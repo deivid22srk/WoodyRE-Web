@@ -126,8 +126,16 @@ Collision-varianten (Press/UnPress/In/PersoUnpress) via `0x441fc0..0x442100`.
 Elke gebeurtenis zet flags op het volume en op de actor-entry en wekt de watcher-objecten van dat volume (`0x443d20`).
 Bron van de volume-events: `0x430210` (bounding-volume test per actor, `push 0x65/0x66/0x67`).
 
-## 6. Wat nog ontbreekt voor een 1:1 reimplementatie
+## 6. Implementaties
 
-- Semantiek per berichttype (≈140 handlers; ruwe map met strings/calls in `messages_raw.txt`).
-- Exacte tijdseenheid van `0x5d0514` en de plek van de VM-tick in de frame-loop.
+- `tools/ekovm.py`: Python-emulator (init + tick), gebruikt voor statistieken en als referentie.
+- `src/ekovm.c` + `src/ekovm.h`: C-implementatie met dezelfde semantiek (inclusief de eigenaardigheden:
+  dubbele init-pass, `FOREACH` beëindigt de omliggende run, wake-lijst achterstevoren, wachtrij-cap van 1280
+  berichten met waarschuwing). `src/ekorun.c` is een testharnas; traces zijn identiek aan de Python-emulator.
+- Beide gebruiken de MSVC-`rand()` LCG (`seed*214013+2531011`) zodat `RANDOM` deterministisch vergelijkbaar is.
+
+## 7. Wat nog ontbreekt voor een 1:1 reimplementatie
+
+- Semantiek per berichttype: zie [MESSAGES.md](MESSAGES.md) (routering compleet, gedrag deels).
+- Plek van de VM-tick in de frame-loop (`0x4019c0` wordt aangeroepen uit `0x401ab0`/`0x404822`).
 - Betekenis van de `0x02000000`-verwijzingen en de `.ins`-koppeling object ↔ instantie.
