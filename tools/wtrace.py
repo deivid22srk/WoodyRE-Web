@@ -181,6 +181,7 @@ class Debugger:
                             armed = True   # first (64-bit loader) breakpoint: image is mapped now, arm ours
                             for a, fn in list(self.pre_bps.items()): self.add_bp(a, fn)
                             self.log('# breakpoints armed')
+                            if getattr(self, 'post_arm', None): self.post_arm(None)
                         # IAT slots are only resolved once the 32-bit loader has run (second breakpoint)
                         for slot, fn in list(self.iat_bps.items()):
                             target = self.u32(slot)
@@ -201,6 +202,7 @@ def main():
     ap.add_argument('gamedir')
     ap.add_argument('--seconds', type=float, default=0)
     ap.add_argument('--out', default='-')
+    ap.add_argument('--level', help='level name (W1A, K2A, ...): the House slot of the level table is redirected to it, so the game boots straight into that level')
     a = ap.parse_args()
     out = sys.stdout if a.out == '-' else open(a.out, 'w', encoding='utf-8', buffering=1)
     exe = os.path.join(a.gamedir, 'Woody.exe')
@@ -221,6 +223,17 @@ def main():
         dbg.log('LOAD %s' % dbg.cstr(dbg.u32(ctx.Esp + 4)))
     def on_init(ctx):
         dbg.log('INIT')
+    if a.level:
+        # level table at 0x4b12a0: 28 pointers to Data/LVL/LVL.gel path strings strings; slot 0 = House (the boot level)
+        import pefile
+        pe = pefile.PE(exe); img = pe.get_memory_mapped_image()
+        table = struct.unpack_from('<28I', img, 0x4b12a0 - 0x400000)
+        want = (r'\Data\%s\%s.gel' % (a.level, a.level)).encode()
+        match = [p for p in table if img[p - 0x400000:p - 0x400000 + len(want) + 1] == want + bytes(1)]
+        if not match: sys.exit('unknown level %s' % a.level)
+        def redirect(ctx):
+            dbg.write(0x4b12a0, struct.pack('<I', match[0])); dbg.log('# level slot 0 -> %s' % a.level)
+        dbg.post_arm = redirect
     def on_dbgprint(ctx):          # 0x462c60: the (stubbed) internal logger; first arg is usually a format string
         p = dbg.u32(ctx.Esp + 4)
         if p and 0x400000 <= p < 0x600000:
