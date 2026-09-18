@@ -1,0 +1,193 @@
+type -> size, ctor, vtable, msg handler (vtable slot 22 @+0x58)
+  type   1  size=0x754  ctor=0044a2d0 vtable=004aabc0 handler=0044cda0
+  type   2  size=0x754  ctor=0044a2d0 vtable=004aabc0 handler=0044cda0
+  type   3  size=0x754  ctor=0044a2d0 vtable=004aabc0 handler=0044cda0
+  type   4  size=0x1fc  ctor=004189f0 vtable=004a9ec0 handler=00414530
+  type   5  size=0x1fc  ctor=004189f0 vtable=004a9ec0 handler=00414530
+  type   6  size=0x1fc  ctor=004189f0 vtable=004a9ec0 handler=00414530
+  type   7  size=0x20c  ctor=00416ca0 vtable=004a9dc0 handler=00414530
+  type   8  size=0x20c  ctor=00416ca0 vtable=004a9dc0 handler=00414530
+  type   9  size=0x20c  ctor=00416ca0 vtable=004a9dc0 handler=00414530
+  type  10  size=0x1ec  ctor=00415190 vtable=004a9cb8 handler=00414530
+  type  11  size=0x200  ctor=004120e0 vtable=004a9ab0 handler=00414530
+  type  12  size=0x204  ctor=00410e90 vtable=004a99b0 handler=00414530
+  type  13  size=0x1f8  ctor=00413780 vtable=004a9bb0 handler=00414530
+  type  14  size=0x24c  ctor=0040eb50 vtable=004a98a8 handler=00410070
+  type  15  size=0x258  ctor=0040d850 vtable=004a9778 handler=0040e730
+  type  16  size=0x2a8  ctor=0040c730 vtable=004a9658 handler=0040d530
+  type  17  size=0x118  ctor=0040c3d0 vtable=004a95dc handler=0040c5e0
+  type  18  size=0x754  ctor=0044a2d0 vtable=004aabc0 handler=0044cda0
+  type  19  size=0x754  ctor=0044a2d0 vtable=004aabc0 handler=0044cda0
+  type  20  size=0x194  ctor=00452850 vtable=004ab1b8 handler=00453730
+  type  21  size=0x194  ctor=00452850 vtable=004ab1b8 handler=00453730
+  type  22  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  23  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  24  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  25  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  26  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  27  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  28  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  29  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  30  size=0x108  ctor=0044f3e0 vtable=004aad64 handler=0044f350
+  type  31  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  32  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  33  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  34  size=0x108  ctor=0044f500 vtable=004aadd8 handler=0044f350
+  type  35  size=0x108  ctor=0044f300 vtable=004aacf0 handler=0044f350
+  type  36  size=0x10c  ctor=0044f670 vtable=004aae50 handler=0044f350
+  type  37  size=0x108  ctor=0044f7d0 vtable=004aaec4 handler=0044f350
+  type  38  size=0x108  ctor=0044f300 vtable=004aacf0 handler=0044f350
+  type  39  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  40  size=0x134  ctor=0044d250 vtable=004aac74 handler=00451820
+  type  41  size=0x104  ctor=0042e1a0 vtable=004aa31c handler=0042d5e0
+  type  42  size=0x19c  ctor=00452140 vtable=004ab148 handler=0044e8f0
+  type  43  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  44  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  45  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  46  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  47  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  48  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  49  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  50  size=0x114  ctor=00450cd0 vtable=004aaf5c handler=00451040
+  type  51  size=0x118  ctor=00450cd0 vtable=004aaf5c handler=00451040
+  type  52  size=0x118  ctor=00450cd0 vtable=004aaf5c handler=00451040
+  type  53  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  54  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  55  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  56  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  57  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  58  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  59  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  60  size=0x158  ctor=0042e1a0 vtable=004aa31c handler=0042d5e0
+  type  61  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  62  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  63  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  64  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  65  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  66  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  67  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  68  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  69  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  70  size=0x108  ctor=0042e1a0 vtable=004aa31c handler=0042d5e0
+  type  71  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  72  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  73  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  74  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  75  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  76  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  77  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  78  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  79  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  80  size=0x118  ctor=00451a90 vtable=004ab0c4 handler=00451b50
+  type  81  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  82  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  83  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  84  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  85  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  86  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  87  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  88  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  89  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  90  size=0x150  ctor=0042e1a0 vtable=004aa31c handler=0042d5e0
+  type  91  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  92  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  93  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  94  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  95  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  96  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  97  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  98  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type  99  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 100  size=0x170  ctor=004890c0 vtable=004abe24 handler=0042d5e0
+  type 101  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 102  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 103  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 104  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 105  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 106  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 107  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 108  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 109  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 110  size=0x190  ctor=00451860 vtable=004ab048 handler=00451940
+  type 111  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 112  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 113  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 114  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 115  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 116  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 117  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 118  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 119  size=0x0    ctor=0042dfc0 vtable=? handler=?
+  type 120  size=0x108  ctor=00451650 vtable=004aafd0 handler=00451820
+  type 121  size=0x108  ctor=00451650 vtable=004aafd0 handler=00451820
+
+====================================================================================================
+message handler 0044cda0  (types [1, 2, 3, 18, 19])
+  no switch; 26 instr; calls 0x40bf20
+====================================================================================================
+message handler 00414530  (types [4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+  no switch; 4 instr; calls 0x41a740
+====================================================================================================
+message handler 00410070  (types [14])
+  no switch; 21 instr; calls 0x41a740
+====================================================================================================
+message handler 0040e730  (types [15])
+  no switch; 55 instr; calls 
+====================================================================================================
+message handler 0040d530  (types [16])
+  no switch; 16 instr; calls 0x41a740
+====================================================================================================
+message handler 0040c5e0  (types [17])
+  no switch; 6 instr; calls 0x44e8f0
+====================================================================================================
+message handler 00453730  (types [20, 21])
+  no switch; 11 instr; calls 0x44e8f0
+====================================================================================================
+message handler 0044f350  (types [30, 34, 35, 36, 37, 38])
+  no switch; 6 instr; calls 0x44e8f0
+====================================================================================================
+message handler 00451820  (types [40, 120, 121])
+  no switch; 6 instr; calls 0x44e8f0
+====================================================================================================
+message handler 0042d5e0  (types [41, 60, 70, 90, 100])
+  switch table 0042df28 with 22 cases; byte table 0042df80; key base 1; nkeys 56
+  msg 1                -> 0042de97 ( 32 instr) calls=0x42e290
+  msg 2                -> 0042de16 ( 67 instr) calls=0x42e290
+  msg 3                -> 0042d62d ( 25 instr) calls=0x42e290
+  msg 4                -> 0042d8e7 ( 46 instr) calls=0x42e290
+  msg 5                -> 0042d606 ( 10 instr) calls=0x42e290
+  msg 6                -> 0042d985 ( 16 instr) calls=0x407790
+  msg 12               -> 0042d619 ( 10 instr) calls=
+  msg 13               -> 0042d8d3 ( 10 instr) calls=
+  msg 14               -> 0042db9e ( 46 instr) calls=
+  msg 15               -> 0042d9c3 ( 32 instr) calls=
+  msg 16               -> 0042da32 ( 37 instr) calls=
+  msg 17               -> 0042daae ( 29 instr) calls=
+  msg 18               -> 0042db0f ( 36 instr) calls=
+  msg 19               -> 0042db86 ( 10 instr) calls=
+  msg 34               -> 0042dc21 ( 29 instr) calls=
+  msg 42               -> 0042dcb2 ( 66 instr) calls=0x437d10 0x437d50 0x4077f0
+  msg 43               -> 0042dcdd ( 52 instr) calls=0x437d50 0x4077f0
+  msg 44               -> 0042dd9a ( 11 instr) calls=0x437d90
+  msg 45               -> 0042ddb4 ( 24 instr) calls=
+  msg 46               -> 0042dc7d ( 22 instr) calls=0x4381e0
+  msg 56               -> 0042de00 ( 10 instr) calls=
+  default (35 keys) -> 0042df1c
+====================================================================================================
+message handler 0044e8f0  (types [42])
+  no switch; 9 instr; calls 0x42d5e0
+====================================================================================================
+message handler 00451040  (types [50, 51, 52])
+  no switch; 11 instr; calls 0x44e8f0
+====================================================================================================
+message handler 00451b50  (types [80])
+  no switch; 13 instr; calls 0x44e8f0
+====================================================================================================
+message handler 00451940  (types [110])
+  switch table 00451a0c with 6 cases; byte table None; key base 0; nkeys 6
+  msg 0                -> 00451974 (  5 instr) calls=0x45e6f0
+  msg 1                -> 0045198d (  5 instr) calls=0x45e6f0
+  msg 2                -> 004519a6 (  5 instr) calls=0x45e6f0
+  msg 3                -> 004519bf (  5 instr) calls=0x45e6f0
+  msg 4                -> 004519d8 (  5 instr) calls=0x45e6f0
+  msg 5                -> 004519f1 (  5 instr) calls=0x45e6f0

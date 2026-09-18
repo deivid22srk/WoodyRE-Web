@@ -1,0 +1,147 @@
+##### GAME handler 0x444870 (this=[0x5d7afc]): ids 1000..1180 #####
+msg 1000           -> 00444d99  (31 instr) calls=0x4522b0
+msg 1001           -> 00444c50  (22 instr) calls=0x452330
+msg 1002           -> 00444c99  (24 instr) calls=0x452360
+msg 1003           -> 00444d27  (35 instr) calls=0x4522b0
+msg 1004           -> 00444ce4  (20 instr) calls=0x452320
+msg 1010           -> 00445026  (21 instr) calls=0x462c60
+msg 1020           -> 0044516a  (13 instr) calls=0x41fa30 0x459030
+msg 1030           -> 00445129  (10 instr) calls=0x44aa10
+msg 1040           -> 00445230  (18 instr) calls=0x42f6b0 0x44dda0
+msg 1041           -> 0044543c  (20 instr) calls=0x44e040
+msg 1042           -> 00445269  (152 instr) calls=0x443ca0 0x44bcf0 0x42f6b0 0x445780 0x440070 0x458e40 0x44e040
+msg 1043           -> 004451e4  (23 instr) calls=0x42f6b0 0x44dda0
+msg 1044           -> 004451a1  (9 instr) calls=0x44e140
+msg 1045           -> 004451c2  (9 instr) calls=0x44e1a0
+msg 1048           -> 004454ff  (77 instr) calls=0x443ca0 0x467440 0x467420 0x467400
+msg 1049           -> 00445562  (44 instr) calls=0x443ca0 0x467440 0x467420 0x467400
+msg 1050           -> 0044548b  (110 instr) calls=0x443ca0 0x467440 0x467420 0x467400
+msg 1080           -> 0044511b  (4 instr) calls=0x456ed0
+msg 1081           -> 00445057  (8 instr) calls=0x404b60
+msg 1082           -> 00445074  (16 instr) calls=0x450470 0x462c60
+        'No saved struct for LevelIsEnable message...'
+msg 1083           -> 00445106  (4 instr) calls=0x404be0
+msg 1084           -> 004450ee  (11 instr) calls=0x404be0
+msg 1085           -> 004450b1  (30 instr) calls=0x4509e0 0x404be0
+msg 1088           -> 00445001  (11 instr) calls=0x459960
+msg 1090           -> 00444e00  (99 instr) calls=0x449070 0x42f6b0 0x44d5d0
+msg 1100           -> 00444b79  (7 instr) calls=0x451ba0
+msg 1101           -> 00444b93  (2 instr) calls=0x451bd0
+msg 1110           -> 00444b9d  (10 instr) calls=
+msg 1120           -> 00444b27  (20 instr) calls=0x455dc0
+msg 1121           -> 00444a37  (27 instr) calls=0x42f6b0 0x462c60 0x456000
+        "Pas de Vecteur dans l'instance du message StartBoostSurf"
+msg 1130           -> 00444a8f  (18 instr) calls=0x44e990 0x44e9e0
+msg 1131           -> 00444acf  (12 instr) calls=0x44e980
+msg 1132           -> 00444afb  (12 instr) calls=0x44e9a0
+msg 1140           -> 004449e3  (24 instr) calls=0x42f6b0 0x443ca0 0x404df0 0x453d90
+msg 1141           -> 004448d1  (15 instr) calls=0x42f6b0 0x44e640
+msg 1142           -> 004449c2  (8 instr) calls=
+msg 1150           -> 00444978  (7 instr) calls=0x401440
+msg 1151           -> 00444995  (7 instr) calls=0x401480
+msg 1152           -> 004449b2  (3 instr) calls=0x4014c0
+msg 1160           -> 00444950  (8 instr) calls=
+msg 1170           -> 00444934  (4 instr) calls=0x44c7a0
+msg 1171           -> 00444942  (4 instr) calls=0x44c840
+msg 1172           -> 00444925  (3 instr) calls=
+msg 1173           -> 00444904  (9 instr) calls=
+msg 1180           -> 004448b9  (7 instr) calls=0x404b60
+default case (136 keys) -> 004455c6
+
+##### handler 0x46cca0 (this=[0x5e823c]): ids 1500..1511 #####
+msg 1500           -> 0046ccc0  (25 instr) calls=0x478980
+msg 1501           -> 0046cd07  (11 instr) calls=
+msg 1502           -> 0046cd2e  (26 instr) calls=
+msg 1503           -> 0046cda0  (13 instr) calls=
+msg 1504           -> 0046cdcc  (12 instr) calls=
+msg 1505           -> 0046cdfd  (18 instr) calls=0x478660
+msg 1506           -> 0046ce38  (24 instr) calls=0x474690
+msg 1507           -> 0046ce85  (13 instr) calls=0x4750e0
+msg 1508           -> 0046ceae  (20 instr) calls=0x4995b2 0x47cdf0
+msg 1509           -> 0046cf6f  (27 instr) calls=0x42f6b0 0x477060
+msg 1510           -> 0046cf02  (21 instr) calls=
+msg 1511           -> 0046cf44  (13 instr) calls=
+
+##### handler 0x467fa0 (this=[0x4c2dd8]): ids 1600..1657 #####
+msg 1600           -> 00467fe4  (13 instr) calls=
+msg 1601           -> 00468001  (16 instr) calls=
+msg 1602           -> 00468026  (16 instr) calls=
+msg 1603           -> 0046804b  (13 instr) calls=
+msg 1604           -> 00468068  (16 instr) calls=
+msg 1605           -> 0046808d  (16 instr) calls=
+msg 1606           -> 004680b2  (14 instr) calls=
+msg 1607           -> 004680d4  (20 instr) calls=
+msg 1608,1610      -> 00468107  (20 instr) calls=
+msg 1609           -> 004680dd  (17 instr) calls=
+msg 1608,1610      -> 00468107  (20 instr) calls=
+msg 1611           -> 00468139  (14 instr) calls=
+msg 1612           -> 0046815b  (20 instr) calls=
+msg 1613,1615      -> 0046818e  (20 instr) calls=
+msg 1614           -> 00468164  (17 instr) calls=
+msg 1613,1615      -> 0046818e  (20 instr) calls=
+msg 1616           -> 004681c0  (18 instr) calls=
+msg 1617           -> 004681f1  (27 instr) calls=
+msg 1618,1619      -> 00468201  (21 instr) calls=
+msg 1618,1619      -> 00468201  (21 instr) calls=
+msg 1620           -> 00468236  (21 instr) calls=
+msg 1621           -> 00468273  (24 instr) calls=
+msg 1622           -> 004683f4  (56 instr) calls=
+msg 1623           -> 00468406  (49 instr) calls=
+msg 1624           -> 0046843a  (29 instr) calls=
+msg 1625           -> 00468443  (26 instr) calls=
+msg 1626           -> 00468450  (22 instr) calls=
+msg 1627           -> 00468420  (39 instr) calls=
+msg 1628           -> 004685ab  (18 instr) calls=
+msg 1629           -> 004682b8  (38 instr) calls=
+msg 1630           -> 00468332  (38 instr) calls=
+msg 1631           -> 00468354  (27 instr) calls=
+msg 1632           -> 004683a0  (30 instr) calls=
+msg 1633           -> 0046848a  (75 instr) calls=
+msg 1634           -> 004684ac  (64 instr) calls=
+msg 1635           -> 004684d6  (50 instr) calls=
+msg 1636           -> 00468500  (36 instr) calls=
+msg 1637           -> 0046851d  (26 instr) calls=
+msg 1638           -> 00468564  (26 instr) calls=
+default case (10 keys) -> 004686aa
+default case (10 keys) -> 004686aa
+default case (10 keys) -> 004686aa
+default case (10 keys) -> 004686aa
+default case (10 keys) -> 004686aa
+default case (10 keys) -> 004686aa
+default case (10 keys) -> 004686aa
+msg 1646,1656      -> 00468671  (10 instr) calls=
+default case (10 keys) -> 004686aa
+default case (10 keys) -> 004686aa
+msg 1649           -> 0046864f  (6 instr) calls=0x41fa40
+msg 1650           -> 00468660  (6 instr) calls=0x41fa50
+default case (10 keys) -> 004686aa
+msg 1652           -> 004685dc  (16 instr) calls=
+msg 1653           -> 00468603  (31 instr) calls=0x41fa40
+msg 1654           -> 0046862c  (18 instr) calls=0x41fa40
+msg 1655           -> 00468689  (8 instr) calls=
+msg 1646,1656      -> 00468671  (10 instr) calls=
+msg 1657           -> 00468698  (10 instr) calls=
+
+##### instance base handler 0x42d5e0: ids 1..56 #####
+msg 1              -> 0042de97  (32 instr) calls=0x42e290
+msg 2              -> 0042de16  (67 instr) calls=0x42e290
+msg 3              -> 0042d62d  (25 instr) calls=0x42e290
+msg 4              -> 0042d8e7  (46 instr) calls=0x42e290
+msg 5              -> 0042d606  (10 instr) calls=0x42e290
+msg 6              -> 0042d985  (16 instr) calls=0x407790
+msg 12             -> 0042d619  (10 instr) calls=
+msg 13             -> 0042d8d3  (10 instr) calls=
+msg 14             -> 0042db9e  (46 instr) calls=
+msg 15             -> 0042d9c3  (32 instr) calls=
+msg 16             -> 0042da32  (37 instr) calls=
+msg 17             -> 0042daae  (29 instr) calls=
+msg 18             -> 0042db0f  (36 instr) calls=
+msg 19             -> 0042db86  (10 instr) calls=
+msg 34             -> 0042dc21  (29 instr) calls=
+msg 42             -> 0042dcb2  (66 instr) calls=0x437d10 0x437d50 0x4077f0
+msg 43             -> 0042dcdd  (52 instr) calls=0x437d50 0x4077f0
+msg 44             -> 0042dd9a  (11 instr) calls=0x437d90
+msg 45             -> 0042ddb4  (24 instr) calls=
+msg 46             -> 0042dc7d  (22 instr) calls=0x4381e0
+msg 56             -> 0042de00  (10 instr) calls=
+default case (35 keys) -> 0042df1c

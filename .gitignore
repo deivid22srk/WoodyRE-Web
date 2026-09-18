@@ -1,0 +1,9 @@
+game/
+extract/
+out/*.wav
+__pycache__/
+*.pyc
+.venv/
+out/ekoasm/
+out/disasm_full.txt
+docs/disasm_*.txt
