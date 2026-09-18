@@ -7,3 +7,6 @@ __pycache__/
 out/ekoasm/
 out/disasm_full.txt
 docs/disasm_*.txt
+out/trace/
+out/*.exe
+out/msg_blocks.txt

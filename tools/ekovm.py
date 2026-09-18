@@ -46,6 +46,7 @@ class EkoVM:
         self.vol_flags = [0] * self.nvol; self.vol_count = [0] * self.nvol; self.vol_list = [[] for _ in range(self.nvol)]
         self.col_flags = [0] * self.ncol; self.col_list = [[] for _ in range(self.ncol)]
         self.log = log
+        self.seed = 1
         self.stats = Counter(); self.opstats = Counter()
 
     # ---- helpers ----
@@ -62,6 +63,15 @@ class EkoVM:
         for o in self.watchers[idx]: self.wake_obj(o)
         self.vars[idx] = v
     def bpush(self, b): self.bstack.append(1 if b else 0)
+    def rand(self):
+        """MSVC CRT rand(): seed = seed*214013+2531011; return (seed>>16)&0x7fff"""
+        self.seed = (self.seed * 214013 + 2531011) & 0xffffffff
+        return (self.seed >> 16) & 0x7fff
+    def delay_add(self, t, target, pc):
+        """0x444290/0x4442d0: insert before the first entry whose time >= t"""
+        i = 0
+        while i < len(self.delays) and self.delays[i][0] < t: i += 1
+        self.delays.insert(i, (t, target, self.obj_of(pc)))
 
     # ---- interpreter ----
     def run(self, pc):
@@ -81,7 +91,7 @@ class EkoVM:
             elif op == 1: raise RuntimeError("HANG opcode")
             elif op == 2: self.stop = True; pc += 1
             elif op == 3: s.append(a1); pc += 2
-            elif op == 4: s.append(('str', a1)); pc += 2
+            elif op == 4: s.append(a1); pc += 2
             elif op == 5: s.append(self.vars[a1]); pc += 2
             elif op == 6: self.setvar(a1, s.pop()); pc += 2
             elif op == 7: v = s.pop(); s[-1] = (s[-1] + v) & 0xffffffff; pc += 1
@@ -100,7 +110,7 @@ class EkoVM:
             elif op == 21: bs[-1] = 0 if bs[-1] else 1; pc += 1
             elif op == 22: pc = a1
             elif op == 23: pc = pc + 2 if bs.pop() else a1
-            elif op == 24: self.delays.append((self.time + a1, a2, self.obj_of(pc))); self.stats['delay'] += 1; pc += 3
+            elif op == 24: self.delay_add(self.time + a1, a2, pc); self.stats['delay'] += 1; pc += 3
             elif op == 25: pc += 2
             elif op == 26: self.durings.append((self.time + a1, a2, self.obj_of(pc))); self.stats['during'] += 1; pc += 3
             elif op == 27: s.append(self.time); pc += 1
@@ -138,15 +148,14 @@ class EkoVM:
             elif op == 58: v = s.pop(); self.bpush(v & self.msgmask[a1]); pc += 2
             elif op == 59: self.msgmask[a1] = 0; pc += 2
             elif op == 60: self.bpush(False); pc += 4
-            elif op == 61: v = s.pop(); self.delays.append((self.time + v, a1, self.obj_of(pc))); pc += 2
-            elif op == 62: v = s.pop(); s.append(random.randrange(v) if v > 0 else 0); pc += 1
+            elif op == 61: v = s.pop(); self.delay_add(self.time + v, a1, pc); pc += 2
+            elif op == 62: v = s.pop(); s.append(self.rand() % (v if v > 0 else 1)); pc += 1
             else: raise RuntimeError("bad opcode %d at %d" % (op, pc))
         return pc
 
     @staticmethod
     def sg(v): return v - 0x100000000 if isinstance(v, int) and v >= 0x80000000 else v
     def fmt(self, v):
-        if isinstance(v, tuple): return "str:%r" % (self.strings[v[1]] if v[1] < len(self.strings) else v[1])
         if v >= 0x1000000: return "0x%x" % v
         return str(v)
 
@@ -172,8 +181,7 @@ class EkoVM:
         """0x442240"""
         self.time += dt
         ran = 0
-        # delays (sorted by time)
-        self.delays.sort()
+        # delays (kept sorted by insertion)
         while self.delays and self.delays[0][0] <= self.time:
             t, target, owner = self.delays.pop(0); self.run(target); ran += 1
         # durings
