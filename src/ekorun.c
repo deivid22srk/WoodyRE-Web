@@ -1,5 +1,7 @@
 /* Test harness: load a level's `code` file, run the init and some ticks, print the message trace.
- * usage: ekorun <code file> [ticks]
+ * usage: ekorun <code file> [ticks | @timesfile]
+ *   @timesfile: one VM time value (1/100 s) per line, e.g. extracted from a live trace (tools/wtrace.py),
+ *   so the emulator replays exactly the tick timing of the original.
  * Output format matches tools/ekovm.py --trace ("  SEND id [args]") so the two can be diffed. */
 #include "ekovm.h"
 #include <stdio.h>
@@ -33,9 +35,17 @@ int main(int argc, char **argv)
     if (eko_load(&vm, buf, (size_t)sz) != 0) { fprintf(stderr, "not an EKO CODE file\n"); return 1; }
     vm.on_msg = on_msg; vm.on_warn = on_warn; vm.rand_fn = msvc_rand;
     eko_init(&vm);
-    int ticks = argc > 2 ? atoi(argv[2]) : 60;
-    int total = 0;
-    for (int t = 1; t <= ticks; t++) { total += eko_tick(&vm, t); }
+    int ticks = 0, total = 0;
+    if (argc > 2 && argv[2][0] == '@') {
+        FILE *tf = fopen(argv[2] + 1, "r");
+        if (!tf) { perror(argv[2] + 1); return 1; }
+        long tv;
+        while (fscanf(tf, "%ld", &tv) == 1) { printf("TICK time=%ld\n", tv); total += eko_tick(&vm, (uint32_t)tv); ticks++; }
+        fclose(tf);
+    } else {
+        ticks = argc > 2 ? atoi(argv[2]) : 60;
+        for (int t = 1; t <= ticks; t++) { printf("TICK time=%d\n", t); total += eko_tick(&vm, (uint32_t)t); }
+    }
     fprintf(stderr, "%s: objects=%u vars=%u volumes=%u strings=%u collisions=%u msgs(pass2)=%d ticks=%d objects_run=%d delays_run=%u error=%d sp=%d bsp=%d\n",
             argv[1], vm.nobj, vm.nvars, vm.nvol, vm.nstr, vm.ncol, vm.nmsgs, ticks, total, vm.stat_delays_run, vm.error, vm.sp, vm.bsp);
     eko_free(&vm); free(buf);

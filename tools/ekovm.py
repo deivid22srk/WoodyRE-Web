@@ -171,7 +171,9 @@ class EkoVM:
 
     def init(self):
         """0x4427e0: two init passes; messages of the first pass are discarded"""
+        saved_log, self.log = self.log, None          # the exe discards (and never routes) pass-1 messages
         for o in range(self.nobj): self.run_object_init(o)
+        self.log = saved_log
         pass1 = self.msgs; self.msgs = []
         self.delays = []; self.durings = []
         for o in range(self.nobj): self.run_object_init(o)

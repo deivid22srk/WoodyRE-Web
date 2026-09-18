@@ -319,7 +319,7 @@ static void send_msg(EkoVM *vm, int n)                              /* 0x443220 
     int copy = n - 1; if (copy > EKO_MAX_MSG_ARGS) copy = EKO_MAX_MSG_ARGS;
     for (int i = 0; i < copy; i++) m->args[i] = (uint32_t)a[1 + i];
     vm->sp -= n;
-    if (vm->on_msg) vm->on_msg(vm, m, vm->user);
+    if (vm->on_msg && !vm->discard_msgs) vm->on_msg(vm, m, vm->user);
 }
 
 /* ------------------------------------------------------------------ interpreter (0x4429f0) */
@@ -487,7 +487,9 @@ void eko_init(EkoVM *vm)                   /* 0x4427e0 */
     reset_lists(vm);
     vm->globals[0] = vm->globals[1] = 0;
     vm->bsp = vm->sp = 0;
+    vm->discard_msgs = 1;
     for (uint32_t o = 0; o < vm->nobj; o++) run_object_init(vm, o);
+    vm->discard_msgs = 0;
     /* pass 1 done: clear stamps, msgmask, wake lists, discard messages (0x441d40), reset timers */
     memset(vm->stamp, 0, (vm->nobj + 1) * 4);
     memset(vm->msgmask, 0, (vm->nobj + 1) * 4);
