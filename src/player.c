@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include "player.h"
+#include "audio.h"
 #include "enemy.h"
 
 /* ---- decompiled Perso parameters (docs/PERSO_FRAME.md 2.3 / 2.6, table 0x4b5f14, Woody column) ---- */
@@ -490,6 +491,7 @@ static void attack_hit_loop(Player *p)
         if (!hit) continue;
         int was = p->atk; if (p->atk == 2) p->atk = 3;
         int died = enemy_take_damage(e, 1.0f /* P+0x90 */, dir);
+        if (died) audio_fx(6, e->inst, &e->inst->position.x);            /* 0x44d730: destroyed, 3D on the victim */
         printf("  ATTACK hit enemy %u (%s)%s\n", e->inst->index, was == 2 ? "peck" : "charge", died ? " - dead" : "");
         if (was == 2) return;
     }
@@ -508,7 +510,7 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
             p->aim = t->pos; p->aim.y += enemy_height(t) * 0.8f; p->target = t;
             if (p->pos.y - p->aim.y > 50.0f) { p->atk_dir = vsub(p->aim, p->pos); p->has_target = 1; float yl = sqrtf(p->atk_dir.x * p->atk_dir.x + p->atk_dir.z * p->atk_dir.z); if (yl > 0.01f) p->yaw = atan2f(p->atk_dir.x, p->atk_dir.z); }
         }
-        p->dash_start = p->pos;
+        p->dash_start = p->pos; audio_fx(55 + rand() % 3, NULL, NULL);          /* 0x45752b: air attack cry, 0x37 + rand(0,3) */
         { float l = sqrtf(vdot(p->atk_dir, p->atk_dir)); p->atk_dir.x /= l; p->atk_dir.y /= l; p->atk_dir.z /= l; }
         p->jumper.fallen = 0; p->jumper.hard_fall = 0; p->air_win = 0; p->atk = 2; return; }
     case 2:
@@ -622,16 +624,16 @@ static void game_sequence(Player *p, EkoVM *vm, float dt)
 int player_collect(Player *p, int type, int arg)
 {
     switch (type) {
-    case 30: p->lives++; break;                                           /* extra life, sound 0 */
-    case 34: p->bonus_got++; p->bonus_count++; break;                     /* "Bonus Woody", sound 3; 25 = a heart or a life */
-    case 35: p->special_charges++; break;                                 /* charge for the special action (Perso+0x254), sound 2 */
-    case 36: p->unique_items++; break;                                    /* unique item (save game flag), sound 1 */
-    case 37: p->race_bonus++; break;                                      /* "Bonus Race", sound 5 */
+    case 30: p->lives++; audio_fx(0, NULL, NULL); break;                  /* extra life, SoundFx 0 (0x44f43b) */
+    case 34: p->bonus_got++; p->bonus_count++; audio_fx(3, NULL, NULL); break;                     /* "Bonus Woody", sound 3; 25 = a heart or a life */
+    case 35: p->special_charges++; audio_fx(2, NULL, NULL); break;                                 /* charge for the special action (Perso+0x254), sound 2 */
+    case 36: p->unique_items++; audio_fx(1, NULL, NULL); break;                                    /* unique item (save game flag), sound 1 */
+    case 37: p->race_bonus++; audio_fx(5, NULL, NULL); break;                                      /* "Bonus Race", sound 5 */
     case 38: { float t = arg * 0.01f; if (p->invuln_respawn < t) p->invuln_respawn = t; if (p->invuln_hit < t) p->invuln_hit = t; } break;   /* invulnerability */
     default: return 0;
     }
     /* reward in Perso_Update 0x44b530: 25 bonuses = one heart, or an extra life when already at 5 hearts */
-    if (p->bonus_count >= 25) { p->bonus_count -= 25; if (p->health < 5.0f) p->health += 1.0f; else p->lives++; }
+    if (p->bonus_count >= 25) { p->bonus_count -= 25; audio_fx(4, NULL, NULL); if (p->health < 5.0f) p->health += 1.0f; else { p->lives++; audio_fx(0, NULL, NULL); } }   /* 0x44b6e4, 0x44b71a */
     printf("  BONUS type %d collected: woody bonus %d / %d, health %.0f, lives %d\n", type, p->bonus_got, p->bonus_total, p->health, p->lives);
     return 1;
 }

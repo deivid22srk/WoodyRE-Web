@@ -114,6 +114,8 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 1511 | inst, b | 7 | ✔ `byte inst+0x120 = (b != 0)` |
 
 ## Geluid (`0x467fa0`, vtable van de Cryo-soundmanager)
+> **Let op:** de tabel hieronder is achterhaald. [SOUND.md](SOUND.md) §1 is leidend: 1655 = PlayMusic(track), 1628 = stop van de
+> 3D-stemmen van (inst, id) met fade, 1652 = stop 2D, 1620/1630 = 3D-lussen, 1622/1623/1627 = 3D eenmalig, 1600/1602 = 2D eenmalig, 1606 = 2D-lus.
 | id | args | gebruik | betekenis |
 |---|---|---|---|
 | 1600..1619 | … | 0 | ~ 2D-varianten (vtable +0x24/+0x28: PlaySound2D(id, 0, 1.0, …)) |

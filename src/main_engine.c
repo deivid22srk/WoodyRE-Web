@@ -19,6 +19,7 @@
 #include "player.h"
 #include "instance.h"
 #include "enemy.h"
+#include "audio.h"
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
@@ -38,11 +39,11 @@ static const char *k_levels[29] = { "House", "WWS", "W1A", "W1B", "W2A", "W2B", 
 static int g_level = 27, g_prev_level = 27;           /* app+0x68 / +0x6c (init 0x1b) */
 /* RequestLevel 0x404b60(fade_s, level, state, page): fade out, then the main loop swaps the level */
 static int g_next_level = -1; static float g_fade_len = 0.5f, g_switch_fade = 1.0f;
-static void request_level(int index, float fade_s) { if (g_next_level < 0 && index >= 0 && index < 29) { g_next_level = index; g_fade_len = fade_s > 0.01f ? fade_s : 0.01f; } }
+static void request_level(int index, float fade_s) { if (g_next_level < 0 && index >= 0 && index < 29) { g_next_level = index; g_fade_len = fade_s > 0.01f ? fade_s : 0.01f; audio_music_stop(g_fade_len * 0.9f); audio_rtc(-1); } }   /* 0x404b95 */
 static int level_index(const char *name) { for (int i = 0; i < 29; i++) if (!_stricmp(k_levels[i], name)) return i; return -1; }
 
 /* real time cinematic state (docs/CINEMATIC.md, object game+0x64); the update is further down */
-static struct { int state, anim, nactors; Instance *main_inst, *vec; struct { Instance *inst; int anim; } actor[32]; uint32_t var; float remain, timer; } g_cin;
+static struct { int state, anim, nactors; Instance *main_inst, *vec; struct { Instance *inst; int anim; } actor[32]; uint32_t var; float remain, timer; int rtc; } g_cin;
 static int cin_running(void) { return g_cin.state == 2 || g_cin.state == 3; }               /* 0x44f2e0: Perso update skipped */
 
 /* ---- camera manager: follow camera (mode 1, player.c) + the fixed script cameras (docs/CAMERA_SCRIPT.md, CAMERA.md 4 and 6.1)
@@ -185,7 +186,7 @@ static void cin_update(EkoVM *vm, float dt, float now)
     switch (g_cin.state) {
     case 1:
         if ((g_cin.timer -= dt) > 0) break;
-        fade_start(0.5f, 0); g_black_frame = 1; g_cin.state = 2; eko_set_var(vm, g_cin.var, 0);
+        fade_start(0.5f, 0); g_black_frame = 1; g_cin.state = 2; eko_set_var(vm, g_cin.var, 0); audio_rtc(g_cin.rtc);   /* vt[0x98]: the /Rtc/ stream of this scene */
         {   /* 0x44eab0: the main instance goes to the vector P0, facing P0 -> P1; everything plays once at speed 3 */
             const Model *mo = g_cin.vec->model; int node = -1;
             for (uint32_t i = 0; i < mo->nnodes && node < 0; i++) if (mo->nodes[i].type_code == 5 && mo->nodes[i].npoints >= 2) node = (int)i;
@@ -202,7 +203,7 @@ static void cin_update(EkoVM *vm, float dt, float now)
         g_cin.timer = g_cin.remain; fade_start(g_cin.remain > 0.01f ? g_cin.remain : 0.01f, 1); g_cin.state = 3; break;
     case 3:
         if ((g_cin.timer -= dt) > 0) break;
-        fade_start(0.5f, 0); g_cin.timer = 0.5f; g_cin.state = 4;
+        fade_start(0.5f, 0); g_cin.timer = 0.5f; g_cin.state = 4; audio_rtc(-1); audio_music_pause(0, 0.45f);
         {   /* 0x44edb0 + 0x445af9: the player continues where the animation left the root, follow camera behind him */
             Vec3 pos, fwd;
             if (g_player && g_player->inst == m) {
@@ -241,6 +242,81 @@ static uint32_t g_intro_var; static int g_have_intro;            /* message 1160
 
 /* script -> engine messages. Only the subset needed to see something happen is implemented;
  * everything else is logged. See docs/MESSAGES.md. */
+
+/* ---- sound (docs/SOUND.md): script messages 1600..1657 (0x467fa0) -> the mixer in audio.c.
+ * vol 0..100; pitch args are x0.01 (f > 0 = frequency factor), "dur" args are x-0.01 (wanted duration); dmin args are x0.01 m. */
+static void snd_msg(const EkoMsg *m, Instance *in)
+{
+#define AI(i) ((i) < (int)m->nargs ? (float)(int32_t)m->args[i] : 0.0f)
+    uint32_t s2 = m->nargs ? m->args[0] : 0, s3 = m->nargs > 1 ? m->args[1] : 0;   /* sample ref of the 2D / 3D forms */
+    const float *pos = in ? &in->position.x : NULL;
+    switch (m->id) {
+    case 1600: case 1603: audio_play(s2, NULL, 0, AI(1), 1.0f, NULL, 0, 0); break;
+    case 1601: case 1604: audio_play(s2, NULL, 0, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
+    case 1602: case 1605: audio_play(s2, NULL, 0, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
+    case 1606: case 1611: audio_play(s2, NULL, 1, AI(1), 1.0f, NULL, 0, 0); break;
+    case 1607: case 1612: audio_play(s2, NULL, 1, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
+    case 1609: case 1614: audio_play(s2, NULL, 1, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
+    case 1608: case 1610: case 1613: case 1615: audio_play(s2, NULL, 1, AI(1), AI(2) * 0.01f, NULL, 0, AI(3) * 0.01f); break;
+    case 1616: case 1617: audio_play(s3, in, 0, AI(2), 1.0f, NULL, 0, 0); break;
+    case 1652: audio_stop2d(s2, AI(1) * 0.01f, (int)AI(2)); break;
+    case 1655: audio_music((int)AI(0)); break;
+    case 1646: case 1656: audio_music_stop(AI(0) * 0.01f); break;
+    case 1657: audio_next_fade_in(AI(0) * 0.01f); break;
+    default: break;
+    }
+    if (!in) return;
+    switch (m->id) {                                                                /* 3D: key (instance, sample); default dmin 2 m */
+    case 1620: audio_play(s3, in, 1, AI(2), 1.0f, pos, 2.0f, 0); break;
+    case 1621: audio_play(s3, in, 1, AI(2), AI(3) * 0.01f, pos, 2.0f, 0); break;
+    case 1622: case 1624: audio_play(s3, in, 0, AI(2), 1.0f, pos, 2.0f, 0); break;
+    case 1623: case 1625: audio_play(s3, in, 0, AI(2), AI(3) * 0.01f, pos, 2.0f, 0); break;
+    case 1626: case 1627: audio_play(s3, in, 0, AI(2), AI(3) * -0.01f, pos, 2.0f, 0); break;
+    case 1628: audio_stop3d(s3, in, AI(2) * 0.01f); break;
+    case 1629: audio_play(s3, in, 1, AI(2), AI(3) * -0.01f, pos, 2.0f, AI(4) * 0.01f); break;
+    case 1630: audio_play(s3, in, 1, AI(2), 1.0f, pos, AI(3) * 0.01f, 0); break;
+    case 1631: audio_play(s3, in, 1, AI(2), AI(3) * 0.01f, pos, AI(4) * 0.01f, 0); break;
+    case 1632: audio_play(s3, in, 1, AI(2), AI(3) * -0.01f, pos, AI(5) * 0.01f, AI(4) * 0.01f); break;
+    case 1633: case 1636: audio_play(s3, in, 0, AI(2), 1.0f, pos, AI(3) * 0.01f, 0); break;
+    case 1634: case 1637: audio_play(s3, in, 0, AI(2), AI(3) * 0.01f, pos, AI(4) * 0.01f, 0); break;
+    case 1635: case 1638: audio_play(s3, in, 0, AI(2), AI(3) * -0.01f, pos, AI(4) * 0.01f, 0); break;
+    default: break;
+    }
+#undef AI
+}
+
+/* animation events of type 4 on the root node = sounds (0x42f5e0 -> 0x43a8f0 -> 0x4695f0, docs/SOUND.md 3):
+ * {4, t, ref, probLo, probHi, vol, pitch%, dmin cm, 0}; one random draw per call picks among the variants; the Perso plays 2D */
+static uint32_t msvc_rand(void *user);
+static void anim_sounds(Instance *ii)
+{
+    const Model *mo = ii->model;
+    if (!ii->visible || !mo->nnodes || ii->anim < 0 || (uint32_t)ii->anim >= mo->nanims) return;
+    const InsNode *n = &mo->nodes[0]; if (!n->event_refs || !n->pool || !n->event_refs[ii->anim].cnt) { ii->snd_anim = ii->anim; return; }
+    const InsAnim *a = &mo->anims[ii->anim]; float dur = a->duration_s > 0 ? a->duration_s : 1.0f;
+    float ph = fmodf(ii->anim_time / dur, 1.0f); if (ph < 0) ph += 1.0f; float tf = ph * (float)a->nframes;
+    float t0 = ii->snd_anim == ii->anim ? ii->snd_tf : (tf > 2.0f ? tf - 2.0f : 0.0f);
+    ii->snd_anim = ii->anim; ii->snd_tf = tf;
+    if (tf == t0) return;
+    float r = -1;
+    const uint32_t *e = (const uint32_t *)(n->pool + ((size_t)n->a + n->b + n->event_refs[ii->anim].off) * 4);
+    for (uint32_t i = 0; i < n->event_refs[ii->anim].cnt; i++) {
+        uint32_t type = e[0], size = type == 3 ? 15 : type == 4 ? 9 : type == 5 ? 6 : 0; if (!size) return;
+        if (type == 4) {
+            float t, lo, hi, vol, dmin; int32_t pitch;
+            memcpy(&t, &e[1], 4); memcpy(&lo, &e[3], 4); memcpy(&hi, &e[4], 4); memcpy(&vol, &e[5], 4); memcpy(&pitch, &e[6], 4); memcpy(&dmin, &e[7], 4);
+            int hit = tf > t0 ? (t >= t0 && t < tf) : (t >= t0 || t < tf);
+            if (hit) {
+                if (r < 0) { r = (float)msvc_rand(NULL) / 32767.0f * 100.0f - 1.0f; if (r < 0) r = 0; }
+                if (r >= lo && r < hi) {
+                    int perso = g_player && g_player->inst == ii;
+                    audio_play(e[2], ii, 0, vol, (float)pitch * 0.01f, perso ? NULL : &ii->position.x, dmin * 0.01f, 0);
+                }
+            }
+        }
+        e += size;
+    }
+}
 static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
 {
     (void)user;
@@ -305,14 +381,14 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         if (in && g_cin.main_inst && g_cin.state == 0 && m->nargs > 2) {
             const Model *mo = g_cin.main_inst->model; g_cin.vec = in; g_cin.var = m->args[2];
             g_cin.remain = ((uint32_t)g_cin.anim < mo->nanims ? mo->anims[g_cin.anim].duration_s : 0) / 3.0f;   /* duration / 12288 */
-            g_cin.state = 1; g_cin.timer = 0.5f; fade_start(0.4f, 1);
+            g_cin.state = 1; g_cin.timer = 0.5f; fade_start(0.4f, 1); g_cin.rtc = (int)m->args[1]; audio_music_pause(1, 0.45f);
         }
         break;
     case 1152: g_black_frame = 1; break;
     case 1088: if (in && g_player) cam_side_start(in, m->nargs > 1 ? (int)m->args[1] : 0); break;
     case 1110: if (m->nargs > 1) { static const int fld[9] = { -1, 3, 2, 4, 1, 0, 6, 5, 7 }; int n = (int)m->args[0];   /* n -> sv_par index */
                    if (n == 9) memcpy(g_cam.sv_par, k_sv_defaults, sizeof k_sv_defaults); else if (n >= 1 && n <= 8) g_cam.sv_par[fld[n]] = (float)(int)m->args[1]; } break;                                                              /* credits */                       /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes */
-    default: break;
+    default: if (m->id >= 1600 && m->id <= 1657) snd_msg(m, in); break;
     }
     if (g_log_msgs) {
         printf("  SEND %u [", m->id);
@@ -332,6 +408,7 @@ typedef struct {
 static void *read_all(const char *path, size_t *sz);
 static void level_free(Level *L)
 {
+    audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
@@ -355,6 +432,10 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     g_player = L->have_player ? &L->player : NULL;
     for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
     if (L->have_player) { L->player.inst->scripted = 0; L->player.enemies = &g_enemies; }
+{ static const char *chr[3] = { "Woody", "Knothead", "Splinter" }; static int bank0 = -1, title_n;
+      if (bank0 != g_char) { snprintf(path, sizeof path, "%s/../Common/%s.rck", dir, chr[g_char]); printf("sound bank 0: %d sounds\n", audio_bank_load(0, path)); bank0 = g_char; }
+      snprintf(path, sizeof path, "%s/%s/%s.rck", dir, lvl, lvl); printf("sound bank 1: %d sounds\n", audio_bank_load(1, path));
+      if (g_level == 0) audio_music((title_n++ & 1) ? 0 : 48); }                   /* 0x404e30: the title alternates Menu02 / Menu; levels send 1655 during init */
     printf("VM init...\n"); eko_init(&L->vm);
     printf("init done: %d messages\n", L->vm.nmsgs);
     if (L->have_player) { SaveChar *sc = &g_save.chr[g_char]; L->player.lives = sc->lives; L->player.health = sc->health > 0 ? sc->health : 1.0f; }   /* 0x44a6a0 / 0x44a759 */
@@ -395,6 +476,7 @@ int main(int argc, char **argv)
     }
     Window win; if (win_open(&win, "WoodyRE", 1280, 800)) return 1;
     if (new_game) save_reset(); else save_read();
+    if (!getenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
     static Level L; g_level = level_index(lvl); if (level_load(&L, dir, lvl)) return 1;
 
     /* camera: start behind Woody (model 0, instance 0) if present */
@@ -484,8 +566,10 @@ int main(int argc, char **argv)
             for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
                 Instance *ii = &g_ins.models[mi].instances[k];
                 if (ii->scripted) inst_tick(ii, g_now, dt); else ii->anim_time += dt * ii->anim_speed;
+                anim_sounds(ii);
             }
         }
+        { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
         rnd_frame(&L.rnd, &win, &cam, (float)(now - t0));
         /* level change: PgUp / PgDn cycle through the levels (debug); a request fades out, swaps the level, fades in */
         for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
@@ -514,6 +598,6 @@ int main(int argc, char **argv)
         }
         if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE%s - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", g_level == 0 ? " - TITLE: Enter = new game, L = continue" : "", lvl, frames / (now - fps_t), L.vm.time, L.vm.frame, L.vm.stat_msgs_total, fly ? "fly" : "play", L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.on_ground ? "ground" : "air", L.player.events_sent, L.player.health, L.player.lives, L.player.bonus_got, L.player.bonus_total); SetWindowTextA((HWND)win.hwnd, title); if (L.have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.vel.x, L.player.vel.y, L.player.vel.z, L.player.on_ground ? (L.player.floor_is_hull ? "hull" : "ground") : "air", L.player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
     }
-    level_free(&L); win_close(&win);
+    level_free(&L); audio_shutdown(); win_close(&win);
     return 0;
 }

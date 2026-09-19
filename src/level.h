@@ -102,6 +102,7 @@ typedef struct Instance {
     uint32_t nids; uint32_t *ids;              /* 0x03.. world_volume ids then 0x07.. collision ids */
     /* runtime */
     int visible; int anim; float anim_time; float anim_speed; int type;   /* type from SetTypeInstance */
+    int snd_anim; float snd_tf;                 /* sound events: animation and frame time at the previous tick */
     Mat4 world;                                 /* instance placement */
     /* base class state driven by the script (instance.c, docs/INSTANCE.md) */
     int scripted;                               /* 0 = animation owned by other code (the player) */
