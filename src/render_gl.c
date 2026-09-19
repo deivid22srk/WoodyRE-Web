@@ -268,19 +268,59 @@ static void set_blend(int blended)
     if (blended) { glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE); glDepthMask(GL_FALSE); }
     else { glDisable(GL_BLEND); glDepthMask(GL_TRUE); }
 }
+static uint32_t g_last_material = 0xffffffffu, g_last_frame;
 static float g_mat_scale = 1.0f;                     /* colour scale of the current material (blend intensity) */
 
 /* ---------------------------------------------------------------- instances */
+/* ---- model vertex batching: the model code below is written like immediate mode (begin / colour / texcoord / vertex),
+ * but the vertices are collected in one array per material state and sent with glDrawArrays. Immediate mode cost
+ * 25 ms per frame in the hubs. Fans are turned into triangles; bt_flush() must run before any GL state change. */
+static struct { float *v; uint32_t n, cap; float col[3], uv[2], first[8], prev[8]; int fan, count; } g_bt;
+static void bt_flush(void)
+{
+    if (!g_bt.n) return;
+    glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_TEXTURE_COORD_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 32, g_bt.v); glTexCoordPointer(2, GL_FLOAT, 32, g_bt.v + 3); glColorPointer(3, GL_FLOAT, 32, g_bt.v + 5);
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)g_bt.n);
+    glDisableClientState(GL_VERTEX_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glDisableClientState(GL_COLOR_ARRAY);
+    g_bt.n = 0;
+}
+static void bt_push(const float *v8)
+{
+    if (g_bt.n + 1 > g_bt.cap) { g_bt.cap = g_bt.cap * 2 + 4096; g_bt.v = (float *)realloc(g_bt.v, (size_t)g_bt.cap * 8 * sizeof(float)); }
+    memcpy(g_bt.v + (size_t)g_bt.n * 8, v8, 8 * sizeof(float)); g_bt.n++;
+}
+static void bt_begin(int fan) { g_bt.fan = fan; g_bt.count = 0; }
+static void bt_end(void) { }
+static void bt_color(float r, float g, float b) { g_bt.col[0] = r; g_bt.col[1] = g; g_bt.col[2] = b; }
+static void bt_texcoord(float u, float v) { g_bt.uv[0] = u; g_bt.uv[1] = v; }
+static void bt_vertex(float x, float y, float z)
+{
+    float v[8] = { x, y, z, g_bt.uv[0], g_bt.uv[1], g_bt.col[0], g_bt.col[1], g_bt.col[2] };
+    if (!g_bt.fan) { bt_push(v); return; }
+    if (g_bt.count == 0) memcpy(g_bt.first, v, sizeof v);
+    else if (g_bt.count >= 2) { bt_push(g_bt.first); bt_push(g_bt.prev); bt_push(v); }
+    memcpy(g_bt.prev, v, sizeof v); g_bt.count++;
+}
+
 static void set_material(const Renderer *r, uint32_t material, const Material **mat_out, uint32_t frame)   /* frame: models never auto-cycle (0x47f290) */
 {
+    /* GL state = (texture or none, blend mode). Every polygon has its own material record (a planar projection), so the
+     * batch is keyed on the state, not on the material index: g_last_material holds texture id + 1 (0 = untextured) | blend << 31 */
     *mat_out = NULL; g_mat_scale = 1.0f;
-    if (material & 0x8000) {
-        float rgb[3]; argb1555_to_rgb(material, rgb); glDisable(GL_TEXTURE_2D); set_blend(0); glColor3f(rgb[0], rgb[1], rgb[2]);
-    } else if (material < r->tex->nmaterials) {
+    uint32_t tex = 0; int bl = 0; float col[3] = { 1, 0, 1 };
+    if (material & 0x8000) argb1555_to_rgb(material, col);
+    else if (material < r->tex->nmaterials) {
         const Material *m = &r->tex->materials[material]; *mat_out = m; const TexGroup *g = &r->tex->groups[m->group];
-        int bl = (g->flags & 2) != 0; set_blend(bl); if (bl) g_mat_scale = ((g->flags >> 16) & 0xff) / 255.0f;
-        glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, g->gl_frames[frame < g->frame_count ? frame : 0]); glColor3f(g_mat_scale, g_mat_scale, g_mat_scale);
-    } else { glDisable(GL_TEXTURE_2D); set_blend(0); glColor3f(1, 0, 1); }
+        bl = (g->flags & 2) != 0; if (bl) g_mat_scale = ((g->flags >> 16) & 0xff) / 255.0f;
+        tex = g->gl_frames[frame < g->frame_count ? frame : 0]; col[0] = col[1] = col[2] = g_mat_scale;
+    }
+    uint32_t key = (tex + 1) | (uint32_t)bl << 31;
+    if (key != g_last_material) {
+        bt_flush(); g_last_material = key; set_blend(bl);
+        if (tex) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tex); } else glDisable(GL_TEXTURE_2D);
+    }
+    bt_color(col[0], col[1], col[2]);
 }
 
 /* ---- model lighting (0x42e3e4 light choice, 0x43b912 light vector, 0x43bce4 vertex colour; docs/LIGHTING.md 3).
@@ -315,13 +355,13 @@ static void instance_light(const Renderer *r, Instance *inst, float dt)
 /* vertex colour: vcol * 0.3 + max(0, N.Ldir) * C, drawn MODULATE2X */
 static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat4 *M, const InsPoint *pt, const float base[3])
 {
-    if (!r->lit || !r->show_light) { glColor3f(base[0] * pt->colour.x / 128.0f * g_mat_scale, base[1] * pt->colour.y / 128.0f * g_mat_scale, base[2] * pt->colour.z / 128.0f * g_mat_scale); return; }
+    if (!r->lit || !r->show_light) { bt_color(base[0] * pt->colour.x / 128.0f * g_mat_scale, base[1] * pt->colour.y / 128.0f * g_mat_scale, base[2] * pt->colour.z / 128.0f * g_mat_scale); return; }
     const float *a = M->m; Vec3 n = pt->normal;
     Vec3 w = { a[0] * n.x + a[4] * n.y + a[8] * n.z, a[1] * n.x + a[5] * n.y + a[9] * n.z, a[2] * n.x + a[6] * n.y + a[10] * n.z };
     float l = sqrtf(w.x * w.x + w.y * w.y + w.z * w.z), ndl = l > 1e-6f ? (w.x * inst->ldir.x + w.y * inst->ldir.y + w.z * inst->ldir.z) / l : 0; if (ndl < 0) ndl = 0;
     float vc[3] = { pt->colour.x, pt->colour.y, pt->colour.z }, c[3];
     for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q] * g_mat_scale; }
-    glColor3f(c[0], c[1], c[2]);
+    bt_color(c[0], c[1], c[2]);
 }
 
 /* ---- cast shadows (0x42e651-0x42ec3a, drawn by 0x4385f0): the caster's geometry projected from its light onto the
@@ -449,7 +489,7 @@ static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int 
     for (uint32_t k = 0; k < n->npolys; k++) {
         InsPoly *p = &n->polys[k]; if (p->nverts < 3 || mat_blended(r, p->material) != pass) continue;
         set_material(r, p->material, &mat, frame);
-        glBegin(GL_TRIANGLE_FAN);
+        bt_begin(1);
         for (uint32_t c = 0; c < p->nverts; c++) {
             InsPoint *pt = &m->points[p->indices[c]];
             Vec3 lp = { pt->pos.x - n->pivot.x, pt->pos.y - n->pivot.y, pt->pos.z - n->pivot.z };
@@ -460,12 +500,12 @@ static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int 
                     float ha = h->helper_mode == 0 ? q.y : q.x, hb = h->helper_mode == 2 ? q.y : q.z;
                     u = 0.5f - ha / h->helper_b; v = hb / h->helper_a - 0.5f;
                 } else material_uv(mat, lp.x, lp.y, lp.z, &u, &v);              /* planar projection of the pivot-relative point (0x43da37) */
-                glTexCoord2f(u, v);
+                bt_texcoord(u, v);
             }
             { float base[3] = { 1, 1, 1 }; if (!mat && (p->material & 0x8000)) argb1555_to_rgb(p->material, base); if (mat || (p->material & 0x8000)) lit_vertex_colour(r, inst, &inst->node_world[ni], pt, base); }
-            glVertex3f(wp.x, wp.y, wp.z);
+            bt_vertex(wp.x, wp.y, wp.z);
         }
-        glEnd();
+        bt_end();
     }
 }
 
@@ -481,25 +521,25 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
         for (uint32_t j = 0; j < m->nnodes; j++) if (m->nodes[j].kind == 0x10 && m->nodes[j].parent == (int32_t)ni) { helper = (int)j; break; }
         uint32_t lid = (n->type_code >= 5 && n->type_code <= 8) ? evf[n->type_code - 5] : 0;
         draw_node_polys(r, inst, ni, pass, 0, helper);
-        if (lid) { glDepthFunc(GL_LEQUAL); draw_node_polys(r, inst, ni, pass, lid, -1); glDepthFunc(GL_LESS); }   /* eyelid layer on top of the eyeball */
+        if (lid) { bt_flush(); glDepthFunc(GL_LEQUAL); draw_node_polys(r, inst, ni, pass, lid, -1); bt_flush(); glDepthFunc(GL_LESS); }   /* eyelid layer on top of the eyeball */
     }
     /* skinned triangles */
     if (m->ntris) {
         uint32_t last = 0xffffffff; const int32_t *own = model_owner(m); float base[3] = { 1, 1, 1 };
-        glBegin(GL_TRIANGLES);
+        bt_begin(0);
         for (uint32_t t = 0; t < m->ntris; t++) {
             InsTri *tr = &m->tris[t]; if (mat_blended(r, tr->material) != pass) continue;
-            if (tr->material != last) { glEnd(); set_material(r, tr->material, &mat, 0); last = tr->material; base[0] = base[1] = base[2] = 1; if (tr->material & 0x8000) argb1555_to_rgb(tr->material, base); glBegin(GL_TRIANGLES); }
+            if (tr->material != last) { bt_end(); set_material(r, tr->material, &mat, 0); last = tr->material; base[0] = base[1] = base[2] = 1; if (tr->material & 0x8000) argb1555_to_rgb(tr->material, base); bt_begin(0); }
             uint32_t idx[3] = { tr->i0, tr->i1, tr->i2 };
             for (int c = 0; c < 3; c++) {
                 int o = own[idx[c]]; InsPoint *pt = &m->points[idx[c]]; Vec3 lp = pt->pos; if (o >= 0) { lp.x -= m->nodes[o].pivot.x; lp.y -= m->nodes[o].pivot.y; lp.z -= m->nodes[o].pivot.z; }
                 const Mat4 *M = o >= 0 ? &inst->node_world[o] : &inst->world; Vec3 wp = mat4_apply(M, lp);
                 if (mat || (tr->material & 0x8000)) lit_vertex_colour(r, inst, M, pt, base);
-                if (mat) glTexCoord2f(mat->m[6 - 3 * c], mat->m[7 - 3 * c]);   /* explicit UVs: the material holds three UV pairs, file vertex j = (m[3j], m[3j+1]) and i0 is the third file vertex (0x43e39a) */
-                glVertex3f(wp.x, wp.y, wp.z);
+                if (mat) bt_texcoord(mat->m[6 - 3 * c], mat->m[7 - 3 * c]);   /* explicit UVs: the material holds three UV pairs, file vertex j = (m[3j], m[3j+1]) and i0 is the third file vertex (0x43e39a) */
+                bt_vertex(wp.x, wp.y, wp.z);
             }
         }
-        glEnd();
+        bt_end();
     }
 }
 
@@ -511,6 +551,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         if (tg->frame_count > 1 && tg->anim_duration > 0 && ((tg->flags >> 8) & 0xff) != 2) tg->gl_tex = tg->gl_frames[(uint32_t)(time_s / tg->anim_duration * tg->frame_count) % tg->frame_count];
     }
     glDepthMask(GL_TRUE); glDisable(GL_BLEND); glClearColor(0.08f, 0.09f, 0.11f, 1); glClearStencil(0); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    static double T[5]; static int TN; double q0 = win_time();
     {   /* pose every visible instance up front: the cast shadows are drawn inside the world passes */
         float dt = time_s - r->last_time; if (dt < 0 || dt > 0.25f) dt = 0.016f; r->last_time = time_s;
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
@@ -520,6 +561,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     glEnable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GREATER, 0.5f);
     glPolygonMode(GL_FRONT_AND_BACK, r->wireframe ? GL_LINE : GL_FILL);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    double q1 = win_time(); T[0] += q1 - q0;
 
     /* projection: the world data is right-handed (3ds Max export, y up after the -90 deg x instance rotation), so a plain GL frustum */
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
@@ -582,7 +624,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
                 }
                 glDisable(GL_POLYGON_OFFSET_FILL);
             }
-            if (r->show_light && r->show_instances) draw_cast_shadows(r);
+            { double a = win_time(); if (r->show_light && r->show_instances) draw_cast_shadows(r); T[2] += win_time() - a; }
             /* 3. texture pass: 2 * src * dst (0x4296a4) */
             glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
             for (uint32_t i = 0; i < r->nbatches; i++) {
@@ -596,16 +638,30 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         glDisableClientState(GL_VERTEX_ARRAY); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     }
     if (r->show_instances) {
+        double a = win_time(); g_last_material = 0xffffffffu;
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) {
             Model *m = &r->ins->models[mi];
             for (uint32_t k = 0; k < m->ninstances; k++) {
                 Instance *inst = &m->instances[k]; if (!inst->visible || inst->fade > 0.98f) continue;   /* 0x42e374 */
-                draw_instance(r, inst, pass);
+                {   /* frustum cull on a bounding sphere (the original only draws the instances of the visible sectors) */
+                    if (m->cull_r <= 0) { float mx = 1; for (uint32_t pi = 0; pi < m->npoints; pi++) { const Vec3 *q = &m->points[pi].pos; float d2 = q->x * q->x + q->y * q->y + q->z * q->z; if (d2 > mx) mx = d2; } m->cull_r = sqrtf(mx) * 1.5f + 50.0f; }
+                    const float *wm = inst->node_world ? inst->node_world[0].m : inst->world.m;
+                    float sx = sqrtf(wm[0] * wm[0] + wm[1] * wm[1] + wm[2] * wm[2]); if (sx < 1) sx = 1;
+                    float R = m->cull_r * sx, dx = wm[12] - cam->pos.x, dy = wm[13] - cam->pos.y, dz = wm[14] - cam->pos.z;
+                    float vz = dx * fw.x + dy * fw.y + dz * fw.z, vx = dx * rt.x + dy * rt.y + dz * rt.z, vy = dx * up.x + dy * up.y + dz * up.z;
+                    float ty = 1.0f / f, tx = ty * aspect, zz = vz + R;
+                    if (zz < 0 || fabsf(vx) > zz * tx + R * 1.5f || fabsf(vy) > zz * ty + R * 1.5f) continue;
+                }
+                { static double mt[512]; static int mn; double b0 = win_time(); draw_instance(r, inst, pass); if (mi < 512) mt[mi] += win_time() - b0; if (getenv("WOODY_PROF2") && pass == 1 && mi == r->ins->nmodels - 1 && k == m->ninstances - 1 && ++mn == 120) { for (uint32_t z = 0; z < r->ins->nmodels && z < 512; z++) if (mt[z] / 120 * 1000 > 0.3) { printf("   model %u: %.2f ms (%u nodes, %u tris, %u inst)", z, mt[z] / 120 * 1000, r->ins->models[z].nnodes, r->ins->models[z].ntris, r->ins->models[z].ninstances); puts(""); } } }
             }
         }
+        bt_flush(); g_last_material = 0xffffffffu;
+        T[3] += win_time() - a;
     }
     }
     set_blend(0);
+    T[4] += win_time() - q0;
+    if (getenv("WOODY_PROF") && ++TN == 60) { printf("  RND ms: pose %.2f shadows %.2f instances %.2f total %.2f", T[0] / 60 * 1000, T[2] / 60 * 1000, T[3] / 60 * 1000, T[4] / 60 * 1000); puts(""); T[0] = T[2] = T[3] = T[4] = 0; TN = 0; }
     (void)time_s;
 }
 

@@ -123,7 +123,7 @@ typedef struct Model {
     uint32_t ninstances; Instance *instances;
     uint32_t nvolume_nodes, *volume_nodes; uint32_t nmesh_nodes, *mesh_nodes;
     uint32_t ncollision_ids;
-    int32_t *owner;                             /* per point: owning node (built lazily by the renderer) */
+    int32_t *owner; float cull_r;                             /* per point: owning node (built lazily by the renderer) */
 } Model;
 
 typedef struct { Vec3 position; uint32_t id, index; Trajectory traj; } Camera;

@@ -533,6 +533,7 @@ int main(int argc, char **argv)
             if (br[1] && !br_prev[1]) { sel->anim = (sel->anim + 1) % (int)sel->model->nanims; sel->anim_time = 0; printf("anim %d (%u frames, %.2f s)\n", sel->anim, sel->model->anims[sel->anim].nframes, sel->model->anims[sel->anim].duration_s); }
         }
         br_prev[0] = br[0]; br_prev[1] = br[1];
+        static double pf[5]; static int pfn; static const int prof = 1; double pt0 = win_time();
         /* player (provisional controller) + follow camera */
         if (L.have_player && !paused) {
             PlayerInput pin = { 0 };
@@ -585,6 +586,7 @@ int main(int argc, char **argv)
             }
             if (jump_at >= 0) { if (now - t0 < jump_at) start_y = L.player.pos.y; else if (L.player.pos.y > max_y) { max_y = L.player.pos.y; printf("jump apex so far %.1f above start at t=%.2f (jumper state %d)\n", max_y - start_y, now - t0 - jump_at, L.player.jumper.state); } }
         }
+        double pt1 = win_time();
         /* VM tick: time in 1/100 s like the original */
         if (!paused) {
             eko_tick(&L.vm, (int32_t)((now - t0) * 100.0));
@@ -595,6 +597,7 @@ int main(int argc, char **argv)
                 anim_sounds(ii);
             }
         }
+        double pt2 = win_time();
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
         rnd_frame(&L.rnd, &win, &cam, (float)(now - t0));
         {   /* 2D layer (docs/HUD_TEXT.md 5.4): HUD, then the text box, then the fades. No HUD in menus, BlackBox, cinematics and the fall death camera (0x401e19) */
@@ -638,8 +641,10 @@ int main(int argc, char **argv)
           /* a finished fade-out keeps the 3D picture black until the next fade-in; that is drawn under the 2D layer (above) */
           if (f < 1.0f) rnd_fade(f); }
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
+        double pt3 = win_time();
         win_swap(&win);
         frames++;
+        if (prof && getenv("WOODY_PROF")) { double pt4 = win_time(); pf[0] += pt1 - pt0; pf[1] += pt2 - pt1; pf[2] += pt3 - pt2; pf[3] += pt4 - pt3; if (++pfn == 60) { printf("PROF ms/frame: player+enemies+camera %.2f  vm+instances %.2f  render+2D %.2f  swap %.2f", pf[0] / 60 * 1000, pf[1] / 60 * 1000, pf[2] / 60 * 1000, pf[3] / 60 * 1000); puts(""); pf[0] = pf[1] = pf[2] = pf[3] = 0; pfn = 0; } }
         if (g_next_level >= 0 && g_switch_fade <= 0) {
             const char *name = k_levels[g_next_level]; g_prev_level = g_level; g_level = g_next_level; g_next_level = -1;
             level_free(&L);
