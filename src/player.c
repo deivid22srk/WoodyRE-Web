@@ -141,6 +141,54 @@ static Vec3 gel_push(const GelFile *g, Vec3 c, float r, float lo, float hi)
     Vec3 out = { px + nx, 0, pz + nz }; return out;
 }
 
+/* Same push-out against the collision hulls (kind 4 nodes) of visible instances, after inst->vt[8] = 0x433140.
+ * Hull polygons are taken in world space; their outward side is the one facing away from the node's centroid. */
+static int point_in_poly3(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q)
+{
+    for (uint32_t i = 0; i < n; i++) {
+        Vec3 e = vsub(v[(i + 1) % n], v[i]), w = vsub(q, v[i]);
+        if (vdot(vcross(e, w), nrm) < -1e-3f) return 0;
+    }
+    return 1;
+}
+static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, float lo, float hi)
+{
+    float px = 0, nx = 0, pz = 0, nz = 0; Vec3 v[16];
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
+        const Model *m = &ins->models[mi];
+        for (uint32_t k = 0; k < m->ninstances; k++) {
+            const Instance *in = &m->instances[k]; if (!in->visible || in == skip || !in->node_world) continue;
+            float dx = in->position.x - c.x, dz = in->position.z - c.z; if (dx * dx + dz * dz > 3000.0f * 3000.0f) continue;
+            for (uint32_t ni = 0; ni < m->nnodes; ni++) {
+                const InsNode *nd = &m->nodes[ni]; if (nd->kind != 4 || !nd->polys || !nd->npoints) continue;
+                Vec3 cen = { 0, 0, 0 };
+                for (uint32_t t = 0; t < nd->npoints; t++) { Vec3 w = ins_point_world(in, nd->point_base + t); cen.x += w.x; cen.y += w.y; cen.z += w.z; }
+                cen.x /= nd->npoints; cen.y /= nd->npoints; cen.z /= nd->npoints;
+                for (uint32_t f = 0; f < nd->npolys; f++) {
+                    const InsPoly *pl = &nd->polys[f]; if (pl->nverts < 3 || pl->nverts > 16) continue;
+                    float ymin = 1e30f, ymax = -1e30f;
+                    for (uint32_t t = 0; t < pl->nverts; t++) { v[t] = ins_point_world(in, pl->indices[t]); if (v[t].y < ymin) ymin = v[t].y; if (v[t].y > ymax) ymax = v[t].y; }
+                    if (ymax < lo || ymin > hi) continue;
+                    Vec3 nrm = vcross(vsub(v[1], v[0]), vsub(v[2], v[0])); float nl = sqrtf(vdot(nrm, nrm)); if (nl < 1e-6f) continue;
+                    nrm.x /= nl; nrm.y /= nl; nrm.z /= nl;
+                    Vec3 wind = nrm;                                           /* winding normal for the inside test */
+                    if (vdot(nrm, vsub(cen, v[0])) > 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }
+                    if (nrm.y > 0.71f) continue;                               /* walkable: floor code */
+                    Vec3 q = c; float a = lo > ymin ? lo : ymin, b = hi < ymax ? hi : ymax; if (q.y < a) q.y = a; if (q.y > b) q.y = b;
+                    float d = vdot(nrm, vsub(q, v[0])); if (d < 0 || d >= r) continue;
+                    Vec3 on = { q.x - nrm.x * d, q.y - nrm.y * d, q.z - nrm.z * d };
+                    if (!point_in_poly3(v, pl->nverts, wind, on)) {
+                        Vec3 w2 = { -wind.x, -wind.y, -wind.z }; if (!point_in_poly3(v, pl->nverts, w2, on)) continue;
+                    }
+                    float pen = r - d, vx = nrm.x * pen, vz = nrm.z * pen;
+                    if (vx > px) px = vx; if (vx < nx) nx = vx; if (vz > pz) pz = vz; if (vz < nz) nz = vz;
+                }
+            }
+        }
+    }
+    Vec3 out = { px + nx, 0, pz + nz }; return out;
+}
+
 /* GetHeight 0x435650 -> 0x498520: nearest surface below the point: world polygons with n.y > 1e-5 (any slope) that
  * contain the point in xz, and the press / hull nodes of instances (hit_node != NULL then). */
 static float world_ground(const Player *p, Vec3 pt, int *found, const Instance **hit_inst, const InsNode **hit_node)
@@ -314,6 +362,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             cur.x += d.x; cur.y += d.y; cur.z += d.z;
             float feet = cur.y - half;
             Vec3 push = gel_push(p->gel, cur, P_RADIUS, feet + margin, feet + P_BODY_H);
+            { Vec3 ip = ins_push(p->ins, p->inst, cur, P_RADIUS, feet + margin, feet + P_BODY_H); push.x += ip.x; push.z += ip.z; }
             cur.x += push.x * 0.9f; cur.z += push.z * 0.9f;
             gy = world_ground(p, cur, &found, &hit_inst, &hit_node);
             if (!found) continue;
@@ -427,6 +476,7 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
          * after which the camera no longer sees T is refused. The breadcrumb path (0x423ab0) is not ported. */
         Vec3 push = gel_push(p->gel, N, CAM_RADIUS, N.y - CAM_RADIUS, N.y + CAM_RADIUS);
         N.x += push.x; N.z += push.z;
+        { Vec3 ip = ins_push(p->ins, p->inst, N, CAM_RADIUS, N.y - CAM_RADIUS, N.y + CAM_RADIUS); N.x += ip.x; N.z += ip.z; }
         if (gel_ray_blocked(p->gel, N, T) && !gel_ray_blocked(p->gel, P, T)) N = P;
     }
     p->cam_pos = N; p->cam_tprev = T;
