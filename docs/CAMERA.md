@@ -465,8 +465,8 @@ Byte-tabellen `0x498e84` (500–580) en `0x498f00` (600–800).
 |---|---|---|---|
 | 500 | cam | `CamMgr+0x368 = 0; SetMode(0, 0)` (mode 1<<0 = **1**, volgcamera; arg 0 = start **achter** de speler, 3.8) | `0x498c2b` |
 | 501 | cam | `CamMgr+0x368 = 0; SetMode(0, 1)` (volgcamera, arg 1 = start **vóór** de speler) | `0x498c06` |
-| 510 | cam, target, f | **mode 2** (vaste camera op `.ins`-positie kijkend naar instantie): `p43c.pos = cam->pos; p43c.target = inst[target]; p43c.f(+0x20) = (float)f; SetMode(1, 0)` | `0x498c50` |
-| 520 | cam, target, f | **mode 4**: idem in `p470`; `SetMode(2, 0)` | `0x498c9f` |
+| 510 | cam, f, target (volgorde gecorrigeerd, zie CAMERA_SCRIPT.md §2.1) | **mode 2** (vaste camera op `.ins`-positie kijkend naar instantie): `p43c.pos = cam->pos; p43c.target = inst[target]; p43c.f(+0x20) = (float)f; SetMode(1, 0)` | `0x498c50` |
+| 520 | cam, f, target | **mode 4**: idem in `p470`; `SetMode(2, 0)` | `0x498c9f` |
 | 530 | cam | `SetMode(4, 0)` → mode **0x10** | `0x498d03` |
 | 540 | cam, d | alleen TRAJ-camera (`0x498fe5`): `p3b0.traj(+0x4c) = cam->traj; p3b0.dist(+0x44) = (float)d` (afstand rail-camera ↔ speler, §6.2); `p3b0.pos(+0x20) = cam->pos; SetMode(3, 0)` → mode **8** | `0x498fe5` |
 | 550 | cam | `SetMode(9, 0)` → mode **0x200** | `0x498cee` |

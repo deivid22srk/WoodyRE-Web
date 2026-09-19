@@ -71,17 +71,17 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 1002 | cam, a, b | 513 | ✔ camera `0x452360(a, b)` |
 | 1003 | cam, target, mode, t | 177 | ✔ camera `0x4522b0(mode, t·0.01, target)` |
 | 1004 | cam | 7 | ✔ camera `0x452320()` (reset) |
-| 1010..1050 | … | 0 | ? (1042 groot: 152 instr.) |
+| 1010..1050 | … | 0 | ✔ zie GAMEFLOW.md §8 (1030 SaveAuto, 1040/1043 scripted actie, 1042 nabij+kijkrichting, 1048..1050 toetstests) |
 | 1080 | rec | 0 | ✔ `0x456ed0(record)` op `game+0x18` |
-| 1081 | inst | 0 | ✔ `0x404b60(1.5, inst, 1, 0)` (overgang/fade) |
+| 1081 | level | 0 | ✔ **GotoLevel**: `0x404b60(1.5, level, 1, 0)` = RequestLevel met 1,5 s fade (hubdeuren; zie GAMEFLOW.md §4) |
 | 1082 | level, var | 24 | ✔ **LevelIsEnable**: var = `0x450470(saved, level)`; waarschuwt zonder save-struct |
-| 1083 | – | 0 | ✔ `0x404be0(0.5)` |
-| 1084 | inst, var | 3 | ✔ var = instantietabel-waarde |
-| 1085 | level, var | 4 | ✔ var = `0x4509e0(saved, level)` |
+| 1083 | – | 0 | ✔ **EndLevel** `0x404be0(0.5)`: level als gedaan markeren, terug naar de hub van het personage (GAMEFLOW.md §4) |
+| 1084 | var | 3 | ✔ **GetPrevLevel**: var = `app+0x6c` (vorige levelindex; het hub-script kiest daarmee de spawndeur) |
+| 1085 | level, var | 4 | ✔ **LevelIsDone**: var = done-vlag `0x4509e0(saved, level)` |
 | 1088 | inst, v | 0 | ✔ `0x459960(inst, v)` |
 | 1090 | inst, other, f | 0 | ✔ effect (particles) van inst naar other, `0x44d5d0` |
 | 1100 / 1101 | f / – | 0 | ✔ `0x451ba0(f·0.01)` / `0x451bd0()` |
-| 1110 | n, v | 0 | ✔ cameraparameter n (1..9) in struct `[0x4c737c]+0x61c` |
+| 1110 | n, v | 0 | ✔ parameter n (1..9) van de zij-aanzichtcamera mode 0x20 (CAMERA_SCRIPT.md §4.2); 1088 start die mode |
 | 1120 | inst, other | 6 | ✔ `0x455dc0(inst, other->0x28)` als other type 3 |
 | 1121 | inst, a, f | 0 | ✔ **StartBoostSurf**(vector van inst, a, f·0.01) |
 | 1130 | a, b, c | 0 | ✔ `0x44e990`/`0x44e9e0` op `game+0x64` |
@@ -91,7 +91,7 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 1142 | inst | 2 | ✔ `game+0x748 = inst` |
 | 1150 / 1151 | f | 0 | ✔ `0x401440` / `0x401480` (f·0.01) |
 | 1152 | – | 0 | ✔ `0x4014c0`: volledig scherm vullen (fade naar zwart) |
-| 1160 | a, b | 1 | ✔ `game+0x8c = a`, `+0x90 = b` |
+| 1160 | var, obj | 1 | ✔ `app+0x8c = var`, `app+0x90 = script-object` van de House-intro (GAMEFLOW.md §5) |
 | 1170 / 1171 | – | 0 | ✔ `0x44c7a0(-1)` / `0x44c840(-1)` |
 | 1172 | – | 0 | ✔ `byte game+0x70 = 1` |
 | 1173 | var | 0 | ✔ als `world+0x260 > 0`: var = 1 anders var = 0 |
