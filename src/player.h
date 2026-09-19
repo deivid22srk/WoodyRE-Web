@@ -38,6 +38,12 @@ typedef struct {
     int ramp_phase; float ramp_t, ramp_target, ramp_v0;   /* 0 idle, 1 accelerating, 2 at target, 3 decelerating */
     int on_ground;
     Jumper jumper;
+    /* damage / death / respawn */
+    float health; int lives;        /* Perso+0x24c (hearts, max 5), +0x250 */
+    int dead_kind; float death_delay, invuln_respawn, invuln_hit;   /* +0x26c, +0x288, +0x270, +0x280 */
+    Vec3 push_dir; float push_t, push_speed;                         /* knockback (Mover RampC) */
+    int game_state; float game_t, fade; int mask10_frames;           /* Game sequence 0x4459c0; fade = screen brightness */
+    Vec3 spawn_pos; float spawn_yaw;
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
     /* attack controller (Perso+0x5b4..): sub-state, timer, displacement, air window, charge; move lock = Perso+0x238 */
     int atk; float atk_t; Vec3 atk_dir, atk_disp; int use_atk_disp; float air_win, charge, move_lock, vy_corr; int action_prev;
@@ -59,6 +65,8 @@ int  player_init(Player *p, InsFile *ins, const GelFile *gel);
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_free(Player *p);
+void player_kill(Player *p, int kind);                 /* Perso vt[38] */
+int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
 
 /* world queries (brute force over the .gel polygons) */
 float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, int *found);

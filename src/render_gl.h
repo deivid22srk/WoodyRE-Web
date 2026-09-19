@@ -31,6 +31,7 @@ typedef struct {
 
 int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins);
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s);
+void rnd_fade(float brightness);             /* darken the finished frame: 1 = normal, 0 = black */
 void rnd_free(Renderer *r);
 int  rnd_screenshot(const Window *w, const char *path);   /* binary PPM of the current back buffer */
 Vec3 cam_forward(const FreeCamera *c);

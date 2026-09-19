@@ -20,6 +20,7 @@
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
+static Player *g_player;
 static Instance *slot_instance(uint32_t ref) { if ((ref >> 24) != 1) return NULL; uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.slots[i] : NULL; }
 
 /* script -> engine messages. Only the subset needed to see something happen is implemented;
@@ -37,6 +38,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         if (in && m->nargs > 1 && m->args[1] < in->model->nanims) { in->anim = (int)m->args[1]; }
         break;
     case 6: if (in && m->nargs > 1) in->visible = m->args[1] != 0; break;         /* show/hide */
+    case 1020: if (g_player) player_kill(g_player, 1); break;                       /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes */
     default: break;
     }
     if (g_log_msgs) {
@@ -90,7 +92,7 @@ int main(int argc, char **argv)
     else { cam.pos.x = (gel.bbox[0] + gel.bbox[1]) / 2; cam.pos.y = gel.bbox[3]; cam.pos.z = (gel.bbox[4] + gel.bbox[5]) / 2; cam.pitch = -1.2f; }
 
     Player player; int have_player = player_init(&player, &g_ins, &gel) == 0;
-    if (!have_player) fly = 1;
+    if (!have_player) fly = 1; else g_player = &player;
     if (have_player && have_pos) { player.pos.x = pos_args[0]; player.pos.y = pos_args[1]; player.pos.z = pos_args[2]; player.floor_y = player.pos.y - 1000.0f; }
     printf("VM init...\n"); eko_init(&vm);
     printf("init done: %d messages\n", vm.nmsgs);
@@ -149,6 +151,7 @@ int main(int argc, char **argv)
             for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) g_ins.models[mi].instances[k].anim_time += dt * g_ins.models[mi].instances[k].anim_speed;
         }
         rnd_frame(&rnd, &win, &cam, (float)(now - t0));
+        if (have_player && !fly) rnd_fade(player.fade);
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
         win_swap(&win);
         frames++;

@@ -338,6 +338,7 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel)
     p->inst = &ins->models[0].instances[0]; p->gel = gel; p->ins = ins;
     p->pos = p->inst->position; p->cur_col = 0xffffffffu; p->floor_y = p->pos.y;
     p->jumper.state = 2; p->jumper.armed = 1;                      /* 0x462c90 reset */
+    p->health = 3.0f; p->lives = 3; p->game_state = 2; p->fade = 1.0f; p->lanim = -1;
     /* facing from the instance quaternion: rotation about y composed with the -90 deg x model rotation */
     Vec3 fwd = mat4_apply(&p->inst->world, (Vec3){ 0, -1, 0 }); fwd = vsub(fwd, p->inst->position);
     p->yaw = atan2f(fwd.x, fwd.z);
@@ -356,6 +357,7 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel)
     }
     /* pose every instance once so volume tests are valid before the first rendered frame */
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins_pose(&ins->models[mi].instances[k], 0, 0);
+    p->spawn_pos = p->pos; p->spawn_yaw = p->yaw;
     printf("player: start (%.0f %.0f %.0f) yaw %.1f deg, %u trigger volumes\n", p->pos.x, p->pos.y, p->pos.z, p->yaw * 57.2958f, p->nvol);
     return 0;
 }
@@ -476,6 +478,59 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
     } else if (pressed && p->air_win > 0) p->atk = 1;                      /* air: peck dash */
 }
 
+/* ---- damage, death, respawn (docs/PERSO_MOVE.md 4.4, PERSO_FRAME.md 4.1) ------------------------------------ */
+void player_kill(Player *p, int kind)                                   /* vt[38] Kill(kind) 0x44c110 */
+{
+    if (p->dead_kind) { if (!((kind == 7 && p->dead_kind != 7) || (kind == 1 && p->dead_kind != 1))) return; }
+    if ((kind == 2 || kind == 9 || kind == 3 || kind == 8 || kind == 4 || kind == 5 || kind == 6) && p->invuln_respawn > 0) return;
+    p->death_delay = 3.5f;                                              /* +0x288: time until the fade */
+    if (kind == 2 || kind == 9) p->death_delay = 1.5f; else if (kind == 3 || kind == 8) p->death_delay = 3.0f;
+    else if (kind == 6) p->death_delay = 2.5f; else if (kind == 7) p->death_delay = 0.0f;
+    if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else jumper_force_fall(&p->jumper, 0);
+    p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;      /* state := 2 */
+    printf("  PLAYER killed (kind %d), lives %d\n", kind, p->lives);
+}
+int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39] Hit 0x44ca00: returns 1 when health ran out */
+{
+    if (p->dead_kind || p->invuln_respawn > 0 || p->invuln_hit > 0) return 0;
+    jumper_force_fall(&p->jumper, 0);
+    /* knockback 0x45a140: RampC to 500 u/s (0.1 s up), held 0.2 s, 0.5 s out; the player turns to face the attacker */
+    float l = sqrtf(dir.x * dir.x + dir.z * dir.z);
+    if (p->push_t <= 0) { p->push_dir = l > 0.01f ? (Vec3){ dir.x / l, 0, dir.z / l } : (Vec3){ 0, 0, 0 }; p->push_t = 0.2f; p->push_speed = 0; }
+    if (l > 0.01f) p->yaw = atan2f(-dir.x, -dir.z);
+    if (p->invuln_hit < 0.6f) p->invuln_hit = 0.6f;
+    p->move_lock = 0; p->atk = 0;
+    p->health -= damage;
+    printf("  PLAYER hit, health %.0f\n", p->health);
+    if (p->health <= 0) { p->health = 0; return 1; }
+    return 0;
+}
+static void player_reset(Player *p)                                     /* vt[17] Reset 0x44ab20 + respawn in 0x4459c0 */
+{
+    p->pos = p->spawn_pos; p->yaw = p->spawn_yaw; p->floor_y = p->pos.y;
+    jumper_reset(&p->jumper); p->on_ground = 1; p->invuln_respawn = 1.0f; p->invuln_hit = 0; p->move_lock = 0;
+    if (p->health <= 0) p->health = 3.0f;
+    p->dead_kind = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
+    p->att_inst = NULL; p->lanim = -1; p->cam_init = 0;
+}
+/* Game sequence 0x4459c0: 2 play -> (dead) 3 wait death_delay - 1 s -> 4 fade out 1 s -> lose a life -> 0 wait 0.25 s,
+ * respawn -> 1 fade in 1 s -> 2. p->fade is the screen brightness (1 = normal). */
+static void game_sequence(Player *p, EkoVM *vm, float dt)
+{
+    switch (p->game_state) {
+    case 2: if (p->dead_kind) { p->game_state = 3; p->game_t = 0; } break;
+    case 3: p->game_t += dt; if (p->game_t >= p->death_delay - 1.0f) { p->game_state = 4; p->game_t = 0; } break;
+    case 4: p->game_t += dt; p->fade = 1.0f - p->game_t; if (p->fade <= 0) {
+                p->fade = 0; if (p->lives > 0) p->lives--;               /* 0x44c730: life lost, leave all volumes, msgmask 0x10 pulse */
+                if (vm) { eko_actor_leave_all(vm, p->inst->id); eko_msgmask_set(vm, p->inst->id, 0x10); p->mask10_frames = 2; }
+                for (uint32_t v = 0; v < p->nvol; v++) p->inside[v] = 0;
+                p->game_state = 0; p->game_t = 0.25f; } break;
+    case 0: p->game_t -= dt; if (p->game_t <= 0) { player_reset(p); p->game_state = 1; p->game_t = 0; } break;
+    case 1: p->game_t += dt; p->fade = p->game_t; if (p->fade >= 1.0f) { p->fade = 1.0f; p->game_state = 2; } break;
+    }
+    if (p->mask10_frames > 0 && --p->mask10_frames == 0 && vm) eko_msgmask_clear(vm, p->inst->id, 0x10);
+}
+
 static void player_apply_transform(Player *p)
 {
     Instance *in = p->inst;
@@ -491,10 +546,19 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (dt <= 0) return;
     p->vy_corr = 0;
     if (p->move_lock > 0) p->move_lock -= dt;
-    attack_update(p, in, dt);
-    attack_trigger(p, in, dt);
+    if (p->invuln_respawn > 0) p->invuln_respawn -= dt;
+    if (p->invuln_hit > 0) p->invuln_hit -= dt;
+    game_sequence(p, vm, dt);
+    if (p->game_state == 0) return;                                       /* waiting for the respawn */
+    /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
+    if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
+        p->health -= 1.0f; printf("  PLAYER fall damage, health %.0f\n", p->health);
+        if (p->health <= 0) { p->health = 0; player_kill(p, 8); }
+    }
+    if (!p->dead_kind && p->health <= 0) player_kill(p, 3);
+    if (!p->dead_kind) { attack_update(p, in, dt); attack_trigger(p, in, dt); }
     /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking */
-    int allow = !(p->move_lock > 0 || p->atk != 0);
+    int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind);
     /* input direction relative to the camera */
     float ix = allow ? (float)(in->right - in->left) : 0, iz = allow ? (float)(in->forward - in->back) : 0;
     float len = sqrtf(ix * ix + iz * iz);
@@ -534,6 +598,11 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
     Vec3 disp = p->use_atk_disp ? p->atk_disp : (Vec3){ sinf(p->yaw) * p->speed * dt, p->jumper.dy, cosf(p->yaw) * p->speed * dt };
+    if (p->push_t > 0 || p->push_speed > 0) {                              /* RampC 0x45acb0: 500 u/s, 0.1 s up, 0.5 s out */
+        if (p->push_t > 0) { p->push_t -= dt; p->push_speed += 500.0f / 0.1f * dt; if (p->push_speed > 500.0f) p->push_speed = 500.0f; }
+        else { p->push_speed -= 500.0f / 0.5f * dt; if (p->push_speed < 0) p->push_speed = 0; }
+        if (!p->use_atk_disp) { disp.x += p->push_dir.x * p->push_speed * dt; disp.z += p->push_dir.z * p->push_speed * dt; }
+    }
     if (!p->use_atk_disp && p->slide_speed > 0) { disp.x += p->slide_dir.x * p->slide_speed * dt; disp.z += p->slide_dir.z * p->slide_speed * dt; }
     disp.y += dt * p->vy_corr;
     p->vel = (Vec3){ disp.x / dt, disp.y / dt, disp.z / dt };
@@ -582,7 +651,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         p->ground_n = p->on_ground ? g_ground_n : (Vec3){ 0, 1, 0 };            /* 0x45a110 -> Mover+0xd0 */
         attach_store(p, p->on_ground ? hit_inst : NULL, hit_node, np);  /* 0x436d80 / 0x436d10 */
     }
-    if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; p->jumper.state = 2; }   /* fell out of the world: hold */
+    if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; player_kill(p, 7); }     /* below the world: "disappear" death (the original leaves this to script volumes) */
     p->pos = np;
     player_apply_transform(p);
     /* animations, Perso_AnimState 0x463e60 (docs/PERSO_MOVE.md 4.3, PERSO_JUMP.md 4): attack sub-state first, then
