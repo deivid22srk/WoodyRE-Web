@@ -305,7 +305,8 @@ static void pose_rec(Instance *inst, int32_t node, const Mat4 *parent, int anim,
         InsNode *n = &m->nodes[i];
         Mat4 local; Vec3 p = {0, 0, 0}; Quat q = {0, 0, 0, 1}; Vec3 one = {1, 1, 1};
         int hp = track_pos(n, anim, tf, &p), hr = track_rot(n, anim, tf, &q);
-        if (hp || hr) { mat4_from_trs(&local, p, q, one); mat4_mul(&inst->node_world[i], parent, &local); }
+        if (hp || hr) { q.x = -q.x; q.y = -q.y; q.z = -q.z;      /* 0x440370 conjugates; the .ins loader pre-negates instance quaternions (0x428758) but not track keys */
+                        mat4_from_trs(&local, p, q, one); mat4_mul(&inst->node_world[i], parent, &local); }
         else inst->node_world[i] = *parent;                   /* 0x43a50a: no tracks -> copy parent */
         if (n->kind != 0x80 && n->first_child >= 0) pose_rec(inst, n->first_child, &inst->node_world[i], anim, tf);
     }

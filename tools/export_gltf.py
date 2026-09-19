@@ -54,12 +54,12 @@ def export(lvl, out, datadir='extract/Data', want_tex=True, anim_index=0):
         basei = len(pr['positions'])
         for vi in p['indices']:
             x, y, z, c = verts[vi]
-            pr['positions'].append((x, y, -z))                          # D3D left-handed -> glTF right-handed
-            pr['colors'].append(((c >> 16) & 255, (c >> 8) & 255, c & 255, 255))
+            pr['positions'].append((x, y, z))                           # world is right-handed already (3ds Max export)
+            pr['colors'].append((c2x(c), c2x(c >> 8), c2x(c >> 16), 255))    # bytes R,G,B; 128 = neutral
             pr['uvs'].append((uvf[0] * x + uvf[3] * y + uvf[6] * z + uvf[9], uvf[1] * x + uvf[4] * y + uvf[7] * z + uvf[10]) if uvf else (0.0, 0.0))
         n = len(p['indices'])
-        for k in range(1, n - 1):                                          # fan-triangulate, flipped winding
-            pr['indices'].extend((basei, basei + k + 1, basei + k))
+        for k in range(1, n - 1):                                          # fan-triangulate
+            pr['indices'].extend((basei, basei + k, basei + k + 1))
     plist = [prims[k] for k in sorted(prims)]
     world_mesh = b.add_mesh('world', plist)
     b.add_node('world', mesh=world_mesh, extras={'level': lvl})
@@ -73,11 +73,15 @@ def export(lvl, out, datadir='extract/Data', want_tex=True, anim_index=0):
         lvl, len(gel['polys']), len(verts), len(groups), len(mats), len(ins['models']), ninst, out, size / 1e6))
 
 def sub(a, c): return (a[0] - c[0], a[1] - c[1], a[2] - c[2])
-def flipz(v): return (v[0], v[1], -v[2])
+def c2x(v): return min(255, (v & 255) * 2)
+def flipz(v): return (v[0], v[1], v[2])                # historical name: the game world turned out to be right-handed, no mirroring needed
+def conjq(q):
+    """track key quaternion -> the rotation the engine applies: 0x440370 negates x,y,z and the loader does not pre-negate track keys"""
+    q = flipq(q); return (-q[0], -q[1], -q[2], q[3])
 def flipq(q):
-    """unit quaternion (x,y,z,w) in the D3D frame -> glTF frame (z mirrored)"""
+    """quaternion (x,y,z,w) from the file (stored with norm 2) -> unit quaternion"""
     n = (q[0] ** 2 + q[1] ** 2 + q[2] ** 2 + q[3] ** 2) ** 0.5 or 1.0
-    return (-q[0] / n, -q[1] / n, q[2] / n, q[3] / n)
+    return (q[0] / n, q[1] / n, q[2] / n, q[3] / n)
 
 def rgb565_rgba(v):
     """flat model colour: ARGB1555 (bit 15 = 'flat colour' flag doubles as alpha), converted to linear RGB for glTF"""
@@ -116,7 +120,7 @@ def export_models(b, ins, mats, gmat, flat, anim_index):
                     c = p['color']; pr['colors'].append((min(255, int(c[0] * 2)), min(255, int(c[1] * 2)), min(255, int(c[2] * 2)), 255))   # 128 = neutral
                     pr['uvs'].append((uvf[0] * x + uvf[3] * y + uvf[6] * z + uvf[9], uvf[1] * x + uvf[4] * y + uvf[7] * z + uvf[10]) if uvf else (0.0, 0.0))
                 n = len(poly['indices'])
-                for k in range(1, n - 1): pr['indices'].extend((basei, basei + k + 1, basei + k))
+                for k in range(1, n - 1): pr['indices'].extend((basei, basei + k, basei + k + 1))
             node_mesh[ni] = b.add_mesh('m%d_n%d' % (mi, ni), list(prims.values()))
         owner = {}
         for ni, nd in enumerate(nodes):
@@ -134,7 +138,7 @@ def export_models(b, ins, mats, gmat, flat, anim_index):
                     pr['positions'].append(flipz(sub(p['pos'], nodes[o]['pivot']))); pr['joints'].append(o)
                     c = p['color']; pr['colors'].append((min(255, int(c[0] * 2)), min(255, int(c[1] * 2)), min(255, int(c[2] * 2)), 255))   # 128 = neutral
                     pr['uvs'].append((uvf[0] * x + uvf[3] * y + uvf[6] * z + uvf[9], uvf[1] * x + uvf[4] * y + uvf[7] * z + uvf[10]) if uvf else (0.0, 0.0))
-                pr['indices'].extend((basei, basei + 2, basei + 1))       # file order is i2,i1,i0
+                pr['indices'].extend((basei, basei + 1, basei + 2))       # file order is i2,i1,i0
             tri_mesh = b.add_mesh('m%d_tris' % mi, list(prims.values()))
 
         for inst in model['instances']:
@@ -168,7 +172,7 @@ def export_models(b, ins, mats, gmat, flat, anim_index):
                     if pt and len(pt[0]) == 4:
                         chans.append({'node': gl[ni], 'path': 'translation', 'times': [f[0] * scale for f in pt], 'values': [flipz(f[1:4]) for f in pt]})
                     if rt and len(rt[0]) == 5:
-                        chans.append({'node': gl[ni], 'path': 'rotation', 'times': [f[0] * scale for f in rt], 'values': [flipq(f[1:5]) for f in rt]})
+                        chans.append({'node': gl[ni], 'path': 'rotation', 'times': [f[0] * scale for f in rt], 'values': [conjq(f[1:5]) for f in rt]})   # track keys are applied conjugated (0x440370)
                 if chans: b.add_animation('m%d_anim%d' % (mi, anim_index), chans)
     return total
 

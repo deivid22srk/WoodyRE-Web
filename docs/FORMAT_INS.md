@@ -90,6 +90,17 @@ Afgeleid door de loader: `N+0x84` = ouder (loop over de kindlijst van elke node)
 De animatiehiërarchie wordt door `0x43a3a0` recursief afgelopen (kind via `+0x7c`, broers via `+0x80`);
 de wereldmatrices staan in `[0x509adc]+0xa0` per node (0x30 bytes, basis `inst+0x5c`).
 
+**Rotatieconventie.** `0x440370(q, out)` negeert eerst x, y en z (`fchs`) en schrijft dan de
+standaard quaternionmatrix rij-major (`out[r*3+c]`), die de engine met rijvectoren gebruikt
+(`0x4405e0`: `A' = A·B`, lokaal × ouder). Netto past de engine dus de rotatie van de
+**geconjugeerde** quaternion toe. De instantie-loader (`0x428758`) negeert x, y, z al vóór de
+aanroep, zodat instanties de opgeslagen quaternion recht toepassen; trackframes worden *niet*
+voorgenegeerd en werken dus als `conj(q)`. Wie de matrix als kolomvector-matrix
+(OpenGL/glTF) opbouwt moet trackframes conjugeren en instantiequaternionen laten staan.
+Zichtbaar in W1A: model 3 (zwevende schotels) heeft als eerste trackframe `rotx(+90°)` en
+instantierotatie `rotx(-90°)`; alleen met de conjugatie komt de rand boven en de punt onder,
+zoals in het origineel. Het assenstelsel is rechtshandig (y omhoog, 3ds Max-export).
+
 ### 2.2 EXTRA-LIJSTEN (`node+0x8c`)
 
 Aantal = `len(hull-nodes)` + 1 als het model mesh-, hull- of press-nodes heeft (loader `0x427acb`).

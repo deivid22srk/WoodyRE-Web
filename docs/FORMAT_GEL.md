@@ -101,8 +101,12 @@ u32 count            -> gel+0x04
 count x 16 B:  f32 x, f32 y, f32 z, u32 colour
 ```
 
-`colour` heeft in alle levels het hoogste byte 0 (`0x00RRGGBB`-achtig, bv.
-`0x808080` in Blackbox); vermoedelijk een D3DCOLOR zonder alpha. Engine-record
+`colour` heeft in alle levels het hoogste byte 0. De bytevolgorde is **R,G,B,0**
+(dus `0x00BBGGRR` als little-endian u32, géén D3DCOLOR) en **128 = neutraal**: de
+renderer moduleert de textuur met 2× de vertexkleur (D3D `MODULATE2X`; `0x808080`
+is de meest voorkomende waarde, `0x00fefe` = geel, `0x0000fe` = rood). Gecontroleerd
+aan een screenshot van het origineel (W1A: gele randen, rood startplatform).
+Engine-record
 0x30 B: `+0` xyz, `+0x28` colour, `+0x2c` framestempel (runtime, init -1;
 transformatiecache), de rest wordt bij het laden niet geschreven.
 y is de verticale as (zie `0x40a0c0`, dat de vloer via `ny > 0` zoekt).
@@ -192,8 +196,6 @@ ongebruikte knopen, elke buur grenst aan het juiste vlak.
 
 ## Nog onzeker
 
-* Byte-volgorde/semantiek van de vertexkleur (RGB vs BGR; vermoedelijk
-  D3DCOLOR, nog niet in de renderer gevolgd).
 * Betekenis van bit 15 van `material`: zeker "niet via de materiaaltabel
   renderen" (`0x42acd6`, `0x462948`), maar of dit "onzichtbaar/alleen
   collision" of iets anders betekent is niet nagegaan; overige bits >15 komen

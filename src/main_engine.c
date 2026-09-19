@@ -53,7 +53,11 @@ int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : "extract/Data", *lvl = argc > 2 ? argv[2] : "W1A";
     const char *shot_path = NULL; double shot_after = 0;                          /* --shot file.ppm seconds: screenshot then quit */
-    for (int i = 3; i + 2 < argc + 0 && argv[i]; i++) if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); }
+    int have_cam = 0; float cam_args[5] = {0, 0, 0, 0, 0};                          /* --cam x y z yaw pitch (degrees) */
+    for (int i = 3; i < argc; i++) {
+        if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
+        else if (!strcmp(argv[i], "--cam") && i + 5 < argc) { for (int k = 0; k < 5; k++) cam_args[k] = (float)atof(argv[i + 1 + k]); have_cam = 1; i += 5; }
+    }
     char path[512]; TexFile tex; GelFile gel;
     snprintf(path, sizeof path, "%s/%s/%s.tex", dir, lvl, lvl); if (tex_load(&tex, path)) return 1;
     snprintf(path, sizeof path, "%s/%s/%s.gel", dir, lvl, lvl); if (gel_load(&gel, path)) return 1;
@@ -71,6 +75,7 @@ int main(int argc, char **argv)
     FreeCamera cam = { {0, 0, 0}, 0, 0, 70 };
     Instance *sel = (g_ins.nmodels && g_ins.models[0].ninstances) ? &g_ins.models[0].instances[0] : NULL;
     if (sel) { cam.pos = sel->position; cam.pos.y += 120; cam.pos.z -= 350; }
+    if (have_cam) { cam.pos.x = cam_args[0]; cam.pos.y = cam_args[1]; cam.pos.z = cam_args[2]; cam.yaw = cam_args[3] * 3.14159265f / 180; cam.pitch = cam_args[4] * 3.14159265f / 180; }
     else { cam.pos.x = (gel.bbox[0] + gel.bbox[1]) / 2; cam.pos.y = gel.bbox[3]; cam.pos.z = (gel.bbox[4] + gel.bbox[5]) / 2; cam.pitch = -1.2f; }
 
     printf("VM init...\n"); eko_init(&vm);
@@ -89,7 +94,7 @@ int main(int argc, char **argv)
         if (win.keys['A']) { cam.pos.x -= rt.x * speed; cam.pos.z -= rt.z * speed; }
         if (win.keys['E'] || win.keys[VK_SPACE]) cam.pos.y += speed;
         if (win.keys['Q']) cam.pos.y -= speed;
-        cam.yaw += win.mouse_dx * 0.004f; cam.pitch -= win.mouse_dy * 0.004f;
+        cam.yaw -= win.mouse_dx * 0.004f; cam.pitch -= win.mouse_dy * 0.004f;
         if (cam.pitch > 1.5f) cam.pitch = 1.5f; if (cam.pitch < -1.5f) cam.pitch = -1.5f;
         /* toggles */
         for (int k = 0; k < 3; k++) { int down = win.keys[VK_F1 + k]; if (down && !f_prev[k]) { if (k == 0) rnd.show_world ^= 1; else if (k == 1) rnd.show_instances ^= 1; else rnd.wireframe ^= 1; } f_prev[k] = down; }
