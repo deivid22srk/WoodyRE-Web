@@ -20,6 +20,7 @@ static struct {
     uint16_t **str; int nstr;                             /* bank 0 strings, 0-terminated u16 codes */
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
+    GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
 } H;
@@ -60,6 +61,8 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
 
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
+    static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
+    if (type == 1) for (int b = 0; b < 5; b++) if (index == bonus_img[b]) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.bonus[b] = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1 && index >= 61 && index <= 64 && size >= 8) {      /* i16 w, h; u16 bpp, alpha; BGRA, bottom row first (0x480780) */
         int w = (int16_t)(d[0] | d[1] << 8), h = (int16_t)(d[2] | d[3] << 8), bpp = d[4] | d[5] << 8;
         if (w <= 0 || h <= 0 || size < 8 + (uint32_t)w * h * 4) return;
@@ -102,6 +105,7 @@ void hud_free(void)
     for (int i = 0; i < 4; i++) if (H.img[i]) glDeleteTextures(1, &H.img[i]);
     for (int i = 0; i < 8; i++) if (H.page[i]) glDeleteTextures(1, &H.page[i]);
     if (H.logo) glDeleteTextures(1, &H.logo);
+    for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }
@@ -289,3 +293,25 @@ void hud_title_draw(int page, int sel, int want_logo, float dt)
     if (want_logo) { H.logo_v += 5 * dt; if (H.logo_v > 5) H.logo_v = 5; } else H.logo_v = 0;
     font_size(17.0f);
 }
+
+/* ---------------------------------------------------------------- pickup sprites in the world (0x479530 -> DrawSprite 0x470f10) */
+void hud_world_sprites_begin(const float *right, const float *up)
+{
+    memcpy(H.sr, right, sizeof H.sr); memcpy(H.su, up, sizeof H.su);
+    glEnable(GL_DEPTH_TEST); glDepthMask(GL_FALSE); glDisable(GL_CULL_FACE); glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GREATER, 0.02f);
+    glEnable(GL_TEXTURE_2D); glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); glColor4f(1, 1, 1, 1);   /* rgb 0.5 = neutral */
+}
+void hud_world_sprite(int n, const float *pos, float size)
+{
+    if (!H.ok || n < 0 || n >= 5 || !H.bonus[n]) return;
+    float h = size * 0.5f, c[3] = { pos[0], pos[1] + 50.0f, pos[2] };               /* +50: 0x4a9030 */
+    glBindTexture(GL_TEXTURE_2D, H.bonus[n]);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(c[0] - H.sr[0] * h + H.su[0] * h, c[1] - H.sr[1] * h + H.su[1] * h, c[2] - H.sr[2] * h + H.su[2] * h);
+    glTexCoord2f(0, 1); glVertex3f(c[0] - H.sr[0] * h - H.su[0] * h, c[1] - H.sr[1] * h - H.su[1] * h, c[2] - H.sr[2] * h - H.su[2] * h);
+    glTexCoord2f(1, 1); glVertex3f(c[0] + H.sr[0] * h - H.su[0] * h, c[1] + H.sr[1] * h - H.su[1] * h, c[2] + H.sr[2] * h - H.su[2] * h);
+    glTexCoord2f(1, 0); glVertex3f(c[0] + H.sr[0] * h + H.su[0] * h, c[1] + H.sr[1] * h + H.su[1] * h, c[2] + H.sr[2] * h + H.su[2] * h);
+    glEnd();
+}
+void hud_world_sprites_end(void) { glDisable(GL_ALPHA_TEST); glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDisable(GL_TEXTURE_2D); }
