@@ -54,7 +54,7 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.9));
 const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(1, 2, 1); scene.add(sun);
 
 const params = new URLSearchParams(location.search);
-const levels = ['House','WWS','W1A','W1B','W2A','W2B','W2D','W3A','W3B','W3C','W3D','KWS','K1A','K1R','K2A','K2R','K3A','K3R','SWS','S1A','S1R','S2A','S2R','S3A','S3R','BlackBox','Credits','Lang'];
+const levels = ['House','WWS','W1A','W1B','W2A','W2B','W2D','W3A','W3B','W3C','W3D','KWS','K1A','K1R','K2A','K2R','K3A','K3R','SWS','S1A','S1R','S2A','S2R','S3A','S3R','Blackbox','Credits','Lang'];
 const sel = document.getElementById('level');
 for (const l of levels) { const o = document.createElement('option'); o.value = o.textContent = l; sel.appendChild(o); }
 sel.value = params.get('level') || 'W1A';
@@ -84,7 +84,7 @@ function applyToggles() {
         m.vertexColors = vcol;
         m.needsUpdate = true;
       }
-      const isInst = o.userData.instance !== undefined || (o.parent && o.parent.userData.instance !== undefined);
+      let isInst = false; for (let a = o; a; a = a.parent) if (a.userData.instance !== undefined) { isInst = true; break; }
       o.visible = isInst ? showInst : showWorld;
     }
   });

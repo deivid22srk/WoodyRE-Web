@@ -13,7 +13,7 @@ class GltfBuilder:
     def __init__(self):
         self.bin = bytearray()
         self.bufferViews = []; self.accessors = []; self.images = []; self.textures = []; self.samplers = []
-        self.materials = []; self.meshes = []; self.nodes = []; self.animations = []
+        self.materials = []; self.meshes = []; self.nodes = []; self.animations = []; self.skins = []
         self.scene_nodes = []
         self.default_material = None
 
@@ -48,6 +48,21 @@ class GltfBuilder:
     def color_accessor(self, rgba_u8):
         data = bytes(c for v in rgba_u8 for c in v)
         return self._accessor(self._view(data, 34962), 5121, len(rgba_u8), 'VEC4', normalized=True)
+
+    def joints_accessor(self, joints):
+        data = struct.pack('<%dH' % (4 * len(joints)), *[c for j in joints for c in (j, 0, 0, 0)])
+        return self._accessor(self._view(data, 34962), 5123, len(joints), 'VEC4')
+
+    def mat4_accessor(self, mats):
+        data = struct.pack('<%df' % (16 * len(mats)), *[c for m in mats for c in m])
+        return self._accessor(self._view(data), 5126, len(mats), 'MAT4')
+
+    def add_skin(self, joint_nodes, skeleton=None, inverse_bind=None):
+        """joint_nodes: glTF node indices. inverse_bind: list of 16-float column-major matrices (default identity)."""
+        ibm = inverse_bind or [(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)] * len(joint_nodes)
+        sk = {'joints': list(joint_nodes), 'inverseBindMatrices': self.mat4_accessor(ibm)}
+        if skeleton is not None: sk['skeleton'] = skeleton
+        self.skins.append(sk); return len(self.skins) - 1
 
     def index_accessor(self, indices):
         data = struct.pack('<%dI' % len(indices), *indices)
@@ -85,15 +100,19 @@ class GltfBuilder:
             attrs = {'POSITION': self.vec3_accessor(p['positions'])}
             if p.get('uvs'): attrs['TEXCOORD_0'] = self.vec2_accessor(p['uvs'])
             if p.get('colors'): attrs['COLOR_0'] = self.color_accessor(p['colors'])
+            if p.get('joints'):
+                attrs['JOINTS_0'] = self.joints_accessor(p['joints'])
+                attrs['WEIGHTS_0'] = self.vec4_accessor([(1.0, 0.0, 0.0, 0.0)] * len(p['joints']))
             prim = {'attributes': attrs, 'indices': self.index_accessor(p['indices']), 'mode': 4}
             if p.get('material') is not None: prim['material'] = p['material']
             prims.append(prim)
         self.meshes.append({'name': name, 'primitives': prims}); return len(self.meshes) - 1
 
     # -- nodes -------------------------------------------------------------------------
-    def add_node(self, name, mesh=None, translation=None, rotation=None, scale=None, matrix=None, extras=None, children=None, root=True):
+    def add_node(self, name, mesh=None, translation=None, rotation=None, scale=None, matrix=None, extras=None, children=None, root=True, skin=None):
         n = {'name': name}
         if mesh is not None: n['mesh'] = mesh
+        if skin is not None: n['skin'] = skin
         if matrix is not None: n['matrix'] = list(matrix)
         else:
             if translation: n['translation'] = list(translation)
@@ -130,6 +149,7 @@ class GltfBuilder:
         if self.materials: gltf['materials'] = self.materials
         if self.textures: gltf['textures'] = self.textures; gltf['images'] = self.images; gltf['samplers'] = self.samplers
         if self.animations: gltf['animations'] = self.animations
+        if self.skins: gltf['skins'] = self.skins
         js = _pad(json.dumps(gltf, separators=(',', ':')).encode(), 4, b' ')
         bn = _pad(bytes(self.bin))
         total = 12 + 8 + len(js) + 8 + len(bn)
