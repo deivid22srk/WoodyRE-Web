@@ -1,9 +1,12 @@
-/* player.h - provisional player controller for the WoodyRE engine.
+/* player.h - player controller for the WoodyRE engine, ported from the decompiled Perso class.
  *
- * This is NOT yet the decompiled Perso class (see docs/PERSO_*.md when available); it is a
- * placeholder that gives the level a controllable Woody so the engine->VM events (trigger
- * volumes) can be exercised: camera-relative movement, gravity, floor/wall collision against
- * the .gel polygons and a follow camera. Constants are guesses in world units (Woody is ~300 tall). */
+ * Ported (docs/PERSO_FRAME.md, PERSO_MOVE.md, PERSO_JUMP.md, CAMERA.md, EVENTS.md): Mover walk ramp and turn blend,
+ * Jumper state machine (time parabolas, short hop, coyote time, terminal speed), sub-stepped cylinder sweep with
+ * ground clinging and the feet+43 ground probe, animations per state, follow camera (mode 1), and the engine->VM
+ * events (trigger volumes, world_collision press nodes, msgmask 0x200).
+ * Not ported yet: attacks (0x457a50), ducking, look-around, sliding on steep slopes, ground kinds, platform carry,
+ * damage/death, wall collision against instance hulls, camera breadcrumb path, cfg key mapping.
+ * Geometry queries are brute force over the .gel polygons instead of the original kd-tree cells. */
 #ifndef WOODY_PLAYER_H
 #define WOODY_PLAYER_H
 #include "level.h"
@@ -15,26 +18,39 @@ typedef struct {
     float cam_turn;                                  /* -1..1 manual camera orbit */
 } PlayerInput;
 
+/* Jumper = Perso+0x334 (docs/PERSO_JUMP.md 1.1) */
+typedef struct {
+    int state;                      /* J+0x14: 0 start, 1 rising, 2 grounded, 3 early fall, 4 fall, 5 long fall, 6 landed, 7 apex */
+    float D, t, h_prev, v_down;     /* J+0x18, +0x1c, +0x20, +0x24 */
+    float fallen, coyote_t, dy;     /* J+0x28, +0x48, J+0xc (vertical displacement this frame) */
+    int armed, fell_off, hard_fall, short_hop, coyote;
+} Jumper;
+
 typedef struct {
     Instance *inst;                 /* the Woody instance (model 0, instance 0) */
     const GelFile *gel;
     const InsFile *ins;
     Vec3 pos, vel;                  /* pos = feet (instance origin) */
     float yaw;                      /* facing, radians; forward = (sin yaw, 0, cos yaw) */
+    float speed;                    /* horizontal speed along the facing direction (Mover RampA, 0x45b110) */
+    int ramp_phase; float ramp_t, ramp_target, ramp_v0;   /* 0 idle, 1 accelerating, 2 at target, 3 decelerating */
     int on_ground;
+    Jumper jumper;
     float floor_y;                  /* last floor height found under the player */
-    int floor_is_hull;              /* floor came from an instance collision hull (kind 4 node) */
+    int floor_is_hull;              /* floor came from an instance node (press kind 1 or hull kind 4) */
+    uint32_t cur_col;               /* world_collision id currently pressed, 0xffffffff = none (Probe+0x20) */
     /* volume tracking: one flag per (instance, volume node) */
     uint32_t nvol; uint8_t *inside; Instance **vol_inst; uint32_t *vol_node; uint32_t *vol_id;
     /* follow camera state */
     float cam_yaw; Vec3 cam_pos; int cam_init;
+    Vec3 cam_tprev; float cam_drop, cam_quick_t; int cam_behind_prev;   /* previous target, look-point drop while airborne, action 0xa */
     /* statistics */
     uint32_t events_sent;
 } Player;
 
 int  player_init(Player *p, InsFile *ins, const GelFile *gel);
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
-void player_camera(Player *p, FreeCamera *cam, float dt);
+void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_free(Player *p);
 
 /* world queries (brute force over the .gel polygons) */
