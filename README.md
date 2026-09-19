@@ -13,7 +13,9 @@ exe/DLL's in `game/` (beide staan in `.gitignore`).
 - **Berichtencatalogus** script ↔ engine → [docs/MESSAGES.md](docs/MESSAGES.md)
 - **Origineel draait op Windows 11 en wordt live getraceerd** (`tools/wtrace.py`, eigen Win32-debugger): berichtenstroom van de C-VM identiek aan het origineel (House 854 ticks, W1A init+2 ticks) → [docs/TRACING.md](docs/TRACING.md)
 - **RKET resource-banks volledig ontleed** (geluid, 2D-afbeeldingen, glyph-strings, font; geen 3D-data) → [docs/RCK.md](docs/RCK.md), `tools/rckparse.py`
-- Bestandsformaten van de assets (geometrie, textures, licht, muziek) → [docs/ANALYSE.md](docs/ANALYSE.md)
+- **Alle levelformaten ontleed en gevalideerd op 28/28 levels (byte-exact tot EOF)**: `.gel` wereldgeometrie + kd-boom → [docs/FORMAT_GEL.md](docs/FORMAT_GEL.md) (`tools/gelparse.py`); `.ins` modellen, skeletanimatie, instanties, camera's, triggervolumes → [docs/FORMAT_INS.md](docs/FORMAT_INS.md) (`tools/insparse.py`); `.tex/.col/.vis/.lit` → [docs/FORMAT_TEX_COL_VIS_LIT.md](docs/FORMAT_TEX_COL_VIS_LIT.md) (`tools/levelparse.py`)
+- **glTF-export + viewer**: `tools/export_gltf.py` schrijft per level één `.glb` (wereld met texturen en per-polygoon UV-projectie, alle instanties, Woody als geskinde mesh met animatie); `viewer/index.html` (three.js) toont het. Ook te openen in Blender.
+- Oudere overzichtsanalyse → [docs/ANALYSE.md](docs/ANALYSE.md)
 
 ## Bouwen / draaien
 ```bash
@@ -22,6 +24,12 @@ python -m ziglang cc -std=c99 -O2 -o out/ekorun.exe src/ekovm.c src/ekorun.c
 ./out/ekorun.exe extract/Data/W1A/code 60          # init + 60 ticks, print SEND-trace
 python tools/ekodisasm.py extract/Data out/ekoasm   # disassembleer alle levels
 python tools/ekovm.py extract/Data                  # berichtstatistieken van alle levels
+```
+
+## Viewer
+```bash
+python tools/export_gltf.py --all            # out/gltf/<LVL>.glb (of één level: export_gltf.py W1A [--anim N])
+python -m http.server 8765                   # daarna http://localhost:8765/viewer/index.html?level=W1A
 ```
 
 ## Origineel draaien
