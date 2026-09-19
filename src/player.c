@@ -225,6 +225,38 @@ static float world_ground(const Player *p, Vec3 pt, int *found, const Instance *
     *hit_inst = NULL; *hit_node = NULL; *found = f1; return f1 ? y1 : pt.y;
 }
 
+/* ---- platform attachment (Perso+0x298, 0x436d80 store / 0x436d20 delta; docs/PERSO_MOVE.md 6.1) -------------
+ * While standing on an instance node the contact point is remembered in node space; next frame the node's
+ * movement (world(local) - previous world position) is added to the player's displacement. */
+static int mat4_inv_apply(const Mat4 *m, Vec3 w, Vec3 *out)        /* out = M^-1 * w for an affine column-major M */
+{
+    const float *a = m->m;
+    float x = w.x - a[12], y = w.y - a[13], z = w.z - a[14];
+    float c00 = a[5] * a[10] - a[9] * a[6], c01 = a[9] * a[2] - a[1] * a[10], c02 = a[1] * a[6] - a[5] * a[2];
+    float det = a[0] * c00 + a[4] * c01 + a[8] * c02; if (fabsf(det) < 1e-12f) return 0;
+    float c10 = a[8] * a[6] - a[4] * a[10], c11 = a[0] * a[10] - a[8] * a[2], c12 = a[4] * a[2] - a[0] * a[6];
+    float c20 = a[4] * a[9] - a[8] * a[5], c21 = a[8] * a[1] - a[0] * a[9], c22 = a[0] * a[5] - a[4] * a[1];
+    out->x = (c00 * x + c10 * y + c20 * z) / det; out->y = (c01 * x + c11 * y + c21 * z) / det; out->z = (c02 * x + c12 * y + c22 * z) / det;
+    return 1;
+}
+static Vec3 attach_delta(Player *p)
+{
+    Vec3 d = { 0, 0, 0 };
+    if (!p->att_inst || !p->att_inst->node_world || !p->att_inst->visible) return d;
+    Vec3 nw = mat4_apply(&p->att_inst->node_world[p->att_node], p->att_local);
+    d = vsub(nw, p->att_world);
+    if (vdot(d, d) > 200.0f * 200.0f) { d = (Vec3){ 0, 0, 0 }; p->att_inst = NULL; }   /* teleporting platform: let go */
+    return d;
+}
+static void attach_store(Player *p, const Instance *inst, const InsNode *node, Vec3 contact)
+{
+    p->att_inst = NULL;
+    if (!inst || !node || !inst->node_world) return;
+    uint32_t ni = (uint32_t)(node - inst->model->nodes);
+    if (!mat4_inv_apply(&inst->node_world[ni], contact, &p->att_local)) return;
+    p->att_inst = inst; p->att_node = ni; p->att_world = contact;
+}
+
 /* ---- Jumper (0x462d70 update, 0x462fd0 tick) ------------------------------------ */
 static void jumper_start_jump(Jumper *j) { j->D = J_P68 * 0.75f; j->t = (j->D / J_V) * -0.5f; j->h_prev = 0; j->v_down = 0; j->short_hop = j->fell_off = 0; }   /* 0x462d10 */
 static void jumper_start_fall(Jumper *j, int fell_off) { j->D = J_P68 * 1.25f; j->fell_off = fell_off; j->h_prev = J_HEIGHT; j->t = 0; }                       /* 0x462d40 */
@@ -494,7 +526,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     {
         const float half = P_BODY_H * 0.5f;
         Vec3 cur = { p->pos.x, p->pos.y + half, p->pos.z };
-        Vec3 d = disp;
+        Vec3 carry = attach_delta(p);                                 /* 0x436d20: the platform moved under the player */
+        Vec3 d = { disp.x + carry.x, disp.y + carry.y, disp.z + carry.z };
         int mode = d.y > 0.1f ? 3 : (d.y < -0.1f ? 2 : 0);
         int n = (int)(floorf(sqrtf(vdot(d, d)) / P_SUBSTEP) + 1.5f);
         d.x /= n; d.y /= n; d.z /= n;
@@ -526,6 +559,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         p->floor_is_hull = found && hit_node != NULL;
         if (found) p->floor_y = gy;
         if (found && np.y - gy < 1.0f) { p->on_ground = 1; np.y = gy; } else p->on_ground = 0;
+        attach_store(p, p->on_ground ? hit_inst : NULL, hit_node, np);  /* 0x436d80 / 0x436d10 */
     }
     if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; p->jumper.state = 2; }   /* fell out of the world: hold */
     p->pos = np;

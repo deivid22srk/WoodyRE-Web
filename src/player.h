@@ -43,6 +43,7 @@ typedef struct {
     int lanim, lanim_sub;           /* logical animation (table 0x4b6180) and position in its chain */
     float floor_y;                  /* last floor height found under the player */
     int floor_is_hull;              /* floor came from an instance node (press kind 1 or hull kind 4) */
+    const Instance *att_inst; uint32_t att_node; Vec3 att_local, att_world;   /* platform attachment (Perso+0x298) */
     uint32_t cur_col;               /* world_collision id currently pressed, 0xffffffff = none (Probe+0x20) */
     /* volume tracking: one flag per (instance, volume node) */
     uint32_t nvol; uint8_t *inside; Instance **vol_inst; uint32_t *vol_node; uint32_t *vol_id;

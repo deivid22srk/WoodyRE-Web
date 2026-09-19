@@ -58,6 +58,7 @@ int main(int argc, char **argv)
     int have_cam = 0; float cam_args[5] = {0, 0, 0, 0, 0};                          /* --cam x y z yaw pitch (degrees) */
     double jump_at = -1; float max_y = -1e30f, start_y = 0;                       /* --jump T: hold jump from T s for 1 s (testing), reports the apex */
     double peck_at = -1, peck_len = 0.1;                                          /* --peck T LEN: hold the attack key from T s for LEN s (testing) */
+    int have_pos = 0; float pos_args[3] = {0, 0, 0};                               /* --pos x y z: start the player there (testing) */
     double walk_for = 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
@@ -65,6 +66,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--walk") && i + 1 < argc) { walk_for = atof(argv[i + 1]); i += 1; }
         else if (!strcmp(argv[i], "--jump") && i + 1 < argc) { jump_at = atof(argv[i + 1]); i += 1; }
         else if (!strcmp(argv[i], "--peck") && i + 2 < argc) { peck_at = atof(argv[i + 1]); peck_len = atof(argv[i + 2]); i += 2; }
+        else if (!strcmp(argv[i], "--pos") && i + 3 < argc) { for (int k = 0; k < 3; k++) pos_args[k] = (float)atof(argv[i + 1 + k]); have_pos = 1; i += 3; }
         else if (!strcmp(argv[i], "--fly")) fly = 1;
     }
     char path[512]; TexFile tex; GelFile gel;
@@ -89,6 +91,7 @@ int main(int argc, char **argv)
 
     Player player; int have_player = player_init(&player, &g_ins, &gel) == 0;
     if (!have_player) fly = 1;
+    if (have_player && have_pos) { player.pos.x = pos_args[0]; player.pos.y = pos_args[1]; player.pos.z = pos_args[2]; player.floor_y = player.pos.y - 1000.0f; }
     printf("VM init...\n"); eko_init(&vm);
     printf("init done: %d messages\n", vm.nmsgs);
     double t0 = win_time(), last = t0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
