@@ -48,7 +48,6 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     e->st = inst->traj.npoints > 1 ? 0 : 8;
     if (e->st == 0) { Vec3 a = inst->traj.points[0], b = inst->traj.points[1]; e->ang = atan2f(b.z - a.z, b.x - a.x); }
     inst->scripted = 0;
-    printf("  enemy type %d inst %u at %.0f %.0f %.0f, %u path points\n", type, inst->index, e->pos.x, e->pos.y, e->pos.z, inst->traj.npoints);
 }
 
 int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)

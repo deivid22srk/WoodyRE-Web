@@ -157,7 +157,7 @@ static void set_blend(int blended)
 static float g_mat_scale = 1.0f;                     /* colour scale of the current material (blend intensity) */
 
 /* ---------------------------------------------------------------- instances */
-static void set_material(const Renderer *r, uint32_t material, const Material **mat_out)
+static void set_material(const Renderer *r, uint32_t material, const Material **mat_out, uint32_t frame)   /* frame: models never auto-cycle (0x47f290) */
 {
     *mat_out = NULL; g_mat_scale = 1.0f;
     if (material & 0x8000) {
@@ -165,31 +165,80 @@ static void set_material(const Renderer *r, uint32_t material, const Material **
     } else if (material < r->tex->nmaterials) {
         const Material *m = &r->tex->materials[material]; *mat_out = m; const TexGroup *g = &r->tex->groups[m->group];
         int bl = (g->flags & 2) != 0; set_blend(bl); if (bl) g_mat_scale = ((g->flags >> 16) & 0xff) / 255.0f;
-        glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, g->gl_tex); glColor3f(g_mat_scale, g_mat_scale, g_mat_scale);
+        glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, g->gl_frames[frame < g->frame_count ? frame : 0]); glColor3f(g_mat_scale, g_mat_scale, g_mat_scale);
     } else { glDisable(GL_TEXTURE_2D); set_blend(0); glColor3f(1, 0, 1); }
+}
+
+/* inverse of an affine matrix applied to a point (rotation, scale, translation) */
+static int affine_inv_apply(const Mat4 *M, Vec3 w, Vec3 *out)
+{
+    const float *a = M->m; float x = w.x - a[12], y = w.y - a[13], z = w.z - a[14];
+    float c00 = a[5] * a[10] - a[9] * a[6], c01 = a[8] * a[6] - a[4] * a[10], c02 = a[4] * a[9] - a[8] * a[5];
+    float det = a[0] * c00 + a[1] * c01 + a[2] * c02; if (fabsf(det) < 1e-12f) return 0;
+    float id = 1.0f / det;
+    out->x = (c00 * x + c01 * y + c02 * z) * id;
+    out->y = ((a[9] * a[2] - a[1] * a[10]) * x + (a[0] * a[10] - a[8] * a[2]) * y + (a[8] * a[1] - a[0] * a[9]) * z) * id;
+    out->z = ((a[1] * a[6] - a[5] * a[2]) * x + (a[4] * a[2] - a[0] * a[6]) * y + (a[0] * a[5] - a[4] * a[1]) * z) * id;
+    return 1;
+}
+/* texture frames for mesh nodes with typecode 5..8: the last type-5 event of the root node's event track with
+ * t <= the current frame (0x43b58b-0x43b62c, docs/MODEL_RENDER.md 5). This is how the eyes blink. */
+static void event_frames(const Instance *inst, uint32_t out[4])
+{
+    const Model *m = inst->model; out[0] = out[1] = out[2] = out[3] = 0;
+    if (!m->nnodes || !m->nanims || inst->anim < 0 || (uint32_t)inst->anim >= m->nanims) return;
+    const InsNode *n = &m->nodes[0]; if (!n->event_refs || !n->pool) return;
+    const InsAnim *a = &m->anims[inst->anim]; float dur = a->duration_s > 0 ? a->duration_s : 1.0f;
+    float ph = fmodf(inst->anim_time / dur, 1.0f); if (ph < 0) ph += 1.0f; float tf = ph * (float)a->nframes;
+    const uint32_t *e = (const uint32_t *)(n->pool + ((size_t)n->a + n->b + n->event_refs[inst->anim].off) * 4);
+    for (uint32_t i = 0; i < n->event_refs[inst->anim].cnt; i++) {
+        uint32_t type = e[0], size = type == 3 ? 15 : type == 4 ? 9 : type == 5 ? 6 : 0; if (!size) return;
+        float t; memcpy(&t, &e[1], 4);
+        if (type == 5 && t <= tf) { out[0] = e[2]; out[1] = e[3]; out[2] = e[4]; out[3] = e[5]; }
+        e += size;
+    }
+}
+
+/* one mesh node layer. helper >= 0: UVs come from the helper child node (0x43b74d-0x43b908), the moving pupil */
+static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int pass, uint32_t frame, int helper)
+{
+    Model *m = inst->model; InsNode *n = &m->nodes[ni]; const Material *mat;
+    for (uint32_t k = 0; k < n->npolys; k++) {
+        InsPoly *p = &n->polys[k]; if (p->nverts < 3 || mat_blended(r, p->material) != pass) continue;
+        set_material(r, p->material, &mat, frame);
+        glBegin(GL_TRIANGLE_FAN);
+        for (uint32_t c = 0; c < p->nverts; c++) {
+            InsPoint *pt = &m->points[p->indices[c]];
+            Vec3 lp = { pt->pos.x - n->pivot.x, pt->pos.y - n->pivot.y, pt->pos.z - n->pivot.z };
+            Vec3 wp = mat4_apply(&inst->node_world[ni], lp);
+            if (mat) {
+                float u, v; Vec3 q; const InsNode *h = helper >= 0 ? &m->nodes[helper] : NULL;
+                if (h && h->helper_a != 0 && h->helper_b != 0 && affine_inv_apply(&inst->node_world[helper], wp, &q)) {
+                    float ha = h->helper_mode == 0 ? q.y : q.x, hb = h->helper_mode == 2 ? q.y : q.z;
+                    u = 0.5f - ha / h->helper_b; v = hb / h->helper_a - 0.5f;
+                } else material_uv(mat, lp.x, lp.y, lp.z, &u, &v);              /* planar projection of the pivot-relative point (0x43da37) */
+                glTexCoord2f(u, v);
+                glColor3f(pt->colour.x / 128.0f * g_mat_scale, pt->colour.y / 128.0f * g_mat_scale, pt->colour.z / 128.0f * g_mat_scale);
+            }
+            glVertex3f(wp.x, wp.y, wp.z);
+        }
+        glEnd();
+    }
 }
 
 static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass 0 = opaque, 1 = blended */
 {
     Model *m = inst->model;
     const Material *mat;
-    /* rigid node polygons */
+    uint32_t evf[4]; event_frames(inst, evf);
+    /* rigid node polygons: only mesh nodes, never those with typecode 2 (0x43b6c2) */
     for (uint32_t ni = 0; ni < m->nnodes; ni++) {
-        InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys) continue;
-        for (uint32_t k = 0; k < n->npolys; k++) {
-            InsPoly *p = &n->polys[k]; if (p->nverts < 3 || mat_blended(r, p->material) != pass) continue;
-            set_material(r, p->material, &mat);
-            glBegin(GL_TRIANGLE_FAN);
-            for (uint32_t c = 0; c < p->nverts; c++) {
-                InsPoint *pt = &m->points[p->indices[c]];
-                Vec3 lp = { pt->pos.x - n->pivot.x, pt->pos.y - n->pivot.y, pt->pos.z - n->pivot.z };
-                Vec3 wp = mat4_apply(&inst->node_world[ni], lp);
-                if (mat) { float u, v; material_uv(mat, pt->pos.x, pt->pos.y, pt->pos.z, &u, &v); glTexCoord2f(u, v); }
-                if (mat) glColor3f(pt->colour.x / 128.0f * g_mat_scale, pt->colour.y / 128.0f * g_mat_scale, pt->colour.z / 128.0f * g_mat_scale);
-                glVertex3f(wp.x, wp.y, wp.z);
-            }
-            glEnd();
-        }
+        InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || n->type_code == 2) continue;
+        int helper = -1;
+        for (uint32_t j = 0; j < m->nnodes; j++) if (m->nodes[j].kind == 0x10 && m->nodes[j].parent == (int32_t)ni) { helper = (int)j; break; }
+        uint32_t lid = (n->type_code >= 5 && n->type_code <= 8) ? evf[n->type_code - 5] : 0;
+        draw_node_polys(r, inst, ni, pass, 0, helper);
+        if (lid) { glDepthFunc(GL_LEQUAL); draw_node_polys(r, inst, ni, pass, lid, -1); glDepthFunc(GL_LESS); }   /* eyelid layer on top of the eyeball */
     }
     /* skinned triangles */
     if (m->ntris) {
@@ -197,11 +246,11 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
         glBegin(GL_TRIANGLES);
         for (uint32_t t = 0; t < m->ntris; t++) {
             InsTri *tr = &m->tris[t]; if (mat_blended(r, tr->material) != pass) continue;
-            if (tr->material != last) { glEnd(); set_material(r, tr->material, &mat); last = tr->material; glBegin(GL_TRIANGLES); }
+            if (tr->material != last) { glEnd(); set_material(r, tr->material, &mat, 0); last = tr->material; glBegin(GL_TRIANGLES); }
             uint32_t idx[3] = { tr->i0, tr->i1, tr->i2 };
             for (int c = 0; c < 3; c++) {
                 Vec3 wp = ins_point_world(inst, idx[c]);
-                if (mat) { InsPoint *pt = &m->points[idx[c]]; float u, v; material_uv(mat, pt->pos.x, pt->pos.y, pt->pos.z, &u, &v); glTexCoord2f(u, v); }
+                if (mat) glTexCoord2f(mat->m[6 - 3 * c], mat->m[7 - 3 * c]);   /* explicit UVs: the material holds three UV pairs, file vertex j = (m[3j], m[3j+1]) and i0 is the third file vertex (0x43e39a) */
                 glVertex3f(wp.x, wp.y, wp.z);
             }
         }

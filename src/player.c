@@ -406,6 +406,7 @@ static void anim_request(Player *p, int n, float rate)                     /* 0x
 {
     Instance *wi = p->inst; const LogAnim *a = log_anim(n); const Model *m = wi->model;
     if (n != p->lanim) {
+        if (getenv("WOODY_ANIMLOG")) printf("  lanim %d -> %d (jumper %d t %.3f)\n", p->lanim, n, p->jumper.state, p->jumper.t);
         p->lanim = n; p->lanim_sub = 0;
         if ((uint32_t)a->sub[0] < m->nanims && (a->restart || wi->anim != a->sub[0])) { wi->anim = a->sub[0]; wi->anim_time = 0; }
     }
