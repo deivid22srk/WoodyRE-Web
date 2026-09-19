@@ -2,7 +2,8 @@
  * EKO CODE script VM every frame and renders world + instances with OpenGL.
  *
  * usage: woody.exe <Data dir> <LVL>            e.g. woody.exe extract/Data W1A
- * keys: WASD + right mouse = fly, Shift = fast, F1 world, F2 instances, F3 wireframe,
+ * keys: arrows/WASD = walk Woody (camera-relative), Space = jump, F5 = toggle free-fly camera
+ *       (in fly mode WASD + right mouse = fly, Shift = fast), F1 world, F2 instances, F3 wireframe,
  *       [ ] = previous/next animation of the selected instance (default: Woody), Tab = next instance,
  *       P = pause VM, Esc = quit. Script messages are printed to the console.
  */
@@ -15,6 +16,7 @@
 #include "level.h"
 #include "render_gl.h"
 #include "ekovm.h"
+#include "player.h"
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
@@ -54,9 +56,12 @@ int main(int argc, char **argv)
     const char *dir = argc > 1 ? argv[1] : "extract/Data", *lvl = argc > 2 ? argv[2] : "W1A";
     const char *shot_path = NULL; double shot_after = 0;                          /* --shot file.ppm seconds: screenshot then quit */
     int have_cam = 0; float cam_args[5] = {0, 0, 0, 0, 0};                          /* --cam x y z yaw pitch (degrees) */
+    double walk_for = 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
-        else if (!strcmp(argv[i], "--cam") && i + 5 < argc) { for (int k = 0; k < 5; k++) cam_args[k] = (float)atof(argv[i + 1 + k]); have_cam = 1; i += 5; }
+        else if (!strcmp(argv[i], "--cam") && i + 5 < argc) { for (int k = 0; k < 5; k++) cam_args[k] = (float)atof(argv[i + 1 + k]); have_cam = 1; i += 5; fly = 1; }
+        else if (!strcmp(argv[i], "--walk") && i + 1 < argc) { walk_for = atof(argv[i + 1]); i += 1; }
+        else if (!strcmp(argv[i], "--fly")) fly = 1;
     }
     char path[512]; TexFile tex; GelFile gel;
     snprintf(path, sizeof path, "%s/%s/%s.tex", dir, lvl, lvl); if (tex_load(&tex, path)) return 1;
@@ -78,23 +83,27 @@ int main(int argc, char **argv)
     if (have_cam) { cam.pos.x = cam_args[0]; cam.pos.y = cam_args[1]; cam.pos.z = cam_args[2]; cam.yaw = cam_args[3] * 3.14159265f / 180; cam.pitch = cam_args[4] * 3.14159265f / 180; }
     else { cam.pos.x = (gel.bbox[0] + gel.bbox[1]) / 2; cam.pos.y = gel.bbox[3]; cam.pos.z = (gel.bbox[4] + gel.bbox[5]) / 2; cam.pitch = -1.2f; }
 
+    Player player; int have_player = player_init(&player, &g_ins, &gel) == 0;
+    if (!have_player) fly = 1;
     printf("VM init...\n"); eko_init(&vm);
     printf("init done: %d messages\n", vm.nmsgs);
-    double t0 = win_time(), last = t0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0; uint32_t frames = 0; double fps_t = t0;
+    double t0 = win_time(), last = t0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
         double now = win_time(); float dt = (float)(now - last); last = now;
         if (dt > 0.1f) dt = 0.1f;
+        if (win.keys[VK_F5] && !f5_prev && have_player) { fly ^= 1; if (!fly) player.cam_init = 0; }
+        f5_prev = win.keys[VK_F5];
         /* camera */
         float speed = (win.keys[VK_SHIFT] ? 3000.0f : 600.0f) * dt;
         Vec3 fw = cam_forward(&cam), rt = cam_right(&cam);
-        if (win.keys['W']) { cam.pos.x += fw.x * speed; cam.pos.y += fw.y * speed; cam.pos.z += fw.z * speed; }
-        if (win.keys['S']) { cam.pos.x -= fw.x * speed; cam.pos.y -= fw.y * speed; cam.pos.z -= fw.z * speed; }
-        if (win.keys['D']) { cam.pos.x += rt.x * speed; cam.pos.z += rt.z * speed; }
-        if (win.keys['A']) { cam.pos.x -= rt.x * speed; cam.pos.z -= rt.z * speed; }
-        if (win.keys['E'] || win.keys[VK_SPACE]) cam.pos.y += speed;
-        if (win.keys['Q']) cam.pos.y -= speed;
-        cam.yaw -= win.mouse_dx * 0.004f; cam.pitch -= win.mouse_dy * 0.004f;
+        if (fly && win.keys['W']) { cam.pos.x += fw.x * speed; cam.pos.y += fw.y * speed; cam.pos.z += fw.z * speed; }
+        if (fly && win.keys['S']) { cam.pos.x -= fw.x * speed; cam.pos.y -= fw.y * speed; cam.pos.z -= fw.z * speed; }
+        if (fly && win.keys['D']) { cam.pos.x += rt.x * speed; cam.pos.z += rt.z * speed; }
+        if (fly && win.keys['A']) { cam.pos.x -= rt.x * speed; cam.pos.z -= rt.z * speed; }
+        if (fly && (win.keys['E'] || win.keys[VK_SPACE])) cam.pos.y += speed;
+        if (fly && win.keys['Q']) cam.pos.y -= speed;
+        if (fly) { cam.yaw -= win.mouse_dx * 0.004f; cam.pitch -= win.mouse_dy * 0.004f; }
         if (cam.pitch > 1.5f) cam.pitch = 1.5f; if (cam.pitch < -1.5f) cam.pitch = -1.5f;
         /* toggles */
         for (int k = 0; k < 3; k++) { int down = win.keys[VK_F1 + k]; if (down && !f_prev[k]) { if (k == 0) rnd.show_world ^= 1; else if (k == 1) rnd.show_instances ^= 1; else rnd.wireframe ^= 1; } f_prev[k] = down; }
@@ -116,6 +125,16 @@ int main(int argc, char **argv)
             if (br[1] && !br_prev[1]) { sel->anim = (sel->anim + 1) % (int)sel->model->nanims; sel->anim_time = 0; printf("anim %d (%u frames, %.2f s)\n", sel->anim, sel->model->anims[sel->anim].nframes, sel->model->anims[sel->anim].duration_s); }
         }
         br_prev[0] = br[0]; br_prev[1] = br[1];
+        /* player (provisional controller) + follow camera */
+        if (have_player && !paused) {
+            PlayerInput pin = { 0 };
+            pin.forward = win.keys[VK_UP] || (!fly && win.keys['W']) || (now - t0 < walk_for);
+            pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
+            pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
+            pin.jump = !fly && win.keys[VK_SPACE]; pin.action = win.keys[VK_CONTROL];
+            player_update(&player, &pin, dt, &vm, fly ? cam.yaw : player.cam_yaw);
+            if (!fly) player_camera(&player, &cam, dt);
+        }
         /* VM tick: time in 1/100 s like the original */
         if (!paused) {
             eko_tick(&vm, (int32_t)((now - t0) * 100.0));
@@ -125,8 +144,9 @@ int main(int argc, char **argv)
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
         win_swap(&win);
         frames++;
-        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE - %s - %.0f fps - VM t=%d frame %u msgs %u - cam %.0f %.0f %.0f", lvl, frames / (now - fps_t), vm.time, vm.frame, vm.stat_msgs_total, cam.pos.x, cam.pos.y, cam.pos.z); SetWindowTextA((HWND)win.hwnd, title); frames = 0; fps_t = now; }
+        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u", lvl, frames / (now - fps_t), vm.time, vm.frame, vm.stat_msgs_total, fly ? "fly" : "play", player.pos.x, player.pos.y, player.pos.z, player.on_ground ? "ground" : "air", player.events_sent); SetWindowTextA((HWND)win.hwnd, title); if (have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, player.pos.x, player.pos.y, player.pos.z, player.vel.x, player.vel.y, player.vel.z, player.on_ground ? (player.floor_is_hull ? "hull" : "ground") : "air", player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
     }
+    if (have_player) player_free(&player);
     rnd_free(&rnd); win_close(&win);
     eko_free(&vm); free(code); ins_free(&g_ins); gel_free(&gel); tex_free(&tex);
     return 0;
