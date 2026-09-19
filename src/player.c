@@ -531,6 +531,24 @@ static void game_sequence(Player *p, EkoVM *vm, float dt)
     if (p->mask10_frames > 0 && --p->mask10_frames == 0 && vm) eko_msgmask_clear(vm, p->inst->id, 0x10);
 }
 
+/* ---- bonuses (docs/BONUS.md): the script sends message 10 to the bonus instance; vtable[+0x70] per class ------ */
+int player_collect(Player *p, int type, int arg)
+{
+    switch (type) {
+    case 30: p->lives++; break;                                           /* extra life, sound 0 */
+    case 34: p->bonus_got++; p->bonus_count++; break;                     /* "Bonus Woody", sound 3; 25 = a heart or a life */
+    case 35: p->special_charges++; break;                                 /* charge for the special action (Perso+0x254), sound 2 */
+    case 36: p->unique_items++; break;                                    /* unique item (save game flag), sound 1 */
+    case 37: p->race_bonus++; break;                                      /* "Bonus Race", sound 5 */
+    case 38: { float t = arg * 0.01f; if (p->invuln_respawn < t) p->invuln_respawn = t; if (p->invuln_hit < t) p->invuln_hit = t; } break;   /* invulnerability */
+    default: return 0;
+    }
+    /* reward in Perso_Update 0x44b530: 25 bonuses = one heart, or an extra life when already at 5 hearts */
+    if (p->bonus_count >= 25) { p->bonus_count -= 25; if (p->health < 5.0f) p->health += 1.0f; else p->lives++; }
+    printf("  BONUS type %d collected: woody bonus %d / %d, health %.0f, lives %d\n", type, p->bonus_got, p->bonus_total, p->health, p->lives);
+    return 1;
+}
+
 static void player_apply_transform(Player *p)
 {
     Instance *in = p->inst;

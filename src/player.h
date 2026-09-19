@@ -44,6 +44,7 @@ typedef struct {
     Vec3 push_dir; float push_t, push_speed;                         /* knockback (Mover RampC) */
     int game_state; float game_t, fade; int mask10_frames;           /* Game sequence 0x4459c0; fade = screen brightness */
     Vec3 spawn_pos; float spawn_yaw;
+    int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264 */
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
     /* attack controller (Perso+0x5b4..): sub-state, timer, displacement, air window, charge; move lock = Perso+0x238 */
     int atk; float atk_t; Vec3 atk_dir, atk_disp; int use_atk_disp; float air_win, charge, move_lock, vy_corr; int action_prev;
@@ -65,6 +66,7 @@ int  player_init(Player *p, InsFile *ins, const GelFile *gel);
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_free(Player *p);
+int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34..38: message 10; returns 1 when the instance must disappear */
 void player_kill(Player *p, int kind);                 /* Perso vt[38] */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
 

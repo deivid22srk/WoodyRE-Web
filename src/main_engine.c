@@ -30,7 +30,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     (void)vm; (void)user;
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) in->type = (int)m->args[1]; break;          /* SetTypeInstance */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (in->type == 34 && g_player) { g_player->bonus_total++; if (g_player->bonus_total <= 4) printf("  bonus %u at %.0f %.0f %.0f\n", in->index, in->position.x, in->position.y, in->position.z); } } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1: case 4:                                                                 /* PlayAnim(inst, anim, ...) */
         if (in && m->nargs > 1 && m->args[1] < in->model->nanims) { in->anim = (int)m->args[1]; in->anim_time = 0; }
         break;
@@ -38,6 +38,9 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         if (in && m->nargs > 1 && m->args[1] < in->model->nanims) { in->anim = (int)m->args[1]; }
         break;
     case 6: if (in && m->nargs > 1) in->visible = m->args[1] != 0; break;         /* show/hide */
+    case 10:                                                                        /* Collect (docs/BONUS.md): the level script saw the player enter the bonus volume */
+        if (in && g_player && in->visible && player_collect(g_player, in->type, m->nargs > 1 ? (int)m->args[1] : 0)) in->visible = 0;   /* 0x407850: cell = -1 */
+        break;
     case 1020: if (g_player) player_kill(g_player, 1); break;                       /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes */
     default: break;
     }
@@ -155,7 +158,7 @@ int main(int argc, char **argv)
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
         win_swap(&win);
         frames++;
-        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u", lvl, frames / (now - fps_t), vm.time, vm.frame, vm.stat_msgs_total, fly ? "fly" : "play", player.pos.x, player.pos.y, player.pos.z, player.on_ground ? "ground" : "air", player.events_sent); SetWindowTextA((HWND)win.hwnd, title); if (have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, player.pos.x, player.pos.y, player.pos.z, player.vel.x, player.vel.y, player.vel.z, player.on_ground ? (player.floor_is_hull ? "hull" : "ground") : "air", player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
+        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", lvl, frames / (now - fps_t), vm.time, vm.frame, vm.stat_msgs_total, fly ? "fly" : "play", player.pos.x, player.pos.y, player.pos.z, player.on_ground ? "ground" : "air", player.events_sent, player.health, player.lives, player.bonus_got, player.bonus_total); SetWindowTextA((HWND)win.hwnd, title); if (have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, player.pos.x, player.pos.y, player.pos.z, player.vel.x, player.vel.y, player.vel.z, player.on_ground ? (player.floor_is_hull ? "hull" : "ground") : "air", player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
     }
     if (have_player) player_free(&player);
     rnd_free(&rnd); win_close(&win);
