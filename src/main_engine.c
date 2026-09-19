@@ -246,6 +246,52 @@ static uint32_t g_intro_var; static int g_have_intro;            /* message 1160
 
 /* ---- sound (docs/SOUND.md): script messages 1600..1657 (0x467fa0) -> the mixer in audio.c.
  * vol 0..100; pitch args are x0.01 (f > 0 = frequency factor), "dur" args are x-0.01 (wanted duration); dmin args are x0.01 m. */
+/* vector marker of an instance (0x42f6b0): the first 2-point node with typecode `tc`; P0 = start, dir = P1 - P0 (not normalised) */
+static int inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir)
+{
+    const Model *mo = in->model;
+    for (uint32_t i = 0; i < mo->nnodes; i++) if (mo->nodes[i].kind != 0 && mo->nodes[i].type_code == tc && mo->nodes[i].npoints >= 2 && (mo->nodes[i].kind == 0x20 || tc == 5)) {
+        Vec3 a = ins_point_world(in, mo->nodes[i].point_base), b = ins_point_world(in, mo->nodes[i].point_base + 1);
+        *p0 = a; dir->x = b.x - a.x; dir->y = b.y - a.y; dir->z = b.z - a.z; return 1;
+    }
+    return 0;
+}
+/* ---- lasers: classes 50 / 51 / 52 (docs/OBJECTS.md 2.1). One beam per typecode-0 vector marker; off until message 50.
+ * 51: marker start along the marker direction for `len` (message 52, default 400), cut at the first world polygon;
+ * 50: endless until the first hit; 52: to the marker start of the target instance (message 53). Touching a beam kills (Kill(2)). */
+typedef struct { Instance *inst, *target; int type, on; float len, phase; } Laser;
+static Laser g_lasers[64]; static int g_nlasers;
+static Laser *laser_of(const Instance *in) { for (int i = 0; i < g_nlasers; i++) if (g_lasers[i].inst == in) return &g_lasers[i]; return NULL; }
+static int laser_segment(const Laser *z, uint32_t marker, const GelFile *gel, Vec3 *a, Vec3 *b, int *kind)
+{
+    const Model *mo = z->inst->model; uint32_t seen = 0;
+    for (uint32_t i = 0; i < mo->nnodes; i++) {
+        const InsNode *n = &mo->nodes[i]; if (n->kind != 0x20 || n->type_code != 0 || n->npoints < 2) continue;
+        if (seen++ != marker) continue;
+        Vec3 p0 = ins_point_world(z->inst, n->point_base), p1 = ins_point_world(z->inst, n->point_base + 1), d = { p1.x - p0.x, p1.y - p0.y, p1.z - p0.z };
+        float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l < 1e-4f) return 0;
+        float len = z->type == 50 ? 100000.0f : z->len; *a = p0; *kind = 0;
+        if (z->type == 52) { Vec3 t0, td; if (z->target && inst_vector(z->target, 0, &t0, &td)) { *b = t0; *kind = 2; return 1; } if (marker) return 0; }
+        b->x = p0.x + d.x / l * len; b->y = p0.y + d.y / l * len; b->z = p0.z + d.z / l * len;
+        float t = gel_ray_frac(gel, *a, *b);
+        if (t <= 1.0f) { b->x = a->x + (b->x - a->x) * t; b->y = a->y + (b->y - a->y) * t; b->z = a->z + (b->z - a->z) * t; *kind = 1; }
+        return 1;
+    }
+    return 0;
+}
+/* hit test 0x450f80: segment against the player's cylinder (radius 69 * 0.85, centre at half height) */
+static int laser_hits_player(Vec3 a, Vec3 b, const Player *p)
+{
+    const float R = 69.0f * 0.85f, H = 193.0f;
+    Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float best = 1e30f;
+    for (int i = 0; i <= 16; i++) {                                                 /* closest approach in xz, sampled (beams are short next to the player) */
+        float t = i / 16.0f, x = a.x + d.x * t - p->pos.x, y = a.y + d.y * t - p->pos.y, zz = a.z + d.z * t - p->pos.z;
+        if (y < 0 || y > H) continue; float q = x * x + zz * zz; if (q < best) best = q;
+    }
+    float l2 = d.x * d.x + d.z * d.z;
+    if (l2 > 1e-6f) { float t = ((p->pos.x - a.x) * d.x + (p->pos.z - a.z) * d.z) / l2; t = t < 0 ? 0 : t > 1 ? 1 : t; float y = a.y + d.y * t - p->pos.y, x = a.x + d.x * t - p->pos.x, zz = a.z + d.z * t - p->pos.z; if (y >= 0 && y <= H && x * x + zz * zz < best) best = x * x + zz * zz; }
+    return best <= R * R;
+}
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
@@ -325,7 +371,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if (in->type >= 4 && in->type <= 6) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if (in->type >= 4 && in->type <= 6) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
     case 42: case 43: case 44: case 45: case 56: case 57:
         if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
@@ -362,15 +408,21 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         if (m->nargs > 3) {
             int ok = 0;
             if (in && g_player && g_player->dead_kind == 0) {
-                float dx = in->position.x - g_player->pos.x, dz = in->position.z - g_player->pos.z, d = sqrtf(dx * dx + dz * dz);
-                if (d < (float)(int)m->args[1]) ok = d < 1e-3f || (sinf(g_player->yaw) * dx + cosf(g_player->yaw) * dz) / d >= cosf((float)(int)m->args[2] * 3.14159265f / 180.0f);
+                /* 0x445269 (docs/OBJECTS.md 1): on the ground, within `dist` (xz) of the START of the instance's vector marker (typecode 0, else 5),
+                 * and moving/facing along the marker direction within `angle` degrees. Without a marker: the instance position and the direction to it. */
+                Vec3 p0, dir; int have = inst_vector(in, 0, &p0, &dir) || inst_vector(in, 5, &p0, &dir);
+                if (!have) { p0 = in->position; dir.x = p0.x - g_player->pos.x; dir.y = 0; dir.z = p0.z - g_player->pos.z; }
+                float dx = p0.x - g_player->pos.x, dz = p0.z - g_player->pos.z, d = sqrtf(dx * dx + dz * dz), dl = sqrtf(dir.x * dir.x + dir.z * dir.z);
+                if (d <= (float)(int)m->args[1] && g_player->on_ground)
+                    ok = dl < 1e-3f || (sinf(g_player->yaw) * dir.x + cosf(g_player->yaw) * dir.z) / dl > cosf((float)(int)m->args[2] * 3.14159265f / 180.0f);
+                if (getenv("WOODY_SWLOG")) printf("  1042 inst %u marker %d dist %.0f/%d facing ok %d", in->index, have, d, (int)m->args[1], ok), puts("");
             }
             eko_set_var(vm, m->args[3], ok);
         }
         break;
-    case 1048: case 1049: case 1050:                                                                        /* key tests: mode 0 held, 1 released, 2 just pressed (0x467400 / 0x467420 / 0x467440) */
+    case 1048: case 1049: case 1050:                                                                        /* key tests on actions 0, 1, 6 */
         if (m->nargs > 1) { int k = m->id - 1048, mode = (int)m->args[1], now = g_act_now[k], prev = g_act_prev[k];
-                            eko_set_var(vm, m->args[0], mode == 0 ? now : mode == 1 ? (!now && prev) : (now && !prev)); }
+                            eko_set_var(vm, m->args[0], mode == 0 ? now : mode == 1 ? (now && !prev) : (!now && prev)); }   /* 0x467400 held, 0x467420 just pressed, 0x467440 just released */
         break;
     case 1141: g_pose = in; break;
     case 1160: if (m->nargs) { g_intro_var = m->args[0]; g_have_intro = 1; } break;
@@ -387,6 +439,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
         break;
     case 1152: g_black_frame = 1; break;
+    case 50: case 52: case 53: if (in) { Laser *z = laser_of(in); if (z && m->nargs > 1) { if (m->id == 50) z->on = m->args[1] == 1; else if (m->id == 52) z->len = (float)(int)m->args[1]; else z->target = slot_instance(m->args[1]); } } break;
     case 1080: if (m->nargs > 3) { hud_text_open((int)m->args[0], (int)m->args[1], &m->args[3], (int)m->nargs - 3); g_text_var = m->args[2]; printf("  TEXT box at vm t=%d: strings %u %u %u\n", vm->time, m->args[3] & 0xffff, m->nargs > 4 ? m->args[4] & 0xffff : 0, m->nargs > 5 ? m->args[5] & 0xffff : 0); } break;   /* text box 0x456ed0: stays until the script sets var != 0 */
     case 1172: g_hud_ext = 1; break;
     case 1088: if (in && g_player) cam_side_start(in, m->nargs > 1 ? (int)m->args[1] : 0); break;
@@ -412,7 +465,7 @@ typedef struct {
 static void *read_all(const char *path, size_t *sz);
 static void level_free(Level *L)
 {
-    hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
+    g_nlasers = 0; hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
@@ -612,6 +665,24 @@ int main(int argc, char **argv)
                     float p[3] = { ii->position.x, ii->position.y, ii->position.z };
                     if (ii->type == 34 && ii->node_world) { p[0] = ii->node_world[0].m[12]; p[1] = ii->node_world[0].m[13]; p[2] = ii->node_world[0].m[14]; }
                     hud_world_sprite(n, p, size);
+                }
+                for (int li = 0; li < g_nlasers; li++) {                            /* Lazer_Draw 0x46e530: core (1,.7,.7) width 6 + glow (1,.4,.4) width 30 pulsing 0.5..1, ends fade over 70 */
+                    Laser *z = &g_lasers[li]; if (!z->on || !z->inst->visible) continue;
+                    if (!paused) z->phase += dt * 127.75f;
+                    float g = 0.5f - 0.5f * cosf(2 * 3.14159265f * (float)(((int)z->phase % 254 + 0x80) & 0x1ff) / 512.0f);
+                    for (uint32_t mk = 0; mk < 8; mk++) {
+                        Vec3 a, b; int kind; if (!laser_segment(z, mk, &L.gel, &a, &b, &kind)) break;
+                        if (L.have_player && !paused && !fly && !L.player.dead_kind && !cin_running() && laser_hits_player(a, b, &L.player)) player_kill(&L.player, 2);
+                        Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l < 1) continue;
+                        static const float core[3] = { 1, 0.7f, 0.7f }, glow[3] = { 1, 0.4f, 0.4f };
+                        float f = kind == 2 ? 0 : (l > 140 ? 70.0f : l * 0.5f) / l;
+                        Vec3 a1 = { a.x + d.x * f, a.y + d.y * f, a.z + d.z * f }, b1 = { b.x - d.x * f, b.y - d.y * f, b.z - d.z * f };
+                        for (int layer = 0; layer < 2; layer++) {
+                            const float *c = layer ? glow : core; float hw = layer ? 30.0f : 6.0f, al = layer ? g : 1.0f;
+                            if (f > 0) { hud_world_beam(&a.x, &a1.x, &cam.pos.x, hw, c, 0, al); hud_world_beam(&b1.x, &b.x, &cam.pos.x, hw, c, al, 0); }
+                            hud_world_beam(&a1.x, &b1.x, &cam.pos.x, hw, c, al, al);
+                        }
+                    }
                 }
                 hud_world_sprites_end();
             }

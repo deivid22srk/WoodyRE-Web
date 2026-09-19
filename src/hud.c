@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #ifndef GL_BGRA_EXT
 #define GL_BGRA_EXT 0x80E1
@@ -21,6 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
+    GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
@@ -63,6 +65,7 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
+    if (type == 1 && index == 1) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.beam = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1) for (int b = 0; b < 5; b++) if (index == bonus_img[b]) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.bonus[b] = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1 && index >= 61 && index <= 64 && size >= 8) {      /* i16 w, h; u16 bpp, alpha; BGRA, bottom row first (0x480780) */
         int w = (int16_t)(d[0] | d[1] << 8), h = (int16_t)(d[2] | d[3] << 8), bpp = d[4] | d[5] << 8;
@@ -118,6 +121,7 @@ void hud_free(void)
     if (H.logo) glDeleteTextures(1, &H.logo);
     for (int i = 0; i < 5; i++) if (H.sky[i]) glDeleteTextures(1, &H.sky[i]);
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
+    if (H.beam) glDeleteTextures(1, &H.beam);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }
@@ -334,4 +338,24 @@ int hud_sky_images(uint32_t out[5])
     if (H.nlevel_img < 5) return 0;
     for (int f = 0; f < 5; f++) out[f] = H.sky[order[f]];
     return 1;
+}
+
+void hud_world_beam(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b)
+{
+    if (!H.ok) return;
+    float d[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, m[3] = { (a[0] + b[0]) * 0.5f - eye[0], (a[1] + b[1]) * 0.5f - eye[1], (a[2] + b[2]) * 0.5f - eye[2] };
+    float s[3] = { d[1] * m[2] - d[2] * m[1], d[2] * m[0] - d[0] * m[2], d[0] * m[1] - d[1] * m[0] };      /* perpendicular to the segment and to the view ray */
+    float l = (float)sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]); if (l < 1e-6f) return;
+    for (int i = 0; i < 3; i++) s[i] *= hw / l;
+    glBlendFunc(GL_ONE, GL_ONE); glDisable(GL_ALPHA_TEST);                          /* flag 4 = additive ONE/ONE */
+    if (H.beam) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, H.beam); } else glDisable(GL_TEXTURE_2D);
+    glBegin(GL_QUADS);
+    glColor3f(rgb[0] * alpha_a, rgb[1] * alpha_a, rgb[2] * alpha_a);
+    glTexCoord2f(0, 0); glVertex3f(a[0] - s[0], a[1] - s[1], a[2] - s[2]);
+    glTexCoord2f(0, 1); glVertex3f(a[0] + s[0], a[1] + s[1], a[2] + s[2]);
+    glColor3f(rgb[0] * alpha_b, rgb[1] * alpha_b, rgb[2] * alpha_b);
+    glTexCoord2f(1, 1); glVertex3f(b[0] + s[0], b[1] + s[1], b[2] + s[2]);
+    glTexCoord2f(1, 0); glVertex3f(b[0] - s[0], b[1] - s[1], b[2] - s[2]);
+    glEnd();
+    glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
 }

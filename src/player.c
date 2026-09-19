@@ -395,6 +395,21 @@ static int gel_ray_blocked(const GelFile *g, Vec3 a, Vec3 b)
     return 0;
 }
 
+float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b)
+{
+    float best = 2.0f;
+    for (uint32_t i = 0; i < g->npolys; i++) {
+        const GelPoly *pl = &g->polys[i]; if (pl->nverts < 3) continue;
+        float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
+        float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
+        if ((da > 0) == (db > 0)) continue;
+        float t = da / (da - db); if (t >= best) continue;
+        Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
+        if (poly_contains(g, pl, q)) best = t;
+    }
+    return best;
+}
+
 /* ---- logical animations: table 0x4b6180 (0x1c bytes per record: sub[4], prio, speed, restart) --------------
  * A logical animation is a chain of up to four .ins animations played in order, the last one looping (-1 = hold);
  * the speed divides the .ins duration (docs/PERSO_JUMP.md 4). Priorities are not used here. */
