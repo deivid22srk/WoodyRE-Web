@@ -20,6 +20,7 @@ static struct {
     uint16_t **str; int nstr;                             /* bank 0 strings, 0-terminated u16 codes */
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
+    GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
@@ -81,6 +82,16 @@ static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 static void common_item(int type, int index, const uint8_t *d, uint32_t size);
 static void level_item(int type, int index, const uint8_t *d, uint32_t size)
 {
+    if (type == 1) { H.nlevel_img = index + 1; }
+    if (type == 1 && index < 5 && size >= 8) {                       /* raw row order: file row 0 = v 0 = bottom of the cube face (docs/SKY.md) */
+        int w = (int16_t)(d[0] | d[1] << 8), h = (int16_t)(d[2] | d[3] << 8);
+        if (w > 0 && h > 0 && size >= 8 + (uint32_t)w * h * 4) {
+            uint8_t *px = malloc((size_t)w * h * 4);
+            for (int i = 0; i < w * h; i++) { px[i * 4] = d[8 + i * 4 + 2]; px[i * 4 + 1] = d[8 + i * 4 + 1]; px[i * 4 + 2] = d[8 + i * 4]; px[i * 4 + 3] = 255; }
+            H.sky[index] = upload(px, w, h); free(px);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        }
+    }
     if (type == 1 && index == 1) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.logo = H.img[0]; H.logo_w = H.img_w[0]; H.logo_h = H.img_h[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type != 3 || index != 0 || size < 0x1c) return;              /* font 0x01030000 (0x43f9a0) */
     H.nglyphs = rd32(d); H.npages = rd32(d + 4); H.psize = rd32(d + 8);
@@ -105,6 +116,7 @@ void hud_free(void)
     for (int i = 0; i < 4; i++) if (H.img[i]) glDeleteTextures(1, &H.img[i]);
     for (int i = 0; i < 8; i++) if (H.page[i]) glDeleteTextures(1, &H.page[i]);
     if (H.logo) glDeleteTextures(1, &H.logo);
+    for (int i = 0; i < 5; i++) if (H.sky[i]) glDeleteTextures(1, &H.sky[i]);
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
@@ -315,3 +327,11 @@ void hud_world_sprite(int n, const float *pos, float size)
     glEnd();
 }
 void hud_world_sprites_end(void) { glDisable(GL_ALPHA_TEST); glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDisable(GL_TEXTURE_2D); }
+
+int hud_sky_images(uint32_t out[5])
+{
+    static const int order[5] = { 3, 0, 1, 2, 4 };
+    if (H.nlevel_img < 5) return 0;
+    for (int f = 0; f < 5; f++) out[f] = H.sky[order[f]];
+    return 1;
+}

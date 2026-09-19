@@ -33,6 +33,7 @@ typedef struct {
     struct WorldBatch lightb[16]; uint32_t light_tex[16];   /* light polygons per generated radial texture */
     int show_light; float *face_bound;                 /* per world face: centre xyz + radius (cast shadow receivers) */
     float last_time;
+    int have_sky; uint32_t sky_tex[5]; float sky_hu, sky_hv;   /* sky cube (docs/SKY.md): +z, +x, -z, -x, top */
     int show_world, show_instances, wireframe;
 } Renderer;
 
@@ -40,6 +41,7 @@ int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFi
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s);
 void rnd_fade(float brightness);             /* darken the finished frame: 1 = normal, 0 = black */
 void rnd_free(Renderer *r);
+void rnd_set_sky(Renderer *r, const uint32_t tex[5]);   /* level bank images 3,0,1,2,4 replace the group's own frames when the bank has >= 5 images (0x5e8670) */
 int  rnd_screenshot(const Window *w, const char *path);   /* binary PPM of the current back buffer */
 Vec3 cam_forward(const FreeCamera *c);
 Vec3 cam_right(const FreeCamera *c);

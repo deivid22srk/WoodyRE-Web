@@ -174,6 +174,11 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
         int nomat = (p->material & 0x8000) != 0;
         const Material *m = nomat ? NULL : &tex->materials[p->material & 0x7fff];
         uint32_t grp = nomat ? tex->ngroups : m->group; uint32_t gflags = nomat ? 0 : tex->groups[grp].flags;
+        if (!nomat && ((gflags >> 8) & 0xff) == 2) {                               /* sky group (0x42acea): the face is never drawn, it only switches the sky cube on */
+            TexGroup *sg = &tex->groups[grp];
+            if (!r->have_sky) { r->have_sky = 1; r->sky_hu = 0.5f / (float)sg->width; r->sky_hv = 0.5f / (float)sg->height; for (int f = 0; f < 5; f++) r->sky_tex[f] = sg->gl_frames[(uint32_t)f < sg->frame_count ? f : 0]; }
+            continue;
+        }
         /* multi-pass only for plain opaque textures: colour-keyed faces would get their holes filled by the ambient pass,
          * they take the same light per vertex instead */
         int multipass = r->lit && lit_face[i] && !(gflags & 3);
@@ -503,7 +508,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     glViewport(0, 0, w->width, w->height);
     for (uint32_t g = 0; g < r->tex->ngroups; g++) {                 /* texture animation: frame_count frames over anim_duration seconds */
         TexGroup *tg = &r->tex->groups[g];
-        if (tg->frame_count > 1 && tg->anim_duration > 0) tg->gl_tex = tg->gl_frames[(uint32_t)(time_s / tg->anim_duration * tg->frame_count) % tg->frame_count];
+        if (tg->frame_count > 1 && tg->anim_duration > 0 && ((tg->flags >> 8) & 0xff) != 2) tg->gl_tex = tg->gl_frames[(uint32_t)(time_s / tg->anim_duration * tg->frame_count) % tg->frame_count];
     }
     glDepthMask(GL_TRUE); glDisable(GL_BLEND); glClearColor(0.08f, 0.09f, 0.11f, 1); glClearStencil(0); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     {   /* pose every visible instance up front: the cast shadows are drawn inside the world passes */
@@ -533,6 +538,21 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     float view[16] = { rt.x, up.x, -fw.x, 0, rt.y, up.y, -fw.y, 0, rt.z, up.z, -fw.z, 0,          /* GL camera looks along -z */
                        -(rt.x * cam->pos.x + rt.y * cam->pos.y + rt.z * cam->pos.z), -(up.x * cam->pos.x + up.y * cam->pos.y + up.z * cam->pos.z), (fw.x * cam->pos.x + fw.y * cam->pos.y + fw.z * cam->pos.z), 1 };
     glLoadMatrixf(view);
+    if (r->have_sky && r->show_world) {                                             /* 0x42ad40..0x42b373: five quads of a cube around the camera, white, unlit, drawn behind everything */
+        static const signed char q[5][4][3] = {
+            { {-1,-1, 1}, {-1, 1, 1}, { 1, 1, 1}, { 1,-1, 1} }, { { 1,-1, 1}, { 1, 1, 1}, { 1, 1,-1}, { 1,-1,-1} },
+            { { 1,-1,-1}, { 1, 1,-1}, {-1, 1,-1}, {-1,-1,-1} }, { {-1,-1,-1}, {-1, 1,-1}, {-1, 1, 1}, {-1,-1, 1} },
+            { {-1, 1, 1}, {-1, 1,-1}, { 1, 1,-1}, { 1, 1, 1} } };
+        const float S = 50000.0f, hu = r->sky_hu, hv = r->sky_hv, uv[4][2] = { { hu, hv }, { hu, 1 - hv }, { 1 - hu, 1 - hv }, { 1 - hu, hv } };
+        glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE); glDisable(GL_CULL_FACE); glDisable(GL_BLEND); glDisable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D); glColor3f(1, 1, 1);
+        for (int f = 0; f < 5; f++) {
+            glBindTexture(GL_TEXTURE_2D, r->sky_tex[f]);
+            glBegin(GL_QUADS);
+            for (int c = 0; c < 4; c++) { glTexCoord2f(uv[c][0], uv[c][1]); glVertex3f(cam->pos.x + q[f][c][0] * S, cam->pos.y + q[f][c][1] * S, cam->pos.z + q[f][c][2] * S); }
+            glEnd();
+        }
+        glEnable(GL_DEPTH_TEST); glDepthMask(GL_TRUE);
+    }
 
     for (int pass = 0; pass < 2; pass++) {                      /* pass 0 opaque, pass 1 additive (no depth writes) */
     if (r->show_world) {
@@ -588,3 +608,5 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     set_blend(0);
     (void)time_s;
 }
+
+void rnd_set_sky(Renderer *r, const uint32_t tex[5]) { if (r->have_sky) for (int f = 0; f < 5; f++) if (tex[f]) r->sky_tex[f] = tex[f]; }

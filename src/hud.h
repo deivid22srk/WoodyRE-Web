@@ -22,6 +22,7 @@ void hud_text_reset(void);
 /* House menu pages (docs/TITLE.md 5): page 0 = "Press a key", page 1 = New game / Load game / Options / Quit; logo = House.rck image 1 */
 void hud_title_draw(int page, int sel, int want_logo, float dt);
 void hud_title_reset(void);
+int  hud_sky_images(uint32_t out[5]);                           /* level bank images in cube order 3,0,1,2,4 when the bank has >= 5 images, else 0 */
 /* pickups are sprites, not meshes (docs/BONUS.md 3.1, 0x479530): n = 0 life, 1 charge, 2 W, 3 $, 4 flag. Call between the 3D frame and hud_begin. */
 void hud_world_sprites_begin(const float *right, const float *up);
 void hud_world_sprite(int n, const float *pos, float size);
