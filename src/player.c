@@ -1,4 +1,4 @@
-/* player.c - provisional player controller (see player.h). */
+/* player.c - player controller ported from the decompiled Perso class (see player.h). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,12 +21,11 @@
 #define J_SHORT_HOP_T  -0.2f      /* 0x4aa430 */
 #define J_APEX_T       -0.15f     /* 0x4ab7a0: state 1 -> 7 (attack window opens) */
 #define J_HARD_FALL    1500.0f    /* P+0x7c */
-/* ---- remaining guesses ---- */
+/* collision (docs/PERSO_MOVE.md 6) */
 #define P_STEP         40.0f      /* 0x437180 step argument: clinging distance, wall test skips the lowest step+1 */
 #define P_SUBSTEP      10.0f      /* 0x437180 substep length */
 #define P_BODY_H       193.0f     /* P+0x0c: body height (61 when ducking) */
 #define P_PROBE_Y      43.0f      /* P+0x00: ground probe / collision centre above the feet */
-#define P_STEP_UP      60.0f      /* (old provisional floor search) */
 #define P_RADIUS       69.0f      /* P+0x04: horizontal collision radius (0x434820 in 0x4624f0) */
 #define P_VOL_PROBE_Y  71.0f      /* volume test point above the feet: 0x462760(perso, 71.0), docs/EVENTS.md 2.1 */
 /* follow camera (docs/CAMERA.md 3) */
@@ -116,6 +115,42 @@ static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float ma
     return best;
 }
 
+/* Push-out contribution of one convex polygon (world-space vertices v[0..n), unit normal nrm on the outward side)
+ * for a body of radius r centred at q: closest point of the polygon to q (plane point if the projection is inside,
+ * else the nearest edge point), penetration r - distance, pushed along the horizontal direction away from it.
+ * Accumulated like 0x408600: positive maximum and negative minimum per axis (acc = px, nx, pz, nz). */
+static int point_in_poly3(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q)
+{
+    int sign = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        Vec3 e = vsub(v[(i + 1) % n], v[i]), w = vsub(q, v[i]); float c = vdot(vcross(e, w), nrm);
+        int sg = c > 1e-3f ? 1 : (c < -1e-3f ? -1 : 0);
+        if (!sg) continue;
+        if (!sign) sign = sg; else if (sg != sign) return 0;
+    }
+    return 1;
+}
+static void poly_push_accum(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q, float r, float acc[4])
+{
+    float d = vdot(nrm, vsub(q, v[0])); if (d < 0 || d >= r) return;        /* front side only */
+    Vec3 cp = { q.x - nrm.x * d, q.y - nrm.y * d, q.z - nrm.z * d };
+    if (!point_in_poly3(v, n, nrm, cp)) {
+        float best = 1e30f; Vec3 bc = cp;
+        for (uint32_t i = 0; i < n; i++) {
+            Vec3 a = v[i], e = vsub(v[(i + 1) % n], a); float el = vdot(e, e), t = el > 1e-9f ? vdot(vsub(q, a), e) / el : 0;
+            if (t < 0) t = 0; if (t > 1) t = 1;
+            Vec3 c = { a.x + e.x * t, a.y + e.y * t, a.z + e.z * t }, w = vsub(q, c); float dd = vdot(w, w);
+            if (dd < best) { best = dd; bc = c; }
+        }
+        cp = bc;
+    }
+    Vec3 w = vsub(q, cp); float dist = sqrtf(vdot(w, w)); if (dist >= r) return;
+    float hx = w.x, hz = w.z, hl = sqrtf(hx * hx + hz * hz);
+    if (hl < 1e-4f) { hx = nrm.x; hz = nrm.z; hl = sqrtf(hx * hx + hz * hz); if (hl < 1e-4f) return; }
+    float pen = r - dist, vx = hx / hl * pen, vz = hz / hl * pen;
+    if (vx > acc[0]) acc[0] = vx; if (vx < acc[1]) acc[1] = vx; if (vz > acc[2]) acc[2] = vz; if (vz < acc[3]) acc[3] = vz;
+}
+
 /* One push-out vector for the body cylinder (radius r, vertical band [lo, hi]) against the world, after 0x407000 /
  * 0x408600: front side only, penetration r - dist along the polygon normal in xz, accumulated per axis as a positive
  * maximum plus a negative minimum. Simplifications: no band clipping / edge-circle intersection and no conical bottom
@@ -123,37 +158,26 @@ static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float ma
  * instance hulls are not tested yet. */
 static Vec3 gel_push(const GelFile *g, Vec3 c, float r, float lo, float hi)
 {
-    float px = 0, nx = 0, pz = 0, nz = 0;
+    float acc[4] = { 0, 0, 0, 0 }; Vec3 v[32];
     for (uint32_t i = 0; i < g->npolys; i++) {
         const GelPoly *pl = &g->polys[i];
-        if (pl->nverts < 3 || pl->plane[1] > 0.71f) continue;
+        if (pl->nverts < 3 || pl->nverts > 32 || pl->plane[1] > 0.71f) continue;
+        float d0 = pl->plane[0] * c.x + pl->plane[1] * c.y + pl->plane[2] * c.z + pl->plane[3];
+        if (d0 < -r - (hi - lo) || d0 > r + (hi - lo)) continue;               /* cheap reject */
         float ymin = 1e30f, ymax = -1e30f;
-        for (uint32_t k = 0; k < pl->nverts; k++) { float y = g->verts[pl->indices[k]].y; if (y < ymin) ymin = y; if (y > ymax) ymax = y; }
+        for (uint32_t k = 0; k < pl->nverts; k++) { const GelVert *gv = &g->verts[pl->indices[k]]; v[k] = (Vec3){ gv->x, gv->y, gv->z }; if (gv->y < ymin) ymin = gv->y; if (gv->y > ymax) ymax = gv->y; }
         if (ymax < lo || ymin > hi) continue;
         Vec3 q = c; float a = lo > ymin ? lo : ymin, b = hi < ymax ? hi : ymax; if (q.y < a) q.y = a; if (q.y > b) q.y = b;
-        float d = pl->plane[0] * q.x + pl->plane[1] * q.y + pl->plane[2] * q.z + pl->plane[3];
-        if (d < 0 || d >= r) continue;
-        Vec3 on = { q.x - pl->plane[0] * d, q.y - pl->plane[1] * d, q.z - pl->plane[2] * d };
-        if (!poly_contains(g, pl, on)) continue;
-        float pen = r - d, vx = pl->plane[0] * pen, vz = pl->plane[2] * pen;
-        if (vx > px) px = vx; if (vx < nx) nx = vx; if (vz > pz) pz = vz; if (vz < nz) nz = vz;
+        poly_push_accum(v, pl->nverts, (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }, q, r, acc);
     }
-    Vec3 out = { px + nx, 0, pz + nz }; return out;
+    Vec3 out = { acc[0] + acc[1], 0, acc[2] + acc[3] }; return out;
 }
 
 /* Same push-out against the collision hulls (kind 4 nodes) of visible instances, after inst->vt[8] = 0x433140.
  * Hull polygons are taken in world space; their outward side is the one facing away from the node's centroid. */
-static int point_in_poly3(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q)
-{
-    for (uint32_t i = 0; i < n; i++) {
-        Vec3 e = vsub(v[(i + 1) % n], v[i]), w = vsub(q, v[i]);
-        if (vdot(vcross(e, w), nrm) < -1e-3f) return 0;
-    }
-    return 1;
-}
 static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, float lo, float hi)
 {
-    float px = 0, nx = 0, pz = 0, nz = 0; Vec3 v[16];
+    float acc[4] = { 0, 0, 0, 0 }; Vec3 v[16];
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
         const Model *m = &ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
@@ -171,22 +195,15 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
                     if (ymax < lo || ymin > hi) continue;
                     Vec3 nrm = vcross(vsub(v[1], v[0]), vsub(v[2], v[0])); float nl = sqrtf(vdot(nrm, nrm)); if (nl < 1e-6f) continue;
                     nrm.x /= nl; nrm.y /= nl; nrm.z /= nl;
-                    Vec3 wind = nrm;                                           /* winding normal for the inside test */
                     if (vdot(nrm, vsub(cen, v[0])) > 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }
                     if (nrm.y > 0.71f) continue;                               /* walkable: floor code */
                     Vec3 q = c; float a = lo > ymin ? lo : ymin, b = hi < ymax ? hi : ymax; if (q.y < a) q.y = a; if (q.y > b) q.y = b;
-                    float d = vdot(nrm, vsub(q, v[0])); if (d < 0 || d >= r) continue;
-                    Vec3 on = { q.x - nrm.x * d, q.y - nrm.y * d, q.z - nrm.z * d };
-                    if (!point_in_poly3(v, pl->nverts, wind, on)) {
-                        Vec3 w2 = { -wind.x, -wind.y, -wind.z }; if (!point_in_poly3(v, pl->nverts, w2, on)) continue;
-                    }
-                    float pen = r - d, vx = nrm.x * pen, vz = nrm.z * pen;
-                    if (vx > px) px = vx; if (vx < nx) nx = vx; if (vz > pz) pz = vz; if (vz < nz) nz = vz;
+                    poly_push_accum(v, pl->nverts, nrm, q, r, acc);
                 }
             }
         }
     }
-    Vec3 out = { px + nx, 0, pz + nz }; return out;
+    Vec3 out = { acc[0] + acc[1], 0, acc[2] + acc[3] }; return out;
 }
 
 /* GetHeight 0x435650 -> 0x498520: nearest surface below the point: world polygons with n.y > 1e-5 (any slope) that
@@ -215,7 +232,7 @@ static int jumper_tick(Jumper *j, float dt, int on_ground)
 {
     j->t += dt;
     float u = j->t / (0.5f * j->D / J_V), h = J_HEIGHT - J_HEIGHT * u * u;
-    if (j->t >= J_APEX_T && j->state == 1 && !j->short_hop) j->state = 7;
+    if (j->t >= J_APEX_T && j->state == 1 && !j->short_hop) { j->state = 7; j->open_window = 1; }   /* 0x457560(0.5): air attack window */
     if (j->t >= 0 && (j->state == 7 || (j->state == 1 && j->short_hop))) {
         j->state = j->short_hop ? (on_ground ? 6 : 4) : 3;
         jumper_start_fall(j, 0); h = J_HEIGHT;
@@ -305,6 +322,122 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel)
     return 0;
 }
 
+/* segment a->b blocked by a world polygon? (line-of-sight veto 0x423a40; instances are not tested yet) */
+static int gel_ray_blocked(const GelFile *g, Vec3 a, Vec3 b)
+{
+    for (uint32_t i = 0; i < g->npolys; i++) {
+        const GelPoly *pl = &g->polys[i]; if (pl->nverts < 3) continue;
+        float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
+        float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
+        if ((da > 0) == (db > 0)) continue;
+        float t = da / (da - db); Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
+        if (poly_contains(g, pl, q)) return 1;
+    }
+    return 0;
+}
+
+/* ---- logical animations: table 0x4b6180 (0x1c bytes per record: sub[4], prio, speed, restart) --------------
+ * A logical animation is a chain of up to four .ins animations played in order, the last one looping (-1 = hold);
+ * the speed divides the .ins duration (docs/PERSO_JUMP.md 4). Priorities are not used here. */
+typedef struct { int sub[4]; float speed; int restart; } LogAnim;
+static const LogAnim *log_anim(int n)
+{
+    static const LogAnim t[0x13] = {
+        {{0,0,0,0},3,0}, {{0,0,0,0},3,0}, {{1,2,2,2},3,1}, {{2,2,2,2},3,0}, {{3,4,4,4},8,1}, {{5,6,7,7},2,1}, {{6,7,7,7},3,0},
+        {{6,7,7,7},3,1}, {{8,0,0,0},3,1}, {{7,32,33,33},3,0}, {{34,0,0,0},3,1}, {{9,9,9,9},3,1}, {{10,11,-1,-1},3,1},
+        {{16,0,0,0},3,1}, {{19,6,7,7},3,1}, {{21,13,13,13},3,1}, {{38,51,51,51},3,1}, {{51,51,51,51},3,0}, {{51,52,0,0},3,0} };
+    return (n >= 0 && n < 0x13) ? &t[n] : &t[0];
+}
+static float anim_len(const Player *p, int n, int k)                       /* 0x436b90 AnimLen(n, k) */
+{
+    const LogAnim *a = log_anim(n); const Model *m = p->inst->model; int s = a->sub[k];
+    return (s >= 0 && (uint32_t)s < m->nanims) ? m->anims[s].duration_s / a->speed : 0.0f;
+}
+static void anim_request(Player *p, int n, float rate)                     /* 0x436b70 Request + 0x436a50 Tick */
+{
+    Instance *wi = p->inst; const LogAnim *a = log_anim(n); const Model *m = wi->model;
+    if (n != p->lanim) {
+        p->lanim = n; p->lanim_sub = 0;
+        if ((uint32_t)a->sub[0] < m->nanims && (a->restart || wi->anim != a->sub[0])) { wi->anim = a->sub[0]; wi->anim_time = 0; }
+    }
+    wi->anim_speed = a->speed * rate;
+    /* advance through the chain */
+    if ((uint32_t)wi->anim < m->nanims && wi->anim_time >= m->anims[wi->anim].duration_s && p->lanim_sub < 3) {
+        int nx = a->sub[p->lanim_sub + 1];
+        if (nx < 0 || (uint32_t)nx >= m->nanims) wi->anim_time = m->anims[wi->anim].duration_s * 0.999f;   /* hold the last frame */
+        else { wi->anim_time -= m->anims[wi->anim].duration_s; wi->anim = nx; p->lanim_sub++; }
+    }
+}
+
+/* ---- attack controller 0x457a50 + trigger 0x457330 (docs/PERSO_JUMP.md 2) -----------------------------------
+ * Ported: peck dash (1,2), wall/ground rebound (6,7), charge run (9,10), brake (11). Not ported because there are no
+ * actors yet: target finder / auto-aim, hit loop, hit pause and recoil (3,4,5); also peckable surfaces (8) and the
+ * steep-edge test. The dash additionally ends on landing, which the original leaves to its ray probe. */
+static void lock_move(Player *p, float t) { p->move_lock = t; p->ramp_phase = 0; p->speed = 0; }   /* 0x44cce0 */
+static void jumper_reset(Jumper *j) { memset(j, 0, sizeof *j); j->state = 2; j->armed = 1; }       /* 0x462c90 */
+static void jumper_force_fall(Jumper *j, int force)                                                 /* 0x463170 */
+{
+    if ((j->state == 3 || j->state == 4 || j->state == 5) && !force) return;
+    j->coyote = 0; jumper_start_fall(j, 1); j->v_down = 0; j->state = 4;
+}
+static int attack_probe(Player *p, Vec3 v)                                                          /* 0x4575b0 */
+{
+    Vec3 a = { p->pos.x, p->pos.y + 5.0f, p->pos.z }, b = { a.x + v.x, a.y + v.y, a.z + v.z };
+    if (!gel_ray_blocked(p->gel, a, b)) return 0;
+    int found; const Instance *hi; const InsNode *hn;
+    float gy = world_ground(p, (Vec3){ p->pos.x, p->pos.y + 1.0f, p->pos.z }, &found, &hi, &hn);
+    int n = (found && p->pos.y - gy > 100.0f) ? 0xe : 0xd;
+    p->atk = n == 0xe ? 7 : 6; p->atk_t = anim_len(p, n, 0); lock_move(p, p->atk_t);
+    return 1;
+}
+static void attack_update(Player *p, const PlayerInput *in, float dt)
+{
+    p->use_atk_disp = 0;
+    if (p->charge > 0) p->charge -= dt;
+    Vec3 dir = { sinf(p->yaw), 0, cosf(p->yaw) };
+    switch (p->atk) {
+    case 1:                                                               /* dash start: no target -> diagonally down */
+        p->atk_dir = (Vec3){ dir.x, -2.0f, dir.z };
+        { float l = sqrtf(vdot(p->atk_dir, p->atk_dir)); p->atk_dir.x /= l; p->atk_dir.y /= l; p->atk_dir.z /= l; }
+        p->jumper.fallen = 0; p->jumper.hard_fall = 0; p->air_win = 0; p->atk = 2; return;
+    case 2:
+        p->atk_disp = (Vec3){ p->atk_dir.x * dt * 1500.0f, p->atk_dir.y * dt * 1500.0f, p->atk_dir.z * dt * 1500.0f }; p->use_atk_disp = 1;
+        if (!attack_probe(p, (Vec3){ p->atk_dir.x * 50.0f, p->atk_dir.y * 50.0f, p->atk_dir.z * 50.0f }))
+            attack_probe(p, (Vec3){ dir.x * 100.0f, 0, dir.z * 100.0f });
+        if (p->atk == 2 && p->on_ground) { p->atk = 6; p->atk_t = anim_len(p, 0xd, 0); lock_move(p, p->atk_t); }
+        return;
+    case 6:
+        jumper_reset(&p->jumper);
+        if ((p->atk_t -= dt) < 0.4f) p->vy_corr -= (p->pos.y - p->floor_y) * 2.5f;   /* spring toward the ground */
+        if (p->atk_t <= 0) { p->pos.y = p->floor_y; p->on_ground = 1; p->atk = 0; }  /* 0x462990 snap to ground */
+        return;
+    case 7: jumper_reset(&p->jumper); if ((p->atk_t -= dt) <= 0) { p->atk = 0; jumper_force_fall(&p->jumper, 0); } return;
+    case 9:
+        if ((p->atk_t -= dt) <= 0) p->atk = 10;
+        p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; return;
+    case 10:
+        if (p->charge > 0 && !in->jump) { p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; return; }
+        if (in->jump) { lock_move(p, 0); p->atk = 0; return; }             /* jump cancels the run */
+        p->charge = 0; p->atk_t = anim_len(p, 0x12, 0) + anim_len(p, 0x12, 1); lock_move(p, p->atk_t); p->atk = 11; return;   /* brake */
+    case 11: if ((p->atk_t -= dt) <= 0) p->atk = 0; return;
+    default: return;
+    }
+}
+static void attack_trigger(Player *p, const PlayerInput *in, float dt)
+{
+    int held = in->action, pressed = held && !p->action_prev, released = !held && p->action_prev;
+    p->action_prev = held;
+    if (p->jumper.state != 2 && p->jumper.state != 6) p->charge = 0;       /* no charge in the air */
+    if (p->air_win > 0) p->air_win -= dt;
+    if (p->move_lock > 0 || p->atk != 0) return;
+    if (p->on_ground) {
+        if (released) {                                                    /* charge run starts on RELEASE */
+            p->atk_t = anim_len(p, 0x10, 0) + anim_len(p, 0x11, 0); p->atk = 9;
+            if (p->charge <= 0.1f) { lock_move(p, p->atk_t); p->charge = 0; }
+        } else if (held) { p->charge += 4.0f * dt; if (p->charge > 1.5f) p->charge = 1.5f; }
+    } else if (pressed && p->air_win > 0) p->atk = 1;                      /* air: peck dash */
+}
+
 static void player_apply_transform(Player *p)
 {
     Instance *in = p->inst;
@@ -318,8 +451,14 @@ static void player_apply_transform(Player *p)
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw)
 {
     if (dt <= 0) return;
+    p->vy_corr = 0;
+    if (p->move_lock > 0) p->move_lock -= dt;
+    attack_update(p, in, dt);
+    attack_trigger(p, in, dt);
+    /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking */
+    int allow = !(p->move_lock > 0 || p->atk != 0);
     /* input direction relative to the camera */
-    float ix = (float)(in->right - in->left), iz = (float)(in->forward - in->back);
+    float ix = allow ? (float)(in->right - in->left) : 0, iz = allow ? (float)(in->forward - in->back) : 0;
     float len = sqrtf(ix * ix + iz * iz);
     if (len > 0) {
         ix /= len; iz /= len;
@@ -332,17 +471,21 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         p->ramp_target = (cosf(d) + 1.0f) * 0.5f * P_WALK_SPEED;
         p->yaw += d * (1.0f - powf(1.0f - P_TURN_BLEND, dt * P_REF_FPS));
         if (p->ramp_phase == 0 || p->ramp_phase == 3) { p->ramp_phase = 1; p->ramp_t = sqrtf(p->speed / P_WALK_SPEED) * P_ACC_TIME; }   /* 0x45ad30: 0/3 -> 1 */
-    } else if (p->ramp_phase == 1 || p->ramp_phase == 2) { p->ramp_phase = 3; p->ramp_t = 0; p->ramp_v0 = p->speed; }                  /* 2 -> 3 */
+    } else if (!allow) { p->ramp_phase = 0; p->speed = 0; }
+    else if (p->ramp_phase == 1 || p->ramp_phase == 2) { p->ramp_phase = 3; p->ramp_t = 0; p->ramp_v0 = p->speed; }                  /* 2 -> 3 */
     /* Ramp tick (0x4671d0) */
     if (p->ramp_phase == 1) { p->ramp_t += dt; float k = p->ramp_t / P_ACC_TIME; if (k >= 1.0f) { k = 1.0f; p->ramp_phase = 2; } p->speed = k * k * p->ramp_target; }
     else if (p->ramp_phase == 2) p->speed = p->ramp_target;
     else if (p->ramp_phase == 3) { p->ramp_t += dt; float k = p->ramp_t / P_DEC_TIME; if (k >= 1.0f) { k = 1.0f; p->ramp_phase = 0; } p->speed = p->ramp_v0 * (1.0f - k * k); }
     else p->speed = 0;
-    p->vel.x = sinf(p->yaw) * p->speed; p->vel.z = cosf(p->yaw) * p->speed;
     /* vertical motion comes from the Jumper; air control is the unchanged Mover (docs/PERSO_JUMP.md 1.4) */
-    jumper_update(&p->jumper, in->jump, p->on_ground, p->pos.y - p->floor_y, dt);
-    p->vel.y = p->jumper.dy / dt;
-    if (p->jumper.dy < 0) p->jumper.fallen -= p->jumper.dy;                          /* 0x44b914: fallen height accumulates */
+    if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, allow && in->jump, p->on_ground, p->pos.y - p->floor_y, dt);
+    if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
+    /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
+    Vec3 disp = p->use_atk_disp ? p->atk_disp : (Vec3){ sinf(p->yaw) * p->speed * dt, p->jumper.dy, cosf(p->yaw) * p->speed * dt };
+    disp.y += dt * p->vy_corr;
+    p->vel = (Vec3){ disp.x / dt, disp.y / dt, disp.z / dt };
+    if (disp.y < 0) p->jumper.fallen -= disp.y;                                      /* 0x44b914: fallen height accumulates */
 
     /* Perso_MoveCollide 0x4624f0 -> SweepCylinder 0x437180 (docs/PERSO_MOVE.md 6.1/6.2): move in substeps of at
      * most 10 units; per substep one xz push-out vector (x0.9), landing clamp when falling, ground clinging when walking. */
@@ -351,12 +494,15 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     {
         const float half = P_BODY_H * 0.5f;
         Vec3 cur = { p->pos.x, p->pos.y + half, p->pos.z };
-        Vec3 d = { p->vel.x * dt, p->jumper.dy, p->vel.z * dt };
+        Vec3 d = disp;
         int mode = d.y > 0.1f ? 3 : (d.y < -0.1f ? 2 : 0);
         int n = (int)(floorf(sqrtf(vdot(d, d)) / P_SUBSTEP) + 1.5f);
         d.x /= n; d.y /= n; d.z /= n;
         float margin = 5.0f;
-        float gy = world_ground(p, cur, &found, &hit_inst, &hit_node);
+        /* the original probes from the body centre here; feet + 43 (as in the final ground test) keeps objects of up to
+         * half the body height from counting as floor while the hull push-out is still approximate */
+        #define SWEEP_PROBE(c) ((Vec3){ (c).x, (c).y - half + P_PROBE_Y, (c).z })
+        float gy = world_ground(p, SWEEP_PROBE(cur), &found, &hit_inst, &hit_node);
         if (found && cur.y - half - 1.0f < gy) { margin = P_STEP + 1.0f; if (mode == 0) mode = 1; }
         for (; n > 0; n--) {
             cur.x += d.x; cur.y += d.y; cur.z += d.z;
@@ -364,7 +510,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             Vec3 push = gel_push(p->gel, cur, P_RADIUS, feet + margin, feet + P_BODY_H);
             { Vec3 ip = ins_push(p->ins, p->inst, cur, P_RADIUS, feet + margin, feet + P_BODY_H); push.x += ip.x; push.z += ip.z; }
             cur.x += push.x * 0.9f; cur.z += push.z * 0.9f;
-            gy = world_ground(p, cur, &found, &hit_inst, &hit_node);
+            gy = world_ground(p, SWEEP_PROBE(cur), &found, &hit_inst, &hit_node);
             if (!found) continue;
             if (mode == 2) { if (cur.y - half < gy) cur.y = gy + half; }
             else if (mode == 1) { float f = cur.y - half; if (f - gy < P_STEP && f > gy) cur.y = gy + half; }
@@ -384,22 +530,27 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; p->jumper.state = 2; }   /* fell out of the world: hold */
     p->pos = np;
     player_apply_transform(p);
-    /* animations per state, Perso_AnimState 0x463e60 (docs/PERSO_MOVE.md 4.3): ground by Mover phase (0x463f40),
-     * air by Jumper state (0x4642f0). Idle variations 0x59/0x5a after 10 s are not done. */
+    /* animations, Perso_AnimState 0x463e60 (docs/PERSO_MOVE.md 4.3, PERSO_JUMP.md 4): attack sub-state first, then
+     * ground by Mover phase (0x463f40) or air by Jumper state (0x4642f0). Idle variations 0x59/0x5a are not done. */
     {
-        Instance *wi = p->inst; int cur = wi->anim, want = cur; int js = p->jumper.state; float spd = 1.0f;
-        int landing = (cur == 8 || cur == 10) && wi->anim_time < wi->model->anims[cur].duration_s;
-        if (js == 2) {
-            if (p->ramp_phase == 1) want = 2;                                        /* start walking */
-            else if (p->ramp_phase == 2) { want = 3; spd = p->speed / P_WALK_SPEED; if (spd < 0.5f) spd = 0.5f; if (spd > 1.0f) spd = 1.0f; }   /* walk cycle, 0x436c20 */
-            else if (p->ramp_phase == 0 && !landing) want = 0;                       /* idle */
+        static const int atk_anim[12] = { -1, 0xb, 0xb, 0xc, 0xc, -1, 0xd, 0xe, 0xf, 0x10, 0x11, 0x12 };
+        int js = p->jumper.state, want = p->lanim; float rate = 1.0f;
+        int landing = (p->lanim == 8 || p->lanim == 0xa) && p->lanim_sub == 0;
+        if (p->atk) { if (atk_anim[p->atk] >= 0) want = atk_anim[p->atk]; }
+        else if (js == 2) {
+            if (p->ramp_phase == 1) want = 2;
+            else if (p->ramp_phase == 2) { want = 3; rate = p->speed / P_WALK_SPEED; if (rate < 0.5f) rate = 0.5f; if (rate > 1.0f) rate = 1.0f; }   /* 0x436c20 */
+            else if (p->ramp_phase == 0 && !landing) want = 0;
         }
-        else if (js == 0 || js == 1) want = 4;                                       /* rising */
-        else if (js == 7) want = 5;                                                  /* apex */
-        else if (js == 3) { if (p->jumper.fell_off) want = 7; else if (p->jumper.short_hop) want = 6; }
-        else if (js == 5) want = 9;                                                  /* long fall */
-        else if (js == 6) want = p->jumper.hard_fall ? 10 : (p->ramp_phase == 2 ? cur : 8);   /* landing / hard landing */
-        if ((uint32_t)want < wi->model->nanims) { if (want != cur) { wi->anim = want; wi->anim_time = 0; } wi->anim_speed = spd; }
+        else if (js == 0 || js == 1) want = 4;
+        else if (js == 7) want = 5;
+        else if (js == 3 || js == 4) { if (p->jumper.fell_off) want = 7; else if (p->jumper.short_hop) want = 6; }
+        else if (js == 5) want = 9;
+        else if (js == 6) {
+            if (p->jumper.hard_fall) { want = 0xa; lock_move(p, anim_len(p, 0xa, 0)); }     /* hard landing blocks movement */
+            else if (p->ramp_phase != 2) want = 8;
+        }
+        anim_request(p, want, rate);
     }
 
     /* world_collision events: standing on a press node with type code 1 (0x436f00, docs/EVENTS.md 3.2/3.3).
@@ -435,20 +586,6 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
 }
 
 /* ---- follow camera, mode 1 (docs/CAMERA.md 0.1 / 3: 0x424760 -> 0x422790 -> 0x4231e0) ------------------- */
-/* segment a->b blocked by a world polygon? (line-of-sight veto 0x423a40; instances are not tested yet) */
-static int gel_ray_blocked(const GelFile *g, Vec3 a, Vec3 b)
-{
-    for (uint32_t i = 0; i < g->npolys; i++) {
-        const GelPoly *pl = &g->polys[i]; if (pl->nverts < 3) continue;
-        float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
-        float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
-        if ((da > 0) == (db > 0)) continue;
-        float t = da / (da - db); Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
-        if (poly_contains(g, pl, q)) return 1;
-    }
-    return 0;
-}
-
 static void camera_step(Player *p, float dt, int behind, int quick, int collide)
 {
     Vec3 look = { sinf(p->yaw), 0, cosf(p->yaw) };

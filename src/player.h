@@ -4,8 +4,9 @@
  * Jumper state machine (time parabolas, short hop, coyote time, terminal speed), sub-stepped cylinder sweep with
  * ground clinging and the feet+43 ground probe, animations per state, follow camera (mode 1), and the engine->VM
  * events (trigger volumes, world_collision press nodes, msgmask 0x200).
- * Not ported yet: attacks (0x457a50), ducking, look-around, sliding on steep slopes, ground kinds, platform carry,
- * damage/death, wall collision against instance hulls, camera breadcrumb path, cfg key mapping.
+ * Attacks (0x457a50): peck dash, rebounds, charge run and brake; logical animation chains (table 0x4b6180).
+ * Not ported yet: attack targets/hits/recoil (no actors yet), peckable surfaces, ducking, look-around, sliding on
+ * steep slopes, ground kinds, platform carry, damage/death, camera breadcrumb path, cfg key mapping.
  * Geometry queries are brute force over the .gel polygons instead of the original kd-tree cells. */
 #ifndef WOODY_PLAYER_H
 #define WOODY_PLAYER_H
@@ -24,6 +25,7 @@ typedef struct {
     float D, t, h_prev, v_down;     /* J+0x18, +0x1c, +0x20, +0x24 */
     float fallen, coyote_t, dy;     /* J+0x28, +0x48, J+0xc (vertical displacement this frame) */
     int armed, fell_off, hard_fall, short_hop, coyote;
+    int open_window;                /* set when the air attack window opens (0x457560 from the tick) */
 } Jumper;
 
 typedef struct {
@@ -36,6 +38,9 @@ typedef struct {
     int ramp_phase; float ramp_t, ramp_target, ramp_v0;   /* 0 idle, 1 accelerating, 2 at target, 3 decelerating */
     int on_ground;
     Jumper jumper;
+    /* attack controller (Perso+0x5b4..): sub-state, timer, displacement, air window, charge; move lock = Perso+0x238 */
+    int atk; float atk_t; Vec3 atk_dir, atk_disp; int use_atk_disp; float air_win, charge, move_lock, vy_corr; int action_prev;
+    int lanim, lanim_sub;           /* logical animation (table 0x4b6180) and position in its chain */
     float floor_y;                  /* last floor height found under the player */
     int floor_is_hull;              /* floor came from an instance node (press kind 1 or hull kind 4) */
     uint32_t cur_col;               /* world_collision id currently pressed, 0xffffffff = none (Probe+0x20) */
