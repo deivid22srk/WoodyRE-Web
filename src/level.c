@@ -273,6 +273,52 @@ void argb1555_to_rgb(uint32_t v, float rgb[3])
     rgb[0] = ((v >> 10) & 31) / 31.0f; rgb[1] = ((v >> 5) & 31) / 31.0f; rgb[2] = (v & 31) / 31.0f;
 }
 
+/* ---------------------------------------------------------------- .lit (loader 0x40ac30) */
+int lit_load(LitFile *l, const char *path)
+{
+    memset(l, 0, sizeof *l);
+    l->data = read_file(path, &l->size); if (!l->data) return -1;
+    Rd r = { l->data, 0, l->size, 0 };
+    if (ru32(&r) != 0x20010822) { free(l->data); memset(l, 0, sizeof *l); return -1; }
+    l->nlights = ru32(&r); l->lights = (LitLight *)calloc(l->nlights ? l->nlights : 1, sizeof(LitLight));
+    for (uint32_t i = 0; i < l->nlights && !r.err; i++) {
+        LitLight *L = &l->lights[i];
+        ru32(&r); ru32(&r); L->pos = rvec3(&r); for (int k = 0; k < 3; k++) L->colour[k] = rf32(&r); L->range = rf32(&r);
+        L->na = ru32(&r); L->a = ru32s(&r, L->na);
+        L->nb = ru32(&r); L->b = ru32s(&r, L->nb);
+        L->nc = ru32(&r); ru32(&r); L->c = (LitPoly *)calloc(L->nc ? L->nc : 1, sizeof(LitPoly));
+        for (uint32_t k = 0; k < L->nc && !r.err; k++) {
+            LitPoly *p = &L->c[k]; p->n = ru32(&r); for (int q = 0; q < 4; q++) p->plane[q] = rf32(&r); ru32(&r);
+            if (p->n > 4096) { r.err = 1; p->n = 0; break; }
+            p->indices = (int32_t *)ru32s(&r, p->n);
+        }
+        uint32_t nd = ru32(&r); r.pos += 16 * (size_t)nd;
+        L->nbsp = ru32(&r); L->bsp = ru32s(&r, 3 * L->nbsp);
+        L->nplanes = ru32(&r); L->planes = (float *)ru32s(&r, 4 * L->nplanes);
+    }
+    l->nextra = ru32(&r); l->extra = (Vec3 *)calloc(l->nextra ? l->nextra : 1, sizeof(Vec3));
+    for (uint32_t i = 0; i < l->nextra && !r.err; i++) { l->extra[i] = rvec3(&r); ru32(&r); }
+    if (r.err) { fprintf(stderr, "%s: truncated\n", path); l->nlights = 0; return -1; }
+    return 0;
+}
+int lit_point_lit(const LitLight *l, const GelFile *g, Vec3 p)
+{
+    if (!l->nbsp) return 1;
+    uint32_t i = 0;
+    for (int guard = 0; guard < 4096; guard++) {
+        if (i >= l->nbsp) return 1;
+        const uint32_t *nd = &l->bsp[3 * i]; if (nd[0] >= l->nplanes) return 1;
+        const float *pl = &l->planes[4 * nd[0]];
+        uint32_t v = (pl[0] * p.x + pl[1] * p.y + pl[2] * p.z + pl[3]) > 0.0f ? nd[1] : nd[2];
+        if ((v & 0xF) == 0) { i = v >> 4; continue; }
+        if ((v & 0xF) != 1) return 1;
+        uint32_t f = v >> 4; if (f >= g->npolys) return 1;
+        const float *fp = g->polys[f].plane;
+        return fp[0] * p.x + fp[1] * p.y + fp[2] * p.z + fp[3] > 0.0f;
+    }
+    return 1;
+}
+
 /* ---------------------------------------------------------------- pose evaluation (0x43a3a0) */
 static int track_pos(const InsNode *n, int anim, float t, Vec3 *out)
 {

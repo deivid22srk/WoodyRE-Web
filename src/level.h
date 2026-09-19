@@ -49,6 +49,22 @@ typedef struct {
     float bbox[6];
 } GelFile;
 
+/* ---- .lit: precomputed light visibility (docs/LIGHTING.md) ---------------------- */
+typedef struct { uint32_t n; float plane[4]; int32_t *indices; } LitPoly;   /* index < 0: extra vertex -i-1 */
+typedef struct {
+    Vec3 pos; float colour[3]; float range;   /* colour 0..255 */
+    uint32_t na, *a;                           /* faces the light sees completely */
+    uint32_t nb, *b;                           /* partially lit faces (parents of the polygons) */
+    uint32_t nc; LitPoly *c;                   /* the lit fragments of the b faces */
+    uint32_t nbsp; uint32_t *bsp;              /* {plane, front, back} */
+    uint32_t nplanes; float *planes;           /* 4 floats each */
+} LitLight;
+typedef struct {
+    uint8_t *data; size_t size;
+    uint32_t nlights; LitLight *lights;
+    uint32_t nextra; Vec3 *extra;
+} LitFile;
+
 /* ---- .ins ------------------------------------------------------------------ */
 typedef struct { uint32_t off, cnt; } TrackRef;
 
@@ -93,6 +109,7 @@ typedef struct Instance {
     float fade, fade_target, fade_rate; int noncollide; uint32_t setflags;   /* +0x6c, +0xfc, +0x100, +8 & 0x40, +0xf0 */
     uint32_t traj_flags; float traj_start, traj_dur;                         /* path follower (+0x78) */
     Mat4 *node_world;                           /* per node, updated by ins_pose() */
+    Vec3 ldir; float lcol[3]; int l_init, light, l_seen;   /* model lighting: smoothed light vector, light colour, chosen light, seen by it (0x43b912, 0x42e3e4) */
 } Instance;
 
 typedef struct Model {
@@ -105,6 +122,7 @@ typedef struct Model {
     uint32_t ninstances; Instance *instances;
     uint32_t nvolume_nodes, *volume_nodes; uint32_t nmesh_nodes, *mesh_nodes;
     uint32_t ncollision_ids;
+    int32_t *owner;                             /* per point: owning node (built lazily by the renderer) */
 } Model;
 
 typedef struct { Vec3 position; uint32_t id, index; Trajectory traj; } Camera;
@@ -122,6 +140,8 @@ typedef struct {
 int  tex_load(TexFile *t, const char *path);   /* 0 on success */
 int  gel_load(GelFile *g, const char *path);
 int  ins_load(InsFile *f, const char *path);
+int  lit_load(LitFile *l, const char *path);
+int  lit_point_lit(const LitLight *l, const GelFile *g, Vec3 p);   /* BSP point query 0x40b540 + leaf plane test */
 void tex_free(TexFile *t); void gel_free(GelFile *g); void ins_free(InsFile *f);
 
 /* Animation: evaluate the node hierarchy of `inst` for animation `anim` at `t` seconds

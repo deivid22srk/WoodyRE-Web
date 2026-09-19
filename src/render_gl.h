@@ -26,10 +26,16 @@ typedef struct {
     TexFile *tex; GelFile *gel; InsFile *ins;
     /* world geometry baked into vertex arrays per texture group */
     struct WorldBatch { uint32_t group; uint32_t ntris; float *pos; float *uv; uint8_t *col; } *batches; uint32_t nbatches;
+    /* static lighting from the .lit (docs/LIGHTING.md): lit faces are drawn in passes (ambient fill, additive light
+     * polygons, texture x2), everything else in one pass */
+    const LitFile *lit; struct WorldBatch *litb;      /* lit faces per texture group (same count as batches) */
+    struct WorldBatch lightb[16]; uint32_t light_tex[16];   /* light polygons per generated radial texture */
+    int show_light; float *face_bound;                 /* per world face: centre xyz + radius (cast shadow receivers) */
+    float last_time;
     int show_world, show_instances, wireframe;
 } Renderer;
 
-int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins);
+int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit);   /* lit may be NULL */
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s);
 void rnd_fade(float brightness);             /* darken the finished frame: 1 = normal, 0 = black */
 void rnd_free(Renderer *r);

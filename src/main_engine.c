@@ -91,7 +91,8 @@ int main(int argc, char **argv)
     printf("%s: %u polys, %u verts, %u textures, %u models, %u slots, %u script objects\n", lvl, gel.npolys, gel.nverts, tex.ngroups, g_ins.nmodels, g_ins.nslots, vm.nobj);
 
     Window win; if (win_open(&win, "WoodyRE", 1280, 800)) return 1;
-    Renderer rnd; rnd_init(&rnd, &tex, &gel, &g_ins);
+    LitFile lit; snprintf(path, sizeof path, "%s/%s/%s.lit", dir, lvl, lvl); int have_lit = lit_load(&lit, path) == 0;
+    Renderer rnd; rnd_init(&rnd, &tex, &gel, &g_ins, have_lit ? &lit : NULL);
 
     /* camera: start behind Woody (model 0, instance 0) if present */
     FreeCamera cam = { {0, 0, 0}, 0, 0, 70 };
