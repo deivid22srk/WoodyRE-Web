@@ -13,3 +13,6 @@ out/msg_blocks.txt
 out/gltf/
 out/rck/
 out/*.png
+out/*.ppm
+out/*.exe
+out/*.pdb
