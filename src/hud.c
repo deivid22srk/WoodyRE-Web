@@ -20,6 +20,7 @@ static struct {
     uint16_t **str; int nstr;                             /* bank 0 strings, 0-terminated u16 codes */
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
+    GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
 } H;
 
@@ -74,8 +75,10 @@ static void common_item(int type, int index, const uint8_t *d, uint32_t size)
     }
 }
 
+static void common_item(int type, int index, const uint8_t *d, uint32_t size);
 static void level_item(int type, int index, const uint8_t *d, uint32_t size)
 {
+    if (type == 1 && index == 1) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.logo = H.img[0]; H.logo_w = H.img_w[0]; H.logo_h = H.img_h[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type != 3 || index != 0 || size < 0x1c) return;              /* font 0x01030000 (0x43f9a0) */
     H.nglyphs = rd32(d); H.npages = rd32(d + 4); H.psize = rd32(d + 8);
     memcpy(&H.H, d + 0xc, 4); memcpy(&H.B, d + 0x14, 4); memcpy(&H.M, d + 0x18, 4);
@@ -89,7 +92,7 @@ int hud_load(const char *common_rck, const char *level_rck)
 {
     hud_free();
     if (rck_walk(common_rck, 6, common_item)) return -1;
-    if (rck_walk(level_rck, 8, level_item) || !H.nglyphs) return -1;
+    if (rck_walk(level_rck, 8 | 2, level_item) || !H.nglyphs) return -1;
     H.ok = 1; H.k = 17.0f / (H.H - H.B);
     return 0;
 }
@@ -98,6 +101,7 @@ void hud_free(void)
 {
     for (int i = 0; i < 4; i++) if (H.img[i]) glDeleteTextures(1, &H.img[i]);
     for (int i = 0; i < 8; i++) if (H.page[i]) glDeleteTextures(1, &H.page[i]);
+    if (H.logo) glDeleteTextures(1, &H.logo);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }
@@ -257,4 +261,31 @@ void hud_text_draw(int closed, float dt)
     quad(H.box.rect[0], H.box.rect[1], H.box.rect[2] - H.box.rect[0], H.box.rect[3] - H.box.rect[1], 0, 0, 0, 0, 0, bg, bg, bg, bg);
     font_size(H.box.size);
     for (int i = 0; i < H.box.n; i++) { const uint16_t *s = hud_string(H.box.id[i]); if (s) font_draw(H.box.x[i], H.box.y[i], s, col); }
+}
+
+/* ---------------------------------------------------------------- House menu pages (docs/TITLE.md 5) */
+void hud_title_reset(void) { H.logo_v = 0; H.menu_t = 0; }
+
+void hud_title_draw(int page, int sel, int want_logo, float dt)
+{
+    if (!H.ok) return;
+    static const uint32_t items1[4] = { 22, 23, 36, 2 };             /* New game, Load game, Options, Quit */
+    H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;
+    int hide_sel = H.menu_t < 0.25f;                                  /* the selected item blinks at 2 Hz; no colour highlight, no cursor */
+    font_size(30.0f);
+    if (page == 0) {
+        const uint16_t *s = hud_string(21);                           /* "Press a key", y fraction 0.7 */
+        if (s && !hide_sel) font_draw(320 - font_measure(s) * 0.5f, 336, s, 0xff808080);
+    } else if (page == 1) {
+        for (int i = 0; i < 4; i++) {
+            const uint16_t *s = hud_string(items1[i]);
+            if (s && !(i == sel && hide_sel)) font_draw(320 - font_measure(s) * 0.5f, 264 + 46.5f * i, s, 0xff808080);
+        }
+    }
+    if (H.logo && H.logo_v > 0) {                                     /* 0x446b00: alpha = 254 * v / 5, source 0,0,209,247 at (216,16) */
+        uint32_t c = (uint32_t)(254.0f * H.logo_v / 5.0f) << 24 | 0x808080;
+        quad(216, 16, 209, 247, H.logo, 0, 0, 209.0f / H.logo_w, 247.0f / H.logo_h, c, c, c, c);
+    }
+    if (want_logo) { H.logo_v += 5 * dt; if (H.logo_v > 5) H.logo_v = 5; } else H.logo_v = 0;
+    font_size(17.0f);
 }

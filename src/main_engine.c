@@ -494,7 +494,7 @@ int main(int argc, char **argv)
     if (!L.have_player) fly = 1;
     if (L.have_player && have_pos) { L.player.pos.x = pos_args[0]; L.player.pos.y = pos_args[1]; L.player.pos.z = pos_args[2]; L.player.floor_y = L.player.pos.y - 1000.0f; }
     if (L.have_player && have_yaw) L.player.yaw = yaw_arg;
-    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, enter_prev = 0, l_prev = 0, new_game_pending = 0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
+    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, enter_prev = 0, l_prev = 0, new_game_pending = 0, title_page = 0, title_sel = 0, title_prev[2] = {0, 0}; float title_t = 0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
         double now = win_time(); float dt = (float)(now - last); last = now; g_now = (float)(now - t0);
@@ -543,12 +543,25 @@ int main(int argc, char **argv)
                 memset(&pin, 0, sizeof pin);
                 if (g_pose && !g_cin.state) { L.player.pos = g_pose->position; L.player.yaw = inst_yaw(g_pose); L.player.vel = (Vec3){ 0, 0, 0 }; }
                 int32_t *iv = g_have_intro && (g_intro_var & 0xffffff) < L.vm.nvars ? &L.vm.varval[g_intro_var & 0xffffff] : NULL;
-                int enter_key = win.keys[VK_RETURN] || (enter_at >= 0 && ((now - t0 >= enter_at && now - t0 < enter_at + 0.1) || (getenv("WOODY_ENTER2") && now - t0 >= enter_at + 2 && now - t0 < enter_at + 2.1))); int enter = enter_key && !enter_prev, cont = win.keys['L'] && !l_prev; enter_prev = enter_key; l_prev = win.keys['L'];
-                if (enter && !new_game_pending) { new_game_pending = 1; if (iv && *iv == 0) eko_set_var(&L.vm, g_intro_var, 1); else enter = 0, new_game_pending = 2; }   /* page 1 -> 0x1f: the House script plays the intro */
-                else if (enter && new_game_pending == 1) new_game_pending = 2;               /* a key skips the intro */
+                int synth = enter_at >= 0 && ((now - t0 >= enter_at && now - t0 < enter_at + 0.1) || (getenv("WOODY_ENTER2") && now - t0 >= enter_at + 2 && now - t0 < enter_at + 2.1));
+                int ok_key = win.keys[VK_RETURN] || win.keys[VK_SPACE], up_key = win.keys[VK_UP] || win.keys['W'], dn_key = win.keys[VK_DOWN] || win.keys['S'];
+                int ok = ok_key && !enter_prev, up = up_key && !title_prev[0], dn = dn_key && !title_prev[1], syn = synth && !l_prev;
+                enter_prev = ok_key; title_prev[0] = up_key; title_prev[1] = dn_key; l_prev = synth;
+                int start_new = 0, cont = 0;
+                if (new_game_pending == 1) { if (ok || syn) new_game_pending = 2; }          /* a key skips the intro */
+                else if (syn) start_new = 1;                                                 /* --enter T: straight to New game (testing) */
+                else if (title_page == 0) { if (ok || (win.keys[VK_ESCAPE] && 0)) { title_page = 1; title_sel = 0; audio_fx(63, NULL, NULL); } }   /* page 0 -> 1, SoundFx 63 on entering a panel page */
+                else if (title_page == 1) {
+                    if (up) title_sel = (title_sel + 3) % 4; if (dn) title_sel = (title_sel + 1) % 4;
+                    if (ok) { if (title_sel == 0) start_new = 1; else if (title_sel == 1) cont = 1; else if (title_sel == 3) win.quit = 1; }   /* Options is not ported; Quit skips the "are you sure" page 0x1c */
+                }
+                if (start_new) { new_game_pending = 1; title_page = -1; if (iv && *iv == 0) eko_set_var(&L.vm, g_intro_var, 1); else new_game_pending = 2; }   /* result 2: the House script plays the intro (page 0x1f) */
                 if (new_game_pending == 1 && iv && *iv == 4) new_game_pending = 2;
                 if (new_game_pending == 2) { save_reset(); save_write(); request_level(1, 0.5f); new_game_pending = 0; }   /* 0x44ffa0 + RequestLevel(0.5, WWS) */
-                if (cont && !new_game_pending) request_level(1, 0.4f);                       /* load game -> world select -> hub; here straight to Woody's hub */
+                if (cont && !new_game_pending) { title_page = -1; request_level(1, 0.5f); }  /* load game -> world select -> hub; here straight to Woody's hub */
+                /* 0x44e690: outside the cinematic Woody is invisible and plays action 0x49 = animation 73 at speed 3 (10 s loop), whose camera track is the orbit */
+                L.player.inst->visible = g_cin.state >= 2;
+                title_t += dt;
             }
             for (int k = 0; k < 3; k++) g_act_prev[k] = g_act_now[k];
             g_act_now[0] = pin.left; g_act_now[1] = pin.right; g_act_now[2] = pin.action;
@@ -562,6 +575,13 @@ int main(int argc, char **argv)
                 L.player.pos.x -= n.x * off; L.player.pos.z -= n.z * off;
             }
             if (!fly) cam_update(&L.player, &cam, dt, g_cam.mode == 0x20 ? (pin.forward ? 2 : pin.back ? 3 : 0) : win.keys['C']); else cam.letterbox = 0;
+            if (g_level == 0 && !fly && g_cin.state < 2) {                           /* title orbit: camera mode 0x80 on the Perso's animation 73 (docs/TITLE.md 2): no letterbox, vfov 83.97, no smoothing */
+                Vec3 eye, tgt; float ph = fmodf(title_t / 10.0f, 1.0f);
+                if (ins_camera_eval(L.player.inst, 73, ph, &eye, &tgt)) {
+                    Vec3 to = { tgt.x - eye.x, tgt.y - eye.y, tgt.z - eye.z };
+                    cam.pos = eye; cam.yaw = atan2f(to.x, to.z); cam.pitch = atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z)); cam.letterbox = 0; cam.fov_deg = 83.97f;
+                }
+            }
             if (jump_at >= 0) { if (now - t0 < jump_at) start_y = L.player.pos.y; else if (L.player.pos.y > max_y) { max_y = L.player.pos.y; printf("jump apex so far %.1f above start at t=%.2f (jumper state %d)\n", max_y - start_y, now - t0 - jump_at, L.player.jumper.state); } }
         }
         /* VM tick: time in 1/100 s like the original */
@@ -585,6 +605,7 @@ int main(int argc, char **argv)
                                 g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, paused || g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };
                 hud_draw(&hs, dt);
             }
+            if (g_level == 0 && !fly) hud_title_draw(g_next_level >= 0 ? -1 : title_page, title_sel, title_page >= 0 && g_next_level < 0, dt);
             { uint32_t v = g_text_var & 0xffffff; hud_text_draw(v < L.vm.nvars && L.vm.varval[v] != 0, paused ? 0 : dt); }
             hud_end(); g_hud_ext = 0;
         }
@@ -609,6 +630,7 @@ int main(int argc, char **argv)
             level_free(&L);
             if (level_load(&L, dir, name)) { fprintf(stderr, "level %s failed to load\n", name); return 1; }
             if (!L.have_player) fly = 1; else if (!have_cam) fly = 0;
+            title_page = 0; title_sel = 0; title_t = 0; new_game_pending = 0; hud_title_reset();
             t0 = L.t0; last = win_time(); sel = (g_ins.nmodels && g_ins.models[0].ninstances) ? &g_ins.models[0].instances[0] : NULL;
             lvl = L.name; continue;
         }
