@@ -177,8 +177,8 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 
 /* script screen faders (app+0x9c, 0x401440 / 0x401480 / 0x4014c0): 1150 fades in from black over f s, 1151 fades out,
  * 1152 blacks out the current frame (scripts repeat it with DURING) */
-static struct { float rest, total; int out, hold; } g_sfade; static int g_black_frame;
-static void fade_start(float t, int out) { g_sfade.total = g_sfade.rest = t; g_sfade.out = out; g_sfade.hold = 0; }
+static struct { float rest, total; int out, hold, script; } g_sfade; static int g_black_frame;
+static void fade_start(float t, int out) { g_sfade.total = g_sfade.rest = t; g_sfade.out = out; g_sfade.hold = 0; g_sfade.script = 0; }
 
 /* ---- real time cinematics (docs/CINEMATIC.md): object game+0x64, update 0x44f0a0 */
 static void cin_update(EkoVM *vm, float dt, float now)
@@ -376,7 +376,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1160: if (m->nargs) { g_intro_var = m->args[0]; g_have_intro = 1; } break;
     case 1084: if (m->nargs) eko_set_var(vm, m->args[0], g_prev_level); break;                              /* GetPrevLevel: the hub script picks the spawn point with it */
     case 1180: request_level(26, 0.5f); break;
-    case 1150: case 1151: if (m->nargs) fade_start((int)m->args[0] * 0.01f, m->id == 1151); break;
+    case 1150: case 1151: if (m->nargs) { fade_start((int)m->args[0] * 0.01f, m->id == 1151); g_sfade.script = 1; } break;   /* a script fade-out does not stay black when it ends: the House intro cuts to its second scene behind 1152 */
     case 1131: if (in && m->nargs > 1) { g_cin.main_inst = in; g_cin.anim = (int)m->args[1]; } break;
     case 1132: if (in && m->nargs > 1 && g_cin.nactors < 32) { g_cin.actor[g_cin.nactors].inst = in; g_cin.actor[g_cin.nactors++].anim = (int)m->args[1]; } break;
     case 1130:                                                                     /* (vector instance, rtc sound track, var) */
@@ -598,7 +598,7 @@ int main(int argc, char **argv)
         if (next_name && now - t0 >= next_at) { request_level(level_index(next_name), 0.5f); next_name = NULL; }
         if (g_next_level >= 0) { g_switch_fade -= dt / g_fade_len; if (g_switch_fade < 0) g_switch_fade = 0; } else if (g_switch_fade < 1) { g_switch_fade += dt / 0.5f; if (g_switch_fade > 1) g_switch_fade = 1; }
         { float f = (L.have_player && !fly) ? L.player.fade : 1.0f; if (g_switch_fade < f) f = g_switch_fade;
-          if (g_sfade.rest > 0 && g_sfade.total > 0) { float k = g_sfade.rest / g_sfade.total, b = g_sfade.out ? k : 1.0f - k; if (b < f) f = b; g_sfade.rest -= dt; if (g_sfade.rest <= 0 && g_sfade.out) g_sfade.hold = 1; }
+          if (g_sfade.rest > 0 && g_sfade.total > 0) { float k = g_sfade.rest / g_sfade.total, b = g_sfade.out ? k : 1.0f - k; if (b < f) f = b; g_sfade.rest -= dt; if (g_sfade.rest <= 0 && g_sfade.out && !g_sfade.script) g_sfade.hold = 1; }
           /* a finished fade-out keeps the 3D picture black until the next fade-in; that is drawn under the 2D layer (above) */
           if (f < 1.0f) rnd_fade(f); }
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
