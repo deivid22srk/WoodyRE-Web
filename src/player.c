@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include "player.h"
+#include "enemy.h"
 
 /* ---- decompiled Perso parameters (docs/PERSO_FRAME.md 2.3 / 2.6, table 0x4b5f14, Woody column) ---- */
 #define P_WALK_SPEED   600.0f     /* P+0x1c: RampA max speed, units/s */
@@ -214,6 +215,7 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
 
 /* GetHeight 0x435650 -> 0x498520: nearest surface below the point: world polygons with n.y > 1e-5 (any slope) that
  * contain the point in xz, and the press / hull nodes of instances (hit_node != NULL then). */
+static const Instance *g_ground_skip;      /* set by player_ground_query(): instance to ignore instead of the player */
 static float world_ground(const Player *p, Vec3 pt, int *found, const Instance **hit_inst, const InsNode **hit_node)
 {
     const GelFile *g = p->gel; float best = 1e30f; int f1 = 0, f2; Vec3 gn = { 0, 1, 0 };
@@ -226,9 +228,16 @@ static float world_ground(const Player *p, Vec3 pt, int *found, const Instance *
         if (poly_contains(g, pl, q)) { best = dist / pl->plane[1]; f1 = 1; gn = (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }; }
     }
     float y1 = pt.y - best;
-    float y2 = ins_floor_below(p->ins, pt, 0.0f, 1e9f, &f2, p->inst, hit_inst, hit_node);
+    float y2 = ins_floor_below(p->ins, pt, 0.0f, 1e9f, &f2, g_ground_skip ? g_ground_skip : p->inst, hit_inst, hit_node);
     if (f2 && (!f1 || y2 > y1)) { *found = 1; g_ground_n = g_ins_n; return y2; }
     *hit_inst = NULL; *hit_node = NULL; *found = f1; g_ground_n = f1 ? gn : (Vec3){ 0, 1, 0 }; return f1 ? y1 : pt.y;
+}
+
+float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found)
+{
+    const Instance *hi; const InsNode *hn; Vec3 keep = g_ground_n;
+    g_ground_skip = skip; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_ground_n = keep;
+    return y;
 }
 
 /* ---- platform attachment (Perso+0x298, 0x436d80 store / 0x436d20 delta; docs/PERSO_MOVE.md 6.1) -------------
@@ -410,9 +419,9 @@ static void anim_request(Player *p, int n, float rate)                     /* 0x
 }
 
 /* ---- attack controller 0x457a50 + trigger 0x457330 (docs/PERSO_JUMP.md 2) -----------------------------------
- * Ported: peck dash (1,2), wall/ground rebound (6,7), charge run (9,10), brake (11). Not ported because there are no
- * actors yet: target finder / auto-aim, hit loop, hit pause and recoil (3,4,5); also peckable surfaces (8) and the
- * steep-edge test. The dash additionally ends on landing, which the original leaves to its ray probe. */
+ * Ported: peck dash with auto-aim (1,2), hit pause and recoil (3,4,5), wall/ground rebound (6,7), charge run with
+ * auto-steer (9,10), brake (11), hit loop against the enemies. Not ported: peckable surfaces (8), the steep-edge test,
+ * rumble. The dash additionally ends on landing, which the original leaves to its ray probe. */
 static void lock_move(Player *p, float t) { p->move_lock = t; p->ramp_phase = 0; p->speed = 0; }   /* 0x44cce0 */
 static void jumper_reset(Jumper *j) { memset(j, 0, sizeof *j); j->state = 2; j->armed = 1; }       /* 0x462c90 */
 static void jumper_force_fall(Jumper *j, int force)                                                 /* 0x463170 */
@@ -430,21 +439,86 @@ static int attack_probe(Player *p, Vec3 v)                                      
     p->atk = n == 0xe ? 7 : 6; p->atk_t = anim_len(p, n, 0); lock_move(p, p->atk_t);
     return 1;
 }
+/* target finder 0x4632e0 / 0x463420: nearest attackable instance (type bit 0x400) within r (3D) */
+static Enemy *nearest_enemy(Player *p, float r)
+{
+    Enemy *best = NULL; float bd = r * r;
+    if (!p->enemies) return NULL;
+    for (int i = 0; i < p->enemies->n; i++) {
+        Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible) continue;
+        Vec3 d = vsub(e->pos, p->pos); float dd = vdot(d, d); if (dd < bd) { bd = dd; best = e; }
+    }
+    return best;
+}
+static void auto_aim(Player *p)                                          /* 0x4579a0: the charge run steers to the nearest enemy */
+{
+    Enemy *t = nearest_enemy(p, 500.0f); if (!t) return;
+    float dx = t->pos.x - p->pos.x, dz = t->pos.z - p->pos.z; if (dx * dx + dz * dz > 1.0f) p->yaw = atan2f(dx, dz);
+    p->target = t;
+}
+/* hit loop 0x457ceb: dash = swept circle (radius 100 + target radius) along dash start -> position in xz plus a height
+ * overlap; charge run = 50 long beak segment against the target's vertical cylinder. The target handles the hit itself. */
+static void attack_hit_loop(Player *p)
+{
+    if (!p->enemies) return;
+    for (int i = 0; i < p->enemies->n; i++) {
+        Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible) continue;
+        float r = enemy_radius(e), h = enemy_height(e); int hit = 0; Vec3 dir = { 0, 0, 0 };
+        if (p->atk == 2) {
+            float ax = p->dash_start.x, az = p->dash_start.z, bx = p->pos.x - ax, bz = p->pos.z - az, l2 = bx * bx + bz * bz;
+            float t = l2 > 1e-6f ? ((e->pos.x - ax) * bx + (e->pos.z - az) * bz) / l2 : 0; if (t < 0) t = 0; if (t > 1) t = 1;
+            float cx = ax + bx * t - e->pos.x, cz = az + bz * t - e->pos.z, R = 100.0f + r;
+            hit = cx * cx + cz * cz <= R * R && p->pos.y < e->pos.y + h + 100.0f && p->pos.y + P_BODY_H > e->pos.y;
+        } else {
+            Vec3 f = { sinf(p->yaw), 0, cosf(p->yaw) };
+            for (int k = 0; k <= 2 && !hit; k++) {                        /* beak segment: from the body surface 50 forward, at head height */
+                float s = P_RADIUS * 0.5f + 25.0f * k, qx = p->pos.x + f.x * s - e->pos.x, qz = p->pos.z + f.z * s - e->pos.z;
+                hit = qx * qx + qz * qz <= (r + 15.0f) * (r + 15.0f) && p->pos.y + P_BODY_H * 0.6f > e->pos.y && p->pos.y < e->pos.y + h;
+            }
+            if (hit) { float dx = e->pos.x - p->pos.x, dz = e->pos.z - p->pos.z, l = sqrtf(dx * dx + dz * dz); if (l > 1e-3f) dir = (Vec3){ dx / l, 0, dz / l }; }
+        }
+        if (!hit) continue;
+        int was = p->atk; if (p->atk == 2) p->atk = 3;
+        int died = enemy_take_damage(e, 1.0f /* P+0x90 */, dir);
+        printf("  ATTACK hit enemy %u (%s)%s\n", e->inst->index, was == 2 ? "peck" : "charge", died ? " - dead" : "");
+        if (was == 2) return;
+    }
+}
+
 static void attack_update(Player *p, const PlayerInput *in, float dt)
 {
     p->use_atk_disp = 0;
     if (p->charge > 0) p->charge -= dt;
     Vec3 dir = { sinf(p->yaw), 0, cosf(p->yaw) };
     switch (p->atk) {
-    case 1:                                                               /* dash start: no target -> diagonally down */
+    case 1: {                                                             /* dash start: aim at the nearest attackable target within 500 that is > 50 below, else diagonally down */
+        Enemy *t = nearest_enemy(p, 500.0f); p->has_target = 0; p->target = NULL;
         p->atk_dir = (Vec3){ dir.x, -2.0f, dir.z };
+        if (t) {
+            p->aim = t->pos; p->aim.y += enemy_height(t) * 0.8f; p->target = t;
+            if (p->pos.y - p->aim.y > 50.0f) { p->atk_dir = vsub(p->aim, p->pos); p->has_target = 1; float yl = sqrtf(p->atk_dir.x * p->atk_dir.x + p->atk_dir.z * p->atk_dir.z); if (yl > 0.01f) p->yaw = atan2f(p->atk_dir.x, p->atk_dir.z); }
+        }
+        p->dash_start = p->pos;
         { float l = sqrtf(vdot(p->atk_dir, p->atk_dir)); p->atk_dir.x /= l; p->atk_dir.y /= l; p->atk_dir.z /= l; }
-        p->jumper.fallen = 0; p->jumper.hard_fall = 0; p->air_win = 0; p->atk = 2; return;
+        p->jumper.fallen = 0; p->jumper.hard_fall = 0; p->air_win = 0; p->atk = 2; return; }
     case 2:
         p->atk_disp = (Vec3){ p->atk_dir.x * dt * 1500.0f, p->atk_dir.y * dt * 1500.0f, p->atk_dir.z * dt * 1500.0f }; p->use_atk_disp = 1;
         if (!attack_probe(p, (Vec3){ p->atk_dir.x * 50.0f, p->atk_dir.y * 50.0f, p->atk_dir.z * 50.0f }))
             attack_probe(p, (Vec3){ dir.x * 100.0f, 0, dir.z * 100.0f });
         if (p->atk == 2 && p->on_ground) { p->atk = 6; p->atk_t = anim_len(p, 0xd, 0); lock_move(p, p->atk_t); }
+        if (p->atk == 2) attack_hit_loop(p);
+        return;
+    case 3: p->atk = 4; p->target = NULL; p->atk_t = anim_len(p, 0xc, 0); p->atk_disp = (Vec3){ 0, 0, 0 }; p->use_atk_disp = 1; return;   /* hit: hang still */
+    case 4:
+        p->use_atk_disp = 1; p->atk_disp = (Vec3){ 0, 0, 0 };
+        if ((p->atk_t -= dt) > 0) return;
+        /* recoil direction (-dir.x, 0.8, ~0): the original uses dir.y for z at 0x458686, so z is ~0 */
+        p->atk_dir = (Vec3){ -dir.x, 0, 0 }; { float l = fabsf(p->atk_dir.x); if (l > 1e-4f) p->atk_dir.x /= l; p->atk_dir.y = 0.8f; l = sqrtf(vdot(p->atk_dir, p->atk_dir)); p->atk_dir.x /= l; p->atk_dir.y /= l; }
+        p->atk_t = 0.75f; p->atk = 5; return;
+    case 5:
+        p->atk_t -= dt; { float v = dt * p->atk_t * 1000.0f; p->atk_disp = (Vec3){ p->atk_dir.x * v, p->atk_dir.y * v, p->atk_dir.z * v }; } p->use_atk_disp = 1;
+        if (p->atk_t < 0.5f && !(p->air_win > 0)) p->air_win = 0.5f;          /* chained attack possible */
+        if (p->atk_t <= 0) { jumper_force_fall(&p->jumper, 1); p->atk = 0; }
         return;
     case 6:
         jumper_reset(&p->jumper);
@@ -454,9 +528,11 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
     case 7: jumper_reset(&p->jumper); if ((p->atk_t -= dt) <= 0) { p->atk = 0; jumper_force_fall(&p->jumper, 0); } return;
     case 9:
         if ((p->atk_t -= dt) <= 0) p->atk = 10;
-        p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; return;
+        auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
+        p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return;
     case 10:
-        if (p->charge > 0 && !in->jump) { p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; return; }
+        auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
+        if (p->charge > 0 && !in->jump) { p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return; }
         if (in->jump) { lock_move(p, 0); p->atk = 0; return; }             /* jump cancels the run */
         p->charge = 0; p->atk_t = anim_len(p, 0x12, 0) + anim_len(p, 0x12, 1); lock_move(p, p->atk_t); p->atk = 11; return;   /* brake */
     case 11: if ((p->atk_t -= dt) <= 0) p->atk = 0; return;
@@ -469,6 +545,7 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
     p->action_prev = held;
     if (p->jumper.state != 2 && p->jumper.state != 6) p->charge = 0;       /* no charge in the air */
     if (p->air_win > 0) p->air_win -= dt;
+    if (p->atk == 5 && pressed && p->air_win > 0) { p->atk = 1; return; }  /* chained attack out of the recoil */
     if (p->move_lock > 0 || p->atk != 0) return;
     if (p->on_ground) {
         if (released) {                                                    /* charge run starts on RELEASE */

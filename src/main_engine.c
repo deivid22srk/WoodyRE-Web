@@ -18,10 +18,12 @@
 #include "ekovm.h"
 #include "player.h"
 #include "instance.h"
+#include "enemy.h"
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
 static Player *g_player;
+static EnemySet g_enemies;
 static float g_now;                                  /* game time in seconds (VM time base) */
 /* messages 12/13 wait for the running animation to end: offered again every frame (max 32 in the original, 0x4012f0 clears) */
 static EkoMsg g_retry[32]; static int g_nretry;
@@ -34,7 +36,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     (void)vm; (void)user;
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (in->type == 34 && g_player) { g_player->bonus_total++; if (g_player->bonus_total <= 4) printf("  bonus %u at %.0f %.0f %.0f\n", in->index, in->position.x, in->position.y, in->position.z); } } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (in->type >= 4 && in->type <= 6) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; if (g_player->bonus_total <= 4) printf("  bonus %u at %.0f %.0f %.0f\n", in->index, in->position.x, in->position.y, in->position.z); } } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
     case 42: case 43: case 44: case 45: case 56: case 57:
         if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
@@ -99,7 +101,7 @@ int main(int argc, char **argv)
     Player player; int have_player = player_init(&player, &g_ins, &gel) == 0;
     if (!have_player) fly = 1; else g_player = &player;
     for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
-    if (have_player) player.inst->scripted = 0;
+    if (have_player) { player.inst->scripted = 0; player.enemies = &g_enemies; }
     if (have_player && have_pos) { player.pos.x = pos_args[0]; player.pos.y = pos_args[1]; player.pos.z = pos_args[2]; player.floor_y = player.pos.y - 1000.0f; }
     printf("VM init...\n"); eko_init(&vm);
     printf("init done: %d messages\n", vm.nmsgs);
@@ -149,6 +151,7 @@ int main(int argc, char **argv)
             pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
             pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + 1.0); pin.action = win.keys[VK_CONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
             player_update(&player, &pin, dt, &vm, fly ? cam.yaw : player.cam_yaw);
+            enemies_update(&g_enemies, &player, cam.pos, dt);
             if (!fly) player_camera(&player, &cam, dt, win.keys['C']);
             if (jump_at >= 0) { if (now - t0 < jump_at) start_y = player.pos.y; else if (player.pos.y > max_y) { max_y = player.pos.y; printf("jump apex so far %.1f above start at t=%.2f (jumper state %d)\n", max_y - start_y, now - t0 - jump_at, player.jumper.state); } }
         }

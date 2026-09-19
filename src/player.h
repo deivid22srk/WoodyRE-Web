@@ -19,6 +19,8 @@ typedef struct {
     float cam_turn;                                  /* -1..1 manual camera orbit */
 } PlayerInput;
 
+struct EnemySet;
+
 /* Jumper = Perso+0x334 (docs/PERSO_JUMP.md 1.1) */
 typedef struct {
     int state;                      /* J+0x14: 0 start, 1 rising, 2 grounded, 3 early fall, 4 fall, 5 long fall, 6 landed, 7 apex */
@@ -28,7 +30,7 @@ typedef struct {
     int open_window;                /* set when the air attack window opens (0x457560 from the tick) */
 } Jumper;
 
-typedef struct {
+typedef struct Player {
     Instance *inst;                 /* the Woody instance (model 0, instance 0) */
     const GelFile *gel;
     const InsFile *ins;
@@ -48,6 +50,7 @@ typedef struct {
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
     /* attack controller (Perso+0x5b4..): sub-state, timer, displacement, air window, charge; move lock = Perso+0x238 */
     int atk; float atk_t; Vec3 atk_dir, atk_disp; int use_atk_disp; float air_win, charge, move_lock, vy_corr; int action_prev;
+    struct EnemySet *enemies; void *target; Vec3 dash_start, aim; int has_target;   /* attack targets (Perso+0x5f0, +0x5e4, +0x5d0, +0x5dc) */
     int lanim, lanim_sub;           /* logical animation (table 0x4b6180) and position in its chain */
     float floor_y;                  /* last floor height found under the player */
     int floor_is_hull;              /* floor came from an instance node (press kind 1 or hull kind 4) */
@@ -66,6 +69,8 @@ int  player_init(Player *p, InsFile *ins, const GelFile *gel);
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_free(Player *p);
+/* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
+float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
 int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34..38: message 10; returns 1 when the instance must disappear */
 void player_kill(Player *p, int kind);                 /* Perso vt[38] */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
