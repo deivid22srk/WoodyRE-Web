@@ -66,6 +66,7 @@ typedef struct Player {
 } Player;
 
 int  player_init(Player *p, InsFile *ins, const GelFile *gel);
+void player_bind(Player *p, Instance *inst);           /* SetTypeInstance 1/2/3/18/19: this instance is the player */
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_free(Player *p);

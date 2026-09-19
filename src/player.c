@@ -340,17 +340,26 @@ static int volume_contains(const Instance *inst, uint32_t node, Vec3 p)
     return valid >= 4;
 }
 
+/* The player is the instance the level script gives a Perso class (SetTypeInstance 1, 2, 3, 18 or 19): Woody in the W
+ * levels, type 2 in the K levels, 3 in the S levels, 18 in the races. Until the script has run it is model 0 instance 0. */
+void player_bind(Player *p, Instance *inst)
+{
+    p->inst = inst; p->pos = inst->position; p->floor_y = p->pos.y; p->cam_init = 0;
+    /* facing from the instance quaternion: rotation about y composed with the -90 deg x model rotation */
+    ins_pose(inst, 0, 0);
+    Vec3 fwd = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); fwd = vsub(fwd, inst->position);
+    p->yaw = atan2f(fwd.x, fwd.z);
+    p->spawn_pos = p->pos; p->spawn_yaw = p->yaw;
+}
+
 int player_init(Player *p, InsFile *ins, const GelFile *gel)
 {
     memset(p, 0, sizeof *p);
     if (!ins->nmodels || !ins->models[0].ninstances) return -1;
-    p->inst = &ins->models[0].instances[0]; p->gel = gel; p->ins = ins;
-    p->pos = p->inst->position; p->cur_col = 0xffffffffu; p->floor_y = p->pos.y;
+    p->gel = gel; p->ins = ins; p->cur_col = 0xffffffffu;
+    player_bind(p, &ins->models[0].instances[0]);
     p->jumper.state = 2; p->jumper.armed = 1;                      /* 0x462c90 reset */
     p->health = 3.0f; p->lives = 3; p->game_state = 2; p->fade = 1.0f; p->lanim = -1;
-    /* facing from the instance quaternion: rotation about y composed with the -90 deg x model rotation */
-    Vec3 fwd = mat4_apply(&p->inst->world, (Vec3){ 0, -1, 0 }); fwd = vsub(fwd, p->inst->position);
-    p->yaw = atan2f(fwd.x, fwd.z);
     /* volume table */
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) p->nvol += ins->models[mi].nvolume_nodes * ins->models[mi].ninstances;
     p->inside = (uint8_t *)calloc(p->nvol ? p->nvol : 1, 1);
@@ -847,7 +856,7 @@ void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
         /* message 500 "camera behind the player": P = pos - look + (0,100,0), one step of 0.1 s and 100 of 0.04 s in behind mode */
         p->cam_init = 1; p->cam_tprev = (Vec3){ p->pos.x, p->pos.y + CAM_TARGET_Y, p->pos.z };
         p->cam_pos = (Vec3){ p->pos.x - sinf(p->yaw), p->pos.y + 100.0f, p->pos.z - cosf(p->yaw) };
-        camera_step(p, 0.1f, 1, 0, 0); for (int i = 0; i < 100; i++) camera_step(p, 0.04f, 1, 0, 0);
+        camera_step(p, 0.1f, 1, 0, 1); for (int i = 0; i < 100; i++) camera_step(p, 0.04f, 1, 0, 1);   /* Center_Step collides during the pre-simulation too */
     }
     /* action 0xa: a tap pulls the camera behind the player for 0.5 s at 7*dt, holding it at 3*dt */
     if (behind_key && !p->cam_behind_prev) p->cam_quick_t = 0.5f;

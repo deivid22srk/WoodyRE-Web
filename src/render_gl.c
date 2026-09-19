@@ -399,7 +399,7 @@ static void draw_cast_shadows(const Renderer *r)
         Model *m = &r->ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k];
-            int caster = (mi == 0 && k == 0) || (inst->setflags & 1) || (inst->type >= 4 && inst->type <= 13);   /* the player, SetFlags bit 1 (0x42b3cc); enemies are our addition */
+            int caster = inst->type == 1 || inst->type == 2 || inst->type == 3 || inst->type == 18 || inst->type == 19 || (inst->setflags & 1) || (inst->type >= 4 && inst->type <= 13);   /* the player, SetFlags bit 1 (0x42b3cc); enemies are our addition */
             if (!caster || !inst->visible || inst->fade > 0.01f || !inst->l_seen || inst->light < 0 || !inst->node_world) continue;
             cast_shadow(r, inst);
         }

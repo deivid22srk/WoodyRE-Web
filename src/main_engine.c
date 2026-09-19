@@ -36,7 +36,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     (void)vm; (void)user;
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (in->type >= 4 && in->type <= 6) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if (in->type >= 4 && in->type <= 6) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
     case 42: case 43: case 44: case 45: case 56: case 57:
         if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
