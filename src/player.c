@@ -21,6 +21,9 @@
 #define J_SHORT_HOP_T  -0.2f      /* 0x4aa430 */
 #define J_APEX_T       -0.15f     /* 0x4ab7a0: state 1 -> 7 (attack window opens) */
 #define J_HARD_FALL    1500.0f    /* P+0x7c */
+#define P_SLIDE_SPEED  600.0f     /* P+0x40: RampB max, sliding down slopes with n.y < 0.71 (0x45aa60) */
+#define P_SLIDE_TIME   0.25f      /* P+0x44 / P+0x48: RampB acceleration / deceleration time */
+#define P_SLIDE_NY     0.71f      /* 0x4ab2d8 */
 /* collision (docs/PERSO_MOVE.md 6) */
 #define P_STEP         40.0f      /* 0x437180 step argument: clinging distance, wall test skips the lowest step+1 */
 #define P_SUBSTEP      10.0f      /* 0x437180 substep length */
@@ -84,6 +87,8 @@ static int point_in_tri_xz(Vec3 a, Vec3 b, Vec3 c, Vec3 q)
     float d3 = (a.x - c.x) * (q.z - c.z) - (a.z - c.z) * (q.x - c.x);
     return (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0);
 }
+static Vec3 g_ground_n = { 0, 1, 0 };   /* normal of the last world_ground() hit ([0x4b3108..10]) */
+static Vec3 g_ins_n;
 static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float max_drop, int *found, const Instance *skip,
                              const Instance **hit_inst, const InsNode **hit_node)
 {
@@ -107,6 +112,7 @@ static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float ma
                         float y = a.y - (nrm.x * (p.x - a.x) + nrm.z * (p.z - a.z)) / nrm.y;
                         if (y > p.y + step_up || y < p.y - max_drop || y <= best) continue;
                         best = y; *found = 1; *hit_inst = in; *hit_node = n;
+                        { float sg = nrm.y < 0 ? -1.0f / nl : 1.0f / nl; g_ins_n = (Vec3){ nrm.x * sg, nrm.y * sg, nrm.z * sg }; }
                     }
                 }
             }
@@ -210,19 +216,19 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
  * contain the point in xz, and the press / hull nodes of instances (hit_node != NULL then). */
 static float world_ground(const Player *p, Vec3 pt, int *found, const Instance **hit_inst, const InsNode **hit_node)
 {
-    const GelFile *g = p->gel; float best = 1e30f; int f1 = 0, f2;
+    const GelFile *g = p->gel; float best = 1e30f; int f1 = 0, f2; Vec3 gn = { 0, 1, 0 };
     for (uint32_t i = 0; i < g->npolys; i++) {
         const GelPoly *pl = &g->polys[i];
         if (pl->nverts < 3 || pl->plane[1] <= 1e-5f) continue;
         float dist = pl->plane[0] * pt.x + pl->plane[1] * pt.y + pl->plane[2] * pt.z + pl->plane[3];
         if (dist <= 0 || dist / pl->plane[1] >= best) continue;
         Vec3 q = { pt.x, pt.y - dist / pl->plane[1], pt.z };
-        if (poly_contains(g, pl, q)) { best = dist / pl->plane[1]; f1 = 1; }
+        if (poly_contains(g, pl, q)) { best = dist / pl->plane[1]; f1 = 1; gn = (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }; }
     }
     float y1 = pt.y - best;
     float y2 = ins_floor_below(p->ins, pt, 0.0f, 1e9f, &f2, p->inst, hit_inst, hit_node);
-    if (f2 && (!f1 || y2 > y1)) { *found = 1; return y2; }
-    *hit_inst = NULL; *hit_node = NULL; *found = f1; return f1 ? y1 : pt.y;
+    if (f2 && (!f1 || y2 > y1)) { *found = 1; g_ground_n = g_ins_n; return y2; }
+    *hit_inst = NULL; *hit_node = NULL; *found = f1; g_ground_n = f1 ? gn : (Vec3){ 0, 1, 0 }; return f1 ? y1 : pt.y;
 }
 
 /* ---- platform attachment (Perso+0x298, 0x436d80 store / 0x436d20 delta; docs/PERSO_MOVE.md 6.1) -------------
@@ -510,11 +516,25 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     else if (p->ramp_phase == 2) p->speed = p->ramp_target;
     else if (p->ramp_phase == 3) { p->ramp_t += dt; float k = p->ramp_t / P_DEC_TIME; if (k >= 1.0f) { k = 1.0f; p->ramp_phase = 0; } p->speed = p->ramp_v0 * (1.0f - k * k); }
     else p->speed = 0;
+    /* sliding, Mover RampB 0x45aa60: on ground steeper than n.y < 0.71 the player accelerates downhill to 600 u/s;
+     * on flatter ground the slide decelerates. (The original keeps separate ramp phases; this is one linear ramp.) */
+    {
+        Vec3 n = p->ground_n; int steep = p->on_ground && n.y < P_SLIDE_NY;
+        if (steep) {
+            Vec3 up = { 0, 1, 0 }, dh = vcross(vcross(n, up), n); float l = sqrtf(vdot(dh, dh));
+            if (l > 1e-5f) { if (dh.y > 0) l = -l; p->slide_dir = (Vec3){ dh.x / l, dh.y / l, dh.z / l }; }
+            p->sliding = 1; p->slide_speed += P_SLIDE_SPEED / P_SLIDE_TIME * dt; if (p->slide_speed > P_SLIDE_SPEED) p->slide_speed = P_SLIDE_SPEED;
+        } else if (p->slide_speed > 0) {
+            if (p->on_ground) p->sliding = 0;
+            p->slide_speed -= P_SLIDE_SPEED / P_SLIDE_TIME * dt; if (p->slide_speed < 0) p->slide_speed = 0;
+        }
+    }
     /* vertical motion comes from the Jumper; air control is the unchanged Mover (docs/PERSO_JUMP.md 1.4) */
     if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, allow && in->jump, p->on_ground, p->pos.y - p->floor_y, dt);
     if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
     Vec3 disp = p->use_atk_disp ? p->atk_disp : (Vec3){ sinf(p->yaw) * p->speed * dt, p->jumper.dy, cosf(p->yaw) * p->speed * dt };
+    if (!p->use_atk_disp && p->slide_speed > 0) { disp.x += p->slide_dir.x * p->slide_speed * dt; disp.z += p->slide_dir.z * p->slide_speed * dt; }
     disp.y += dt * p->vy_corr;
     p->vel = (Vec3){ disp.x / dt, disp.y / dt, disp.z / dt };
     if (disp.y < 0) p->jumper.fallen -= disp.y;                                      /* 0x44b914: fallen height accumulates */
@@ -559,6 +579,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         p->floor_is_hull = found && hit_node != NULL;
         if (found) p->floor_y = gy;
         if (found && np.y - gy < 1.0f) { p->on_ground = 1; np.y = gy; } else p->on_ground = 0;
+        p->ground_n = p->on_ground ? g_ground_n : (Vec3){ 0, 1, 0 };            /* 0x45a110 -> Mover+0xd0 */
         attach_store(p, p->on_ground ? hit_inst : NULL, hit_node, np);  /* 0x436d80 / 0x436d10 */
     }
     if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; p->jumper.state = 2; }   /* fell out of the world: hold */
