@@ -519,6 +519,10 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     /* projection: the world data is right-handed (3ds Max export, y up after the -90 deg x instance rotation), so a plain GL frustum */
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
     float aspect = w->height ? (float)w->width / (float)w->height : 1.333f, zn = 5.0f, zf = 200000.0f;
+    if (cam->letterbox) {                     /* image strip y = 30..390 of 480: black above (30) and below (90), docs/CAMERA_SCRIPT.md 2.4 */
+        glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
+        glViewport(0, (int)(w->height * 0.1875f), w->width, (int)(w->height * 0.75f)); aspect /= 0.75f;
+    }
     float f = 1.0f / tanf(cam->fov_deg * 3.14159265f / 360.0f);
     float proj[16] = { f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (zf + zn) / (zn - zf), -1, 0, 0, 2 * zf * zn / (zn - zf), 0 };
     glMultMatrixf(proj);

@@ -29,12 +29,80 @@ static float g_now;                                  /* game time in seconds (VM
 static EkoMsg g_retry[32]; static int g_nretry;
 static Instance *slot_instance(uint32_t ref) { if ((ref >> 24) != 1) return NULL; uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.slots[i] : NULL; }
 
+/* level table 0x4b12a0 (docs/GAMEFLOW.md 1): 0 House (menu backdrop), 1 WWS hub, 2..10 Woody, 11 KWS hub, 12..17 Knothead,
+ * 18 SWS hub, 19..24 Splinter, 25 BlackBox, 26 Credits, 27 dev slot, 28 Lang */
+static const char *k_levels[29] = { "House", "WWS", "W1A", "W1B", "W2A", "W2B", "W2D", "W3A", "W3B", "W3C", "W3D", "KWS", "K1A", "K1R", "K2A", "K2R", "K3A", "K3R",
+                                    "SWS", "S1A", "S1R", "S2A", "S2R", "S3A", "S3R", "BlackBox", "Credits", "BlackBox", "Lang" };
+static int g_level = 27, g_prev_level = 27;           /* app+0x68 / +0x6c (init 0x1b) */
+/* RequestLevel 0x404b60(fade_s, level, state, page): fade out, then the main loop swaps the level */
+static int g_next_level = -1; static float g_fade_len = 0.5f, g_switch_fade = 1.0f;
+static void request_level(int index, float fade_s) { if (g_next_level < 0 && index >= 0 && index < 29) { g_next_level = index; g_fade_len = fade_s > 0.01f ? fade_s : 0.01f; } }
+static int level_index(const char *name) { for (int i = 0; i < 29; i++) if (!_stricmp(k_levels[i], name)) return i; return -1; }
+
+/* ---- camera manager: follow camera (mode 1, player.c) + the fixed script cameras (docs/CAMERA_SCRIPT.md, CAMERA.md 4 and 6.1)
+ * mode 2 (message 510) / mode 4 (520, letterbox, player frozen): camera at the .ins camera position looking at
+ * target origin + (0, f, 0). A mode change blends linearly from the frozen old camera unless the script asked for a cut. */
+static struct {
+    int mode; Vec3 fix_pos; Instance *fix_target; float fix_f;
+    float dur, speed; int dur_from_speed, cut;                  /* 570 / 560 / 580 */
+    int active; Vec3 from_pos, look_from, look_cur, look_off; float elapsed, t;
+    Vec3 pos;                                                    /* camera position of the last frame */
+} g_cam = { 1 };
+static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
+static void cam_set_mode(int mode)                               /* SetMode 0x41f410 + 0x41eaa0 */
+{
+    if (!g_cam.cut) {
+        g_cam.look_from = g_cam.active ? g_cam.look_cur : g_cam.look_off; g_cam.from_pos = g_cam.pos;
+        g_cam.active = 1; if (g_cam.dur <= 0) g_cam.dur = 2.0f; g_cam.elapsed = 0; g_cam.t = 0;
+    } else g_cam.active = 0;
+    g_cam.mode = mode; if (mode == 1 && g_player) g_player->cam_init = 0;
+}
+static void cam_msg(const EkoMsg *m, const Camera *c)
+{
+    int a1 = m->nargs > 1 ? (int)m->args[1] : 0;
+    switch (m->id) {
+    case 500: case 501: cam_set_mode(1); break;                  /* 501 (camera in front of the player) starts behind as well */
+    case 510: case 520: {
+        Instance *t = m->nargs > 2 ? slot_instance(0x1000000 | (m->args[2] & 0xffffff)) : NULL; if (!t) break;
+        g_cam.fix_pos = c->position; g_cam.fix_f = (float)a1; g_cam.fix_target = t; cam_set_mode(m->id == 510 ? 2 : 4); break; }
+    case 560: g_cam.speed = (float)a1; g_cam.dur_from_speed = 1; break;
+    case 570: g_cam.dur = a1 * 0.01f; g_cam.dur_from_speed = 0; break;
+    case 580: g_cam.cut = a1 == 2; break;
+    default: break;
+    }
+}
+static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
+{
+    Vec3 P, T;
+    if (g_cam.mode == 1 || !g_cam.fix_target) {
+        player_camera(p, cam, dt, behind_key); P = cam->pos; T = p->pos; g_cam.look_off = (Vec3){ 0, 140.0f - p->cam_drop, 0 };
+    } else {
+        P = g_cam.fix_pos; T = g_cam.fix_target == p->inst ? p->pos : g_cam.fix_target->position; g_cam.look_off = (Vec3){ 0, g_cam.fix_f, 0 };
+    }
+    Vec3 look = { T.x + g_cam.look_off.x, T.y + g_cam.look_off.y, T.z + g_cam.look_off.z };
+    if (g_cam.active) {                                          /* Transition_Travelling 0x41eb90 */
+        Vec3 d = { P.x - g_cam.from_pos.x, P.y - g_cam.from_pos.y, P.z - g_cam.from_pos.z };
+        if (g_cam.dur_from_speed) { g_cam.dur = g_cam.speed > 0 ? sqrtf(d.x * d.x + d.y * d.y + d.z * d.z) / g_cam.speed : 2.0f; g_cam.dur_from_speed = 0; }
+        float t = g_cam.t;
+        P = (Vec3){ g_cam.from_pos.x + d.x * t, g_cam.from_pos.y + d.y * t, g_cam.from_pos.z + d.z * t };
+        g_cam.look_cur = (Vec3){ g_cam.look_from.x + (g_cam.look_off.x - g_cam.look_from.x) * t, g_cam.look_from.y + (g_cam.look_off.y - g_cam.look_from.y) * t, g_cam.look_from.z + (g_cam.look_off.z - g_cam.look_from.z) * t };
+        look = (Vec3){ T.x + g_cam.look_cur.x, T.y + g_cam.look_cur.y, T.z + g_cam.look_cur.z };
+        g_cam.t = g_cam.dur > 0 ? g_cam.elapsed / g_cam.dur : 1; if (g_cam.t > 1) g_cam.t = 1;
+        g_cam.elapsed += dt; if (g_cam.elapsed > g_cam.dur) g_cam.active = 0;
+    }
+    Vec3 to = { look.x - P.x, look.y - P.y, look.z - P.z };
+    cam->pos = P; cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z));
+    cam->letterbox = g_cam.mode == 4; cam->fov_deg = g_cam.mode == 4 ? 68.04f : 83.97f;   /* tan(vfov/2) = 1.2 * 0.5625 resp. 1.2 * 0.75 */
+    g_cam.pos = P; p->cam_yaw = cam->yaw;                         /* movement stays relative to the camera on screen */
+}
+
 /* script -> engine messages. Only the subset needed to see something happen is implemented;
  * everything else is logged. See docs/MESSAGES.md. */
 static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
 {
-    (void)vm; (void)user;
+    (void)user;
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
+    if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
     case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if (in->type >= 4 && in->type <= 6) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
@@ -45,7 +113,12 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 10:                                                                        /* Collect (docs/BONUS.md): the level script saw the player enter the bonus volume */
         if (in && g_player && in->visible && player_collect(g_player, in->type, m->nargs > 1 ? (int)m->args[1] : 0)) in->visible = 0;   /* 0x407850: cell = -1 */
         break;
-    case 1020: if (g_player) player_kill(g_player, 1); break;                       /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes */
+    case 1020: if (g_player) player_kill(g_player, 1); break;
+    /* game flow (docs/GAMEFLOW.md) */
+    case 1081: if (m->nargs) request_level((int)m->args[0], 1.5f); break;                                   /* GotoLevel: 0x404b60(1.5, level, 1, 0) */
+    case 1083: request_level(g_level >= 18 && g_level <= 24 ? 18 : g_level >= 11 && g_level <= 17 ? 11 : 1, 0.5f); break;   /* EndLevel: back to the hub of the current character */
+    case 1084: if (m->nargs) eko_set_var(vm, m->args[0], g_prev_level); break;                              /* GetPrevLevel: the hub script picks the spawn point with it */
+    case 1180: request_level(26, 0.5f); break;                                                              /* credits */                       /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes */
     default: break;
     }
     if (g_log_msgs) {
@@ -67,7 +140,7 @@ static void *read_all(const char *path, size_t *sz);
 static void level_free(Level *L)
 {
     if (L->have_player) player_free(&L->player);
-    g_player = NULL; g_enemies.n = 0; g_nretry = 0;
+    g_player = NULL; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1;
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -93,11 +166,6 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     L->t0 = win_time();
     return 0;
 }
-/* level change: requested by name, executed at the end of the frame after a fade to black */
-static char g_next_level[32]; static float g_switch_fade = 1.0f;
-static void request_level(const char *name) { if (!g_next_level[0]) snprintf(g_next_level, sizeof g_next_level, "%s", name); }
-static const char *k_levels[] = { "House", "WWS", "W1A", "W1B", "W2A", "W2B", "W2D", "W3A", "W3B", "W3C", "W3D", "KWS", "K1A", "K1R", "K2A", "K2R", "K3A", "K3R",
-                                  "SWS", "S1A", "S1R", "S2A", "S2R", "S3A", "S3R", "Blackbox", "Credits", "Lang" };
 
 static void *read_all(const char *path, size_t *sz) { FILE *f = fopen(path, "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); void *b = malloc((size_t)n); if (fread(b, 1, (size_t)n, f) != (size_t)n) { fclose(f); free(b); return NULL; } fclose(f); *sz = (size_t)n; return b; }
 
@@ -121,10 +189,11 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--peck") && i + 2 < argc) { peck_at = atof(argv[i + 1]); peck_len = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--pos") && i + 3 < argc) { for (int k = 0; k < 3; k++) pos_args[k] = (float)atof(argv[i + 1 + k]); have_pos = 1; i += 3; }
         else if (!strcmp(argv[i], "--fly")) fly = 1;
+        else if (!strcmp(argv[i], "--prev") && i + 1 < argc) { g_prev_level = level_index(argv[i + 1]); i += 1; }   /* --prev LVL: pretend we came from LVL (hub spawn point) */
         else if (!strcmp(argv[i], "--next") && i + 2 < argc) { next_name = argv[i + 1]; next_at = atof(argv[i + 2]); i += 2; }
     }
     Window win; if (win_open(&win, "WoodyRE", 1280, 800)) return 1;
-    static Level L; if (level_load(&L, dir, lvl)) return 1;
+    static Level L; g_level = level_index(lvl); if (level_load(&L, dir, lvl)) return 1;
 
     /* camera: start behind Woody (model 0, instance 0) if present */
     FreeCamera cam = { {0, 0, 0}, 0, 0, 70 };
@@ -180,9 +249,10 @@ int main(int argc, char **argv)
             pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
             pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
             pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_CONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
+            if (g_cam.mode == 4 && !fly) memset(&pin, 0, sizeof pin);              /* cinematic camera: the player is frozen (0x459090) */
             player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             enemies_update(&g_enemies, &L.player, cam.pos, dt);
-            if (!fly) player_camera(&L.player, &cam, dt, win.keys['C']);
+            if (!fly) cam_update(&L.player, &cam, dt, win.keys['C']); else cam.letterbox = 0;
             if (jump_at >= 0) { if (now - t0 < jump_at) start_y = L.player.pos.y; else if (L.player.pos.y > max_y) { max_y = L.player.pos.y; printf("jump apex so far %.1f above start at t=%.2f (jumper state %d)\n", max_y - start_y, now - t0 - jump_at, L.player.jumper.state); } }
         }
         /* VM tick: time in 1/100 s like the original */
@@ -196,15 +266,15 @@ int main(int argc, char **argv)
         }
         rnd_frame(&L.rnd, &win, &cam, (float)(now - t0));
         /* level change: PgUp / PgDn cycle through the levels (debug); a request fades out, swaps the level, fades in */
-        for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int n = (int)(sizeof k_levels / sizeof *k_levels), cur = 0; for (int i = 0; i < n; i++) if (!_stricmp(k_levels[i], L.name)) cur = i; request_level(k_levels[(cur + (k ? 1 : n - 1)) % n]); } pg_prev[k] = down; }
-        if (next_name && now - t0 >= next_at) { request_level(next_name); next_name = NULL; }
-        if (g_next_level[0]) { g_switch_fade -= dt / 0.5f; if (g_switch_fade < 0) g_switch_fade = 0; } else if (g_switch_fade < 1) { g_switch_fade += dt / 0.5f; if (g_switch_fade > 1) g_switch_fade = 1; }
+        for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
+        if (next_name && now - t0 >= next_at) { request_level(level_index(next_name), 0.5f); next_name = NULL; }
+        if (g_next_level >= 0) { g_switch_fade -= dt / g_fade_len; if (g_switch_fade < 0) g_switch_fade = 0; } else if (g_switch_fade < 1) { g_switch_fade += dt / 0.5f; if (g_switch_fade > 1) g_switch_fade = 1; }
         { float f = (L.have_player && !fly) ? L.player.fade : 1.0f; if (g_switch_fade < f) f = g_switch_fade; if (f < 1.0f) rnd_fade(f); }
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
         win_swap(&win);
         frames++;
-        if (g_next_level[0] && g_switch_fade <= 0) {
-            char name[32]; snprintf(name, sizeof name, "%s", g_next_level); g_next_level[0] = 0;
+        if (g_next_level >= 0 && g_switch_fade <= 0) {
+            const char *name = k_levels[g_next_level]; g_prev_level = g_level; g_level = g_next_level; g_next_level = -1;
             int lives = L.have_player ? L.player.lives : -1; float health = L.have_player ? L.player.health : 0;
             level_free(&L);
             if (level_load(&L, dir, name)) { fprintf(stderr, "level %s failed to load\n", name); return 1; }

@@ -6,6 +6,7 @@
 typedef struct {
     Vec3 pos; float yaw, pitch;               /* radians; yaw 0 looks along +z (D3D convention) */
     float fov_deg;
+    int letterbox;                            /* camera mode 4: 16:9 strip, shifted up (0x41f910) */
 } FreeCamera;
 
 typedef struct {
