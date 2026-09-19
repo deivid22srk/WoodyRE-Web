@@ -646,6 +646,12 @@ static void player_apply_transform(Player *p)
     mat4_from_trs(&in->world, in->position, in->quat, in->scale);
 }
 
+void player_place(Player *p, Vec3 pos, float yaw)
+{
+    p->pos = pos; p->yaw = yaw; p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->atk = 0; p->move_lock = 0; p->lanim = -1;
+    jumper_reset(&p->jumper); p->on_ground = 1; p->cam_init = 0; player_apply_transform(p);
+}
+
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw)
 {
     if (dt <= 0) return;

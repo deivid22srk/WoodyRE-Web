@@ -147,6 +147,11 @@ void tex_free(TexFile *t); void gel_free(GelFile *g); void ins_free(InsFile *f);
 /* Animation: evaluate the node hierarchy of `inst` for animation `anim` at `t` seconds
  * (wraps around); writes inst->node_world[] (includes the instance placement). */
 void ins_pose(Instance *inst, int anim, float t);
+/* cinematics (docs/CINEMATIC.md): camera eye/target from the top-level nodes with flags 0x80 / 0x180 of an animation
+ * (0x42fa80, with the cut detection of 0x43a660); 0 when the animation has no camera track */
+int  ins_camera_eval(const Instance *inst, int anim, float phase, Vec3 *eye, Vec3 *target);
+/* where the root motion of `anim` leaves the model (0x44edb0): C = W * root(anim, end) * root(anim 0, start)^-1 */
+int  ins_root_end(const Instance *inst, int anim, Vec3 *pos, Vec3 *forward);
 /* Transform point i of the model (owner node applied, pivot subtracted) to world space. */
 Vec3 ins_point_world(const Instance *inst, uint32_t point_index);
 /* Which node owns point index i (0-based node index). */

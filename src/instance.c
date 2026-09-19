@@ -98,6 +98,11 @@ static void traj_update(Instance *I, float now)                                 
     mat4_from_trs(&I->world, I->position, I->quat, I->scale);
 }
 
+void inst_play_once(Instance *I, int anim, float speed, float now)
+{
+    I->slot[0] = anim; I->slot[1] = I->slot[2] = I->slot[3] = -1; set_speed(I, speed); I->a_start = now; I->a_pos = 0; I->a_ended = 0;
+}
+
 void inst_tick(Instance *I, float now, float dt)
 {
     if (!I->scripted) return;

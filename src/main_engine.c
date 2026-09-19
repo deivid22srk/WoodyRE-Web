@@ -41,6 +41,10 @@ static int g_next_level = -1; static float g_fade_len = 0.5f, g_switch_fade = 1.
 static void request_level(int index, float fade_s) { if (g_next_level < 0 && index >= 0 && index < 29) { g_next_level = index; g_fade_len = fade_s > 0.01f ? fade_s : 0.01f; } }
 static int level_index(const char *name) { for (int i = 0; i < 29; i++) if (!_stricmp(k_levels[i], name)) return i; return -1; }
 
+/* real time cinematic state (docs/CINEMATIC.md, object game+0x64); the update is further down */
+static struct { int state, anim, nactors; Instance *main_inst, *vec; struct { Instance *inst; int anim; } actor[32]; uint32_t var; float remain, timer; } g_cin;
+static int cin_running(void) { return g_cin.state == 2 || g_cin.state == 3; }               /* 0x44f2e0: Perso update skipped */
+
 /* ---- camera manager: follow camera (mode 1, player.c) + the fixed script cameras (docs/CAMERA_SCRIPT.md, CAMERA.md 4 and 6.1)
  * mode 2 (message 510) / mode 4 (520, letterbox, player frozen): camera at the .ins camera position looking at
  * target origin + (0, f, 0). A mode change blends linearly from the frozen old camera unless the script asked for a cut. */
@@ -119,6 +123,15 @@ static Vec3 rail_target(const Trajectory *tr, Vec3 c, float d, Vec3 prev)
 static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 {
     Vec3 P, T;
+    if (g_cam.mode == 0x80 && g_cin.main_inst) {                 /* camera from the animation of the cinematic's main instance (0x42fa80): cut, no smoothing */
+        Instance *I = g_cin.main_inst; const Model *mo = I->model; Vec3 eye, tgt;
+        float L = (uint32_t)I->slot[0] < mo->nanims && mo->anims[I->slot[0]].duration_s > 0 ? mo->anims[I->slot[0]].duration_s : 1.0f;
+        if (ins_camera_eval(I, I->slot[0], I->a_pos / L, &eye, &tgt)) {
+            Vec3 to = { tgt.x - eye.x, tgt.y - eye.y, tgt.z - eye.z };
+            cam->pos = eye; cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z)); cam->letterbox = 1; cam->fov_deg = 68.04f;
+            g_cam.pos = eye; g_cam.active = 0; return;
+        }
+    }
     if (g_cam.death_cam && !p->dead_kind) { g_cam.death_cam = 0; g_cam.cut = 1; cam_set_mode(1); }   /* respawn: hard cut back to the follow camera (0x41f9f0(2), SetMode(0,0)) */
     if (g_cam.mode == 0x20 && g_cam.plane_on) {                  /* 0x424bf0 */
         const float *q = g_cam.sv_par; Vec3 d = g_cam.plane_d, sidev = { -d.z, 0, d.x };   /* (0,-1,0) x dir */
@@ -162,7 +175,47 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 
 /* script screen faders (app+0x9c, 0x401440 / 0x401480 / 0x4014c0): 1150 fades in from black over f s, 1151 fades out,
  * 1152 blacks out the current frame (scripts repeat it with DURING) */
-static struct { float rest, total; int out; } g_sfade; static int g_black_frame;
+static struct { float rest, total; int out, hold; } g_sfade; static int g_black_frame;
+static void fade_start(float t, int out) { g_sfade.total = g_sfade.rest = t; g_sfade.out = out; g_sfade.hold = 0; }
+
+/* ---- real time cinematics (docs/CINEMATIC.md): object game+0x64, update 0x44f0a0 */
+static void cin_update(EkoVM *vm, float dt, float now)
+{
+    Instance *m = g_cin.main_inst;
+    switch (g_cin.state) {
+    case 1:
+        if ((g_cin.timer -= dt) > 0) break;
+        fade_start(0.5f, 0); g_black_frame = 1; g_cin.state = 2; eko_set_var(vm, g_cin.var, 0);
+        {   /* 0x44eab0: the main instance goes to the vector P0, facing P0 -> P1; everything plays once at speed 3 */
+            const Model *mo = g_cin.vec->model; int node = -1;
+            for (uint32_t i = 0; i < mo->nnodes && node < 0; i++) if (mo->nodes[i].type_code == 5 && mo->nodes[i].npoints >= 2) node = (int)i;
+            if (node < 0) { printf("cinematic: no vector on instance %u\n", g_cin.vec->index); g_cin.remain = 0; break; }
+            Vec3 P0 = ins_point_world(g_cin.vec, mo->nodes[node].point_base), P1 = ins_point_world(g_cin.vec, mo->nodes[node].point_base + 1);
+            if (g_player && g_player->inst == m) player_place(g_player, P0, atan2f(P1.x - P0.x, P1.z - P0.z));
+            m->scripted = 1; m->visible = 1; inst_play_once(m, g_cin.anim, 3.0f, now);
+            for (int i = 0; i < g_cin.nactors; i++) inst_play_once(g_cin.actor[i].inst, g_cin.actor[i].anim, 3.0f, now);
+            g_cam.cut = 1; cam_set_mode(0x80);
+        }
+        break;
+    case 2:
+        g_cin.remain -= dt; if (g_cin.remain > 0.5f) break;
+        g_cin.timer = g_cin.remain; fade_start(g_cin.remain > 0.01f ? g_cin.remain : 0.01f, 1); g_cin.state = 3; break;
+    case 3:
+        if ((g_cin.timer -= dt) > 0) break;
+        fade_start(0.5f, 0); g_cin.timer = 0.5f; g_cin.state = 4;
+        {   /* 0x44edb0 + 0x445af9: the player continues where the animation left the root, follow camera behind him */
+            Vec3 pos, fwd;
+            if (g_player && g_player->inst == m) {
+                m->scripted = 0;
+                if (ins_root_end(m, g_cin.anim, &pos, &fwd)) player_place(g_player, pos, atan2f(fwd.x, fwd.z));
+            }
+            g_cam.cut = 1; cam_set_mode(1);
+        }
+        break;
+    case 4: if ((g_cin.timer -= dt) <= 0) memset(&g_cin, 0, sizeof g_cin); break;
+    default: break;
+    }
+}
 
 /* ---- progress (docs/GAMEFLOW.md 6): the active save struct is the only player state that survives a level change.
  * Kept in our own file (woodyre.sav), not in the original's Woody.sav. */
@@ -245,7 +298,16 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1160: if (m->nargs) { g_intro_var = m->args[0]; g_have_intro = 1; } break;
     case 1084: if (m->nargs) eko_set_var(vm, m->args[0], g_prev_level); break;                              /* GetPrevLevel: the hub script picks the spawn point with it */
     case 1180: request_level(26, 0.5f); break;
-    case 1150: case 1151: if (m->nargs) { g_sfade.total = g_sfade.rest = (int)m->args[0] * 0.01f; g_sfade.out = m->id == 1151; } break;
+    case 1150: case 1151: if (m->nargs) fade_start((int)m->args[0] * 0.01f, m->id == 1151); break;
+    case 1131: if (in && m->nargs > 1) { g_cin.main_inst = in; g_cin.anim = (int)m->args[1]; } break;
+    case 1132: if (in && m->nargs > 1 && g_cin.nactors < 32) { g_cin.actor[g_cin.nactors].inst = in; g_cin.actor[g_cin.nactors++].anim = (int)m->args[1]; } break;
+    case 1130:                                                                     /* (vector instance, rtc sound track, var) */
+        if (in && g_cin.main_inst && g_cin.state == 0 && m->nargs > 2) {
+            const Model *mo = g_cin.main_inst->model; g_cin.vec = in; g_cin.var = m->args[2];
+            g_cin.remain = ((uint32_t)g_cin.anim < mo->nanims ? mo->anims[g_cin.anim].duration_s : 0) / 3.0f;   /* duration / 12288 */
+            g_cin.state = 1; g_cin.timer = 0.5f; fade_start(0.4f, 1);
+        }
+        break;
     case 1152: g_black_frame = 1; break;
     case 1088: if (in && g_player) cam_side_start(in, m->nargs > 1 ? (int)m->args[1] : 0); break;
     case 1110: if (m->nargs > 1) { static const int fld[9] = { -1, 3, 2, 4, 1, 0, 6, 5, 7 }; int n = (int)m->args[0];   /* n -> sv_par index */
@@ -271,7 +333,7 @@ static void *read_all(const char *path, size_t *sz);
 static void level_free(Level *L)
 {
     if (L->have_player) player_free(&L->player);
-    g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0;
+    g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -392,9 +454,9 @@ int main(int argc, char **argv)
             pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_CONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
             if (g_level == 0 && !fly) {                                             /* title: House is the backdrop of the menu (docs/GAMEFLOW.md 5); the 2D menu pages are not ported */
                 memset(&pin, 0, sizeof pin);
-                if (g_pose) { L.player.pos = g_pose->position; L.player.yaw = inst_yaw(g_pose); L.player.vel = (Vec3){ 0, 0, 0 }; }
+                if (g_pose && !g_cin.state) { L.player.pos = g_pose->position; L.player.yaw = inst_yaw(g_pose); L.player.vel = (Vec3){ 0, 0, 0 }; }
                 int32_t *iv = g_have_intro && (g_intro_var & 0xffffff) < L.vm.nvars ? &L.vm.varval[g_intro_var & 0xffffff] : NULL;
-                int enter_key = win.keys[VK_RETURN] || (enter_at >= 0 && ((now - t0 >= enter_at && now - t0 < enter_at + 0.1) || (now - t0 >= enter_at + 2 && now - t0 < enter_at + 2.1))); int enter = enter_key && !enter_prev, cont = win.keys['L'] && !l_prev; enter_prev = enter_key; l_prev = win.keys['L'];
+                int enter_key = win.keys[VK_RETURN] || (enter_at >= 0 && ((now - t0 >= enter_at && now - t0 < enter_at + 0.1) || (getenv("WOODY_ENTER2") && now - t0 >= enter_at + 2 && now - t0 < enter_at + 2.1))); int enter = enter_key && !enter_prev, cont = win.keys['L'] && !l_prev; enter_prev = enter_key; l_prev = win.keys['L'];
                 if (enter && !new_game_pending) { new_game_pending = 1; if (iv && *iv == 0) eko_set_var(&L.vm, g_intro_var, 1); else enter = 0, new_game_pending = 2; }   /* page 1 -> 0x1f: the House script plays the intro */
                 else if (enter && new_game_pending == 1) new_game_pending = 2;               /* a key skips the intro */
                 if (new_game_pending == 1 && iv && *iv == 4) new_game_pending = 2;
@@ -405,8 +467,9 @@ int main(int argc, char **argv)
             g_act_now[0] = pin.left; g_act_now[1] = pin.right; g_act_now[2] = pin.action;
             g_save.chr[g_char].lives = L.player.lives; g_save.chr[g_char].health = L.player.health;          /* the Perso writes straight into the save struct */
             if (g_cam.mode == 4 && !fly) memset(&pin, 0, sizeof pin);              /* cinematic camera: the player is frozen (0x459090) */
-            player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
-            enemies_update(&g_enemies, &L.player, cam.pos, dt);
+            cin_update(&L.vm, dt, g_now);
+            if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
+            if (!cin_running()) enemies_update(&g_enemies, &L.player, cam.pos, dt);
             if (g_cam.plane_on) {                                                   /* 0x459eb0: the player stays on the vertical plane through the marker */
                 Vec3 n = { -g_cam.plane_d.z, 0, g_cam.plane_d.x }; float off = (L.player.pos.x - g_cam.plane_a.x) * n.x + (L.player.pos.z - g_cam.plane_a.z) * n.z;
                 L.player.pos.x -= n.x * off; L.player.pos.z -= n.z * off;
@@ -434,7 +497,8 @@ int main(int argc, char **argv)
         if (next_name && now - t0 >= next_at) { request_level(level_index(next_name), 0.5f); next_name = NULL; }
         if (g_next_level >= 0) { g_switch_fade -= dt / g_fade_len; if (g_switch_fade < 0) g_switch_fade = 0; } else if (g_switch_fade < 1) { g_switch_fade += dt / 0.5f; if (g_switch_fade > 1) g_switch_fade = 1; }
         { float f = (L.have_player && !fly) ? L.player.fade : 1.0f; if (g_switch_fade < f) f = g_switch_fade;
-          if (g_sfade.rest > 0 && g_sfade.total > 0) { float k = g_sfade.rest / g_sfade.total, b = g_sfade.out ? k : 1.0f - k; if (b < f) f = b; g_sfade.rest -= dt; }
+          if (g_sfade.rest > 0 && g_sfade.total > 0) { float k = g_sfade.rest / g_sfade.total, b = g_sfade.out ? k : 1.0f - k; if (b < f) f = b; g_sfade.rest -= dt; if (g_sfade.rest <= 0 && g_sfade.out) g_sfade.hold = 1; }
+          else if (g_sfade.hold) f = 0;                                       /* a finished fade-out stays black until the next fade-in */
           if (g_black_frame) { f = 0; g_black_frame = 0; }
           if (f < 1.0f) rnd_fade(f); }
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
