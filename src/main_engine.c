@@ -20,6 +20,7 @@
 #include "instance.h"
 #include "enemy.h"
 #include "audio.h"
+#include "hud.h"
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
@@ -245,6 +246,7 @@ static uint32_t g_intro_var; static int g_have_intro;            /* message 1160
 
 /* ---- sound (docs/SOUND.md): script messages 1600..1657 (0x467fa0) -> the mixer in audio.c.
  * vol 0..100; pitch args are x0.01 (f > 0 = frequency factor), "dur" args are x-0.01 (wanted duration); dmin args are x0.01 m. */
+static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
 #define AI(i) ((i) < (int)m->nargs ? (float)(int32_t)m->args[i] : 0.0f)
@@ -385,6 +387,8 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
         break;
     case 1152: g_black_frame = 1; break;
+    case 1080: if (m->nargs > 3) { hud_text_open((int)m->args[0], (int)m->args[1], &m->args[3], (int)m->nargs - 3); g_text_var = m->args[2]; printf("  TEXT box at vm t=%d: strings %u %u %u\n", vm->time, m->args[3] & 0xffff, m->nargs > 4 ? m->args[4] & 0xffff : 0, m->nargs > 5 ? m->args[5] & 0xffff : 0); } break;   /* text box 0x456ed0: stays until the script sets var != 0 */
+    case 1172: g_hud_ext = 1; break;
     case 1088: if (in && g_player) cam_side_start(in, m->nargs > 1 ? (int)m->args[1] : 0); break;
     case 1110: if (m->nargs > 1) { static const int fld[9] = { -1, 3, 2, 4, 1, 0, 6, 5, 7 }; int n = (int)m->args[0];   /* n -> sv_par index */
                    if (n == 9) memcpy(g_cam.sv_par, k_sv_defaults, sizeof k_sv_defaults); else if (n >= 1 && n <= 8) g_cam.sv_par[fld[n]] = (float)(int)m->args[1]; } break;                                                              /* credits */                       /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes */
@@ -408,7 +412,7 @@ typedef struct {
 static void *read_all(const char *path, size_t *sz);
 static void level_free(Level *L)
 {
-    audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
+    hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
@@ -435,6 +439,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
 { static const char *chr[3] = { "Woody", "Knothead", "Splinter" }; static int bank0 = -1, title_n;
       if (bank0 != g_char) { snprintf(path, sizeof path, "%s/../Common/%s.rck", dir, chr[g_char]); printf("sound bank 0: %d sounds\n", audio_bank_load(0, path)); bank0 = g_char; }
       snprintf(path, sizeof path, "%s/%s/%s.rck", dir, lvl, lvl); printf("sound bank 1: %d sounds\n", audio_bank_load(1, path));
+      { char common[512]; snprintf(common, sizeof common, "%s/../Common/%s.rck", dir, chr[g_char]); if (hud_load(common, path)) printf("hud: no font / images\n"); }
       if (g_level == 0) audio_music((title_n++ & 1) ? 0 : 48); }                   /* 0x404e30: the title alternates Menu02 / Menu; levels send 1655 during init */
     printf("VM init...\n"); eko_init(&L->vm);
     printf("init done: %d messages\n", L->vm.nmsgs);
@@ -571,6 +576,18 @@ int main(int argc, char **argv)
         }
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
         rnd_frame(&L.rnd, &win, &cam, (float)(now - t0));
+        {   /* 2D layer (docs/HUD_TEXT.md 5.4): HUD, then the text box, then the fades. No HUD in menus, BlackBox, cinematics and the fall death camera (0x401e19) */
+            if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */
+            hud_begin(win.width, win.height);
+            if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
+                const Player *pl = &L.player; int race = pl->inst->type == 18 || pl->inst->type == 19;
+                HudState hs = { g_char, race, pl->lives, race ? pl->race_bonus : pl->bonus_count, race ? pl->race_bonus : pl->bonus_got, pl->bonus_total,
+                                g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, paused || g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };
+                hud_draw(&hs, dt);
+            }
+            { uint32_t v = g_text_var & 0xffffff; hud_text_draw(v < L.vm.nvars && L.vm.varval[v] != 0, paused ? 0 : dt); }
+            hud_end(); g_hud_ext = 0;
+        }
         /* level change: PgUp / PgDn cycle through the levels (debug); a request fades out, swaps the level, fades in */
         for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
         if (getenv("WOODY_SIDE") && now - t0 >= 1.0 && !g_cam.plane_on && L.have_player) { Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(getenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); }   /* testing: force the side view on a marker instance */
@@ -582,8 +599,7 @@ int main(int argc, char **argv)
         if (g_next_level >= 0) { g_switch_fade -= dt / g_fade_len; if (g_switch_fade < 0) g_switch_fade = 0; } else if (g_switch_fade < 1) { g_switch_fade += dt / 0.5f; if (g_switch_fade > 1) g_switch_fade = 1; }
         { float f = (L.have_player && !fly) ? L.player.fade : 1.0f; if (g_switch_fade < f) f = g_switch_fade;
           if (g_sfade.rest > 0 && g_sfade.total > 0) { float k = g_sfade.rest / g_sfade.total, b = g_sfade.out ? k : 1.0f - k; if (b < f) f = b; g_sfade.rest -= dt; if (g_sfade.rest <= 0 && g_sfade.out) g_sfade.hold = 1; }
-          else if (g_sfade.hold) f = 0;                                       /* a finished fade-out stays black until the next fade-in */
-          if (g_black_frame) { f = 0; g_black_frame = 0; }
+          /* a finished fade-out keeps the 3D picture black until the next fade-in; that is drawn under the 2D layer (above) */
           if (f < 1.0f) rnd_fade(f); }
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
         win_swap(&win);
