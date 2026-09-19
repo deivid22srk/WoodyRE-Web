@@ -416,11 +416,12 @@ float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b)
 typedef struct { int sub[4]; float speed; int restart; } LogAnim;
 static const LogAnim *log_anim(int n)
 {
-    static const LogAnim t[0x13] = {
+    static const LogAnim t[0x18] = {
         {{0,0,0,0},3,0}, {{0,0,0,0},3,0}, {{1,2,2,2},3,1}, {{2,2,2,2},3,0}, {{3,4,4,4},8,1}, {{5,6,7,7},2,1}, {{6,7,7,7},3,0},
         {{6,7,7,7},3,1}, {{8,0,0,0},3,1}, {{7,32,33,33},3,0}, {{34,0,0,0},3,1}, {{9,9,9,9},3,1}, {{10,11,-1,-1},3,1},
-        {{16,0,0,0},3,1}, {{19,6,7,7},3,1}, {{21,13,13,13},3,1}, {{38,51,51,51},3,1}, {{51,51,51,51},3,0}, {{51,52,0,0},3,0} };
-    return (n >= 0 && n < 0x13) ? &t[n] : &t[0];
+        {{16,0,0,0},3,1}, {{19,6,7,7},3,1}, {{21,13,13,13},3,1}, {{38,51,51,51},3,1}, {{51,51,51,51},3,0}, {{51,52,0,0},3,0},
+        {{86,0,0,0},3,1}, {{12,13,13,13},5,1}, {{13,13,13,13},3,0}, {{14,6,7,7},3,0}, {{15,-1,-1,-1},3,0} };   /* 0x14..0x17: grab, climb, let go, over the top */
+    return (n >= 0 && n < 0x18) ? &t[n] : &t[0];
 }
 static float anim_len(const Player *p, int n, int k)                       /* 0x436b90 AnimLen(n, k) */
 {
@@ -635,6 +636,92 @@ static void game_sequence(Player *p, EkoVM *vm, float dt)
     if (p->mask10_frames > 0 && --p->mask10_frames == 0 && vm) eko_msgmask_clear(vm, p->inst->id, 0x10);
 }
 
+/* ---- peck climbing: Perso state 4 (0x4651d0). A press node (kind 1) with typecode 4 is a peckable wall. ---- */
+static int climb_ray(const Player *p, Vec3 from, Vec3 to, Vec3 *n_out, const Instance **inst_out, int *peckable)
+{
+    float best = 2.0f; int hit = 0;
+    for (uint32_t mi = 0; mi < p->ins->nmodels; mi++) {
+        const Model *m = &p->ins->models[mi];
+        for (uint32_t ni = 0; ni < m->nnodes; ni++) {
+            const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys) continue;
+            for (uint32_t k = 0; k < m->ninstances; k++) {
+                const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == p->inst) continue;
+                float dx = in->position.x - from.x, dz = in->position.z - from.z; if (dx * dx + dz * dz > 3000.0f * 3000.0f) continue;
+                for (uint32_t pi = 0; pi < nd->npolys; pi++) {
+                    const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 8) continue;
+                    Vec3 v[8]; for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
+                    Vec3 nrm = vcross(vsub(v[1], v[0]), vsub(v[2], v[0])); float l = sqrtf(vdot(nrm, nrm)); if (l < 1e-6f) continue;
+                    nrm.x /= l; nrm.y /= l; nrm.z /= l;
+                    float da = vdot(vsub(from, v[0]), nrm), db = vdot(vsub(to, v[0]), nrm); if ((da > 0) == (db > 0)) continue;
+                    float t = da / (da - db); if (t >= best) continue;
+                    Vec3 q = { from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t, from.z + (to.z - from.z) * t };
+                    if (!point_in_poly3(v, pl->nverts, nrm, q)) continue;
+                    if (da < 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }   /* normal towards the player */
+                    best = t; hit = 1; *n_out = nrm; *inst_out = in; *peckable = nd->type_code == 4;
+                }
+            }
+        }
+    }
+    return hit;
+}
+static Vec3 climb_probe_to(const Player *p, Vec3 from) { Vec3 to = { from.x + sinf(p->yaw) * (P_RADIUS + 100.0f), from.y, from.z + cosf(p->yaw) * (P_RADIUS + 100.0f) }; return to; }
+
+/* 0x464e00: grab when the attack meets a peckable, (nearly) vertical wall */
+static int climb_try(Player *p)
+{
+    if (p->regrab > 0 || p->climb_sub) return 0;
+    Vec3 from = { p->pos.x, p->pos.y + 40.0f, p->pos.z }, n; const Instance *wi; int peck = 0;
+    if (!climb_ray(p, from, climb_probe_to(p, from), &n, &wi, &peck) || !peck || fabsf(n.y) > 0.05f) return 0;
+    float l = sqrtf(n.x * n.x + n.z * n.z); if (l < 1e-4f) return 0;
+    p->wall_n = (Vec3){ n.x / l, 0, n.z / l }; p->wall_inst = wi; p->yaw = atan2f(-p->wall_n.x, -p->wall_n.z);
+    p->climb_sub = p->on_ground ? 1 : 2; p->grip = 0.8f; p->peck_t = 0.3f;
+    p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->vel = (Vec3){ 0, 0, 0 }; p->use_atk_disp = 0;
+    printf("  CLIMB grab on instance %u\n", wi->index);
+    return 1;
+}
+static void climb_update(Player *p, const PlayerInput *in, float dt)
+{
+    int tap = in->action && !p->climb_act_prev; p->climb_act_prev = in->action;
+    if (getenv("WOODY_TAP")) { static float tt; tt += dt; if (tt > 0.3f) { tt = 0; tap = 1; } }   /* testing: tap the attack key automatically */
+    if (p->grip > 0) p->grip -= dt;
+    if (tap && p->grip < 0.5f) p->grip = 0.5f;                          /* tapping keeps him on the wall */
+    if (p->grip <= 0 && p->climb_sub != 3) p->climb_sub = 4;
+    switch (p->climb_sub) {
+    case 1: anim_request(p, 0x14, 1.0f); p->climb_sub = 2; p->peck_t = 0.3f; break;
+    case 2: {
+        anim_request(p, 0x15, 1.0f);
+        Vec3 side = { p->wall_n.z, 0, -p->wall_n.x };                   /* cross((0,1,0), n) */
+        float s = 300.0f * dt, a = in->left ? -s : in->right ? s : 0;
+        p->pos.y += 250.0f * dt;                                        /* always upwards, no input needed (P+0x74) */
+        p->pos.x += side.x * a; p->pos.z += side.z * a;
+        Vec3 from = { p->pos.x, p->pos.y + 40.0f, p->pos.z }, n; const Instance *wi; int peck = 0;
+        if (climb_ray(p, from, climb_probe_to(p, from), &n, &wi, &peck)) {
+            if (!peck) { p->climb_sub = 4; break; }
+            if ((p->peck_t -= dt) <= 0) p->peck_t += 0.3f;              /* spark every 0.3 s (0x479c80): particles are not ported */
+        } else {
+            /* nothing in front any more: the top, when within 50 of the wall instance's typecode-0 marker */
+            const Model *wm = p->wall_inst->model; int top = 0; float ty = 0;
+            for (uint32_t i = 0; i < wm->nnodes && !top; i++) if (wm->nodes[i].kind == 0x20 && wm->nodes[i].type_code == 0 && wm->nodes[i].npoints >= 1) { ty = ins_point_world(p->wall_inst, wm->nodes[i].point_base).y; top = 1; }
+            if (top && fabsf(p->pos.y - ty) < 50.0f) {
+                p->climb_sub = 3; p->over_len = p->over_t = anim_len(p, 0x17, 0) > 0.05f ? anim_len(p, 0x17, 0) : 0.5f; anim_request(p, 0x17, 1.0f);
+                p->over_from = p->pos; p->over_to = (Vec3){ p->pos.x - p->wall_n.x * (P_RADIUS + 40.0f), ty, p->pos.z - p->wall_n.z * (P_RADIUS + 40.0f) };   /* stands in for the root motion of .ins animation 15 (0x44e290) */
+            } else p->climb_sub = 4;
+        }
+        break; }
+    case 3: {
+        anim_request(p, 0x17, 1.0f);
+        p->over_t -= dt; float k = 1.0f - (p->over_t > 0 ? p->over_t / p->over_len : 0), ky = k < 0.6f ? k / 0.6f : 1.0f, kh = k < 0.4f ? 0 : (k - 0.4f) / 0.6f;
+        p->pos.y = p->over_from.y + (p->over_to.y - p->over_from.y) * ky;
+        p->pos.x = p->over_from.x + (p->over_to.x - p->over_from.x) * kh; p->pos.z = p->over_from.z + (p->over_to.z - p->over_from.z) * kh;
+        if (p->over_t <= 0) { p->climb_sub = 0; jumper_reset(&p->jumper); p->on_ground = 1; printf("  CLIMB over the top\n"); }
+        break; }
+    default:                                                            /* 4: let go; no new grab for twice the fall animation */
+        p->regrab = 2.0f * anim_len(p, 0x16, 0); anim_request(p, 0x16, 1.0f);
+        p->climb_sub = 0; jumper_force_fall(&p->jumper, 1); printf("  CLIMB let go\n");
+        break;
+    }
+}
+
 /* ---- bonuses (docs/BONUS.md): the script sends message 10 to the bonus instance; vtable[+0x70] per class ------ */
 int player_collect(Player *p, int type, int arg)
 {
@@ -684,7 +771,10 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         if (p->health <= 0) { p->health = 0; player_kill(p, 8); }
     }
     if (!p->dead_kind && p->health <= 0) player_kill(p, 3);
-    if (!p->dead_kind) { attack_update(p, in, dt); attack_trigger(p, in, dt); }
+    if (p->regrab > 0) p->regrab -= dt;
+    if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); player_apply_transform(p); return; }
+    if (p->dead_kind) p->climb_sub = 0;
+    if (!p->dead_kind) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); return; } }
     /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking */
     int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind);
     /* input direction relative to the camera */

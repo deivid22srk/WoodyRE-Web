@@ -49,6 +49,8 @@ typedef struct Player {
     int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264 */
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
     /* attack controller (Perso+0x5b4..): sub-state, timer, displacement, air window, charge; move lock = Perso+0x238 */
+    /* peck climbing, Perso state 4 (0x4651d0, docs/OBJECTS.md 1.3): sub 1 grab, 2 climbing, 3 over the top, 4 let go */
+    int climb_sub, climb_act_prev; float grip, regrab, peck_t, over_t, over_len; Vec3 wall_n, over_from, over_to; const Instance *wall_inst;
     int atk; float atk_t; Vec3 atk_dir, atk_disp; int use_atk_disp; float air_win, charge, move_lock, vy_corr; int action_prev;
     struct EnemySet *enemies; void *target; Vec3 dash_start, aim; int has_target;   /* attack targets (Perso+0x5f0, +0x5e4, +0x5d0, +0x5dc) */
     int lanim, lanim_sub;           /* logical animation (table 0x4b6180) and position in its chain */
