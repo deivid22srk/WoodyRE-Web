@@ -240,7 +240,18 @@ int rnd_screenshot(const Window *w, const char *path)
     fclose(f); free(px); return 0;
 }
 
-void rnd_free(Renderer *r) { for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); } free(r->batches); free(r->litb); }
+void rnd_free(Renderer *r)
+{
+    for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); }
+    free(r->batches); free(r->litb); free(r->face_bound);
+    for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
+    for (uint32_t g = 0; r->tex && g < r->tex->ngroups; g++) {                 /* the level's textures live in the GL context, not in the TexFile */
+        TexGroup *tg = &r->tex->groups[g]; if (!tg->gl_frames) continue;
+        for (uint32_t f = 0; f < tg->frame_count; f++) { GLuint id = tg->gl_frames[f]; if (id) glDeleteTextures(1, &id); }
+        free(tg->gl_frames); tg->gl_frames = NULL; tg->gl_tex = 0;
+    }
+    memset(r, 0, sizeof *r);
+}
 
 /* ---------------------------------------------------------------- blend modes
  * .tex group flags (tex+0x44 in the exe): bit 0 colour key, bit 1 = blended (rendered additively here: the glare

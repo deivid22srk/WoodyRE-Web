@@ -58,6 +58,47 @@ static void on_warn(EkoVM *vm, const char *s, void *user) { (void)vm; (void)user
 static uint32_t g_seed = 1;
 static uint32_t msvc_rand(void *user) { (void)user; g_seed = g_seed * 214013u + 2531011u; return (g_seed >> 16) & 0x7fff; }
 
+/* one loaded level: everything that is torn down and rebuilt on a level change (the window and GL context stay) */
+typedef struct {
+    char name[32]; TexFile tex; GelFile gel; LitFile lit; int have_lit; void *code; EkoVM vm; Renderer rnd;
+    Player player; int have_player; double t0;
+} Level;
+static void *read_all(const char *path, size_t *sz);
+static void level_free(Level *L)
+{
+    if (L->have_player) player_free(&L->player);
+    g_player = NULL; g_enemies.n = 0; g_nretry = 0;
+    rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
+    memset(L, 0, sizeof *L);
+}
+static int level_load(Level *L, const char *dir, const char *lvl)
+{
+    char path[512]; memset(L, 0, sizeof *L); snprintf(L->name, sizeof L->name, "%s", lvl);
+    snprintf(path, sizeof path, "%s/%s/%s.tex", dir, lvl, lvl); if (tex_load(&L->tex, path)) return -1;
+    snprintf(path, sizeof path, "%s/%s/%s.gel", dir, lvl, lvl); if (gel_load(&L->gel, path)) { tex_free(&L->tex); return -1; }
+    snprintf(path, sizeof path, "%s/%s/%s.ins", dir, lvl, lvl); if (ins_load(&g_ins, path)) { gel_free(&L->gel); tex_free(&L->tex); return -1; }
+    snprintf(path, sizeof path, "%s/%s/code", dir, lvl);
+    size_t codesz; L->code = read_all(path, &codesz);
+    if (!L->code || eko_load(&L->vm, L->code, codesz)) { fprintf(stderr, "cannot load %s\n", path); free(L->code); ins_free(&g_ins); gel_free(&L->gel); tex_free(&L->tex); return -1; }
+    L->vm.on_msg = on_msg; L->vm.on_warn = on_warn; L->vm.rand_fn = msvc_rand;
+    printf("%s: %u polys, %u verts, %u textures, %u models, %u slots, %u script objects\n", lvl, L->gel.npolys, L->gel.nverts, L->tex.ngroups, g_ins.nmodels, g_ins.nslots, L->vm.nobj);
+    snprintf(path, sizeof path, "%s/%s/%s.lit", dir, lvl, lvl); L->have_lit = lit_load(&L->lit, path) == 0;
+    rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL);
+    L->have_player = player_init(&L->player, &g_ins, &L->gel) == 0;
+    g_player = L->have_player ? &L->player : NULL;
+    for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
+    if (L->have_player) { L->player.inst->scripted = 0; L->player.enemies = &g_enemies; }
+    printf("VM init...\n"); eko_init(&L->vm);
+    printf("init done: %d messages\n", L->vm.nmsgs);
+    L->t0 = win_time();
+    return 0;
+}
+/* level change: requested by name, executed at the end of the frame after a fade to black */
+static char g_next_level[32]; static float g_switch_fade = 1.0f;
+static void request_level(const char *name) { if (!g_next_level[0]) snprintf(g_next_level, sizeof g_next_level, "%s", name); }
+static const char *k_levels[] = { "House", "WWS", "W1A", "W1B", "W2A", "W2B", "W2D", "W3A", "W3B", "W3C", "W3D", "KWS", "K1A", "K1R", "K2A", "K2R", "K3A", "K3R",
+                                  "SWS", "S1A", "S1R", "S2A", "S2R", "S3A", "S3R", "Blackbox", "Credits", "Lang" };
+
 static void *read_all(const char *path, size_t *sz) { FILE *f = fopen(path, "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); void *b = malloc((size_t)n); if (fread(b, 1, (size_t)n, f) != (size_t)n) { fclose(f); free(b); return NULL; } fclose(f); *sz = (size_t)n; return b; }
 
 int main(int argc, char **argv)
@@ -69,6 +110,7 @@ int main(int argc, char **argv)
     double jump_len = 1.0, jump2_at = -1, jump2_len = getenv("WOODY_J2LEN") ? atof(getenv("WOODY_J2LEN")) : 0.15;                                         /* --jump2 LEN T2: first press lasts LEN s, second press (0.15 s) at T2 */
     double peck_at = -1, peck_len = 0.1;                                          /* --peck T LEN: hold the attack key from T s for LEN s (testing) */
     int have_pos = 0; float pos_args[3] = {0, 0, 0};                               /* --pos x y z: start the player there (testing) */
+    const char *next_name = NULL; double next_at = 0;                              /* --next LVL T: change to level LVL after T s (testing) */
     double walk_for = 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
@@ -79,41 +121,26 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--peck") && i + 2 < argc) { peck_at = atof(argv[i + 1]); peck_len = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--pos") && i + 3 < argc) { for (int k = 0; k < 3; k++) pos_args[k] = (float)atof(argv[i + 1 + k]); have_pos = 1; i += 3; }
         else if (!strcmp(argv[i], "--fly")) fly = 1;
+        else if (!strcmp(argv[i], "--next") && i + 2 < argc) { next_name = argv[i + 1]; next_at = atof(argv[i + 2]); i += 2; }
     }
-    char path[512]; TexFile tex; GelFile gel;
-    snprintf(path, sizeof path, "%s/%s/%s.tex", dir, lvl, lvl); if (tex_load(&tex, path)) return 1;
-    snprintf(path, sizeof path, "%s/%s/%s.gel", dir, lvl, lvl); if (gel_load(&gel, path)) return 1;
-    snprintf(path, sizeof path, "%s/%s/%s.ins", dir, lvl, lvl); if (ins_load(&g_ins, path)) return 1;
-    snprintf(path, sizeof path, "%s/%s/code", dir, lvl);
-    size_t codesz; void *code = read_all(path, &codesz); if (!code) { fprintf(stderr, "cannot read %s\n", path); return 1; }
-    EkoVM vm; if (eko_load(&vm, code, codesz)) { fprintf(stderr, "bad code file\n"); return 1; }
-    vm.on_msg = on_msg; vm.on_warn = on_warn; vm.rand_fn = msvc_rand;
-    printf("%s: %u polys, %u verts, %u textures, %u models, %u slots, %u script objects\n", lvl, gel.npolys, gel.nverts, tex.ngroups, g_ins.nmodels, g_ins.nslots, vm.nobj);
-
     Window win; if (win_open(&win, "WoodyRE", 1280, 800)) return 1;
-    LitFile lit; snprintf(path, sizeof path, "%s/%s/%s.lit", dir, lvl, lvl); int have_lit = lit_load(&lit, path) == 0;
-    Renderer rnd; rnd_init(&rnd, &tex, &gel, &g_ins, have_lit ? &lit : NULL);
+    static Level L; if (level_load(&L, dir, lvl)) return 1;
 
     /* camera: start behind Woody (model 0, instance 0) if present */
     FreeCamera cam = { {0, 0, 0}, 0, 0, 70 };
     Instance *sel = (g_ins.nmodels && g_ins.models[0].ninstances) ? &g_ins.models[0].instances[0] : NULL;
     if (sel) { cam.pos = sel->position; cam.pos.y += 120; cam.pos.z -= 350; }
     if (have_cam) { cam.pos.x = cam_args[0]; cam.pos.y = cam_args[1]; cam.pos.z = cam_args[2]; cam.yaw = cam_args[3] * 3.14159265f / 180; cam.pitch = cam_args[4] * 3.14159265f / 180; }
-    else { cam.pos.x = (gel.bbox[0] + gel.bbox[1]) / 2; cam.pos.y = gel.bbox[3]; cam.pos.z = (gel.bbox[4] + gel.bbox[5]) / 2; cam.pitch = -1.2f; }
+    else { cam.pos.x = (L.gel.bbox[0] + L.gel.bbox[1]) / 2; cam.pos.y = L.gel.bbox[3]; cam.pos.z = (L.gel.bbox[4] + L.gel.bbox[5]) / 2; cam.pitch = -1.2f; }
 
-    Player player; int have_player = player_init(&player, &g_ins, &gel) == 0;
-    if (!have_player) fly = 1; else g_player = &player;
-    for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
-    if (have_player) { player.inst->scripted = 0; player.enemies = &g_enemies; }
-    if (have_player && have_pos) { player.pos.x = pos_args[0]; player.pos.y = pos_args[1]; player.pos.z = pos_args[2]; player.floor_y = player.pos.y - 1000.0f; }
-    printf("VM init...\n"); eko_init(&vm);
-    printf("init done: %d messages\n", vm.nmsgs);
-    double t0 = win_time(), last = t0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
+    if (!L.have_player) fly = 1;
+    if (L.have_player && have_pos) { L.player.pos.x = pos_args[0]; L.player.pos.y = pos_args[1]; L.player.pos.z = pos_args[2]; L.player.floor_y = L.player.pos.y - 1000.0f; }
+    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
         double now = win_time(); float dt = (float)(now - last); last = now; g_now = (float)(now - t0);
         if (dt > 0.1f) dt = 0.1f;
-        if (win.keys[VK_F5] && !f5_prev && have_player) { fly ^= 1; if (!fly) player.cam_init = 0; }
+        if (win.keys[VK_F5] && !f5_prev && L.have_player) { fly ^= 1; if (!fly) L.player.cam_init = 0; }
         f5_prev = win.keys[VK_F5];
         /* camera */
         float speed = (win.keys[VK_SHIFT] ? 3000.0f : 600.0f) * dt;
@@ -127,7 +154,7 @@ int main(int argc, char **argv)
         if (fly) { cam.yaw -= win.mouse_dx * 0.004f; cam.pitch -= win.mouse_dy * 0.004f; }
         if (cam.pitch > 1.5f) cam.pitch = 1.5f; if (cam.pitch < -1.5f) cam.pitch = -1.5f;
         /* toggles */
-        for (int k = 0; k < 3; k++) { int down = win.keys[VK_F1 + k]; if (down && !f_prev[k]) { if (k == 0) rnd.show_world ^= 1; else if (k == 1) rnd.show_instances ^= 1; else rnd.wireframe ^= 1; } f_prev[k] = down; }
+        for (int k = 0; k < 3; k++) { int down = win.keys[VK_F1 + k]; if (down && !f_prev[k]) { if (k == 0) L.rnd.show_world ^= 1; else if (k == 1) L.rnd.show_instances ^= 1; else L.rnd.wireframe ^= 1; } f_prev[k] = down; }
         if (win.keys['P'] && !p_prev) paused ^= 1; p_prev = win.keys['P'];
         if (win.keys[VK_TAB] && !tab_prev && sel) {                                   /* next instance with animations */
             Instance *nxt = NULL; int found = 0;
@@ -147,35 +174,47 @@ int main(int argc, char **argv)
         }
         br_prev[0] = br[0]; br_prev[1] = br[1];
         /* player (provisional controller) + follow camera */
-        if (have_player && !paused) {
+        if (L.have_player && !paused) {
             PlayerInput pin = { 0 };
             pin.forward = win.keys[VK_UP] || (!fly && win.keys['W']) || (now - t0 < walk_for);
             pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
             pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
             pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_CONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
-            player_update(&player, &pin, dt, &vm, fly ? cam.yaw : player.cam_yaw);
-            enemies_update(&g_enemies, &player, cam.pos, dt);
-            if (!fly) player_camera(&player, &cam, dt, win.keys['C']);
-            if (jump_at >= 0) { if (now - t0 < jump_at) start_y = player.pos.y; else if (player.pos.y > max_y) { max_y = player.pos.y; printf("jump apex so far %.1f above start at t=%.2f (jumper state %d)\n", max_y - start_y, now - t0 - jump_at, player.jumper.state); } }
+            player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
+            enemies_update(&g_enemies, &L.player, cam.pos, dt);
+            if (!fly) player_camera(&L.player, &cam, dt, win.keys['C']);
+            if (jump_at >= 0) { if (now - t0 < jump_at) start_y = L.player.pos.y; else if (L.player.pos.y > max_y) { max_y = L.player.pos.y; printf("jump apex so far %.1f above start at t=%.2f (jumper state %d)\n", max_y - start_y, now - t0 - jump_at, L.player.jumper.state); } }
         }
         /* VM tick: time in 1/100 s like the original */
         if (!paused) {
-            eko_tick(&vm, (int32_t)((now - t0) * 100.0));
+            eko_tick(&L.vm, (int32_t)((now - t0) * 100.0));
             { int n = g_nretry; g_nretry = 0; for (int i = 0; i < n; i++) { Instance *ri = slot_instance(g_retry[i].args[0]); if (ri && inst_msg(ri, g_retry[i].id, g_retry[i].args, g_retry[i].nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = g_retry[i]; } }
             for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
                 Instance *ii = &g_ins.models[mi].instances[k];
                 if (ii->scripted) inst_tick(ii, g_now, dt); else ii->anim_time += dt * ii->anim_speed;
             }
         }
-        rnd_frame(&rnd, &win, &cam, (float)(now - t0));
-        if (have_player && !fly) rnd_fade(player.fade);
+        rnd_frame(&L.rnd, &win, &cam, (float)(now - t0));
+        /* level change: PgUp / PgDn cycle through the levels (debug); a request fades out, swaps the level, fades in */
+        for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int n = (int)(sizeof k_levels / sizeof *k_levels), cur = 0; for (int i = 0; i < n; i++) if (!_stricmp(k_levels[i], L.name)) cur = i; request_level(k_levels[(cur + (k ? 1 : n - 1)) % n]); } pg_prev[k] = down; }
+        if (next_name && now - t0 >= next_at) { request_level(next_name); next_name = NULL; }
+        if (g_next_level[0]) { g_switch_fade -= dt / 0.5f; if (g_switch_fade < 0) g_switch_fade = 0; } else if (g_switch_fade < 1) { g_switch_fade += dt / 0.5f; if (g_switch_fade > 1) g_switch_fade = 1; }
+        { float f = (L.have_player && !fly) ? L.player.fade : 1.0f; if (g_switch_fade < f) f = g_switch_fade; if (f < 1.0f) rnd_fade(f); }
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
         win_swap(&win);
         frames++;
-        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", lvl, frames / (now - fps_t), vm.time, vm.frame, vm.stat_msgs_total, fly ? "fly" : "play", player.pos.x, player.pos.y, player.pos.z, player.on_ground ? "ground" : "air", player.events_sent, player.health, player.lives, player.bonus_got, player.bonus_total); SetWindowTextA((HWND)win.hwnd, title); if (have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, player.pos.x, player.pos.y, player.pos.z, player.vel.x, player.vel.y, player.vel.z, player.on_ground ? (player.floor_is_hull ? "hull" : "ground") : "air", player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
+        if (g_next_level[0] && g_switch_fade <= 0) {
+            char name[32]; snprintf(name, sizeof name, "%s", g_next_level); g_next_level[0] = 0;
+            int lives = L.have_player ? L.player.lives : -1; float health = L.have_player ? L.player.health : 0;
+            level_free(&L);
+            if (level_load(&L, dir, name)) { fprintf(stderr, "level %s failed to load\n", name); return 1; }
+            if (L.have_player && lives >= 0) { L.player.lives = lives; L.player.health = health; }
+            if (!L.have_player) fly = 1; else if (!have_cam) fly = 0;
+            t0 = L.t0; last = win_time(); sel = (g_ins.nmodels && g_ins.models[0].ninstances) ? &g_ins.models[0].instances[0] : NULL;
+            lvl = L.name; continue;
+        }
+        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", lvl, frames / (now - fps_t), L.vm.time, L.vm.frame, L.vm.stat_msgs_total, fly ? "fly" : "play", L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.on_ground ? "ground" : "air", L.player.events_sent, L.player.health, L.player.lives, L.player.bonus_got, L.player.bonus_total); SetWindowTextA((HWND)win.hwnd, title); if (L.have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.vel.x, L.player.vel.y, L.player.vel.z, L.player.on_ground ? (L.player.floor_is_hull ? "hull" : "ground") : "air", L.player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
     }
-    if (have_player) player_free(&player);
-    rnd_free(&rnd); win_close(&win);
-    eko_free(&vm); free(code); ins_free(&g_ins); gel_free(&gel); tex_free(&tex);
+    level_free(&L); win_close(&win);
     return 0;
 }

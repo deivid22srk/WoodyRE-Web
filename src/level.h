@@ -142,7 +142,7 @@ int  gel_load(GelFile *g, const char *path);
 int  ins_load(InsFile *f, const char *path);
 int  lit_load(LitFile *l, const char *path);
 int  lit_point_lit(const LitLight *l, const GelFile *g, Vec3 p);   /* BSP point query 0x40b540 + leaf plane test */
-void tex_free(TexFile *t); void gel_free(GelFile *g); void ins_free(InsFile *f);
+void tex_free(TexFile *t); void gel_free(GelFile *g); void ins_free(InsFile *f); void lit_free(LitFile *l);
 
 /* Animation: evaluate the node hierarchy of `inst` for animation `anim` at `t` seconds
  * (wraps around); writes inst->node_world[] (includes the instance placement). */
