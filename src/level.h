@@ -17,7 +17,8 @@ typedef struct {
     float scroll_u, scroll_v, anim_duration;
     uint32_t frame_count;
     uint16_t **frames;                         /* frame_count pointers into file data (RGB565, row-major) */
-    uint32_t gl_tex;                           /* renderer handle (frame 0) */
+    uint32_t gl_tex;                           /* renderer handle of the current frame */
+    uint32_t *gl_frames;                       /* renderer handles per frame (frame_count) */
 } TexGroup;
 
 typedef struct {

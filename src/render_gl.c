@@ -77,7 +77,11 @@ static void material_uv(const Material *m, float x, float y, float z, float *u, 
 int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins)
 {
     memset(r, 0, sizeof *r); r->tex = tex; r->gel = gel; r->ins = ins; r->show_world = r->show_instances = 1;
-    for (uint32_t g = 0; g < tex->ngroups; g++) tex->groups[g].gl_tex = upload_texture(&tex->groups[g], 0);
+    for (uint32_t g = 0; g < tex->ngroups; g++) {
+        TexGroup *tg = &tex->groups[g]; tg->gl_frames = (uint32_t *)calloc(tg->frame_count ? tg->frame_count : 1, 4);
+        for (uint32_t f = 0; f < tg->frame_count; f++) tg->gl_frames[f] = upload_texture(tg, (int)f);
+        tg->gl_tex = tg->gl_frames[0];
+    }
     /* count triangles per texture group */
     uint32_t *count = (uint32_t *)calloc(tex->ngroups + 1, 4);
     for (uint32_t i = 0; i < gel->npolys; i++) {
@@ -195,6 +199,10 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s)
 {
     glViewport(0, 0, w->width, w->height);
+    for (uint32_t g = 0; g < r->tex->ngroups; g++) {                 /* texture animation: frame_count frames over anim_duration seconds */
+        TexGroup *tg = &r->tex->groups[g];
+        if (tg->frame_count > 1 && tg->anim_duration > 0) tg->gl_tex = tg->gl_frames[(uint32_t)(time_s / tg->anim_duration * tg->frame_count) % tg->frame_count];
+    }
     glDepthMask(GL_TRUE); glDisable(GL_BLEND); glClearColor(0.08f, 0.09f, 0.11f, 1); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GREATER, 0.5f);
     glPolygonMode(GL_FRONT_AND_BACK, r->wireframe ? GL_LINE : GL_FILL);

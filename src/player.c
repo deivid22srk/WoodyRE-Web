@@ -214,6 +214,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->inst->position; np = p->pos; np.y += 10; p->vel.y = 0; }   /* fell out of the world: hold */
     p->pos = np;
     player_apply_transform(p);
+    /* provisional animation choice until the Perso state machine is decompiled: 0 = idle (6 s), 1 = walk cycle (0.8 s) */
+    { int want = (len > 0 && p->on_ground) ? 1 : 0; if (p->inst->model->nanims > 1 && p->inst->anim != want && (p->inst->anim == 0 || p->inst->anim == 1)) { p->inst->anim = want; p->inst->anim_time = 0; } }
 
     /* trigger volumes: enter / in / leave -> script VM (player = "perso" variants) */
     if (vm) {
