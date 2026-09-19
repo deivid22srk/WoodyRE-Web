@@ -73,6 +73,7 @@ void player_free(Player *p);
 /* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
 int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34..38: message 10; returns 1 when the instance must disappear */
+void player_script_hold(Player *p, float t);       /* message 1040: scripted action, control taken away for t s */
 void player_kill(Player *p, int kind);                 /* Perso vt[38] */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
 

@@ -27,7 +27,9 @@ static EnemySet g_enemies;
 static float g_now;                                  /* game time in seconds (VM time base) */
 /* messages 12/13 wait for the running animation to end: offered again every frame (max 32 in the original, 0x4012f0 clears) */
 static EkoMsg g_retry[32]; static int g_nretry;
-static Instance *slot_instance(uint32_t ref) { if ((ref >> 24) != 1) return NULL; uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.slots[i] : NULL; }
+static float inst_yaw(const Instance *in) { Vec3 f = mat4_apply(&in->world, (Vec3){ 0, -1, 0 }); return atan2f(f.x - in->position.x, f.z - in->position.z); }   /* as player_bind */
+static Instance *slot_instance(uint32_t ref) { if ((ref >> 24) > 1) return NULL;   /* scripts also use bare slot numbers; the dispatcher 0x401370 only masks & 0xffffff */
+    uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.slots[i] : NULL; }
 
 /* level table 0x4b12a0 (docs/GAMEFLOW.md 1): 0 House (menu backdrop), 1 WWS hub, 2..10 Woody, 11 KWS hub, 12..17 Knothead,
  * 18 SWS hub, 19..24 Splinter, 25 BlackBox, 26 Credits, 27 dev slot, 28 Lang */
@@ -160,6 +162,27 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
  * 1152 blacks out the current frame (scripts repeat it with DURING) */
 static struct { float rest, total; int out; } g_sfade; static int g_black_frame;
 
+/* ---- progress (docs/GAMEFLOW.md 6): the active save struct is the only player state that survives a level change.
+ * Kept in our own file (woodyre.sav), not in the original's Woody.sav. */
+typedef struct { int32_t lives, unique, charges; float health; uint8_t done[29]; } SaveChar;
+static struct { uint32_t magic; SaveChar chr[3]; } g_save;
+static int g_char, g_unlock_all;                                 /* cfg+0x380: 0 Woody, 1 Knothead, 2 Splinter */
+static void save_reset(void) { memset(&g_save, 0, sizeof g_save); g_save.magic = 0x31565357; for (int c = 0; c < 3; c++) { g_save.chr[c].lives = 9; g_save.chr[c].health = 3.0f; } }   /* 0x44ffa0 */
+static void save_write(void) { FILE *f = fopen("woodyre.sav", "wb"); if (f) { fwrite(&g_save, sizeof g_save, 1, f); fclose(f); } }
+static void save_read(void) { FILE *f = fopen("woodyre.sav", "rb"); save_reset(); if (f) { if (fread(&g_save, sizeof g_save, 1, f) != 1 || g_save.magic != 0x31565357) save_reset(); fclose(f); } }
+static int char_of_level(int i) { return i <= 10 ? 0 : i <= 17 ? 1 : i <= 24 ? 2 : i == 25 ? 0 : -1; }   /* byte table 0x404830; -1 = unchanged */
+/* LevelIsEnable 0x450470 (table 0x450694): the done flag of the predecessor. The original reads it in the block of the
+ * current character; here in the block of the predecessor's own character (otherwise K1A could never open from KWS). */
+static int level_is_enable(int level)
+{
+    if (g_unlock_all || level <= 2 || level > 25) return 1;
+    int pred = (level == 11 || level == 12) ? 6 : (level == 18 || level == 19) ? 10 : level - 1;
+    return g_save.chr[char_of_level(pred)].done[pred];
+}
+static Instance *g_prop;                                         /* message 1142: the instance 1140 moves along with the player */
+static int g_act_now[3], g_act_prev[3];                          /* input actions 0 (left), 1 (right), 6 (attack) for 1048 / 1049 / 1050 */
+static uint32_t g_intro_var; static int g_have_intro;            /* message 1160: House intro state variable (0 rest, 1 start, 2/3 running, 4 done) */
+
 /* script -> engine messages. Only the subset needed to see something happen is implemented;
  * everything else is logged. See docs/MESSAGES.md. */
 static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
@@ -180,7 +203,37 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1020: if (g_player) player_kill(g_player, 1); break;
     /* game flow (docs/GAMEFLOW.md) */
     case 1081: if (m->nargs) request_level((int)m->args[0], 1.5f); break;                                   /* GotoLevel: 0x404b60(1.5, level, 1, 0) */
-    case 1083: request_level(g_level >= 18 && g_level <= 24 ? 18 : g_level >= 11 && g_level <= 17 ? 11 : 1, 0.5f); break;   /* EndLevel: back to the hub of the current character */
+    case 1083:                                                                                              /* EndLevel 0x404be0 */
+        if (g_level == 1 || g_level == 11 || g_level == 18 || g_level == 25) { request_level(0, 0.5f); break; }    /* from a hub: to the title */
+        if (g_level >= 0 && g_level < 29) g_save.chr[g_char].done[g_level] = 1;
+        save_write(); request_level(g_char == 0 ? 1 : g_char == 1 ? 11 : 18, 0.5f); break;
+    case 1082: if (m->nargs > 1) eko_set_var(vm, m->args[1], level_is_enable((int)m->args[0])); break;
+    case 1085: if (m->nargs > 1) eko_set_var(vm, m->args[1], m->args[0] < 29 ? g_save.chr[g_char].done[m->args[0]] : 0); break;   /* LevelIsDone 0x4509e0 */
+    case 1030: if (in && g_player) { g_player->spawn_pos = in->position; g_player->spawn_yaw = g_player->yaw; }   /* direction: the instance's vector node when it has one (not parsed), else the current facing */ break;   /* SaveAuto: checkpoint */
+    case 1142: g_prop = in; break;
+    case 1040: case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;                         /* scripted Perso action (17 = into the door); the animation itself is not ported */
+    case 1140:                                                                                              /* hub: player at the door he came out of (0x453d90); the results screen is skipped */
+        if (in && g_player && m->nargs > 1) {
+            g_player->pos = in->position; g_player->yaw = inst_yaw(in) + 3.14159265f;   /* out of the door */ g_player->floor_y = g_player->pos.y; g_player->vel = (Vec3){ 0, 0, 0 }; g_player->cam_init = 0;
+            if (g_prop) g_prop->position = in->position;
+            save_write(); eko_set_var(vm, m->args[1], 1);                                                   /* 0x45422c: what the script gets when the results screen closes */
+        }
+        break;
+    case 1042:                                                                                              /* near `inst` (xz) and facing it within `angle` degrees */
+        if (m->nargs > 3) {
+            int ok = 0;
+            if (in && g_player && g_player->dead_kind == 0) {
+                float dx = in->position.x - g_player->pos.x, dz = in->position.z - g_player->pos.z, d = sqrtf(dx * dx + dz * dz);
+                if (d < (float)(int)m->args[1]) ok = d < 1e-3f || (sinf(g_player->yaw) * dx + cosf(g_player->yaw) * dz) / d >= cosf((float)(int)m->args[2] * 3.14159265f / 180.0f);
+            }
+            eko_set_var(vm, m->args[3], ok);
+        }
+        break;
+    case 1048: case 1049: case 1050:                                                                        /* key tests: mode 0 held, 1 released, 2 just pressed (0x467400 / 0x467420 / 0x467440) */
+        if (m->nargs > 1) { int k = m->id - 1048, mode = (int)m->args[1], now = g_act_now[k], prev = g_act_prev[k];
+                            eko_set_var(vm, m->args[0], mode == 0 ? now : mode == 1 ? (!now && prev) : (now && !prev)); }
+        break;
+    case 1160: if (m->nargs) { g_intro_var = m->args[0]; g_have_intro = 1; } break;
     case 1084: if (m->nargs) eko_set_var(vm, m->args[0], g_prev_level); break;                              /* GetPrevLevel: the hub script picks the spawn point with it */
     case 1180: request_level(26, 0.5f); break;
     case 1150: case 1151: if (m->nargs) { g_sfade.total = g_sfade.rest = (int)m->args[0] * 0.01f; g_sfade.out = m->id == 1151; } break;
@@ -209,13 +262,14 @@ static void *read_all(const char *path, size_t *sz);
 static void level_free(Level *L)
 {
     if (L->have_player) player_free(&L->player);
-    g_player = NULL; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0;
+    g_player = NULL; g_prop = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0;
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
 static int level_load(Level *L, const char *dir, const char *lvl)
 {
     char path[512]; memset(L, 0, sizeof *L); snprintf(L->name, sizeof L->name, "%s", lvl);
+    if (char_of_level(g_level) >= 0) g_char = char_of_level(g_level);
     snprintf(path, sizeof path, "%s/%s/%s.tex", dir, lvl, lvl); if (tex_load(&L->tex, path)) return -1;
     snprintf(path, sizeof path, "%s/%s/%s.gel", dir, lvl, lvl); if (gel_load(&L->gel, path)) { tex_free(&L->tex); return -1; }
     snprintf(path, sizeof path, "%s/%s/%s.ins", dir, lvl, lvl); if (ins_load(&g_ins, path)) { gel_free(&L->gel); tex_free(&L->tex); return -1; }
@@ -232,6 +286,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     if (L->have_player) { L->player.inst->scripted = 0; L->player.enemies = &g_enemies; }
     printf("VM init...\n"); eko_init(&L->vm);
     printf("init done: %d messages\n", L->vm.nmsgs);
+    if (L->have_player) { SaveChar *sc = &g_save.chr[g_char]; L->player.lives = sc->lives; L->player.health = sc->health > 0 ? sc->health : 1.0f; }   /* 0x44a6a0 / 0x44a759 */
     L->t0 = win_time();
     return 0;
 }
@@ -247,7 +302,8 @@ int main(int argc, char **argv)
     double jump_len = 1.0, jump2_at = -1, jump2_len = getenv("WOODY_J2LEN") ? atof(getenv("WOODY_J2LEN")) : 0.15;                                         /* --jump2 LEN T2: first press lasts LEN s, second press (0.15 s) at T2 */
     double peck_at = -1, peck_len = 0.1;                                          /* --peck T LEN: hold the attack key from T s for LEN s (testing) */
     int have_pos = 0; float pos_args[3] = {0, 0, 0};                               /* --pos x y z: start the player there (testing) */
-    const char *next_name = NULL; double next_at = 0;                              /* --next LVL T: change to level LVL after T s (testing) */
+    int have_yaw = 0; float yaw_arg = 0;
+    int new_game = 0; const char *next_name = NULL; double next_at = 0;                              /* --next LVL T: change to level LVL after T s (testing) */
     double walk_for = 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
@@ -258,10 +314,14 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--peck") && i + 2 < argc) { peck_at = atof(argv[i + 1]); peck_len = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--pos") && i + 3 < argc) { for (int k = 0; k < 3; k++) pos_args[k] = (float)atof(argv[i + 1 + k]); have_pos = 1; i += 3; }
         else if (!strcmp(argv[i], "--fly")) fly = 1;
+        else if (!strcmp(argv[i], "--yaw") && i + 1 < argc) { have_yaw = 1; yaw_arg = (float)atof(argv[i + 1]) * 3.14159265f / 180; i += 1; }   /* with --pos: facing in degrees */
+        else if (!strcmp(argv[i], "--unlock")) g_unlock_all = 1;                       /* every level door open */
+        else if (!strcmp(argv[i], "--newgame")) new_game = 1;                          /* ignore woodyre.sav */
         else if (!strcmp(argv[i], "--prev") && i + 1 < argc) { g_prev_level = level_index(argv[i + 1]); i += 1; }   /* --prev LVL: pretend we came from LVL (hub spawn point) */
         else if (!strcmp(argv[i], "--next") && i + 2 < argc) { next_name = argv[i + 1]; next_at = atof(argv[i + 2]); i += 2; }
     }
     Window win; if (win_open(&win, "WoodyRE", 1280, 800)) return 1;
+    if (new_game) save_reset(); else save_read();
     static Level L; g_level = level_index(lvl); if (level_load(&L, dir, lvl)) return 1;
 
     /* camera: start behind Woody (model 0, instance 0) if present */
@@ -273,7 +333,8 @@ int main(int argc, char **argv)
 
     if (!L.have_player) fly = 1;
     if (L.have_player && have_pos) { L.player.pos.x = pos_args[0]; L.player.pos.y = pos_args[1]; L.player.pos.z = pos_args[2]; L.player.floor_y = L.player.pos.y - 1000.0f; }
-    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
+    if (L.have_player && have_yaw) L.player.yaw = yaw_arg;
+    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
         double now = win_time(); float dt = (float)(now - last); last = now; g_now = (float)(now - t0);
@@ -318,6 +379,9 @@ int main(int argc, char **argv)
             pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
             pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
             pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_CONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
+            for (int k = 0; k < 3; k++) g_act_prev[k] = g_act_now[k];
+            g_act_now[0] = pin.left; g_act_now[1] = pin.right; g_act_now[2] = pin.action;
+            g_save.chr[g_char].lives = L.player.lives; g_save.chr[g_char].health = L.player.health;          /* the Perso writes straight into the save struct */
             if (g_cam.mode == 4 && !fly) memset(&pin, 0, sizeof pin);              /* cinematic camera: the player is frozen (0x459090) */
             player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             enemies_update(&g_enemies, &L.player, cam.pos, dt);
@@ -341,6 +405,10 @@ int main(int argc, char **argv)
         /* level change: PgUp / PgDn cycle through the levels (debug); a request fades out, swaps the level, fades in */
         for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
         if (getenv("WOODY_SIDE") && now - t0 >= 1.0 && !g_cam.plane_on && L.have_player) { Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(getenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); }   /* testing: force the side view on a marker instance */
+        if ((next_name && now - t0 >= next_at && !strcmp(next_name, "END")) || (win.keys[VK_END] && !end_prev)) {   /* End key / --next END T: finish the level as its exit door does (message 1083) */
+            EkoMsg em; memset(&em, 0, sizeof em); em.id = 1083; on_msg(&L.vm, &em, NULL); if (next_name && !strcmp(next_name, "END")) next_name = NULL;
+        }
+        end_prev = win.keys[VK_END];
         if (next_name && now - t0 >= next_at) { request_level(level_index(next_name), 0.5f); next_name = NULL; }
         if (g_next_level >= 0) { g_switch_fade -= dt / g_fade_len; if (g_switch_fade < 0) g_switch_fade = 0; } else if (g_switch_fade < 1) { g_switch_fade += dt / 0.5f; if (g_switch_fade > 1) g_switch_fade = 1; }
         { float f = (L.have_player && !fly) ? L.player.fade : 1.0f; if (g_switch_fade < f) f = g_switch_fade;
@@ -352,10 +420,8 @@ int main(int argc, char **argv)
         frames++;
         if (g_next_level >= 0 && g_switch_fade <= 0) {
             const char *name = k_levels[g_next_level]; g_prev_level = g_level; g_level = g_next_level; g_next_level = -1;
-            int lives = L.have_player ? L.player.lives : -1; float health = L.have_player ? L.player.health : 0;
             level_free(&L);
             if (level_load(&L, dir, name)) { fprintf(stderr, "level %s failed to load\n", name); return 1; }
-            if (L.have_player && lives >= 0) { L.player.lives = lives; L.player.health = health; }
             if (!L.have_player) fly = 1; else if (!have_cam) fly = 0;
             t0 = L.t0; last = win_time(); sel = (g_ins.nmodels && g_ins.models[0].ninstances) ? &g_ins.models[0].instances[0] : NULL;
             lvl = L.name; continue;

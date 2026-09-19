@@ -868,4 +868,8 @@ void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
     cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, h); p->cam_yaw = cam->yaw;
 }
 
+/* scripted Perso action (message 1040, 0x44dda0): only the effect on control is ported - the running attack is dropped
+ * and the player stands still for t seconds (17 = walk into a door: the level change follows) */
+void player_script_hold(Player *p, float t) { p->atk = 0; p->charge = 0; p->use_atk_disp = 0; lock_move(p, t); }
+
 void player_free(Player *p) { free(p->inside); free(p->vol_inst); free(p->vol_node); free(p->vol_id); }
