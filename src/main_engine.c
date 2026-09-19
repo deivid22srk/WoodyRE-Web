@@ -53,6 +53,7 @@ static struct {
     /* mode 0x20 (game messages 1088 + 1110, CAMERA_SCRIPT.md 4.2): side view of a section where the player is kept on a vertical plane */
     int plane_on, side; Vec3 plane_a, plane_d; float sv_par[8];   /* sv_par: lat 1000, ahead 300, h 340, h_up 500, h_down 0, rate_h 400, rate_a 700, rate_lat 200 */
     float sv_a, sv_h, sv_lat, sv_s;
+    int death_cam;                                               /* engine use of mode 2 (0x41fb50 from 0x459030): the camera stops and watches the player fall */
 } g_cam = { 1 };
 static const float k_sv_defaults[8] = { 1000, 300, 340, 500, 0, 400, 700, 200 };
 static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
@@ -118,6 +119,7 @@ static Vec3 rail_target(const Trajectory *tr, Vec3 c, float d, Vec3 prev)
 static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 {
     Vec3 P, T;
+    if (g_cam.death_cam && !p->dead_kind) { g_cam.death_cam = 0; g_cam.cut = 1; cam_set_mode(1); }   /* respawn: hard cut back to the follow camera (0x41f9f0(2), SetMode(0,0)) */
     if (g_cam.mode == 0x20 && g_cam.plane_on) {                  /* 0x424bf0 */
         const float *q = g_cam.sv_par; Vec3 d = g_cam.plane_d, sidev = { -d.z, 0, d.x };   /* (0,-1,0) x dir */
         float htarget = behind_key == 2 ? q[3] : behind_key == 3 ? q[4] : q[2];
@@ -201,7 +203,12 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 10:                                                                        /* Collect (docs/BONUS.md): the level script saw the player enter the bonus volume */
         if (in && g_player && in->visible && player_collect(g_player, in->type, m->nargs > 1 ? (int)m->args[1] : 0)) in->visible = 0;   /* 0x407850: cell = -1 */
         break;
-    case 1020: if (g_player) player_kill(g_player, 1); break;
+    case 1020:                                                                      /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes; + 0x459030 unless in the side view */
+        if (g_player) {
+            player_kill(g_player, 1);
+            if (g_cam.mode != 0x20 && g_player->dead_kind) { g_cam.fix_pos = g_cam.pos; g_cam.fix_target = g_player->inst; g_cam.fix_f = g_cam.look_off.y; g_cam.cut = 1; cam_set_mode(2); g_cam.death_cam = 1; }
+        }
+        break;
     /* game flow (docs/GAMEFLOW.md) */
     case 1081: if (m->nargs) request_level((int)m->args[0], 1.5f); break;                                   /* GotoLevel: 0x404b60(1.5, level, 1, 0) */
     case 1083:                                                                                              /* EndLevel 0x404be0 */
