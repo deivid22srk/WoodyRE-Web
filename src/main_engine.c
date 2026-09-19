@@ -17,10 +17,14 @@
 #include "render_gl.h"
 #include "ekovm.h"
 #include "player.h"
+#include "instance.h"
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
 static Player *g_player;
+static float g_now;                                  /* game time in seconds (VM time base) */
+/* messages 12/13 wait for the running animation to end: offered again every frame (max 32 in the original, 0x4012f0 clears) */
+static EkoMsg g_retry[32]; static int g_nretry;
 static Instance *slot_instance(uint32_t ref) { if ((ref >> 24) != 1) return NULL; uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.slots[i] : NULL; }
 
 /* script -> engine messages. Only the subset needed to see something happen is implemented;
@@ -31,13 +35,11 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     switch (m->id) {
     case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (in->type == 34 && g_player) { g_player->bonus_total++; if (g_player->bonus_total <= 4) printf("  bonus %u at %.0f %.0f %.0f\n", in->index, in->position.x, in->position.y, in->position.z); } } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
-    case 1: case 4:                                                                 /* PlayAnim(inst, anim, ...) */
-        if (in && m->nargs > 1 && m->args[1] < in->model->nanims) { in->anim = (int)m->args[1]; in->anim_time = 0; }
+    case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
+    case 42: case 43: case 44: case 45: case 56: case 57:
+        if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
         break;
-    case 2: case 3: case 12: case 13:
-        if (in && m->nargs > 1 && m->args[1] < in->model->nanims) { in->anim = (int)m->args[1]; }
-        break;
-    case 6: if (in && m->nargs > 1) in->visible = m->args[1] != 0; break;         /* show/hide */
+    case 7: if (in) { int k = 0; for (int i = 0; i < g_nretry; i++) if (slot_instance(g_retry[i].args[0]) != in) g_retry[k++] = g_retry[i]; g_nretry = k; } break;
     case 10:                                                                        /* Collect (docs/BONUS.md): the level script saw the player enter the bonus volume */
         if (in && g_player && in->visible && player_collect(g_player, in->type, m->nargs > 1 ? (int)m->args[1] : 0)) in->visible = 0;   /* 0x407850: cell = -1 */
         break;
@@ -96,13 +98,15 @@ int main(int argc, char **argv)
 
     Player player; int have_player = player_init(&player, &g_ins, &gel) == 0;
     if (!have_player) fly = 1; else g_player = &player;
+    for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
+    if (have_player) player.inst->scripted = 0;
     if (have_player && have_pos) { player.pos.x = pos_args[0]; player.pos.y = pos_args[1]; player.pos.z = pos_args[2]; player.floor_y = player.pos.y - 1000.0f; }
     printf("VM init...\n"); eko_init(&vm);
     printf("init done: %d messages\n", vm.nmsgs);
     double t0 = win_time(), last = t0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
-        double now = win_time(); float dt = (float)(now - last); last = now;
+        double now = win_time(); float dt = (float)(now - last); last = now; g_now = (float)(now - t0);
         if (dt > 0.1f) dt = 0.1f;
         if (win.keys[VK_F5] && !f5_prev && have_player) { fly ^= 1; if (!fly) player.cam_init = 0; }
         f5_prev = win.keys[VK_F5];
@@ -151,7 +155,11 @@ int main(int argc, char **argv)
         /* VM tick: time in 1/100 s like the original */
         if (!paused) {
             eko_tick(&vm, (int32_t)((now - t0) * 100.0));
-            for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) g_ins.models[mi].instances[k].anim_time += dt * g_ins.models[mi].instances[k].anim_speed;
+            { int n = g_nretry; g_nretry = 0; for (int i = 0; i < n; i++) { Instance *ri = slot_instance(g_retry[i].args[0]); if (ri && inst_msg(ri, g_retry[i].id, g_retry[i].args, g_retry[i].nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = g_retry[i]; } }
+            for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
+                Instance *ii = &g_ins.models[mi].instances[k];
+                if (ii->scripted) inst_tick(ii, g_now, dt); else ii->anim_time += dt * ii->anim_speed;
+            }
         }
         rnd_frame(&rnd, &win, &cam, (float)(now - t0));
         if (have_player && !fly) rnd_fade(player.fade);

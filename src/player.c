@@ -96,7 +96,7 @@ static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float ma
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
         const Model *m = &ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in == skip) continue;
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip) continue;
             /* cheap reject: instance origin far away horizontally */
             float dx = in->position.x - p.x, dz = in->position.z - p.z; if (dx * dx + dz * dz > 4000.0f * 4000.0f) continue;
             for (uint32_t ni = 0; ni < m->nnodes; ni++) {
@@ -187,7 +187,7 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
         const Model *m = &ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in == skip || !in->node_world) continue;
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || !in->node_world) continue;
             float dx = in->position.x - c.x, dz = in->position.z - c.z; if (dx * dx + dz * dz > 3000.0f * 3000.0f) continue;
             for (uint32_t ni = 0; ni < m->nnodes; ni++) {
                 const InsNode *nd = &m->nodes[ni]; if (nd->kind != 4 || !nd->polys || !nd->npoints) continue;

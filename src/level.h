@@ -87,6 +87,11 @@ typedef struct Instance {
     /* runtime */
     int visible; int anim; float anim_time; float anim_speed; int type;   /* type from SetTypeInstance */
     Mat4 world;                                 /* instance placement */
+    /* base class state driven by the script (instance.c, docs/INSTANCE.md) */
+    int scripted;                               /* 0 = animation owned by other code (the player) */
+    int slot[4]; float a_speed, a_base_speed, a_start, a_pos; int a_ended;   /* +0xb0.., +0xa0, +0xa4, +0xa8, +0xac, +0x9c */
+    float fade, fade_target, fade_rate; int noncollide; uint32_t setflags;   /* +0x6c, +0xfc, +0x100, +8 & 0x40, +0xf0 */
+    uint32_t traj_flags; float traj_start, traj_dur;                         /* path follower (+0x78) */
     Mat4 *node_world;                           /* per node, updated by ins_pose() */
 } Instance;
 

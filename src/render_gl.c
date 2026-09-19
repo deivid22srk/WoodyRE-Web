@@ -251,7 +251,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) {
             Model *m = &r->ins->models[mi];
             for (uint32_t k = 0; k < m->ninstances; k++) {
-                Instance *inst = &m->instances[k]; if (!inst->visible) continue;
+                Instance *inst = &m->instances[k]; if (!inst->visible || inst->fade > 0.98f) continue;   /* 0x42e374 */
                 if (pass == 0) ins_pose(inst, inst->anim, inst->anim_time);
                 draw_instance(r, inst, pass);
             }
