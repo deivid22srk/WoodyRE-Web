@@ -637,6 +637,7 @@ static void game_sequence(Player *p, EkoVM *vm, float dt)
 }
 
 /* ---- peck climbing: Perso state 4 (0x4651d0). A press node (kind 1) with typecode 4 is a peckable wall. ---- */
+static float g_climb_frac;   /* fraction of the last climb_ray hit */
 static int climb_ray(const Player *p, Vec3 from, Vec3 to, Vec3 *n_out, const Instance **inst_out, int *peckable)
 {
     float best = 2.0f; int hit = 0;
@@ -657,7 +658,7 @@ static int climb_ray(const Player *p, Vec3 from, Vec3 to, Vec3 *n_out, const Ins
                     Vec3 q = { from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t, from.z + (to.z - from.z) * t };
                     if (!point_in_poly3(v, pl->nverts, nrm, q)) continue;
                     if (da < 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }   /* normal towards the player */
-                    best = t; hit = 1; *n_out = nrm; *inst_out = in; *peckable = nd->type_code == 4;
+                    best = t; g_climb_frac = t; hit = 1; *n_out = nrm; *inst_out = in; *peckable = nd->type_code == 4;
                 }
             }
         }
@@ -674,7 +675,7 @@ static int climb_try(Player *p)
     if (!climb_ray(p, from, climb_probe_to(p, from), &n, &wi, &peck) || !peck || fabsf(n.y) > 0.05f) return 0;
     float l = sqrtf(n.x * n.x + n.z * n.z); if (l < 1e-4f) return 0;
     p->wall_n = (Vec3){ n.x / l, 0, n.z / l }; p->wall_inst = wi; p->yaw = atan2f(-p->wall_n.x, -p->wall_n.z);
-    p->climb_sub = p->on_ground ? 1 : 2; p->grip = 0.8f; p->peck_t = 0.3f;
+    p->climb_sub = p->on_ground ? 1 : 2; p->grip = 0.8f; p->peck_t = 0.3f; jumper_reset(&p->jumper);   /* 0x462c90 at 0x4650ce */
     p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->vel = (Vec3){ 0, 0, 0 }; p->use_atk_disp = 0;
     printf("  CLIMB grab on instance %u\n", wi->index);
     return 1;
@@ -697,6 +698,8 @@ static void climb_update(Player *p, const PlayerInput *in, float dt)
         Vec3 from = { p->pos.x, p->pos.y + 40.0f, p->pos.z }, n; const Instance *wi; int peck = 0;
         if (climb_ray(p, from, climb_probe_to(p, from), &n, &wi, &peck)) {
             if (!peck) { p->climb_sub = 4; break; }
+            /* 0x4aa164: pressed against the wall at 200 u/s; the cylinder stops at its radius (the root motion of the climb-over counts on it) */
+            { float gap = g_climb_frac * (P_RADIUS + 100.0f) - P_RADIUS, st = 200.0f * dt; if (st > gap) st = gap; if (st > 0) { p->pos.x -= p->wall_n.x * st; p->pos.z -= p->wall_n.z * st; } }
             if ((p->peck_t -= dt) <= 0) p->peck_t += 0.3f;              /* spark every 0.3 s (0x479c80): particles are not ported */
         } else {
             /* nothing in front any more: the top, when within 50 of the wall instance's typecode-0 marker */
@@ -704,19 +707,24 @@ static void climb_update(Player *p, const PlayerInput *in, float dt)
             for (uint32_t i = 0; i < wm->nnodes && !top; i++) if (wm->nodes[i].kind == 0x20 && wm->nodes[i].type_code == 0 && wm->nodes[i].npoints >= 1) { ty = ins_point_world(p->wall_inst, wm->nodes[i].point_base).y; top = 1; }
             if (top && fabsf(p->pos.y - ty) < 50.0f) {
                 p->climb_sub = 3; p->over_len = p->over_t = anim_len(p, 0x17, 0) > 0.05f ? anim_len(p, 0x17, 0) : 0.5f; anim_request(p, 0x17, 1.0f);
-                p->over_from = p->pos; p->over_to = (Vec3){ p->pos.x - p->wall_n.x * (P_RADIUS + 40.0f), ty, p->pos.z - p->wall_n.z * (P_RADIUS + 40.0f) };   /* stands in for the root motion of .ins animation 15 (0x44e290) */
+                p->use_root = 1; p->root_pos = p->pos;
             } else p->climb_sub = 4;
         }
         break; }
     case 3: {
         anim_request(p, 0x17, 1.0f);
-        p->over_t -= dt; float k = 1.0f - (p->over_t > 0 ? p->over_t / p->over_len : 0), ky = k < 0.6f ? k / 0.6f : 1.0f, kh = k < 0.4f ? 0 : (k - 0.4f) / 0.6f;
-        p->pos.y = p->over_from.y + (p->over_to.y - p->over_from.y) * ky;
-        p->pos.x = p->over_from.x + (p->over_to.x - p->over_from.x) * kh; p->pos.z = p->over_from.z + (p->over_to.z - p->over_from.z) * kh;
-        if (p->over_t <= 0) { p->climb_sub = 0; jumper_reset(&p->jumper); p->on_ground = 1; printf("  CLIMB over the top\n"); }
+        /* Perso_RootMotion 0x44e290 (docs/OBJECTS.md 1.5): pos stays frozen while the root track of .ins anim 15 carries the model over
+         * the edge; the position getter returns (1-f) pos + f q(f); on the last frame pos = the root's end relative to idle (anim 1) */
+        p->over_t -= dt; float f = 1.0f - (p->over_t > 0 ? p->over_t / p->over_len : 0); Vec3 q, fw;
+        if (ins_root_at(p->inst, 15, f, 1, &q, &fw)) p->root_pos = (Vec3){ p->pos.x + (q.x - p->pos.x) * f, p->pos.y + (q.y - p->pos.y) * f, p->pos.z + (q.z - p->pos.z) * f };
+        if (p->over_t <= 0) {
+            if (ins_root_at(p->inst, 15, 1.0f, 1, &q, &fw)) { p->pos = q; if (fw.x * fw.x + fw.z * fw.z > 1e-6f) p->yaw = atan2f(fw.x, fw.z); }
+            { int fnd; const Instance *gi; const InsNode *gn; Vec3 pr = { p->pos.x, p->pos.y + P_PROBE_Y + 60.0f, p->pos.z }; float gy = world_ground(p, pr, &fnd, &gi, &gn); if (fnd && fabsf(gy - p->pos.y) < 150.0f) p->pos.y = gy; }   /* SnapToGround 0x462990 */
+            p->use_root = 0; p->climb_sub = 0; jumper_reset(&p->jumper); p->on_ground = 1; p->lanim = -1; anim_request(p, 0, 1.0f); printf("  CLIMB over the top at %.0f %.0f %.0f\n", p->pos.x, p->pos.y, p->pos.z);
+        }
         break; }
     default:                                                            /* 4: let go; no new grab for twice the fall animation */
-        p->regrab = 2.0f * anim_len(p, 0x16, 0); anim_request(p, 0x16, 1.0f);
+        p->use_root = 0; p->regrab = 2.0f * anim_len(p, 0x16, 0); anim_request(p, 0x16, 1.0f);
         p->climb_sub = 0; jumper_force_fall(&p->jumper, 1); printf("  CLIMB let go\n");
         break;
     }
@@ -789,7 +797,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (!p->dead_kind && p->health <= 0) player_kill(p, 3);
     if (p->regrab > 0) p->regrab -= dt;
     if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); if (p->climb_sub) p->on_ground = 0; player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return; }
-    if (p->dead_kind) p->climb_sub = 0;
+    if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     if (!p->dead_kind) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } }
     /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking */
     int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind);
@@ -979,11 +987,14 @@ void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
     /* action 0xa: a tap pulls the camera behind the player for 0.5 s at 7*dt, holding it at 3*dt */
     if (behind_key && !p->cam_behind_prev) p->cam_quick_t = 0.5f;
     p->cam_behind_prev = behind_key; if (p->cam_quick_t > 0) p->cam_quick_t -= dt;
-    camera_step(p, dt, behind_key || p->cam_quick_t > 0, p->cam_quick_t > 0, 1);
+    /* 0x4591ec: Perso states 1, 4 (climbing) and 8 force behind mode at the slow rate; the target is the root position during the climb-over */
+    Vec3 keep = p->pos; if (p->use_root) p->pos = p->root_pos;
+    camera_step(p, dt, behind_key || p->cam_quick_t > 0 || p->climb_sub, p->cam_quick_t > 0, 1);
     cam->pos = p->cam_pos; cam->fov_deg = CAM_FOV_Y;
     Vec3 to = { p->pos.x - cam->pos.x, p->pos.y + CAM_LOOK_Y - p->cam_drop - cam->pos.y, p->pos.z - cam->pos.z };
     float h = sqrtf(to.x * to.x + to.z * to.z);
     cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, h); p->cam_yaw = cam->yaw;
+    p->pos = keep;
 }
 
 /* scripted Perso action (message 1040, 0x44dda0): only the effect on control is ported - the running attack is dropped

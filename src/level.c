@@ -374,17 +374,19 @@ int ins_camera_eval(const Instance *inst, int anim, float phase, Vec3 *eye, Vec3
     *eye = mat4_apply(&inst->world, track_pos_cut(cn, anim, frame)); *target = mat4_apply(&inst->world, track_pos_cut(tn, anim, frame));
     return 1;
 }
-int ins_root_end(const Instance *inst, int anim, Vec3 *pos, Vec3 *forward)
+int ins_root_end(const Instance *inst, int anim, Vec3 *pos, Vec3 *forward) { return ins_root_at(inst, anim, 1.0f, 0, pos, forward); }
+int ins_root_at(const Instance *inst, int anim, float phase, int base, Vec3 *pos, Vec3 *forward)
 {
     const Model *m = inst->model; const InsNode *root = NULL;
-    if (anim < 0 || (uint32_t)anim >= m->nanims) return 0;
+    if (anim < 0 || (uint32_t)anim >= m->nanims || base < 0 || (uint32_t)base >= m->nanims) return 0;
     for (uint32_t i = 0; i < m->nnodes && !root; i++) if (m->nodes[i].parent < 0 && m->nodes[i].flags == 0) root = &m->nodes[i];
     if (!root) return 0;
     Mat4 A, B, WA; Vec3 p = { 0, 0, 0 }, one = { 1, 1, 1 }; Quat q = { 0, 0, 0, 1 };
-    track_pos(root, anim, (float)m->anims[anim].nframes, &p); if (track_rot(root, anim, (float)m->anims[anim].nframes, &q)) { q.x = -q.x; q.y = -q.y; q.z = -q.z; }
+    float fr = (float)m->anims[anim].nframes * phase;
+    track_pos(root, anim, fr, &p); if (track_rot(root, anim, fr, &q)) { q.x = -q.x; q.y = -q.y; q.z = -q.z; }
     mat4_from_trs(&A, p, q, one);
     p = (Vec3){ 0, 0, 0 }; q = (Quat){ 0, 0, 0, 1 };
-    track_pos(root, 0, 0, &p); if (track_rot(root, 0, 0, &q)) { q.x = -q.x; q.y = -q.y; q.z = -q.z; }
+    track_pos(root, base, 0, &p); if (track_rot(root, base, 0, &q)) { q.x = -q.x; q.y = -q.y; q.z = -q.z; }
     mat4_from_trs(&B, p, q, one); mat4_mul(&WA, &inst->world, &A);
     /* B is rigid: B^-1 v = R^T (v - t) */
     Vec3 v[2] = { { 0, 0, 0 }, { 0, -1, 0 } }, w[2];                        /* origin and the model's forward (-y) */

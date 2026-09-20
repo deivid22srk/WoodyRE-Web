@@ -196,6 +196,139 @@ hierboven vereenvoudigd) en de inhoud van `0x44e290` (alleen het begin gelezen: 
 Beide modellen: textuurgroep 78 (16×16, vlaggen `0x00b20002` = additieve gloed) op de "pik hier"-vlakken (nodes 4..7 resp. 5..6),
 een hull-node en gewone press-nodes (typecode 0) om op te staan.
 
+### 1.4 Camera tijdens het klimmen
+
+**Kort: er is géén klimcamera.** Toestand 4 doet precies één ding met de camera: de volgcamera (mode 1) staat zolang de toestand duurt
+in **behind-mode** (alsof knop 0xa wordt vastgehouden, zonder de snelle 7·dt-fase). De rest is de gewone volgcamera van CAMERA.md §3.
+
+1. **De klimcode raakt de camera niet aan.** In `0x464e00`, `0x464ef0`/`0x464f42` (…`0x4651b6`), `0x4651d0`…`0x465727`, de
+   aanval-subtoestand 8 (`0x458524`…`0x458582`) en `SetState` `0x44c980` staat geen enkele verwijzing naar de CamMgr `[0x4c737c]` en geen
+   enkele aanroep van een camerafunctie (`0x41dxxx`…`0x425xxx`; de twee `0x41af10`/`0x42f6b0`-calls zijn kruisproduct en marker-ophalen).
+   `SetState(n)` (`0x44c980`) schrijft alleen `+0x21c = n`, `+0x220 = vorige`, en wist `+0x50c`, `+0x5f0`, `+0x5b4`, `+0x5cd`, `+0x6ac`.
+   Alle CamMgr-verwijzingen in de Perso-code liggen elders (`0x44b567..`, `0x44c343..`, `0x44df7d..`, `0x44e5a0..`, `0x454200..`,
+   `0x4562bd..`, `0x458d5a` (shake), `0x45910e..`, `0x45997c`, `0x459c71..`, `0x45a7d0`, `0x463eb9`, `0x464998`, `0x464b02`).
+2. **De enige koppeling is `0x459090` (camera-besturing, CAMERA.md §3.1)**, mode-index 0, `0x4591ec..0x459224`:
+   ```c
+   st = Perso->state;                                   /* +0x21c */
+   if (st == 1 || st == 4 || st == 8) {                 /* dec eax / sub eax,3 / sub eax,4 */
+       p->behind /*CamMgr+0x3ac*/ = 1;
+       ctl->savedDir /*ctl+0xc*/ = Perso+0x34..0x3c;    /* rij 1 van de instantie-rotatie = −kijkrichting = +wandnormaal */
+   } else p->behind = 0;
+   ...
+   if (p->behind) p->dir /*CamMgr+0x354*/ = ctl->savedDir;
+   p->+0x2c /*CamMgr+0x364*/ = Jumper valt ? 1 : Jumper stijgt ? 2 : 0;
+   p->+0x3c /*CamMgr+0x374*/ = st;                      /* wordt geschreven, maar door NIEMAND gelezen */
+   ```
+   Bij de toestandswissel zelf (`0x4590fb..0x459142`) gebeurt alleen iets voor toestand 3 (first-person) en bij het verlaten daarvan; niets voor 4.
+   De vlag `p->flags & 4` (7·dt) wordt alleen door de 0,5 s-timer van knop 0xa gezet, niet door toestand 4 → factor **3·dt**.
+3. **De camera-update leest geen Perso-velden.** `0x422170..0x424b30` (volgcamera) bevat geen lezer van `p+0x3c` (`CamMgr+0x374`, de
+   Perso-toestand) of `p+0x5c` (`CamMgr+0x394` = `Perso+0x458`), en geen enkele Perso-/Game-global (alle absolute adressen in dat bereik zijn
+   constanten, `[0x4c93b0]` wereld, `[0x53a554/8]` straalresultaat, `[0x4c83a0..0x4c93ac]` kijkpunt-filter). `+0x50c`, `+0x510` (wandnormaal),
+   `+0x51c` en `+0x4ec` worden buiten de Perso-code nergens gelezen. De wandnormaal bereikt de camera dus alleen indirect: bij het vastpikken
+   zet `0x4650de..0x4651b3` `M.dir = −n`, `0x44bd00` bouwt daar de instantie-rotatie uit, en `Perso+0x34` (= +n) wordt `p->dir`; `0x424760`
+   negeert die nog eens, zodat `F = −n` (naar de wand toe).
+4. **Wat de volgcamera dan doet** (`0x4231e0`, behind-tak `0x423264`; CAMERA.md §3.4/§3.5b/§3.6), met `n` = wandnormaal (xz, lengte 1):
+   ```c
+   T = pos + (0,120,0);  L = pos + (0,140,0);
+   D = T + n * 400;                                     /* C+0x280: 400 eenheden van de wand af, recht achter Woody */
+   move.xz = (D − P).xz * 3 * dt;                       /* 0x4a988c = 3.0 */
+   move.y  = (T.y + 180 − P.y) * 6 * dt;                /* jumper is bij het vastpikken gereset (0x462c90 → toestand 2), dus f296/f297 = 0:
+                                                           géén 1:1-meestijgen en géén zakkend kijkpunt (drop veert met ×0.94/frame naar 0) */
+   Center_BehindArc (0x423ed0);  bol r = 40, stapjes van 35 (0x422e30);  zichtlijn-veto (0x423a40);  kruimelpad bij geblokkeerde P→T
+   kijkpunt = L  (pos + 140)
+   ```
+   Woody klimt met 250 e/s; in evenwicht loopt de camera-y `250/6 ≈ 42` eenheden achter op `pos.y + 300`, dus hij hangt ≈ 118 boven het
+   kijkpunt en kijkt **omlaag/horizontaal naar Woody's rug**, nooit omhoog. In een schacht die ondieper is dan 400 + 40 duwt de bol-test de
+   camera tegen de achterwand; hij blijft dan op die xz-plek en volgt alleen in y.
+   De **jumper-reset is essentieel**: `0x4650ce` (vanaf de grond) en `0x45852a` (elk frame van subtoestand 8) roepen `0x462c90` aan
+   (`J+0x14 = 2`), en toestand 4 draait `Perso_Move`/`Jumper_Update` niet (`0x44b834`: alleen `0x4651d0` + `0x4624f0` + `0x462a40`), dus
+   `CamMgr+0x364` blijft 0 tijdens het hele klimmen.
+5. **`Perso+0x4ec`** is de vlag "2.5D-/zijcamera-modus" (PERSO_FRAME `altMode`, PERSO_MOVE "op een vlak geplakt", CAMERA_SCRIPT §4.2):
+   gezet door bericht 1088 → `0x459960` (`0x4599d9`, samen met `+0x4e8 = v` en het vlak `+0x4f0..0x4fc`), gewist door de Perso-reset
+   (`0x44ad22`) en door `0x44dda0` (`0x44de44`, gescripte actie). Lezers: `0x44b7be` (→ `0x459c70`, vult elk frame het mode-0x20-blok
+   `CamMgr+0x61c`), `0x459982` (1088 opnieuw: alleen nog naar mode-index 5 cutten), `0x459ec5` (`0x459eb0` ClampToPlane), `0x45b29e`,
+   `0x44dce9` (einde actie 18) en `0x465387` (toestand 4: **geen zijwaarts klimmen in de zijcamera**, want links/rechts is daar de loopas).
+   Het is dus geen klim-specifiek veld en het verandert de volgcamera niet.
+6. **Botsing/zichtlijn**: ongewijzigd CAMERA.md §3.6 (bol r = 40 met uitduwvector in stapjes van 35; veto van elke stap waarna `N → T`
+   geblokkeerd is of N buiten de wereld valt; bij geblokkeerde `P → T` aan het begin van het frame toestand 2 = kruimelpad
+   `{P, Tprev, T, …}` met `u += 0.04`/frame; instanties van categorie 7 blokkeren niet). De straal `0x4359b0` test wereld **én** instanties
+   (trefsoort 1 / 2). Tijdens het klimmen is het kruimelpad het spoor van Woody langs de wand omhoog: een camera die klem zit komt dus
+   vanzelf via `Tprev` (= 120 boven een eerdere Woody-positie) weer in de schacht terecht.
+   Stand van de port (`src/player.c` `camera_step`/`player_camera`, `src/main_engine.c` `cam_update`): bol-uitduw één keer per frame en
+   alleen in xz (`gel_push` + `ins_push`), veto alleen tegen de wereld (`gel_ray_blocked`, geen instanties) en alleen als P zelf nog zicht
+   had, **geen** kruimelpad, **geen** "buiten de wereld → P = Pstart", geen `Center_BehindArc`; toestand 4 forceert **geen** behind-mode
+   (`player_camera` krijgt alleen de toets), en `climb_try` reset de jumper niet (na vastpikken uit de lucht blijft `rising`/`falling` in
+   `camera_step` het hele klimmen waar → kijkpunt 150 lager resp. y 1:1/bevroren).
+7. **Klim-over (sub 3)**: `0x44e290` zet `+0x550 = 1`, waardoor `vtbl[34]` (`0x44c030`) `&+0x544` (wortelpositie, §1.5) teruggeeft in plaats
+   van `&+0x1f4`. `0x459090` haalt `p->targetPtr` elk frame opnieuw op, dus **T en L volgen de wortelbeweging** over de rand; de camera
+   blijft in behind-mode tot het laatste frame (`SetState(0)` op `0x465697`), daarna gewone lazy-follow. Geen cut, geen overgang, geen
+   `0x44e5a0` (die hoort alleen bij toestand 5).
+
+Onzeker: of de schacht bij wand 495 wereldgeometrie of instantie-hull is (bepaalt of de port-veto hem ziet); welke klasse categorie 7 is.
+
+### 1.5 Klim-over wortelbeweging `0x44e290`
+
+`void Perso_RootMotion(Perso *p, bool last)` – gedeeld door toestand 5 (gescripte acties, CINEMATIC §6) en toestand 4 sub 3. Volledig gelezen
+(`0x44e290..0x44e59d`). Matrices zijn 3×4 met rijvectoren (`v' = v·R + t`; rot op +0..+0x20, t op +0x24), `X·Y` = eerst X dan Y (`0x4405e0(X, Y)`: `X = X·Y`).
+
+Hulp `0x42f7e0(inst, float fase, int anim, Mat34 *out, int metWereld)`:
+```c
+W = metWereld ? { rij0 = inst[+0x28..]*inst.sx(+0x4c), rij1 = inst[+0x34..]*sy(+0x50), rij2 = inst[+0x40..]*sz(+0x54), t = inst.pos(+0xc) } : I;
+model = inst->+0xf8;  frame = (float)model->anims(+8)[anim].nframes /*int op +0, 8 B/entry*/ * fase;
+node = &model->nodes(+0x68)[model->nnodes(+0x6c) − 1];                   /* begin bij de LAATSTE node */
+while (node->flags(+0) != 0) node = &model->nodes[node->+0x80 − 1];       /* volg +0x80 (1-based) tot de node met flags == 0 = skeletwortel */
+if (node->rotTrack(+0x74)) q   = RotKey(node, anim, frame);               /* 0x43a9c0 */
+if (node->posTrack(+0x70)) pos = PosKey(node, anim, frame);               /* 0x43a590, lineair */
+if (geen van beide) *out = W;
+else *out = { R = rotTrack ? Mat(q) /*0x440370*/ : I,  t = posTrack ? pos : 0 } · W;
+```
+
+```c
+void Perso_RootMotion(Perso *p, bool last)                               /* 0x44e290 */
+{
+    int act = p->action540;  if (act == −1) return;                      /* 0x44e2b4 */
+    Mat34 A, B, E, Ainv, Q;
+    RootNode(p, 1.0f, act, &A, 1);                                       /* 0x44e2cf: wortel op het LAATSTE frame, in de wereld */
+    RootNode(p, 0.0f, 1,   &B, 0);                                       /* 0x44e2e4: wortel van ruwe .ins-anim 1 (idle), frame 0, model-ruimte */
+    E = Inverse(B, 1,1,1) · A;                                           /* 0x440fc0, 0x4405e0: E.t = waar de modeloorsprong (voeten) eindigt */
+    Ainv = Inverse(A, p->sx, p->sy, p->sz);                              /* 0x44e339 (schaal +0x4c/+0x50/+0x54) */
+    vec3 l = E.t · Ainv;                                                 /* 0x44e33e..0x44e3d5: eindpunt in het lokale stelsel van de eind-wortel */
+    if (p->remain53c < 0) p->remain53c = 0;
+    float f = (p->total538 − p->remain53c) / p->total538;                /* fase 0..1 */
+    RootNode(p, f, act, &Q, 1);                                          /* 0x44e421 */
+    vec3 q = l · Q;                                                      /* = 0 · B⁻¹ · Root(act, f) · W : voetpunt onder de wortel op fase f */
+    p->useRootPos550 = 1;
+    p->rootPos544 = (1 − f) * p->pos(+0x1f4) + f * q;                    /* 0x44e4aa..0x44e4f4: extra lineaire menging met de staande positie */
+    if (!last) return;
+    p->animctl(+0x494)->vt[2](1);                                        /* idle */
+    vec3 d = { −E.r[2].x, −E.r[2].y, −E.r[2].z };                        /* 0x44e50d..0x44e532: rij 2 (lokale z) van E, genegeerd */
+    Mover_SetDir(&p->M, &d);                                             /* 0x459ff0 */
+    p->pos = E.t;                                                        /* 0x44e552..0x44e56c */
+    p->useRootPos550 = 0;  p->action540 = −1;
+    Perso_SnapToGround(p);                                               /* 0x462990: vloer onder pos + 43, onGround = 1, jumper reset */
+}
+```
+Omdat `A = Root(act,1)·W`, vallen `A⁻¹·Q`-termen weg: `q(f) = (0,0,0)·B⁻¹·Root_lokaal(act, f)·W`, en `E.t = q(1)`.
+
+Aanroep vanuit toestand 4 sub 3 (`0x465670`): start op `0x465622` met `total538 = remain53c = AnimLen(logisch 0x17, 0)` (`0x436b90`),
+`action540 = 0xf` (ruwe anim 15), `Anim(0x17)`; elk frame `remain −= dt`; bij `remain ≤ 0`: eerst `SetState(0)`, `sub = 0`, dan
+`Perso_RootMotion(p, 1)`; anders `Perso_RootMotion(p, 0)`.
+
+Gevolgen tijdens sub 3:
+* `p->pos` (`+0x1f4`) verandert niet (sub 3 zet geen `disp`; onzeker: of `0x4624f0` met een rest-`disp` van het vorige frame nog iets doet) en
+  ook `inst.pos` (`+0xc`) blijft staan: `0x44bf10(useRootPos)` slaat bij `+0x550 = 1` het kopiëren `+0x1f4 → +0xc` over en zet alleen het
+  bolcentrum `+0x60 = rootPos + (0, +0x110, 0)` en de wereldcel (`0x4077f0`). **Het model wordt dus op de klimpositie getekend en de
+  animatie zelf (wortel-track van anim 15) draagt Woody over de rand**; de W in de formules is daardoor constant.
+* `vtbl[34]` geeft `&rootPos544` → camera (T, L), geluid en alles wat "de positie" opvraagt volgt `rootPos`.
+* Laatste frame: `pos = E.t`, kijkrichting `= −E.rij2` (Perso-instantie kijkt langs −z, PERSO_FRAME §2.4), op de grond gezet. Omdat
+  `rootPos(1) = q(1) = E.t` is er geen sprong in de camerapositie; het model springt niet omdat idle frame 0 (B) precies is weggedeeld.
+* Verschil met `0x44edb0` (einde cinematic, CINEMATIC §5): daar is B = anim **0**, fase 0; hier anim **1**.
+
+Voor de port: `ins_root_end()` (`src/level.h`) doet al `E`; nodig is een variant met fase (`q(f)`) en B = anim 1. Recept:
+`over_to = E.t`, `yaw_end = atan2(−E.r2.x, −E.r2.z)`… let op het teken: `Mover_SetDir` krijgt `−E.rij2` als **kijkrichting**; per frame
+`cam_target = lerp(pos, q(f), f)`, model blijft op `pos` staan met de wortel-track van anim 15 aan; op het einde `pos = E.t` + snap-to-ground.
+Onzeker: of de port-renderer de wortel-translatie van animaties al toepast (zo niet, teken het model dan op `q(f)` zonder menging).
+
 ## 2. Klassen
 
 Gemeenschappelijk: alle klassen hieronder behalve 41 en 90 vallen door naar de FadeInst-handler `0x44e8f0` (56/57) en roepen in hun
@@ -406,7 +539,7 @@ gedecompileerd. Model 47: behuizing groep 108, twee press-nodes, markers typecod
 
 ## 5. Open vragen
 
-1. `0x44e290` (klim-over, wortelbeweging van anim `+0x540 = 15`) en de `hitKind == 1`-tak in toestand 4 zijn niet volledig gelezen.
+1. De `hitKind == 1`-tak in toestand 4 is niet volledig gelezen. (`0x44e290` is nu volledig gelezen, zie §1.5; de camera tijdens het klimmen §1.4.)
 2. Laser: kleuren/alpha van de bliksemboog, de vier `0x470f10`-quads van de inslag, vlagbit 0x40 van `fx+0x34`, lezer van `rec+0x18` (bericht 51), vlag 0x20 van `0x481560`.
 3. Lanceerder: betekenis van de 1002-parameters in het projectiel (`0x4493c0`), de drie projectiel-visuals en de schade aan de speler.
 4. Type 20/21: toestandsmachine `0x452e10` en Perso-toestand 8 (`0x4657f0`) zijn alleen op hoofdlijnen gevolgd.

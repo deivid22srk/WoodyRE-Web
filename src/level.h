@@ -153,6 +153,8 @@ void ins_pose(Instance *inst, int anim, float t);
 int  ins_camera_eval(const Instance *inst, int anim, float phase, Vec3 *eye, Vec3 *target);
 /* where the root motion of `anim` leaves the model (0x44edb0): C = W * root(anim, end) * root(anim 0, start)^-1 */
 int  ins_root_end(const Instance *inst, int anim, Vec3 *pos, Vec3 *forward);
+/* root motion 0x44e290: where the root of `anim` at `phase` 0..1 puts a model standing in `base` anim frame 0 (E = B^-1 . A . W) */
+int  ins_root_at(const Instance *inst, int anim, float phase, int base, Vec3 *pos, Vec3 *forward);
 /* Transform point i of the model (owner node applied, pivot subtracted) to world space. */
 Vec3 ins_point_world(const Instance *inst, uint32_t point_index);
 /* Which node owns point index i (0-based node index). */

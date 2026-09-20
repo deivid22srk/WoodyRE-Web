@@ -94,7 +94,8 @@ static void cam_msg(const EkoMsg *m, const Camera *c)
     case 510: case 520: {
         Instance *t = m->nargs > 2 ? slot_instance(0x1000000 | (m->args[2] & 0xffffff)) : NULL; if (!t) break;
         g_cam.fix_pos = c->position; g_cam.fix_f = (float)a1; g_cam.fix_target = t; cam_set_mode(m->id == 510 ? 2 : 4); break; }
-    case 540: if (c->traj.npoints >= 2) { g_cam.rail = &c->traj; g_cam.rail_d = (float)a1; g_cam.rail_first = 1; cam_set_mode(8); } break;
+    case 540: if (getenv("WOODY_CAMLOG")) for (uint32_t i = 0; i < c->traj.npoints; i++) printf("rail %u: %.0f %.0f %.0f closed %d", i, c->traj.points[i].x, c->traj.points[i].y, c->traj.points[i].z, c->traj.closed), puts("");
+        if (c->traj.npoints >= 2) { g_cam.rail = &c->traj; g_cam.rail_d = (float)a1; g_cam.rail_first = 1; cam_set_mode(8); } break;
     case 560: g_cam.speed = (float)a1; g_cam.dur_from_speed = 1; break;
     case 570: g_cam.dur = a1 * 0.01f; g_cam.dur_from_speed = 0; break;
     case 580: g_cam.cut = a1 == 2; break;
