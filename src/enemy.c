@@ -41,7 +41,7 @@ static void ea_play(Enemy *e, int a)
     Instance *in = e->inst; const Model *m = in->model; int s = EA(e, a).anim; if ((uint32_t)s >= m->nanims) return;
     if (in->anim != s) { in->anim = s; in->anim_time = 0; }
     in->anim_speed = EA(e, a).speed;
-    if (EA(e, a).hold && in->anim_time > m->anims[s].duration_s * 0.999f) in->anim_time = m->anims[s].duration_s * 0.999f;
+    if (EA(e, a).hold && in->anim_time > m->anims[s].duration_s - 0.15f) { in->anim_time = m->anims[s].duration_s * 0.999f; in->anim_speed = 0; }   /* held on the last frame: the clock advances after this, so it must stop */
 }
 
 float enemy_radius(const Enemy *e) { return e->P.radius; }
@@ -222,7 +222,7 @@ static void sa_play(Enemy *e, int a, float speed)
     Instance *in = e->inst; const Model *m = in->model; int s = g_sa[a].anim; if ((uint32_t)s >= m->nanims) return;
     if (in->anim != s) { in->anim = s; in->anim_time = 0; }
     in->anim_speed = speed > 0 ? speed : g_sa[a].speed;
-    if (g_sa[a].hold && in->anim_time > m->anims[s].duration_s * 0.999f) in->anim_time = m->anims[s].duration_s * 0.999f;
+    if (g_sa[a].hold && in->anim_time > m->anims[s].duration_s - 0.15f) { in->anim_time = m->anims[s].duration_s * 0.999f; in->anim_speed = 0; }
 }
 static int shooter_vector(const Instance *in, uint32_t tc, Vec3 *p0)      /* 0x42f6b0: start of the first marker with this typecode */
 {
