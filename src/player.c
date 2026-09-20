@@ -756,6 +756,22 @@ void player_place(Player *p, Vec3 pos, float yaw)
     jumper_reset(&p->jumper); p->on_ground = 1; p->cam_init = 0; player_apply_transform(p);
 }
 
+/* trigger volumes: enter / in / leave -> script VM (player = "perso" variants); runs in every Perso state */
+static void player_volumes(Player *p, EkoVM *vm)
+{
+    if (vm) {
+        Vec3 probe = { p->pos.x, p->pos.y + P_VOL_PROBE_Y, p->pos.z };
+        for (uint32_t v = 0; v < p->nvol; v++) {
+            Instance *in2 = p->vol_inst[v]; if (!in2->visible) { continue; }
+            int now = volume_contains(in2, p->vol_node[v], probe);
+            if (now && !p->inside[v]) { eko_vol_perso_enter(vm, p->vol_id[v], p->inst->id); p->events_sent++; printf("  VOL enter 0x%x (inst %u)\n", p->vol_id[v], in2->index); }
+            else if (now) { eko_vol_perso_in(vm, p->vol_id[v], p->inst->id); }
+            else if (p->inside[v]) { eko_vol_perso_leave(vm, p->vol_id[v], p->inst->id); p->events_sent++; printf("  VOL leave 0x%x (inst %u)\n", p->vol_id[v], in2->index); }
+            p->inside[v] = (uint8_t)now;
+        }
+    }
+}
+
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw)
 {
     if (dt <= 0) return;
@@ -772,9 +788,9 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (!p->dead_kind && p->health <= 0) player_kill(p, 3);
     if (p->regrab > 0) p->regrab -= dt;
-    if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); player_apply_transform(p); return; }
+    if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); if (p->climb_sub) p->on_ground = 0; player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return; }
     if (p->dead_kind) p->climb_sub = 0;
-    if (!p->dead_kind) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); return; } }
+    if (!p->dead_kind) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } }
     /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking */
     int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind);
     /* input direction relative to the camera */
@@ -913,18 +929,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         if (p->on_ground) eko_msgmask_set(vm, p->inst->id, 0x200); else eko_msgmask_clear(vm, p->inst->id, 0x200);
     }
 
-    /* trigger volumes: enter / in / leave -> script VM (player = "perso" variants) */
-    if (vm) {
-        Vec3 probe = { p->pos.x, p->pos.y + P_VOL_PROBE_Y, p->pos.z };
-        for (uint32_t v = 0; v < p->nvol; v++) {
-            Instance *in2 = p->vol_inst[v]; if (!in2->visible) { continue; }
-            int now = volume_contains(in2, p->vol_node[v], probe);
-            if (now && !p->inside[v]) { eko_vol_perso_enter(vm, p->vol_id[v], p->inst->id); p->events_sent++; printf("  VOL enter 0x%x (inst %u)\n", p->vol_id[v], in2->index); }
-            else if (now) { eko_vol_perso_in(vm, p->vol_id[v], p->inst->id); }
-            else if (p->inside[v]) { eko_vol_perso_leave(vm, p->vol_id[v], p->inst->id); p->events_sent++; printf("  VOL leave 0x%x (inst %u)\n", p->vol_id[v], in2->index); }
-            p->inside[v] = (uint8_t)now;
-        }
-    }
+    player_volumes(p, vm);
 }
 
 /* ---- follow camera, mode 1 (docs/CAMERA.md 0.1 / 3: 0x424760 -> 0x422790 -> 0x4231e0) ------------------- */
