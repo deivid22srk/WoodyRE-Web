@@ -182,7 +182,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     case 11: anim = EA_WIN; if ((e->t -= dt) <= 0) e->st = 8; break;
     case 9:
         anim = EA_HIT;
-        if (e->hp <= 0) { e->attackable = 0; e->dead_t = e->type == 13 ? (ea_len(e, EA_DEAD) + 1.0f) * 0.5f : 0; e->st = 12; }   /* the ghost starts fading at once */
+        if (e->hp <= 0) { game_enemy_stars(e); e->attackable = 0; e->dead_t = e->type == 13 ? (ea_len(e, EA_DEAD) + 1.0f) * 0.5f : 0; e->st = 12; }   /* the ghost starts fading at once */
         else if (e->hit_t <= 0) { e->st = 8; if (e->type == 13) e->reload = 2.0f * e->P.reload; }
         break;
     case 12: {                                                    /* dead: animation 13, fades out during the second half, then removed */
@@ -322,7 +322,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     case S_WIN: anim = SA_WIN; if ((e->t -= dt) <= 0) e->st = S_TOWANDER; break;
     case S_HIT:
         anim = SA_HIT;
-        if (e->hp <= 0) { e->attackable = 0; e->dead_t = 0; e->st = S_DEAD; }
+        if (e->hp <= 0) { game_enemy_stars(e); e->attackable = 0; e->dead_t = 0; e->st = S_DEAD; }
         else if (e->hit_t <= 0) e->st = S_TOWANDER;
         break;
     case S_DEAD: {

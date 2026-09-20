@@ -31,6 +31,7 @@ void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt);
 int  enemy_take_damage(Enemy *e, float dmg, Vec3 dir);
 void enemies_msg11(EnemySet *s, Instance *inst, int n, int v);                /* Enemy::HandleMsg 0x41a740, id 11 */
 void enemy_warn_dive(Enemy *e, Vec3 d);                                       /* vtbl[37] 0x417ee0: the player starts an air dive at this enemy */
+void game_enemy_stars(Enemy *e);                                              /* vtbl[57] 0x41b000 -> 0x477610: five stars circle over the dying enemy (in main_engine.c) */
 void enemy_player_killed(Enemy *e);                                           /* vtbl[41] 0x417fd0: its projectile killed the player */
 /* implemented by the engine: projectile 0x4490a0 from an enemy (template 1 with the P overrides) */
 void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, int sound_fx);

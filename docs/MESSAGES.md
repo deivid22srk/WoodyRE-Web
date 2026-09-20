@@ -37,7 +37,7 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 15/17 | inst, a, mode, t1, t2 | 0 | ✔ overgang type A: byte +0xda, modusbits in +0xd8, tijden ×0.01 in +0xe8/+0xec, start = nu |
 | 16/18 | inst, a, mode, t | 23/54 | ✔ overgang type B: byte +0xd9, modusbits, tijd ×0.01 in +0xe0 |
 | 19 | inst | 0 | ✔ overgangsbits wissen (`+0xd8 &= 0xc0`) |
-| 26 / 30 | perso | 0 | ~ alleen Perso-klasse (types 1-3, 18, 19): `0x44ce11` / `0x44cde9` |
+| 26 / 30 | perso | 0 | ✔ alleen Perso-klasse: 26 `[_, inst, mode]` = teleport (1 = positie, 2 = + richting van de marker), 30 `[_, cs]` = LockMove; zie PERSO_DEATH.md §1 |
 | 29 | inst | 0 | ~ klassen 20/21 en 40/120/121: eigen afhandeling |
 | 33 | inst, a, b | 50 | ? |
 | 34 | inst, other | 340 | ✔ koppel instantie aan `other` (paar in tabel `[0x50944c]->0x50`, teller +0x4c) – "attach/link" |

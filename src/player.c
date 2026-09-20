@@ -423,6 +423,12 @@ static const LogAnim *log_anim(int n)
         {{6,7,7,7},3,1}, {{8,0,0,0},3,1}, {{7,32,33,33},3,0}, {{34,0,0,0},3,1}, {{9,9,9,9},3,1}, {{10,11,-1,-1},3,1},
         {{16,0,0,0},3,1}, {{19,6,7,7},3,1}, {{21,13,13,13},3,1}, {{38,51,51,51},3,1}, {{51,51,51,51},3,0}, {{51,52,0,0},3,0},
         {{86,0,0,0},3,1}, {{12,13,13,13},5,1}, {{13,13,13,13},3,0}, {{14,6,7,7},3,0}, {{15,-1,-1,-1},3,0} };   /* 0x14..0x17: grab, climb, let go, over the top */
+    /* doors 0x18/0x19 (records 24/25), hit 0x1f/0x20, deaths 0x25..0x30 (docs/PERSO_DEATH.md 3.3) */
+    static const struct { int n; LogAnim a; } x[] = {
+        { 0x18, {{17,-1,-1,-1},3,1} }, { 0x19, {{18,-1,-1,-1},3,1} }, { 0x1f, {{20,0,0,0},3,1} }, { 0x20, {{22,0,0,0},3,1} },
+        { 0x25, {{29,30,30,30},3,1} }, { 0x26, {{28,30,30,30},3,1} }, { 0x29, {{31,-1,-1,-1},3,1} }, { 0x2a, {{27,-1,-1,-1},3,1} },
+        { 0x2b, {{37,-1,-1,-1},3,1} }, { 0x2e, {{35,-1,-1,-1},3,1} }, { 0x2f, {{48,33,33,33},3,1} }, { 0x30, {{85,-1,-1,-1},3,1} } };
+    for (unsigned i = 0; i < sizeof x / sizeof x[0]; i++) if (x[i].n == n) return &x[i].a;
     return (n >= 0 && n < 0x18) ? &t[n] : &t[0];
 }
 static float anim_len(const Player *p, int n, int k)                       /* 0x436b90 AnimLen(n, k) */
@@ -440,10 +446,11 @@ static void anim_request(Player *p, int n, float rate)                     /* 0x
     }
     wi->anim_speed = a->speed * rate;
     /* advance through the chain */
-    if ((uint32_t)wi->anim < m->nanims && wi->anim_time >= m->anims[wi->anim].duration_s && p->lanim_sub < 3) {
-        int nx = a->sub[p->lanim_sub + 1];
-        if (nx < 0 || (uint32_t)nx >= m->nanims) wi->anim_time = m->anims[wi->anim].duration_s * 0.999f;   /* hold the last frame */
-        else { wi->anim_time -= m->anims[wi->anim].duration_s; wi->anim = nx; p->lanim_sub++; }
+    int nx = p->lanim_sub < 3 ? a->sub[p->lanim_sub + 1] : 0;
+    if ((uint32_t)wi->anim < m->nanims && p->lanim_sub < 3 && (nx < 0 || (uint32_t)nx >= m->nanims)) {     /* hold the last frame: the clock advances after this, so stop it just before the end */
+        if (wi->anim_time >= m->anims[wi->anim].duration_s - 0.15f) { wi->anim_time = m->anims[wi->anim].duration_s * 0.999f; wi->anim_speed = 0; }
+    } else if ((uint32_t)wi->anim < m->nanims && wi->anim_time >= m->anims[wi->anim].duration_s && p->lanim_sub < 3) {
+        { wi->anim_time -= m->anims[wi->anim].duration_s; wi->anim = nx; p->lanim_sub++; }
     }
 }
 
@@ -593,13 +600,15 @@ void player_kill(Player *p, int kind)                                   /* vt[38
     p->death_delay = 3.5f;                                              /* +0x288: time until the fade */
     if (kind == 2 || kind == 9) p->death_delay = 1.5f; else if (kind == 3 || kind == 8) p->death_delay = 3.0f;
     else if (kind == 6) p->death_delay = 2.5f; else if (kind == 7) p->death_delay = 0.0f;
-    if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else jumper_force_fall(&p->jumper, 0);
+    if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else if (kind != 2 && kind != 9) jumper_force_fall(&p->jumper, 0);
+    p->nograv_t = kind == 1 ? anim_len(p, 0x2f, 0) : (kind == 2 || kind == 9) ? anim_len(p, 0x30, 0) : 0;   /* +0x240: no fall while he hangs / is zapped */
+    p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0;
     p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;      /* state := 2 */
     printf("  PLAYER killed (kind %d), lives %d\n", kind, p->lives);
 }
 int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39] Hit 0x44ca00: returns 1 when health ran out */
 {
-    if (p->dead_kind || p->invuln_respawn > 0 || p->invuln_hit > 0) return 0;
+    if (p->dead_kind || p->invuln_respawn > 0 || p->invuln_hit > 0 || getenv("WOODY_GOD")) return 0;   /* WOODY_GOD: testing */
     jumper_force_fall(&p->jumper, 0);
     /* knockback 0x45a140: RampC to 500 u/s (0.1 s up), held 0.2 s, 0.5 s out; the player turns to face the attacker */
     float l = sqrtf(dir.x * dir.x + dir.z * dir.z);
@@ -607,6 +616,8 @@ int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39
     if (l > 0.01f) p->yaw = atan2f(-dir.x, -dir.z);
     if (p->invuln_hit < 0.6f) p->invuln_hit = 0.6f;
     p->move_lock = 0; p->atk = 0;
+    p->hit_anim = p->on_ground ? 0x1f : 0x20; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->lanim = -1;   /* 0x464b70: priority 5110, plays out over walking / jumping */
+    if (getenv("WOODY_ONEHIT")) damage = 99;                             /* testing: every hit kills */
     p->health -= damage; if (p->health < 0) p->health = 0;
     printf("  PLAYER hit, health %.0f\n", p->health);
     if (p->health <= 0) { p->health = 0; return 1; }
@@ -617,7 +628,7 @@ static void player_reset(Player *p)                                     /* vt[17
     p->pos = p->spawn_pos; p->yaw = p->spawn_yaw; p->floor_y = p->pos.y;
     jumper_reset(&p->jumper); p->on_ground = 1; p->invuln_respawn = 1.0f; p->invuln_hit = 0; p->move_lock = 0;
     if (p->health <= 0) p->health = 3.0f;
-    p->dead_kind = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
+    p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->cam_init = 0;
 }
 /* Game sequence 0x4459c0: 2 play -> (dead) 3 wait death_delay - 1 s -> 4 fade out 1 s -> lose a life -> 0 wait 0.25 s,
@@ -798,6 +809,20 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (!p->dead_kind && p->health <= 0) player_kill(p, 3);
     if (p->regrab > 0) p->regrab -= dt;
+    if (p->hit_anim_t > 0) p->hit_anim_t -= dt;
+    if (p->dead_kind) p->dead_T += dt;
+    if (!p->dead_kind && p->script_act) {                                  /* state 5, 0x44db50: the Perso stands still, the walk is in the root track of anim 17 / 18 */
+        anim_request(p, p->script_act == 17 ? 0x18 : 0x19, 1.0f);
+        if (p->script_act == 17 && !p->script_faded && p->script_t < 0.6f) { p->script_faded = 1; p->fade_req = 1; }
+        if ((p->script_t -= dt) <= 0) {
+            if (p->script_act == 18) {                                     /* he came out backwards: facing flips, ground snap, idle, follow camera */
+                p->yaw += 3.14159265f; int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
+                if (found) { p->pos.y = gy; p->floor_y = gy; } p->lanim = -1; anim_request(p, 0, 1.0f);
+            } else lock_move(p, 0.3f);                                     /* 17: the pose is held until the teleport (message 26) resets the controller */
+            p->script_act = 0;
+        }
+        player_apply_transform(p); return;
+    }
     if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); if (p->climb_sub) p->on_ground = 0; player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return; }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     if (!p->dead_kind) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } }
@@ -838,7 +863,9 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         }
     }
     /* vertical motion comes from the Jumper; air control is the unchanged Mover (docs/PERSO_JUMP.md 1.4) */
-    if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, allow && in->jump, p->on_ground, p->pos.y - p->floor_y, dt);
+    if (p->dead_kind == 7) jumper_reset(&p->jumper);                       /* 0x4649bf: the water death never falls further */
+    if (p->nograv_t > 0) { p->nograv_t -= dt; p->jumper.dy = 0; if (p->dead_kind == 1 && p->nograv_t <= 0) p->dead_cam_req = 1; }
+    else if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, allow && in->jump, p->on_ground, p->pos.y - p->floor_y, dt);
     if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
     Vec3 disp = p->use_atk_disp ? p->atk_disp : (Vec3){ sinf(p->yaw) * p->speed * dt, p->jumper.dy, cosf(p->yaw) * p->speed * dt };
@@ -904,7 +931,16 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         static const int atk_anim[12] = { -1, 0xb, 0xb, 0xc, 0xc, -1, 0xd, 0xe, 0xf, 0x10, 0x11, 0x12 };
         int js = p->jumper.state, want = p->lanim; float rate = 1.0f;
         int landing = (p->lanim == 8 || p->lanim == 0xa) && p->lanim_sub == 0;
-        if (p->atk) { if (atk_anim[p->atk] >= 0) want = atk_anim[p->atk]; }
+        if (p->dead_kind) {                                                /* 0x464790 */
+            int k = p->dead_kind; want = p->lanim;
+            if (k == 1) want = p->dead_T <= anim_len(p, 0x2f, 0) ? 0x2f : 9;
+            else if (k == 2 || k == 9) want = 0x30;
+            else if (k == 6) want = 0x2b; else if (k == 7) want = 0x2a; else if (k == 8) want = 0x2e;
+            else if (p->dead_T <= dt) { p->dead_ground = p->on_ground; want = p->on_ground ? 0x26 : 0x25; }
+            else if (p->dead_T >= anim_len(p, p->dead_ground ? 0x26 : 0x25, 0)) want = 0x29;
+        }
+        else if (p->hit_anim_t > 0) want = p->hit_anim;
+        else if (p->atk) { if (atk_anim[p->atk] >= 0) want = atk_anim[p->atk]; }
         else if (js == 2) {
             if (p->ramp_phase == 1) want = 2;
             else if (p->ramp_phase == 2) { want = 3; rate = p->speed / P_WALK_SPEED; if (rate < 0.5f) rate = 0.5f; if (rate > 1.0f) rate = 1.0f; }   /* 0x436c20 */
@@ -1001,6 +1037,27 @@ void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
 
 /* scripted Perso action (message 1040, 0x44dda0): only the effect on control is ported - the running attack is dropped
  * and the player stands still for t seconds (17 = walk into a door: the level change follows) */
+void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
+{
+    if (p->dead_kind) return;
+    if (act != 17 && act != 18) { player_script_hold(p, 2.0f); return; }
+    p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
+    if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
+    jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
+    p->script_act = act; p->lanim = -1; anim_request(p, act == 17 ? 0x18 : 0x19, 1.0f); p->script_t = anim_len(p, act == 17 ? 0x18 : 0x19, 0); p->script_faded = 0;
+    if (act == 18) { p->fade_req = 2; p->cam_init = 0; }                                     /* fade in 0.5 s on the first frame */
+    player_apply_transform(p);
+}
+void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44ce11 -> 0x44a650: SetPos + ground snap 0x462990, anim controllers reset, camera cut 0x458f90 */
+{
+    for (uint32_t v = 0; v < p->nvol; v++) p->inside[v] = 0;
+    if (p->script_act) return;                                          /* 0x44a650 does nothing in state 5 */
+    int found; float gy = player_ground_query(p, p->inst, (Vec3){ pos.x, pos.y + P_PROBE_Y, pos.z }, &found);
+    if (found) pos.y = gy;
+    p->pos = pos; if (have_dir && dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z);
+    p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->att_inst = NULL; p->lanim = -1;
+    jumper_reset(&p->jumper); p->on_ground = 1; p->cam_init = 0; player_apply_transform(p);
+}
 void player_script_hold(Player *p, float t) { p->atk = 0; p->charge = 0; p->use_atk_disp = 0; lock_move(p, t); }
 
 void player_free(Player *p) { free(p->inside); free(p->vol_inst); free(p->vol_node); free(p->vol_id); }

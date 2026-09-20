@@ -22,7 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
-    GLuint fx[3];                                         /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md) */
+    GLuint fx[6];                                         /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7) */
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
@@ -63,11 +63,12 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
     return t;
 }
 
+static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
     if (type == 1 && (index == 0 || index == 4 || index == 6) && getenv("WOODY_FXLOG") && size >= 8) { int w = d[0] | d[1] << 8, h = d[2] | d[3] << 8; unsigned long sum = 0, sa = 0; for (int i = 0; i < w * h; i++) { sum += d[8 + i * 4] + d[9 + i * 4] + d[10 + i * 4]; sa += d[11 + i * 4]; } printf("fx image %d: %dx%d bpp %d mean rgb %.1f mean a %.1f", index, w, h, d[4], sum / (3.0 * w * h), sa / (1.0 * w * h)), puts(""); }
-    if (type == 1 && (index == 0 || index == 4 || index == 6)) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.fx[index == 0 ? 0 : index == 4 ? 1 : 2] = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
+    if (type == 1 && fx_slot(index) >= 0) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.fx[fx_slot(index)] = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1 && index == 1) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.beam = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1) for (int b = 0; b < 5; b++) if (index == bonus_img[b]) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.bonus[b] = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1 && index >= 61 && index <= 64 && size >= 8) {      /* i16 w, h; u16 bpp, alpha; BGRA, bottom row first (0x480780) */
@@ -125,7 +126,7 @@ void hud_free(void)
     for (int i = 0; i < 5; i++) if (H.sky[i]) glDeleteTextures(1, &H.sky[i]);
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
     if (H.beam) glDeleteTextures(1, &H.beam);
-    for (int i = 0; i < 3; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
+    for (int i = 0; i < 6; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }
@@ -366,11 +367,12 @@ void hud_world_beam(const float *a, const float *b, const float *eye, float hw, 
 
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha)
 {
-    int n = image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : -1; if (!H.ok || n < 0 || !H.fx[n] || alpha <= 0 || size <= 0) return;
+    int n = fx_slot(image), blend = image == 10 || image == 11; if (!H.ok || n < 0 || !H.fx[n] || alpha <= 0 || size <= 0) return;   /* the stars are alpha blended, the rest additive */
     float h = size * 0.5f, c = (float)cos(turns * 6.2831853f) * h, s = (float)sin(turns * 6.2831853f) * h, r[3], u[3];
     for (int i = 0; i < 3; i++) { r[i] = H.sr[i] * c + H.su[i] * s; u[i] = H.su[i] * c - H.sr[i] * s; }
-    glBlendFunc(GL_ONE, GL_ONE); glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[n]);
-    glColor3f(rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha);
+    glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[n]);
+    if (blend) { glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glColor4f(rgb[0], rgb[1], rgb[2], alpha); }
+    else { glBlendFunc(GL_ONE, GL_ONE); glColor3f(rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha); }
     glBegin(GL_QUADS);
     glTexCoord2f(0, 0); glVertex3f(pos[0] - r[0] + u[0], pos[1] - r[1] + u[1], pos[2] - r[2] + u[2]);
     glTexCoord2f(0, 1); glVertex3f(pos[0] - r[0] - u[0], pos[1] - r[1] - u[1], pos[2] - r[2] - u[2]);

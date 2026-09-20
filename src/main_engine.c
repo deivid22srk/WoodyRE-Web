@@ -349,6 +349,30 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
     }
     for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) { g_flashes[i].t += dt; if (g_flashes[i].t >= 0.4f) g_flashes[i].t = 0; }
 }
+/* death stars 0x477610 (docs/PERSO_DEATH.md 7): five sprites circle over the head of a dying enemy for 2.5 s, one turn, bobbing six times */
+static struct { Enemy *e; float age; int img; } g_stars[16];
+void game_enemy_stars(Enemy *e)
+{
+    for (int i = 0; i < 16; i++) if (!g_stars[i].e) { g_stars[i].e = e; g_stars[i].age = 0; g_stars[i].img = (rand() & 1) ? 11 : 10; return; }
+}
+static void stars_draw(float dt)
+{
+    static const float white[3] = { 1, 1, 1 }, glow[3] = { 1, 1, 0.5f };
+    for (int s = 0; s < 16; s++) {
+        Enemy *e = g_stars[s].e; if (!e) continue;
+        float u = (g_stars[s].age += dt) / 2.5f;
+        if (u >= 1 || e->removed || !e->inst->visible) { g_stars[s].e = NULL; continue; }
+        Vec3 p0, d; float len;
+        if (inst_vector(e->inst, 0, &p0, &d)) len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); else { p0 = e->inst->position; len = enemy_height(e); }
+        float a = u < 0.7f ? 1.0f : 1.0f - (u - 0.7f) * 3.33f;
+        for (int i = 1; i <= 5; i++) {
+            int ang = (i * 512 / 5 + (int)(512 * u)) % 512; float f = ang * 6 / 256.0f; int k = (int)f; float w = (k & 1) ? f - k : 1 - (f - k), r = ang * 6.2831853f / 512.0f;
+            float pos[3] = { p0.x + 80 * cosf(r), p0.y + len + (4 * w) * (4 * w), p0.z + 80 * sinf(r) };
+            if (g_stars[s].img == 10) { float gp[3] = { pos[0], pos[1] + 15, pos[2] }; hud_world_fx(5, gp, 40, 0, glow, 0.8f * a); }
+            hud_world_fx(g_stars[s].img, pos, 40, (float)(int)((w - 0.5f) * 56) / 512.0f, white, a);
+        }
+    }
+}
 static void launchers_draw(const float *eye)
 {
     static const float white[3] = { 1, 1, 1 };
@@ -452,7 +476,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 41) in->visible = 0;   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 41) in->visible = 0;   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
     case 42: case 43: case 44: case 45: case 56: case 57:
         if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
@@ -477,7 +501,20 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1085: if (m->nargs > 1) eko_set_var(vm, m->args[1], m->args[0] < 29 ? g_save.chr[g_char].done[m->args[0]] : 0); break;   /* LevelIsDone 0x4509e0 */
     case 1030: if (in && g_player) { g_player->spawn_pos = in->position; g_player->spawn_yaw = g_player->yaw; }   /* direction: the instance's vector node when it has one (not parsed), else the current facing */ break;   /* SaveAuto: checkpoint */
     case 1142: g_prop = in; break;
-    case 1040: case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;                         /* scripted Perso action (17 = into the door); the animation itself is not ported */
+    case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */
+        if (g_player && m->nargs > 1) { Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir); player_script_action(g_player, (int)m->args[1], have, p0, dir); }
+        break;
+    case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;
+    case 26:                                                                                                /* Perso teleport 0x44ce11 [_, inst, mode]: 1 = position, 2 = position + direction of the vector marker */
+        if (g_player && m->nargs > 2) {
+            Instance *to = slot_instance(m->args[1]); int mode = (int)m->args[2];
+            if (to && (mode == 1 || mode == 2)) {
+                Vec3 p0, dir = { 0, 0, 0 }; int have = mode == 2 && (inst_vector(to, 5, &p0, &dir) || inst_vector(to, 0, &p0, &dir));
+                eko_actor_leave_all(vm, g_player->inst->id); player_teleport(g_player, to->position, have, dir);
+                printf("  TELEPORT to inst %u (%.0f %.0f %.0f)", to->index, to->position.x, to->position.y, to->position.z), puts("");
+            }
+        }
+        break;
     case 1140:                                                                                              /* hub: player at the door he came out of (0x453d90); the results screen is skipped */
         if (in && g_player && m->nargs > 1) {
             g_player->pos = in->position; g_player->yaw = inst_yaw(in) + 3.14159265f;   /* out of the door */ g_player->floor_y = g_player->pos.y; g_player->vel = (Vec3){ 0, 0, 0 }; g_player->cam_init = 0;
@@ -559,7 +596,7 @@ static void level_free(Level *L)
 {
     g_nlasers = 0; g_nlaunchers = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
-    g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -716,6 +753,12 @@ int main(int argc, char **argv)
             if (g_cam.mode == 4 && !fly) memset(&pin, 0, sizeof pin);              /* cinematic camera: the player is frozen (0x459090) */
             cin_update(&L.vm, dt, g_now);
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
+            if (L.player.fade_req) { fade_start(0.5f, L.player.fade_req == 1); L.player.fade_req = 0; }           /* door actions 17 / 18 */
+            if (g_cam.mode != 0x20 && (L.player.dead_cam_req || (L.player.dead_kind == 7 && !g_cam.death_cam))) {     /* 0x41fb50: kind 1 is watched from where he hung (+100), kind 7 from where the camera is */
+                g_cam.fix_pos = L.player.dead_kind == 7 ? g_cam.pos : (Vec3){ L.player.pos.x, L.player.pos.y + 100.0f, L.player.pos.z };
+                g_cam.fix_target = L.player.inst; g_cam.fix_f = g_cam.look_off.y; cam_set_mode(2); g_cam.death_cam = 1;
+            }
+            L.player.dead_cam_req = 0;
             if (!cin_running()) enemies_update(&g_enemies, &L.player, cam.pos, dt);
             if (g_cam.plane_on) {                                                   /* 0x459eb0: the player stays on the vertical plane through the marker */
                 Vec3 n = { -g_cam.plane_d.z, 0, g_cam.plane_d.x }; float off = (L.player.pos.x - g_cam.plane_a.x) * n.x + (L.player.pos.z - g_cam.plane_a.z) * n.z;
@@ -777,7 +820,7 @@ int main(int argc, char **argv)
                         }
                     }
                 }
-                launchers_draw(&cam.pos.x);
+                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */

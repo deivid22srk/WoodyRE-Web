@@ -64,6 +64,9 @@ typedef struct Player {
     /* follow camera state */
     float cam_yaw; Vec3 cam_pos; int cam_init;
     Vec3 cam_tprev; float cam_drop, cam_quick_t; int cam_behind_prev;   /* previous target, look-point drop while airborne, action 0xa */
+    /* death / hit animations, scripted door actions (docs/PERSO_DEATH.md) */
+    float dead_T, nograv_t, hit_anim_t; int dead_ground, hit_anim, dead_cam_req;
+    int script_act; float script_t; int script_faded, fade_req;   /* fade_req: 1 = fade out 0.5 s, 2 = fade in 0.5 s (consumed by the app) */
     /* statistics */
     uint32_t events_sent;
 } Player;
@@ -79,6 +82,8 @@ int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34.
 void player_script_hold(Player *p, float t);       /* message 1040: scripted action, control taken away for t s */
 void player_place(Player *p, Vec3 pos, float yaw);     /* Perso reset + SetPos + SetFacing (end of a cinematic, hub door) */
 void player_kill(Player *p, int kind);
+void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir);   /* message 26 (0x44ce11); the caller leaves all volumes in the VM */
+void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);   /* message 1040 (0x44dda0): 17 = into a door, 18 = out of it */
 int  player_segment_blocked(const Player *p, Vec3 a, Vec3 b);   /* world polygons only */
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b);   /* first world polygon hit on a->b as a fraction 0..1, or 2 when nothing is hit */                 /* Perso vt[38] */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */

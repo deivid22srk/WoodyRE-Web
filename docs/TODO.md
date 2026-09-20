@@ -11,7 +11,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Klimmen: geen botsing met de wereld (zijwaarts door muren), geen vonken (`0x479c80`) | analyse klaar | OBJECTS.md §1.3 |
 | Bukken (actie 5), rondkijken (actie 7) | niet geanalyseerd | PERSO_MOVE.md |
 | Idle-variaties 0x59/0x5a | niet geport | PERSO_MOVE.md §4.3 |
-| Gescripte Perso-acties (bericht 1040: 17/18 = deur in/uit lopen); nu alleen stilstaan | deels | MESSAGES.md |
+| Gescripte Perso-acties (bericht 1040): 17/18 (deur in/uit, met fade) en teleport (bericht 26) geport; overige acties (10..16, 19: wortelbeweging) alleen stilstaan; bericht 30 (LockMove) niet. Na de teleport staat de volgcamera soms even in een muur (geen camerabotsing bij de cut) | grotendeels | PERSO_DEATH.md §1-2, CINEMATIC.md §6 |
+| Doodsanimaties per soort en hit-animatie geport. Niet: tekstballon (soort 1, `0x478980`), skelet-flits (soort 2/9, `0x477e40`), waterplons (soort 7, `0x478660`), gebukte varianten, race-variant `0x464a00`, wit knipperen bij de onkwetsbaarheidsbonus (`0x44cf50`) | deels | PERSO_DEATH.md §3-6 |
 | Perso-toestand 6 (bom dragen), 8 (berijdbaar object type 20/21) | op hoofdlijnen | OBJECTS.md §2.6, BONUS.md §7 |
 | Checkpoints: respawn-positie (1030) | controleren | GAMEFLOW.md |
 | Salto die wegvalt bij springen in de lucht (melding gebruiker) | niet te reproduceren; welke toets/timing? | — |
@@ -37,7 +38,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | 12 | stilstaande bommengooier (eindbaas W2B, 1×): **geblokkeerd op het bommensysteem (type 40)**; zonder hem is W2B niet uit te spelen | analyse klaar | ENEMY2.md §4 |
 | 10 / 11 | vliegende schutter / bommenwerper te voet: in geen enkel level gebruikt | op hoofdlijnen | ENEMY2.md §5-6 |
 | 14 / 15 / 16 | bazen (ctors `0x40eb50`, `0x40d850`, `0x40c730`): W1B, W2D, W3D, WWS | niet geanalyseerd | ENEMY2.md §1 |
-| sterf-effect | 5 deeltjes bij de dood van een vijand (`0x477610`) | niet geport | ENEMY.md |
+| sterf-effect | 5 sterren/belletjes boven de stervende vijand (`0x477610`) | geport | PERSO_DEATH.md §7 |
 | 40 | bom (pool 16, oppakken, explosie r 400) | analyse op hoofdlijnen | BONUS.md §7, OBJECTS.md §3 |
 | 120 / 121 | kist die door een bom opengaat (msgmask 0x20) | analyse op hoofdlijnen | OBJECTS.md §3 |
 | 17 | breekbaar object voor bommen | analyse op hoofdlijnen | OBJECTS.md §3 |
