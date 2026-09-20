@@ -438,32 +438,303 @@ Er zijn in deze handler **geen acknowledge-variabelen**; de SetVar-paren `+0x230
 baasklassen (`0x40c730`, `0x40d850`, `0x40eb50`, eigen handlers `0x40d530`, `0x40e7e3`, `0x410052`, die daarna `0x41a740`
 aanroepen). De vijand meldt alleen msgmask **0x200** (op de grond, elke frame in `0x41a4e0`) en wist **0x10** in Reset (`0x41a167`).
 
-## 8. Type 7/8/9 (ctor `0x416ca0`, vtable `0x4a9dc0`, size 0x20c) – afwijkingen (globaal gevolgd)
+## 8. Type 7/8/9 – de schutter (ctor `0x416ca0(subtype)`, vtable `0x4a9dc0`, size 0x20c)
 
-Zelfde basis, zelfde vier gedragingen (PostLoad `0x416d90`; AnimCtrl-ctor `0x4189b0`, animatietabel via `0x4189d0`), zelfde
-schade-ingang: `vtbl[39]` = `0x417f60` is identiek aan `0x419480` maar zet toestand **4** (= geraakt). Extra: het is een
-**schutter** – hij draait naar de speler, gooit/schiet een projectiel en gaat pas op korte afstand over op de stormloop.
-Update `0x416fb0`, jump-table `0x417da0` (17 toestanden); timers: `+0x1c8` afkoeling, `+0x1d0` herlaadtimer, `+0x158` hit.
+Volledig gelezen (Update `0x416fb0`, jump-table `0x417da0`, 17 toestanden; hulpfuncties `0x417df0..0x418820`). Zelfde basis en dezelfde vier
+gedragingen als type 4 (PostLoad `0x416d90` is op de AnimCtrl-ctor na identiek aan `0x418ae0`; `[0x4c5330]++`).
 
-| # | code | betekenis (bewezen kern) |
-|---|---|---|
-| 0 | `0x417146` | patrouille (Pad); `cool < 0` en `FindTarget(1,0)` ⇒ thuis = pos, leash aan, → **11** |
-| 2 | `0x417057` | naar dwalen: snelheid `P+0x08`, draaisnelheid `P+0x10`, gedrag Dwalen → **3** (Reset zonder TRAJ start hier: toestand 3) |
-| 3 | `0x4170a3` | dwalen; doel ⇒ **11**; met TRAJ en < 10 van thuis ⇒ **0** |
-| 11 | `0x4171bd` | **richten**: gedrag Stilstaan; draaisnelheid `P+0x14 · 4.0` (`0x4a94c0`); doelhoek = naar speler; draai-animaties 1/2 geschaald met `0x436bd0`; als herlaadtimer `+0x1d0 ≤ 0` ⇒ `+0x1e4 = AnimLen(0x13)`, → **12**; geen doel ⇒ `cool = P+0x38`, → 2 |
-| 12 | `0x4172da` | **uithalen**: xz-afstand `≤ P+0x54` (150) ⇒ **5** (stormloop); anders aftellen `+0x1e4`; ≤ 0 ⇒ **13** (subtype 6: `+0x1e4 = 0.1`); blijft meedraaien |
-| 13 | `0x4173ca` | **vuren**: mondingspunt = mesh-vector `0x42f6b0(this, 1, &m, 0)`; zichtlijn `0x497ed0(pos + h/2 → m, −1)`; als `[0x4c4bd0]` niet 3 of 4 ⇒ `vtbl[58](doel, &m)` = `0x418820` → projectiel `0x4490a0` (parameters `P+0x40` schade 1, `P+0x60` = 1000, `P+0x64, +0x68, +0x70, +0x74`); `+0x1d0 += P+0x4c` (**2.0 s** herladen), → **11** |
-| 5 | `0x417523` | stormloop start: gedrag Achtervolgen (`0x41bc80`), `+0x1d4 = afstand / P+0x0c`, → **6** |
-| 6 | `0x417664` | stormloop: geen doel of tijd om ⇒ **14**; `Touch(1,0)` ⇒ `Perso->vtbl[39](this, P+0x3c, &dir, &punt, 0)` (zelfde opbouw als type 4); mis ⇒ `+0x1f8 = AnimLen(10)`, → **1**; speler dood ⇒ **8** |
-| 1 | `0x4177f7` | na de hap: timer `+0x1f8`; daarna `cool = P+0x38`, → 2 |
-| 14 → 7 | `0x417883`, `0x4178cc` | remmen: `+0x1d8 = AnimLen(9)`; daarna `cool`, → 2 |
-| 8 → 9 | `0x41792e`, `0x417977` | speler verslagen: `AnimLen(11)`, → 2 |
-| 4 | `0x417a19` | geraakt: `hp ≤ 0` ⇒ `vtbl[57]()`, → **10**; anders hit-timer ⇒ 2 |
-| 10 | `0x4179b6` | dood (als type 4 toestand 12: `+0x15c`, `vtbl[51]`, `+0x10c \|= 1`) |
-| 15, 16 | `0x417a63`, `0x417ce4` | alleen **subtype 6 (type 9)**: uitwijken – gestart door `vtbl[37](&dir)` = `0x417ee0` (bewaart `dir` in `+0x200`, toestand 15) en `vtbl[42]` = `0x417ff0`; niet gevolgd |
+### 8.1 Klassefabriek en parameters
 
-`vtbl[41](bool)` = `0x417fd0`: true en niet dood ⇒ toestand 8. `vtbl[47]` = `0x417f20`: RegisterActor2 volgens bytetabel
-`0x417f48` (niet in toestand 10).
+Fabriek `0x403502` (bytetabel `0x403f3c`, sprongtabel `0x403e94`): **type 7 → case `0x40370c` → `push 4`**, **type 8 → `0x4036d3` → `push 5`**,
+**type 9 → `0x403745` → `push 6`** (alle drie `new(0x20c)` + `0x416ca0(subtype)`). De ctor zet categorie 2 (`0x40c360(2)`), subtype
+(`0x40c380`) en `+0x1c4 = 0`. De tegenstrijdigheid met OBJECTS.md §2.5 was een leesfout daar: "straal 50, zicht 2500, hoogte 180, hp 2,
+schade 2" is **subtype 7** (= type 10, case `0x41d95c`); type 7 is subtype 4 (case `0x41d750`).
+
+Definitieve P-waarden (`0x41d510`: defaults, daarna `0x41dc38[subtype−1]`; alles float tenzij vermeld):
+
+| P+ | type 7 (sub 4, `0x41d750`) | type 8 (sub 5, `0x41d7da`) | type 9 (sub 6, `0x41d864`) | betekenis in deze klasse |
+|---|---|---|---|---|
+| 0x04 | 30 | 30 | 30 | straal |
+| 0x28 | 140 | **130** | 140 | hoogte |
+| 0x08 | 200 | 200 | 200 | loopsnelheid (scripts: `11 [inst, 7, 150]`) |
+| 0x0c | 600 | 600 | 600 | rensnelheid = **snelheid van de stormloop** (`0x41bc80`) én basis van de uitwijksnelheid (×3) |
+| 0x5c | 800 | 800 | 800 | **niet gelezen** in deze klasse (alleen type 4) |
+| 0x10 / 0x14 / 0x18 | π/2 / **4π** / π | idem | idem | draaisnelheid dwalen / snel (Achtervolgen; richten = `P+0x14 · 4` = 16π rad/s) / – |
+| 0x1c | 800 | 800 | **1000** | leash (Reset met TRAJ: 10; scripts `11 [inst, 0, v]`) |
+| 0x20 | 1500 | 1500 | 1500 | zichtafstand 3D (scripts `11 [inst, 1, v]`: W1A 800) |
+| 0x24 | **800** | 800 | 800 | max. \|dy\| |
+| 0x34 | **1** | **2** | **3** | levenspunten |
+| 0x38 | 1.5 | 1.0 | 1.5 | afkoeltijd `cool` |
+| 0x3c | 1 | 1 | **3** | schade van de hap (stormloop) |
+| 0x40 | 1 | 1 | **2** | **schade van het projectiel** → `T+0x30` |
+| 0x4c | **2.0** | **1.5** | **2.0** | herlaadtijd (s); scripts `11 [inst, 33, v]` (W2D: 2 en 3) |
+| 0x54 | **150** | **150** | **10** | hap-bereik (xz): binnen dit bereik stormloop i.p.v. schieten. Type 9 hapt dus praktisch nooit |
+| 0x58 | 300 | 300 | 300 | uitwijkafstand (alleen type 9 gebruikt hem) |
+| 0x60 | 1000 | 1000 | 1000 | projectielsnelheid → `T+0x20` |
+| 0x64 | 1 | 1 | 0 | → `T+0x54` (begrenzing y; zonder effect omdat `dir0.y = 0`) |
+| 0x68 | **0.2** | **0** | **0** | → `T+0x40` stuurfactor xz per 1/60 s: **alleen type 7 is doelzoekend** |
+| 0x70 | 0 | 0 | 0 | → `T+0x3c` richthoogte **en** `T+0x44` verticale stuursnelheid (0 ⇒ geen verticaal sturen) |
+| 0x74 (int) | **0** | **1** | **3** | → `T+0x60` visueel soort: 0/1 = **missile-model + rook** (`0x4700e0`; SoundFx **17** resp. **18**), 3 = **vuurbal** (`0x470af0`, SoundFx **20**) |
+| 0x48 | 150 | 150 | 10 | gezet, **geen lezer** in `0x416ca0..0x4189f0` (bericht 11/32 schrijft hem; W2B gebruikt dat): onzeker |
+| 0x6c | 100 | 100 | 100 | gezet, geen lezer gevonden: onzeker |
+| 0x44 | 600 | 600 | 600 | terugslagfactor (default) |
+
+Geen van de drie is ballistisch: zwaartekracht komt uit sjabloon 1 (= 0) en de startrichting is **horizontaal** (§8.2). Het projectiel
+vliegt dus recht, op mondingshoogte, 1000 u/s, levensduur 15 s (sjabloon 1), straal 5, 0 stuiters; type 7 stuurt in xz bij
+(`k = pow(0.8, dt·60)`, PROJECTILES.md §2.2; begrensd door `T+0x50 = 0`: nooit meer dan 90° van de startrichting af), y blijft constant.
+
+### 8.2 Afvuren `vtbl[58](doel, Vec3 m[2])` = `0x418820`
+
+```c
+bool Shooter_Fire(Enemy *e, Inst *target, Vec3 *m /* m[0] = monding, m[1] = tweede punt */) {
+    ProjT T = { 0x44a260-waarden inline };            /* 0x41883d..0x4188ba: straal 5, snelheid 1000, levensduur 5, schade 20, richth. 150, visueel 4, raakt-alles 1 */
+    Proj_Template(1, &T);                             /* 0x449070: overschrijft alles met sjabloon 1 (PROJECTILES.md §1.1) */
+    T.pos  = m[0];                                    /* 0x4188e6 */
+    T.dir0 = (m[1].x - m[0].x, 0, m[1].z - m[0].z);   /* y = 0 (0x4188d4); genormaliseerd als lengte > 0 (0x418913) */
+    T.target = target;  T.damage = P->+0x40;  T.owner = e;
+    T.aim_h = T.vsteer = P->+0x70;  T.steer = P->+0x68;  T.lim_y = P->+0x64;
+    T.speed = P->+0x60;  T.visual = P->+0x74;
+    return Proj_Alloc(&T) != NULL;                    /* 0x41898c -> 0x4490a0 -> 0x449130: SoundFx 17/18/20 (3D op de vijand) + visual */
+}
+```
+Er is **geen eigen geluid** en geen animatie-event: het schot wordt getimed door de toestandstimer `+0x1e4 = AnimLen(0x13)` (§8.4), het
+geluid komt uit `0x449130`. De aanroeper (toestand 13) levert `m`: `m[0]` = beginpunt van de eerste marker-node met **typecode 1**
+(`0x42f6b0(this, 1, m, 0)`, wereldruimte, in de actuele animatiepose; W1A model 45: node 65 aan bot 9), en overschrijft `m[1]` met
+`m[0] + kijkrichting(H) · 10` (`0x41b8b0`, `0x4a9750`): de schietrichting is dus de **kijkrichting van de vijand**, niet de markerrichting
+en niet de richting naar de speler (na toestand 12 kijkt hij wel vrijwel exact naar de speler).
+Treft het projectiel iets, dan roept `0x44a0a0` `owner->vtbl[41](dood)` = `0x417fd0` aan: `dood` en toestand ≠ 10 ⇒ toestand **8** (juichen).
+
+### 8.3 Velden (boven de Enemy-basis)
+
+| off | betekenis |
+|---|---|
+| 0x1c0 | toestand 0..16 |
+| 0x1c4 | AnimCtrl (0x54 B, ctor `0x4189b0` → basis `0x4369f0`, vtable `0x4a9eac`, `[0]` = `0x4189d0`: record `0x4b26a8 + n·0x1c`) |
+| 0x1c8 | `cool`: zolang ≥ 0 wordt de speler niet opgemerkt (aftellen in de proloog zolang ≥ 0) |
+| 0x1cc | timer toestand 9 (juichen) = AnimLen(11) |
+| 0x1d0 | **herlaadtimer** (proloog: zolang ≥ 0 `−= dt`; na een schot `+= P+0x4c`) |
+| 0x1d4 | resterende stormlooptijd = `afstand_xz / P+0x0c` |
+| 0x1d8 | timer remmen (toestand 7) = AnimLen(9) |
+| 0x1dc | `AnimLen(4, 1)` (Reset `0x416f8f`): lengte van één loop-cyclus, voor de pad-animatie |
+| 0x1e0 | duur van de draai-animatie in toestand 11 |
+| 0x1e4 | uithaal-timer (toestand 12) = AnimLen(0x13); type 9: daarna nog 0.1 s in toestand 13 |
+| 0x1e8 | uitwijk-timer (toestand 16) = `P+0x58 / (3·P+0x0c)` = 0.1667 s |
+| 0x1ec | vec3 genormaliseerde 3D-richting naar de speler bij de start van de stormloop (geen lezer gevonden) |
+| 0x1f8 | timer toestand 1 (na de hap) = AnimLen(10) |
+| 0x200 | vec3 aanvalsrichting van de speler (door `vtbl[37]`), in toestand 15 omgezet in de uitwijkvector |
+
+Reset `vtbl[17]` = `0x416ed0`: `Enemy::Reset`, AnimCtrl-reset; met TRAJ toestand **0** (gedrag Pad, `P+0x1c = 10`), anders toestand **3**
+(gedrag Dwalen, `vtbl[6]()` + `0x41c160`); alle timers 0 (dus ook herlaadtimer 0: het **eerste schot volgt direct** op het opmerken).
+
+### 8.4 Toestandsmachine (`vtbl[52]` = `0x416fb0`)
+
+Proloog: `Enemy::Update` (§4.2; de animatiekeuze `vtbl[45]` loopt dus vóór de switch, met de toestand van het vorige frame);
+`reload ≥ 0 ⇒ −= dt`; `cool ≥ 0 ⇒ −= dt`; `hitT > 0 ⇒ −= dt`. `doel = FindTarget(1, 0)` (§3.2) wordt per toestand opnieuw gevraagd.
+"→ 2*" = het gedeelde eind `0x4178ee`: toestand 2 **zonder** `cool` te zetten.
+
+| # | code | naam | exact gedrag |
+|---|---|---|---|
+| 0 | `0x417146` | PATROUILLE | als `cool < 0` en doel ⇒ thuis `+0x134` = eigen positie, `Dwalen.0x41c140(1, &thuis)`, → **11** |
+| 2 | `0x417057` | NAAR DWALEN | H-snelheid := `P+0x08` (direct), draaisnelheid := `P+0x10` (`0x41b940`), gedrag = Dwalen, `vtbl[6]()`, `0x41c160`, → **3** |
+| 3 | `0x4170a3` | DWALEN | als `cool < 0` en doel ⇒ **11**. Daarna (ook als net 11 gezet is): met TRAJ en xz-afstand tot thuis `< 10` ⇒ gedrag = Pad (`0x41cfb0`), → **0** |
+| 11 | `0x4171bd` | **WACHTEN/HERLADEN** | geen doel ⇒ 2*. Gedrag = Stilstaan met `Stil+0x38 = 0`; draaisnelheid := `P+0x14 · 4.0` (`0x4a94c0`); doelhoek := hoek(eigen pos → doel) zonder snap (`0x41ba60(own, tgt, 0)`); `+0x1e0 = boog(H.hoek, H.doelhoek) / P+0x14 · 4.0` (`0x4401c0`; letterlijk zo: delen door 4π, **maal** 4); `0x436bd0(2, +0x1e0, 1)` en `0x436bd0(1, +0x1e0, 1)` (draai-animaties zo schalen dat ze `+0x1e0` s duren). **`H.Tick` wordt hier niet aangeroepen** (Stilstaan-Tick `0x41bed0` = kale `0x41b2c0`; de enige `0x41ba90`-aanroep van de klasse staat in toestand 12): tijdens het herladen draait de vijand dus **niet** mee, hij speelt alleen de draai-animatie. Als `reload ≤ 0` ⇒ `+0x1e4 = AnimLen(0x13, 0)`, → **12** |
+| 12 | `0x4172da` | **UITHALEN** | geen doel ⇒ 2*. xz-afstand `≤ P+0x54` ⇒ **5** (meteen return). Anders: `+0x1e4 > 0` ⇒ `−= dt`; anders (subtype 6: `+0x1e4 = 0.1` (`0x3dcccccd`)) → **13**. In beide gevallen daarna doelhoek := naar de speler en **`H.Tick(dt)`** (`0x417397`): hier draait hij, met 16π rad/s ≈ binnen enkele frames |
+| 13 | `0x4173ca` | **VUREN** | geen doel ⇒ 2*. `0x42f6b0(this, 1, m, 0)` mislukt (geen marker typecode 1) ⇒ return (blijft in 13). `m[1] = m[0] + kijkrichting·10`. Subtype 6: `+0x1e4 −= dt`; nog `> 0` ⇒ return. Zichtlijn `0x497ed0(&(pos + (0, h/2, 0)), &m[0], −1)`: **van het eigen middelpunt naar de eigen monding** (steekt de monding door een muur/instantie?), niet naar de speler. `[0x4c4bd0]` = ruw botsresultaat (PERSO_MOVE.md: 1 = niets, **3 = wereldpolygoon, 4 = instantie**): bij 3 of 4 wordt het schot **overgeslagen**, anders `vtbl[58](doel, m)`. In beide gevallen `reload += P+0x4c`, → **11**. (Of de straal eigen hulls kan raken: onzeker.) |
+| 5 | `0x417523` | STORMLOOP START | geen doel ⇒ 2*. xz-afstand `> P+0x54` ⇒ return (**blijft in 5**, staat stil met animatie 8 tot de speler weer binnen bereik of uit zicht is). Anders `+0x1ec = normalize(doel − pos)`; gedrag = Achtervolgen, `vtbl[6]()`, `0x41bc80(doel)` (snelheid `P+0x0c` = 600 direct, draaisnelheid `P+0x14`, eerst op de plaats draaien: §5.3); `+0x1d4 = afstand / P+0x0c`; `0x436bd0(8, +0x1d4, 1)` (stormloop-animatie duurt precies zo lang), → **6** |
+| 6 | `0x417664` | STORMLOOP | geen doel ⇒ **14**; `+0x1d4 < 0` ⇒ **14**; `+0x1d4 −= dt`; `Touch(1, 0)` (`vtbl[31]`) niets ⇒ return. Anders exact als type 4: `dir = normalize_xz(doel − pos)`, `punt = pos + dir·P+0x04 + (0, h/2, 0)`, `dood = doel->vtbl[39](this, P+0x3c, &dir, &punt, 0)`; dood ⇒ **8**, anders `+0x1f8 = AnimLen(10, 0)`, → **1** |
+| 1 | `0x4177f7` | NA DE HAP | gedrag = Stilstaan (`+0x38 = 0`), H-snelheid := `P+0x08` direct; `+0x1f8 > 0` ⇒ `−= dt`; anders `cool = P+0x38`, → **2** |
+| 14 | `0x417883` | REMMEN START | gedrag = Stilstaan; `+0x1d8 = AnimLen(9, 0)`; toestand 7; H-snelheid := `P+0x08`; valt door in 7 |
+| 7 | `0x4178cc` | REMMEN | `+0x1d8 < 0` ⇒ `cool = P+0x38`, → **2**; anders `−= dt` |
+| 8 | `0x41792e` | JUICHEN START | `+0x1cc = AnimLen(11, 0)`; toestand 9; gedrag = Stilstaan; H-snelheid := `P+0x08`; valt door in 9 |
+| 9 | `0x417977` | JUICHEN | `+0x1cc −= dt`; `≤ 0` ⇒ **2** (geen `cool`) |
+| 4 | `0x417a19` | **GERAAKT** | `hp ≤ 0` ⇒ `vtbl[57]()` (sterf-deeltjes, §4.2), → **10**; anders `hitT ≤ 0` ⇒ **2**. Gedrag blijft wat het was |
+| 10 | `0x4179b6` | **DOOD** | gedrag = Stilstaan (`+0x38 = 0`); `+0x15c += dt`; `vtbl[51]() ≤ +0x15c` ⇒ `+0x10c \|= 1`; elk frame typewoord `&= ~0x400` |
+| 15 | `0x417a63` | **UITWIJKEN START** (alleen bereikbaar voor subtype 6) | zie §8.5 → **16** |
+| 16 | `0x417ce4` | UITWIJKEN | `+0x1e8 > 0` ⇒ `−= dt`; anders `Stil+0x38 = 0`, **`reload = P+0x4c`**, `cool = P+0x38`, toestand **3**, H-snelheid := `P+0x08` direct, draaisnelheid := `P+0x10`, gedrag = Dwalen, `0x41c0c0(0)` (Dwalen-herstart met actie 0), `0x41c160` |
+
+Cyclus van een schutter die de speler ziet: 3 → 11 (1 frame bij `reload ≤ 0`) → 12 (AnimLen(0x13) = 0.53 s uithalen, draait mee) → 13
+(schot; type 9 0.1 s later) → 11 (`P+0x4c` s wachten zonder meedraaien) → 12 → … Komt de speler binnen `P+0x54` terwijl hij in **12**
+zit ⇒ stormloop van hooguit `150/600 = 0.25 s`. In 11 en 13 wordt de afstand niet getest.
+
+Overige slots: `vtbl[47]` = `0x417f20` (bytetabel `0x417f48`): RegisterActor2 (`0x40c0b0`) in alle toestanden behalve **10**.
+`vtbl[51]` = `0x4149e0` = `AnimLen(13, 0) + 1.0`. `vtbl[53](x)` = `0x4184f0` (tabel `0x4187ac`): toestand 0 ⇒ `Pad+0x58`; 1 ⇒ AnimLen(10);
+2/3 ⇒ per dwaal-actie (tabel `0x4187f0`: actie −1 ⇒ 0.0; 0..4 ⇒ AnimLen(14..18); 5 ⇒ AnimLen(26 of 27); 6 ⇒ ΣAnimLen(4, 0..2); 7 ⇒ ΣAnimLen(5, 0..2);
+9 ⇒ ΣAnimLen(6, 0..2) − `inst+0xac / inst+0xa0`); **4 ⇒ 0.25** (`0x4a9ca0`); 5/6 ⇒ AnimLen(8); 7/14 ⇒ AnimLen(9); 8/9 ⇒ AnimLen(11); 10 ⇒ AnimLen(13);
+11 ⇒ AnimLen(1 of 2); 12 ⇒ AnimLen(0x13); 13 ⇒ AnimLen(0x14); 15 ⇒ AnimLen(0); 16 ⇒ AnimLen(0x15).
+
+### 8.5 Uitwijken (type 9): `vtbl[37]`, `vtbl[42]`, toestand 15/16
+
+* **Aanroeper van `vtbl[37]`** (slot `+0x94`): alleen `0x457f90` in de aanvalscode van de Perso, aanvalstoestand 1 = **start van de
+  lucht-pikduik** (`0x457eac`, PERSO_JUMP.md §2.4): dichtstbijzijnde aanvalbare instantie binnen 500 (`0x4632e0`), als die categorie 2 is
+  wordt het richtpunt `pos + (0, 0.8·hoogte, 0)`; alleen als de speler meer dan **50 boven** dat richtpunt is: `atkDisp = richtpunt − spelerpos`
+  (3D, **niet genormaliseerd**) en `doel->vtbl[37](&atkDisp)`. De gewone pik/stormloop op de grond waarschuwt dus niet.
+  (De andere `call [r+0x94]` in de exe – `0x428eef..0x42a18a`, `0x44ea80`, `0x47ed03..` – zijn andere klassen.)
+* `vtbl[37](Vec3 *d)` = `0x417ee0`: `if (subtype == 6) { +0x200 = *d; toestand = 15; }` – zonder verdere test (ook tijdens geraakt/juichen; in
+  toestand 10 is bit 0x400 al weg, dus dan vindt de doelzoeker hem niet meer). Voor type 7/8 doet het niets.
+* `vtbl[42]()` = `0x417ff0`: `toestand = 15` onvoorwaardelijk. **Geen aanroeper gevonden** (geen `call [r+0xa8]` op een Npc in de exe; alle andere
+  vijandklassen hebben hier de lege `0x462c60`); `+0x200` houdt dan zijn oude waarde: onzeker/dode code.
+* Toestand 15 (`0x417a63`):
+```c
+d = normalize_xz(e->+0x200) * P->+0x58;            /* 300; y = 0 */       e->+0x200 = d;
+c[3] = pos + ( d.x, h/2,  d.z);                      /* van de speler af */
+c[2] = pos + (-d.z, h/2,  d.x);                      /* zijwaarts */
+c[1] = pos + ( d.z, h/2, -d.x);                      /* andere kant */
+c[0] = pos + (-d.x, h/2, -d.z);                      /* naar de speler toe */
+for (i = 3; i >= 0 && !Free(e, &c[i]); i--) ;  if (i < 0) i = 3;          /* 0x417bc5: eerste vrije, anders toch c[3] */
+e->+0x1e8 = P->+0x58 / (P->+0x0c * 3.0f);          /* 0x4a988c: 300/1800 = 0.1667 s */
+e->behav = Stil;  Stil->+0x38 = P->+0x0c * 3.0f;    /* stapsnelheid 1800 u/s */
+Stil->+0x2c = normalize_xz(c[i] - pos);            /* staprichting */
+e->state = 16;
+H_SetAngle(H, angle(c[i] -> pos), snap = 1);       /* 0x41ba60(c[i], own, 1): kijkt TEGEN de sprongrichting in (bij c[3]: naar de speler) */
+bool Free(e, Vec3 *c) {                            /* 0x417df0 */
+    Ray(&(pos + (0, h/2, 0)), c, -1);              /* 0x4359b0 */    if ([0x53a554] != 0) return false;
+    GetHeight(c, -1, 1);                           /* 0x435650 -> [0x53a568] */
+    float drop = pos.y - [0x53a568];
+    return drop <= P->+0x2c && -drop <= P->+0x30;  /* hoogstens 10 lager / 10 hoger */
+}
+```
+  De verplaatsing zelf loopt via de gewone `0x41b2c0` (sweep, randen, terugslag) met stap `dt · 1800` ⇒ 300 eenheden in 0.167 s. Na afloop
+  (toestand 16) is hij `P+0x4c` s ontwapend en `P+0x38` s blind. Wordt hij tijdens 16 toch geraakt (toestand 4, gedrag ongewijzigd), dan
+  blijft `Stil+0x38 = 1800` staan tot een toestand het gedrag opnieuw zet: randgeval, letterlijk zo.
+
+### 8.6 Animaties
+
+Tabel `0x4b26a8` (28 records van 0x1c B, eindigt precies waar de type-4-tabel `0x4b29b8` begint), zelfde formaat
+`{int sub[4]; int prio; float speed; u8 restart}`; `AnimLen(n, k) = duur(sub[k]) / speed`. Let op: `0x436bd0(n, T, k)` **schrijft**
+`speed = Σ_{i<k} duur(sub[i]) / T` in de (globale, door alle vijanden van de klasse gedeelde) tabel.
+
+| n | sub[] | prio | speed | restart | gebruikt voor |
+|---|---|---|---|---|---|
+| 0 | 0,0,0,0 | 1000 | 3 | 1 | toestand 15 (1 frame) |
+| 1 / 2 | 16×4 / 17×4 | **900** | 3 (herschreven) | 1 | toestand 11: draaien/wachten; `H+0x0c > 0` (`0x41b900`) ⇒ 1, anders 2; duur `+0x1e0` |
+| 3 | 1,2,2,2 | 1000 | 3 | 1 | (rennen; in deze klasse niet aangevraagd) |
+| 4 / 5 | 3,4,5,0 | 1000 | 3 | 1 | dwaal-actie 6 / 7 (lopen) |
+| 6 / 7 | 4,4,5,0 / 4×4 | 1000 | 3 | **0** | dwaal-actie 9 / 10 |
+| 8 | 13,−1,−1,−1 | 1000 | 3 (herschreven: `duur(13) / +0x1d4`) | 1 | toestand 5/6 stormloop |
+| 9 | 15,0,0,0 | 1000 | 3 | 1 | toestand 7/14 remmen |
+| 10 | 14,0,0,0 | **1500** | **2** | 1 | toestand 1 hap |
+| 11 | 18,0,0,0 | 1000 | 3 | 1 | toestand 8/9 juichen |
+| 12 | 11,0,0,0 | 1000 | 4 | 1 | toestand 4 geraakt |
+| 13 | 12,−1,−1,−1 | 2000 | 3 | 1 | toestand 10 dood |
+| 14..18 | 6..10, 0, −1, −1 | 1000 | **2** | 1 | idle-variaties (dwaal-actie 0..4, pad-substaat 2..6) |
+| **19** (0x13) | **21**,−1,−1,−1 | 1000 | 3 | 1 | toestand 12 **uithalen/richten** |
+| **20** (0x14) | **22**, 0,−1,−1 | 1000 | 3 | 1 | toestand 13 **gooien/schieten** |
+| **21** (0x15) | **19**, 0,−1,−1 | 1000 | 3 | 1 | toestand 16 **uitwijksprong** |
+| 22 | 20, 0,−1,−1 | 1000 | 3 | 1 | niet aangevraagd in deze klasse (onzeker waarvoor) |
+| 23 / 24 / 25 | 3,4,4,4 / 4×4 / 5,0,−1,−1 | 1000 | 3 | 1 | pad-lopen: aanzet / lus / stoppen |
+| 26 / 27 | 16,0,−1,−1 / 17,0,−1,−1 | 1000 | 3 | 1 | op de plaats draaien (dwaal-actie 5, pad-substaat 1 en 7) |
+
+Verschillen met de type-4-tabel: 1/2 (sub ×4, prio 900), 8 (speed 3 i.p.v. 10), 9 (3 i.p.v. 2), 10 (prio 1500, speed 2), 11 (3 i.p.v. 1.5),
+14..18 (speed 2), nieuwe 19..22; de type-4-records 19..23 staan hier op 23..27.
+
+`vtbl[45]` = `0x418000` (sprongtabel `0x418184`), daarna altijd `AnimCtrl->Tick(dt)`:
+
+| toestand | 0 | 1 | 2, 3 | 4 | 5, 6 | 7, 14 | 8, 9 | 10 | 11 | 12 | 13 | 15 | 16 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| anim | pad (`0x4182e0`) | 10 | dwalen (`0x4181e0`) | 12 | 8 | 9 | 11 | 13 | 1 / 2 | **0x13** | **0x14** | 0 | **0x15** |
+
+* Dwalen `0x4181e0` (tabel `0x4182ac`, actie uit `0x41c630`): 0..4 ⇒ 14..18; 5 ⇒ 26 (`H+0x0c > 0`) of 27; 6 ⇒ 4; 7 ⇒ 5; 8 ⇒ niets; 9 ⇒ 6; 10 ⇒ 7.
+* Pad `0x4182e0` (tabel `0x4184d0`, substaat uit `0x4883c0`): 2..6 ⇒ 14..18; 1 en 7 ⇒ 26/27 met `0x436bd0(n, Pad+0x58, 1)` (draai duurt de hele substaat);
+  0 (segment lopen, `0x4182ff`): `rest = Pad+0x58 − Pad+0x50`; `AnimLen(25) > rest` ⇒ 25 (stoppen); anders `AnimLen(23) > Pad+0x50` ⇒ 23 (aanzet); anders
+  `x = Pad+0x58 − AnimLen(25) − AnimLen(23)`, `n = x / +0x1dc + 0.5`, `n > 1 ⇒ x /= floor(n)`, `x < 0.5 ⇒ 0`; `0x436bd0(24, x, 2)`; anim 24.
+* Timing van het schot: toestand 13 duurt voor type 7/8 precies één frame; de gooi-animatie 0x14 loopt daarna door omdat de wacht-animaties 1/2
+  **prio 900** hebben en `Tick` (`0x436a50`) een lagere prio pas toelaat als de instantie-animatie klaar is (`inst+0xc0 == 1`).
+* Bij hoekverschil 0 in toestand 11 wordt `T = 0` ⇒ `speed = duur/0` (oneindig): in de port afvangen (pose vasthouden).
+* W1A model 45 (23 anims), duur in s: 11 = 1.2, 12 = 4.4, 13 = 1.2, 14 = 2.0, 15 = 2.4, 16/17 = 1.6, 18 = 12.4, 19 = 1.2, 20 = 1.2, 21 = 1.6, 22 = 1.3 ⇒
+  uithalen 0.533 s, gooien 0.433 s, uitwijken 0.4 s, hap 1.0 s, remmen 0.8 s, juichen 4.13 s, geraakt-anim 0.3 s, dood 1.467 + 1.0 = **2.467 s**.
+
+### 8.7 Schade, dood, geluid
+
+`vtbl[39]` = `0x417f60` is regel voor regel `0x419480` (§6.2) met toestand **4** i.p.v. 9: `hitT > 0` ⇒ false; toestand 4; AnimCtrl-reset;
+`hitT = vtbl[53](0)` = 0.25 (toestand is dan al 4); `Enemy_TakeDamage(att, dmg, dir, punt, 0)` (terugslag 0.25 s, `hp −= dmg`). Geen extra
+onkwetsbaarheid, geen verschil per subtype behalve hp (1/2/3). Dood: toestand 4 → `vtbl[57]` (5 deeltjes) → toestand 10, fade in de tweede
+helft van `AnimLen(13) + 1.0`, dan `+0x10c |= 1` → `vtbl[29]`: `[0x4c532c]++`, `0x407850`. Geen bericht, geen bonus.
+
+**Geluid:** in `0x416ca0..0x41dc80` (type 4..9 én de Enemy-basis) staat **geen enkele** `call 0x468a00` (SoundFx). Alle vijandgeluiden (geraakt,
+dood, stormloop, hap, idle) zijn **animatie-events type 4** op de root-node van het model (SOUND.md §3, 3D op de instantie, toonhoogte ×
+`vtbl[27]()` = `0x40d830` = `enemy+0x170` = 1.0 – dat is de lezer van `+0x170`). W1A model 45: anim 11 (geraakt) t = 0: refs 63/64/65 (elk ⅓),
+anim 12 (dood) t = 0: 66/67/68, anim 13 (stormloop) t = 230: 62, anim 14 (hap): 71 en 61, anim 8 (idle): 72, loop/draai-anims: voetstappen;
+anims 19..22 (uitwijken/richten/gooien) hebben **geen** events – het schotgeluid is SoundFx 17/18/20 uit `0x449130`. Er is geen "opgemerkt"-geluid.
+Hetzelfde geldt voor type 4/5/6 (de port speelt deze events al via `anim_sounds` in `src/main_engine.c` zodra de juiste .ins-animatie op t = 0 start).
+SoundFx 6 (`0x44d730`) hoort bij `Bom::Explode`, niet bij vijanden.
+
+### 8.8 Voorkomen (uit de `1200`-berichten van elk level; totaal type 7: 29×, type 8: 74×, type 9: 33×)
+
+Per level gebruikt één model; de scripts sturen na `1200` meestal `11 [inst, 0, leash]`, `11 [inst, 1, zicht]`, soms `[5, 1]` (leash aan),
+`[6, 1]` (bewaker), `[7, 150]` (loopsnelheid), `[33, s]` (herlaadtijd), `[32, v]` (`P+0x48`), `[37, v]`.
+
+| level | type | model | instanties: index (x, y, z) | 11-berichten |
+|---|---|---|---|---|
+| W1A | 7 | 45 | 312 (3701, 4, 2671) | leash 200, zicht 800 |
+| K1A | 7 | 42 | 252 (3701, 4, 2671), 293 (4692, 808, 3673), 294 (3093, 808, 3750), 295 (779, −2007, −131), 436, 437, 456 | leash 100/200, zicht 800 |
+| W1B | 7 | 29 | 278 (−8773, 2817, −2288), 316 (−458, 4922, −3421; zicht 50), 328 (−3263, 4598, −6421), 331 (−2974, 194, −5013), … 13 stuks | leash 100, zicht 800 |
+| S1A | 7 | 40 | 322 (140, −1985, 601), 323 (893, −1990, 606), 325, 379, 510, 511, 517, 518 | zicht 800..1500, `[37, 10]` |
+| W2A | 8 | 38 | 357 (9575, 157, −16400; bewaker), 359 (7425, 1369, −12682), 360 (7959, 1369, −12773), 373 (−97, 112, −5503), 375 (5422, 713, −2524; geen berichten), … 18 stuks | leash 200..400, zicht 500..800, loop 150 |
+| K2A / S2A | 8 | 37 / 37 | K2A 341 (9575, 157, −16400), 344 (2342, 1335, −5107), … 16; S2A 13 stuks | idem |
+| W2B | 8 | 38 | 228 (−1179, −415, −6341), 281 (1755, 778, −4806), 349 (2853, 602, 11155), … 10 stuks | `[32, 600]`, zicht 100..500 |
+| W2D | 8 | 37 | 170 (−8918, 3506, −2826), 204 (−7863, 3377, 3067), … 17 stuks | zicht 1000, herladen 2 of 3 s |
+| W3A | 9 | 50 | 549 (−10241, −254, 11011), 550 (−4036, −407, 2634; zicht 200) | leash 400, loop 150 |
+| K3A | 9 | 52 | 485 (−10251, −254, 10870), 486 (−10241, −254, 11011), 487 (−3423, 799, 3514), 488 (9192, 1090, 3160), 489 | idem |
+| W3B | 9 | 42 | 500 (−2496, −3628, −72), 503 (−3466, −290, 3815), 505, 506, 513, 719 | leash 400/800, zicht 600, loop 150/250 |
+| W3D / S3A | 9 | 27 / 46 | W3D 193 (−5325, −9204, −23659), 317 (860, −3324, 3916), … 8; S3A 429 (−2427, 514, 864; `[33, 200]`, `[32, 800]`), … 12 stuks | zicht 600..2000 |
+
+De bekeken modellen (W1A 45, K2A 37, K3A 52) hebben 23 animaties en een marker typecode 1 (monding; W1A/K2A node 65 aan bot 9, K3A node 74 aan
+bot 26) plus typecode 0.
+
+### 8.9 Recept type 7/8/9 (aansluitend op `src/enemy.c`)
+
+`src/enemy.c` kent nu alleen de type-4-kolom. Uitbreiding:
+
+1. **Parameters per type** i.p.v. `#define`: `{radius 30, height 140/130/140, walk 200, run 600, see 1500, dy 800 (type 4..6: 600), hp 1/2/3,
+   cool 1.5/1.0/1.5, bite 1/1/3, shot_dmg 1/1/2, reload 2.0/1.5/2.0, melee 150/150/10, dodge 300, turn π/2, turn_fast 4π (type 4..6: 2π),
+   leash 800/800/1000, proj_speed 1000, steer 0.2/0/0, visual 0/1/3}`; bericht 11 (§7) schrijft erin (n = 0, 1, 5, 6, 7, 32, 33, 37 komen voor).
+   `enemies_add`: `type 7..9` ⇒ `hp` uit de tabel, begin-toestand 0 (TRAJ) of **3**; eigen toestandsnummers (enum hieronder) naast die van type 4.
+2. **Animatietabel** naast `g_ea` (hoofd-.ins-anim, deler, hold): `WALK {4, 3, 0}`, `DASH {13, *, 0}` (deler = `duur(13) / dashT`),
+   `BRAKE {15, 3, 1}`, `BITE {14, 2, 1}`, `WIN {18, 3, 1}`, `HIT {11, 4, 1}`, `DEAD {12, 3, 1}`, `IDLE {6, 2, 0}`, `TURN_L {16, *, 0}`, `TURN_R {17, *, 0}`
+   (deler = `duur / T`, `T = 4·Δ/P14`; Δ = 0 ⇒ pose vasthouden), `AIM {21, 3, 1}`, `THROW {22, 3, 1}`, `DODGE {19, 3, 1}`. De gooi-animatie moet
+   uitspelen terwijl de toestand al 11 is: `THROW` vasthouden tot `anim_time ≥ duur` (prio-regel §8.6) en pas dan `TURN_*` tonen.
+3. **Toestanden** (pseudo-C, `see` = FindTarget met `dy 800`, `dxz` = xz-afstand, `to_player` = hoek):
+```c
+enum { S_PATH=0, S_BITE=1, S_TOWANDER=2, S_WANDER=3, S_HIT=4, S_DASH0=5, S_DASH=6, S_BRAKE=7, S_WIN=9, S_DEAD=10, S_WAIT=11, S_AIM=12, S_FIRE=13, S_DODGE0=15, S_DODGE=16 };
+if (e->reload >= 0) e->reload -= dt;   /* naast cool en hit_t */
+case S_PATH:   patrol(); if (cool < 0 && see) { home = pos; st = S_WAIT; } break;
+case S_WANDER: wander(); if (cool < 0 && see) st = S_WAIT;  /* TRAJ: binnen 10 van home -> S_PATH */ break;
+case S_WAIT:   if (!see) { st = S_TOWANDER; break; }  speed = 0;  anim = turn-anim naar teken van ang_diff(to_player, ang), duur 4*|diff|/P14;   /* NIET draaien */
+               if (e->reload <= 0) { e->t = len(AIM); st = S_AIM; } break;
+case S_AIM:    if (!see) { st = S_TOWANDER; break; }  if (dxz <= melee) { st = S_DASH0; break; }
+               if (e->t > 0) e->t -= dt; else { if (type == 9) e->t = 0.1f; st = S_FIRE; }
+               steer(e, to_player, 4*P14, dt);  anim = AIM;  break;
+case S_FIRE:   if (!see) { st = S_TOWANDER; break; }  anim = THROW;
+               if (!inst_vector(inst, 1, &m0, &unused)) break;
+               if (type == 9 && (e->t -= dt) > 0) break;
+               if (!segment_blocked(pos + (0,h/2,0), m0))         /* gel_ray_frac; instantie-hulls zodra beschikbaar */
+                   shot_spawn(m0, (cos ang, 0, sin ang), owner = inst, target = player, dmg, steer, visual);   /* audio_fx 17 / 18 / 20 op de vijand */
+               e->reload += P4c;  st = S_WAIT;  break;
+case S_DASH0:  if (!see) { st = S_TOWANDER; break; }  if (dxz > melee) break;
+               turn_t = |ang_diff| / P14;  speed = want = run;  e->atk_t = dxz / run;  DASH-deler = duur(13) / atk_t;  st = S_DASH;  break;
+case S_DASH:   if (!see || e->atk_t < 0) { e->t = len(BRAKE); want = walk; st = S_BRAKE; break; }  e->atk_t -= dt;  steer(P14); move na turn_t;
+               if (dist3 < radius + 69) { hit = player_hit(pl, bite, dir_xz); if (hit) { player_kill(pl, 3); e->t = len(WIN); st = S_WIN; } else { e->t = len(BITE); st = S_BITE; } }  break;
+case S_BITE:   if (e->t > 0) e->t -= dt; else { cool = P38; st = S_TOWANDER; }  break;
+case S_BRAKE:  if (e->t < 0) { cool = P38; st = S_TOWANDER; } else e->t -= dt;  break;
+case S_WIN:    if ((e->t -= dt) <= 0) st = S_TOWANDER;  break;                  /* ook gezet door shot -> owner als player_hit true gaf (vtbl[41]) en st != S_DEAD */
+case S_TOWANDER: speed = want = walk; wander_restart(); st = S_WANDER; break;
+case S_HIT:    if (hp <= 0) { death_fx; attackable = 0; st = S_DEAD; } else if (hit_t <= 0) st = S_TOWANDER;  break;
+case S_DEAD:   als type 4 toestand 12 (L = len(DEAD) + 1.0).
+case S_DODGE0: d = norm_xz(e->warn) * 300; kandidaten pos+d, pos+(-d.z,d.x), pos+(d.z,-d.x), pos-d: eerste met vrije straal op h/2 en grond binnen ±10 (anders pos+d);
+               e->dodge_dir = norm_xz(c - pos); e->ang = hoek(c -> pos) (snap); e->t = 300 / (3*run); st = S_DODGE;  break;
+case S_DODGE:  anim = DODGE; if (e->t > 0) { e->t -= dt; enemy_move(e, pl, dodge_dir * 3*run*dt); } else { reload = P4c; cool = P38; want = speed = walk; st = S_WANDER; }  break;
+```
+4. **Hooks**: `enemy_take_damage` ⇒ toestand `S_HIT` (4) voor type 7..9, `removed`/`S_DEAD` i.p.v. 12. Nieuw `enemy_warn_dive(Enemy*, Vec3 d)` = `vtbl[37]`:
+   alleen type 9 ⇒ `warn = d; st = S_DODGE0`; aanroepen uit `player.c` op het moment dat de lucht-pikduik start met een vijand als auto-aim-doel
+   (binnen 500, speler > 50 boven `pos.y + 0.8·h`), met `d = (pos + (0, 0.8h, 0)) − spelerpos`.
+5. **Projectiel**: `Shot` in `src/main_engine.c` uitbreiden met `speed`, `damage`, `steer`, `target`, `visual`, `owner_enemy`; per frame (alleen `steer > 0`):
+   `k = powf(1 − steer, dt·60)`; `dir.xz = norm_xz(target − pos)·(1 − k) + dir.xz·k` (richthoogte 0), hernormaliseren, en terugzetten als
+   `dot(dir.xz, dir0.xz) < 0`; y blijft 0. Treffer op de speler ⇒ `player_hit(dmg)`; bij dood `enemy → S_WIN`. Levensduur 15 s, eerste wereldtreffer = weg.
+   Visual 0/1 = missile (PROJECTILES.md §5.3: lint 20 × 25, kop beeld 4 oranje, explosie `0x477060(2, …)`, model uit de type-41-pool; W1A heeft er 8),
+   visual 3 = vuurbal (§5.5). Tot die visuals bestaan: de bol van visual 2 tonen met het juiste geluid.
+6. **Test W1A**: instantie 312 (model 45) op (3701, 4, 2671), zicht door het script 800, leash 200: binnen 800 komen ⇒ 0.53 s uithalen, missile op
+   mondingshoogte die in xz naar Woody buigt, daarna elke 2.0 s één schot; binnen 150 tijdens het uithalen ⇒ korte stormloop met hap (1 hartje);
+   één pik = dood (hp 1), geluid 63..65 en 66..68 uit de animatie-events. K3A/W3A 549/550 voor het uitwijken van type 9 (lucht-pikduik van boven).
 
 ## 9. Recept: eenvoudigste vijand (type 4 zonder TRAJ) in C
 
@@ -511,11 +782,12 @@ bool enemy_take_damage(Enemy *e, void *att, float dmg, vec3 *dir, vec3 *pt, int 
 ## 10. Open vragen
 * Basis-slots 14..16, 23, 24 (`0x41ad80` vult `{pos.x, pos.y + h/2, pos.z, straal, h/2}` = botscilinder), 27/28/30, 50, 54 zijn niet
   benoemd; `vtbl[56]` = `0x41b030` (verplaatsing met `0x4359b0`/`0x436dc0`) is niet gelezen – het wordt in type 4 niet aangeroepen.
-* `Enemy+0x14c`, `+0x154` (bericht 11/18, ×0.01) en `+0x170` (1.0): geen lezer gevonden in type 4.
+* `Enemy+0x14c`, `+0x154` (bericht 11/18, ×0.01): geen lezer gevonden in type 4. `+0x170` (1.0) = toonhoogtefactor van de animatiegeluiden (`vtbl[27]` = `0x40d830`, §8.7).
 * Vlag 0x20 van `+0x174` (PostLoad zet, bericht 11/30 schakelt) en vlag 8: geen lezer/zetter gevonden in de gelezen code.
 * `0x437580` (sweep), `0x437040` (push-out t.o.v. andere actoren?) en `[0x4b310c]` (fractie ≥ 0.8 = "vrij") zijn alleen aan de
   aanroepkant bekeken; `0x436d20/0x436d80` (platform) idem.
-* De obstakelsensor (§5.6) en de type 7-toestanden 15/16 (uitwijken van type 9) zijn niet op instructieniveau gevolgd.
+* De obstakelsensor (§5.6) is niet op instructieniveau gevolgd. Type 7/8/9: `vtbl[42]` (`0x417ff0`) heeft geen gevonden aanroeper; `P+0x48` en `P+0x6c`
+  hebben geen lezer in de klasse; animatierecord 22 (sub 20) wordt nergens aangevraagd (§8).
 * Parameters `P+0x44` (600) is bewezen de terugslagfactor; `P+0x48, +0x50, +0x58, +0x84..0xbc` horen bij types 10..13 (niet gelezen).
 * Types 10..13 (eigen Update `0x415490`, `0x412310`, `0x4110c0`, `0x413ab0`; type 12 met msgmask 0x10 in `0x411729` en eigen
   `vtbl[31]/[40]`) zijn niet geanalyseerd; de hiërarchie, P-tabel en berichten van §1, §2.3 en §7 gelden er wel voor.

@@ -471,7 +471,7 @@ W1A: `1501 [.,1]`, `1502 [.,255,255,255,700,400]` op (8718, 1445, −1412), (438
 
 ### 2.5 Type 7 — schietende vijand (1× in W1A, model 45 op (3701, 4, 2671))
 
-Npc/Enemy-klasse, ctor `0x416ca0`, vtable `0x4a9dc0`, handler `0x414530`; zie ENEMY.md §8 (subtype 4: straal 50, zicht 2500, hp 2, schade 2,
+Npc/Enemy-klasse, ctor `0x416ca0`, vtable `0x4a9dc0`, handler `0x414530`; zie ENEMY.md §8 (subtype 4: straal 30, zicht 1500 (W1A-script: 800), hp 1, schade 1, herladen 2.0 s, doelzoekende missile;
 `vtbl[58]` `0x418820` = projectiel afvuren vanaf de marker). Pikbaar via de gewone doelwitlus (registreert zich met `jmp 0x40c0b0`). Model 45 heeft
 markers typecode 1 en 0 (monding/aanvalsvector).
 

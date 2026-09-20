@@ -410,6 +410,8 @@ float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b)
     return best;
 }
 
+int player_segment_blocked(const Player *p, Vec3 a, Vec3 b) { return gel_ray_frac(p->gel, a, b) <= 1.0f; }
+
 /* ---- logical animations: table 0x4b6180 (0x1c bytes per record: sub[4], prio, speed, restart) --------------
  * A logical animation is a chain of up to four .ins animations played in order, the last one looping (-1 = hold);
  * the speed divides the .ins duration (docs/PERSO_JUMP.md 4). Priorities are not used here. */
@@ -524,7 +526,7 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
         p->atk_dir = (Vec3){ dir.x, -2.0f, dir.z };
         if (t) {
             p->aim = t->pos; p->aim.y += enemy_height(t) * 0.8f; p->target = t;
-            if (p->pos.y - p->aim.y > 50.0f) { p->atk_dir = vsub(p->aim, p->pos); p->has_target = 1; float yl = sqrtf(p->atk_dir.x * p->atk_dir.x + p->atk_dir.z * p->atk_dir.z); if (yl > 0.01f) p->yaw = atan2f(p->atk_dir.x, p->atk_dir.z); }
+            if (p->pos.y - p->aim.y > 50.0f) { p->atk_dir = vsub(p->aim, p->pos); p->has_target = 1; enemy_warn_dive(t, p->atk_dir);   /* 0x457f90 -> vtbl[37] */ float yl = sqrtf(p->atk_dir.x * p->atk_dir.x + p->atk_dir.z * p->atk_dir.z); if (yl > 0.01f) p->yaw = atan2f(p->atk_dir.x, p->atk_dir.z); }
         }
         p->dash_start = p->pos; audio_fx(55 + rand() % 3, NULL, NULL);          /* 0x45752b: air attack cry, 0x37 + rand(0,3) */
         { float l = sqrtf(vdot(p->atk_dir, p->atk_dir)); p->atk_dir.x /= l; p->atk_dir.y /= l; p->atk_dir.z /= l; }
