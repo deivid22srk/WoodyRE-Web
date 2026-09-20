@@ -477,6 +477,8 @@ markers typecode 1 en 0 (monding/aanvalsvector).
 
 ### 2.6 Type 20 (en 21) — **berijdbaar/afvuurbaar object** (2× in W1A: model 47)
 
+> **Vervangen door ROCKET.md** (volledige analyse; type 20 is geport). Onderstaande schets bevat twee fouten, zie ROCKET.md §9.
+
 Ctor `0x452850(type)` (0x194 B), vtable `0x4ab1b8`, Init `0x452890` (type 20: typewoord 0x44 + rook-effect op markers typecode 9; type 21: 0x24; bewaart
 startpositie/-rotatie in `+0x134..0x160`), denk-stap `0x452e10` (toestanden `+0x128` 0..9, jumptabel `0x453708`), reset `vtbl[17]` `0x452ae0`, handler
 `0x453730`: **40** → `0x452a50` (als toestand 0: zoek de Npc met categorie 1 en roep `Perso::0x465740(this)`: alleen op de grond en in toestand 0 →

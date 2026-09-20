@@ -427,6 +427,7 @@ static const LogAnim *log_anim(int n)
     static const struct { int n; LogAnim a; } x[] = {
         { 0x18, {{17,-1,-1,-1},3,1} }, { 0x19, {{18,-1,-1,-1},3,1} }, { 0x1f, {{20,0,0,0},3,1} }, { 0x20, {{22,0,0,0},3,1} },
         { 0x25, {{29,30,30,30},3,1} }, { 0x26, {{28,30,30,30},3,1} }, { 0x29, {{31,-1,-1,-1},3,1} }, { 0x2a, {{27,-1,-1,-1},3,1} },
+        { 0x3b, {{84,-1,-1,-1},3,1} }, { 0x3c, {{80,-1,-1,-1},3,1} }, { 0x3d, {{81,82,82,82},3,1} }, { 0x3e, {{82,82,82,82},3,1} },   /* rocket: mount, sit, ignition, flight */
         { 0x2b, {{37,-1,-1,-1},3,1} }, { 0x2e, {{35,-1,-1,-1},3,1} }, { 0x2f, {{48,33,33,33},3,1} }, { 0x30, {{85,-1,-1,-1},3,1} } };
     for (unsigned i = 0; i < sizeof x / sizeof x[0]; i++) if (x[i].n == n) return &x[i].a;
     return (n >= 0 && n < 0x18) ? &t[n] : &t[0];
@@ -602,7 +603,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
     else if (kind == 6) p->death_delay = 2.5f; else if (kind == 7) p->death_delay = 0.0f;
     if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else if (kind != 2 && kind != 9) jumper_force_fall(&p->jumper, 0);
     p->nograv_t = kind == 1 ? anim_len(p, 0x2f, 0) : (kind == 2 || kind == 9) ? anim_len(p, 0x30, 0) : 0;   /* +0x240: no fall while he hangs / is zapped */
-    p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0;
+    p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL;
     p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;      /* state := 2 */
     printf("  PLAYER killed (kind %d), lives %d\n", kind, p->lives);
 }
@@ -628,7 +629,7 @@ static void player_reset(Player *p)                                     /* vt[17
     p->pos = p->spawn_pos; p->yaw = p->spawn_yaw; p->floor_y = p->pos.y;
     jumper_reset(&p->jumper); p->on_ground = 1; p->invuln_respawn = 1.0f; p->invuln_hit = 0; p->move_lock = 0;
     if (p->health <= 0) p->health = 3.0f;
-    p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
+    p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->cam_init = 0;
 }
 /* Game sequence 0x4459c0: 2 play -> (dead) 3 wait death_delay - 1 s -> 4 fade out 1 s -> lose a life -> 0 wait 0.25 s,
@@ -778,10 +779,10 @@ void player_place(Player *p, Vec3 pos, float yaw)
 }
 
 /* trigger volumes: enter / in / leave -> script VM (player = "perso" variants); runs in every Perso state */
-static void player_volumes(Player *p, EkoVM *vm)
+static void player_volumes_y(Player *p, EkoVM *vm, float probe_y)
 {
     if (vm) {
-        Vec3 probe = { p->pos.x, p->pos.y + P_VOL_PROBE_Y, p->pos.z };
+        Vec3 probe = { p->pos.x, p->pos.y + probe_y, p->pos.z };
         for (uint32_t v = 0; v < p->nvol; v++) {
             Instance *in2 = p->vol_inst[v]; if (!in2->visible) { continue; }
             int now = volume_contains(in2, p->vol_node[v], probe);
@@ -792,6 +793,9 @@ static void player_volumes(Player *p, EkoVM *vm)
         }
     }
 }
+
+static Quat q_unit(Quat q);
+static void player_volumes(Player *p, EkoVM *vm) { player_volumes_y(p, vm, P_VOL_PROBE_Y); }
 
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw)
 {
@@ -822,6 +826,27 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             p->script_act = 0;
         }
         player_apply_transform(p); return;
+    }
+    if (!p->dead_kind && p->ride) {                                        /* state 8, 0x4657f0: the Perso follows the rocket (seat marker + its full rotation); no move, no collision, no gravity */
+        Quat rq = p->ride_q; int st = p->ride_state, can = 0, ending = 0;
+        if (p->ride_t > 0) {                                               /* first 0.3 s he stands, then 0.4 s to the saddle */
+            p->ride_t -= dt;
+            if (p->ride_t < 0.4f) { float u = (0.4f - p->ride_t) / 0.4f; if (u > 1) u = 1; p->ride_cur = q_slerp(p->ride_q0, rq, u);
+                p->pos = (Vec3){ p->ride_p0.x + (p->ride_seat.x - p->ride_p0.x) * u, p->ride_p0.y + (p->ride_seat.y - p->ride_p0.y) * u, p->ride_p0.z + (p->ride_seat.z - p->ride_p0.z) * u }; }
+        } else { p->pos = p->ride_seat; p->ride_cur = rq; }
+        switch (st) { case 1: anim_request(p, 0x3b, 1.0f); break; case 2: case 3: anim_request(p, 0x3c, 1.0f); break; case 4: anim_request(p, 0x3d, 1.0f); break;
+                      case 5: anim_request(p, 0x3e, 1.0f); can = 1; break; case 6: case 7: can = 1; ending = 1; break; default: break; }
+        int leave = ((in->jump && !p->ride_jprev) || (in->action && !p->ride_aprev)) && can;
+        if (st == 0 || st == 9) leave = 1;                                 /* port deviation (ROCKET.md 0.4): the original hangs here when the rider survives the blast */
+        p->ride_jprev = in->jump; p->ride_aprev = in->action;
+        Quat u = q_unit(p->ride_cur); Vec3 nose = { -2 * (u.x * u.y - u.z * u.w), -(1 - 2 * (u.x * u.x + u.z * u.z)), -2 * (u.y * u.z + u.x * u.w) };   /* model -Y */
+        if ((p->ride_t <= 0 || leave || ending) && nose.x * nose.x + nose.z * nose.z > 1e-4f) p->yaw = atan2f(nose.x, nose.z);
+        if (leave) {                                                       /* plain fall, no carried speed, facing = flight direction */
+            p->ride = NULL; jumper_reset(&p->jumper); jumper_force_fall(&p->jumper, 1); p->on_ground = 0; p->lanim = -1; p->speed = 0; p->ramp_phase = 0; p->action_prev = in->action;
+            p->floor_y = p->pos.y; player_apply_transform(p); puts("  PLAYER leaves the rocket");
+        } else { p->on_ground = 0; p->inst->position = p->pos; p->inst->quat = p->ride_cur; mat4_from_trs(&p->inst->world, p->pos, p->ride_cur, p->inst->scale); }
+        if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200);
+        player_volumes_y(p, vm, 20.0f); return;                            /* 0x462760(p, 20.0) */
     }
     if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); if (p->climb_sub) p->on_ground = 0; player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return; }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
@@ -1027,7 +1052,7 @@ void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
     p->cam_behind_prev = behind_key; if (p->cam_quick_t > 0) p->cam_quick_t -= dt;
     /* 0x4591ec: Perso states 1, 4 (climbing) and 8 force behind mode at the slow rate; the target is the root position during the climb-over */
     Vec3 keep = p->pos; if (p->use_root) p->pos = p->root_pos;
-    camera_step(p, dt, behind_key || p->cam_quick_t > 0 || p->climb_sub, p->cam_quick_t > 0, 1);
+    camera_step(p, dt, behind_key || p->cam_quick_t > 0 || p->climb_sub || p->ride, p->cam_quick_t > 0, !p->ride);   /* port choice: no camera collision during the ride, the rocket flies through walls and the veto would strand the camera */
     cam->pos = p->cam_pos; cam->fov_deg = CAM_FOV_Y;
     Vec3 to = { p->pos.x - cam->pos.x, p->pos.y + CAM_LOOK_Y - p->cam_drop - cam->pos.y, p->pos.z - cam->pos.z };
     float h = sqrtf(to.x * to.x + to.z * to.z);
@@ -1037,6 +1062,22 @@ void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
 
 /* scripted Perso action (message 1040, 0x44dda0): only the effect on control is ported - the running attack is dropped
  * and the player stands still for t seconds (17 = walk into a door: the level change follows) */
+static Quat q_unit(Quat q) { float n = sqrtf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w); if (n < 1e-9f) return (Quat){ 0, 0, 0, 1 }; return (Quat){ q.x / n, q.y / n, q.z / n, q.w / n }; }
+Quat q_slerp(Quat a, Quat b, float u)
+{
+    a = q_unit(a); b = q_unit(b); float d = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    if (d < 0) { d = -d; b = (Quat){ -b.x, -b.y, -b.z, -b.w }; }
+    float ka = 1 - u, kb = u; if (d < 0.9995f) { float th = acosf(d), s = sinf(th); ka = sinf((1 - u) * th) / s; kb = sinf(u * th) / s; }
+    return q_unit((Quat){ a.x * ka + b.x * kb, a.y * ka + b.y * kb, a.z * ka + b.z * kb, a.w * ka + b.w * kb });
+}
+int player_mount(Player *p, Instance *obj)                              /* 0x465740 */
+{
+    if (p->dead_kind || p->climb_sub || p->script_act || p->ride || !p->on_ground) return 0;
+    p->ride = obj; p->ride_state = 1; p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->has_target = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->att_inst = NULL;
+    p->ride_p0 = p->pos; p->ride_q0 = p->ride_cur = p->inst->quat; p->ride_t = 0.7f; p->ride_jprev = p->ride_aprev = 1; p->lanim = -1;
+    printf("  PLAYER mounts instance %u", obj->index), puts("");
+    return 1;
+}
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
 {
     if (p->dead_kind) return;

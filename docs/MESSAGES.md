@@ -38,10 +38,10 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 16/18 | inst, a, mode, t | 23/54 | ✔ overgang type B: byte +0xd9, modusbits, tijd ×0.01 in +0xe0 |
 | 19 | inst | 0 | ✔ overgangsbits wissen (`+0xd8 &= 0xc0`) |
 | 26 / 30 | perso | 0 | ✔ alleen Perso-klasse: 26 `[_, inst, mode]` = teleport (1 = positie, 2 = + richting van de marker), 30 `[_, cs]` = LockMove; zie PERSO_DEATH.md §1 |
-| 29 | inst | 0 | ~ klassen 20/21 en 40/120/121: eigen afhandeling |
+| 29 | inst | 0 | ✔ klasse 20: Reset `0x452ae0` (ROCKET.md §4.4); ~ klassen 21, 40/120/121 |
 | 33 | inst, a, b | 50 | ? |
 | 34 | inst, other | 340 | ✔ koppel instantie aan `other` (paar in tabel `[0x50944c]->0x50`, teller +0x4c) – "attach/link" |
-| 40 / 55 | inst | 0 | ~ klasse 20/21 |
+| 40 / 55 | inst | 0 | ✔ klasse 20 (ROCKET.md §2.1): 40 = opstappen, 55 `(1, v)` vliegtijd v·0.01 s, `(2, v)` maximumsnelheid; klasse 21 niet geport |
 | 42 | inst, a, f | 5 | ✔ op padvolger `[+0x78]`: `0x437d10(a≠1, f·0.01)`, daarna positie uit pad kopiëren en `0x4077f0` (herpositioneren) |
 | 43 | inst, a, f, c | 129 | ✔ als 42 met extra vlag `c==1` (`0x437d50`) |
 | 44 | inst | 0 | ✔ padvolger `0x437d90()` (stop/reset) |
@@ -51,7 +51,7 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 52 | inst, v | 158 | ? |
 | 53 | inst, v | 3 | ? |
 | 54 | inst, mode, v | 98 | ✔ klasse 80: mode 1 → `0x451b74`; mode 2 → float +0x10c = v; daarna basis |
-| 55 | inst, a, b | 34 | ? |
+| 55 | inst, a, b | 34 | ✔ parameters raket/kanon klasse 20/21 (ROCKET.md §2.1) |
 | 56 | inst, v | 606 | ✔ basis: float +0x6c = v·0.01; in `0x44e8f0` (meeste klassen) eerst `0x44e91b` |
 | 57 | inst, v | 643 | ~ `0x44e907` (klasse-gemeenschappelijk) |
 | 58..63 | inst, … | weinig | ? 59/60 in klassen 14-16 (`0x4100d2`, `0x40e7e3`: koppelt 8 instanties aan velden +0x1c8..+0x1e4 en zet vlag 0x40), 63 in klasse 17 |

@@ -293,6 +293,7 @@ static int laser_hits_player(Vec3 a, Vec3 b, const Player *p)
     if (l2 > 1e-6f) { float t = ((p->pos.x - a.x) * d.x + (p->pos.z - a.z) * d.z) / l2; t = t < 0 ? 0 : t > 1 ? 1 : t; float y = a.y + d.y * t - p->pos.y, x = a.x + d.x * t - p->pos.x, zz = a.z + d.z * t - p->pos.z; if (y >= 0 && y <= H && x * x + zz * zz < best) best = x * x + zz * zz; }
     return best <= R * R;
 }
+static uint32_t msvc_rand(void *user);
 /* ---- launcher type 42 + projectiles (docs/PROJECTILES.md). Only template kind 1 / visual 2 (the energy bolt every level
  * script uses): straight line at 1000 u/s, radius 5, 1 heart, removed on any hit or after `life` seconds. Homing, bounces,
  * gravity, the bomb thrower (kind 0) and the missile / fireball visuals are not ported. */
@@ -397,6 +398,105 @@ static void launchers_draw(const float *eye)
         hud_world_fx(4, &g_flashes[i].pos.x, size, (1.0f - t * 0.5f) * 512.0f / 512.0f, white, 0.5f - 0.5f * u);
     }
 }
+/* ---- rideable rocket, class 20 (docs/ROCKET.md): not steered. Message 40 seats the player, the rocket turns 2 s towards point 0 of
+ * its own trajectory, ignites 0.3 s, flies a straight line (2000 u/s^2 up to vmax, no collision at all) and explodes after fly_time
+ * seconds (blast 600: Kill(6) for a rider who stayed on); the last second it blinks red. 0.5 s later it is back at its start and fades
+ * in over 1 s. Class 21 (the bomb cannon of W2x) waits for the bomb system. */
+typedef struct { Instance *inst; int state, exhaust, has_prev; float t, speed, fly_time, vmax, ex_t, f1, f2, f3, puff_acc; Vec3 start_pos, prev_mk; Quat start_q, q0, q1; } Rocket;
+typedef struct { Vec3 pos; float t, rot; } Puff;
+typedef struct { Vec3 pos; float t, R; } Blast;
+static Rocket g_rockets[8]; static int g_nrockets; static Puff g_puffs[96]; static int g_puff_next; static Blast g_blasts[8];
+static Rocket *rocket_of(const Instance *in) { for (int i = 0; i < g_nrockets; i++) if (g_rockets[i].inst == in) return &g_rockets[i]; return NULL; }
+static void rocket_place(Rocket *r) { Instance *in = r->inst; mat4_from_trs(&in->world, in->position, in->quat, in->scale); ins_pose(in, in->anim, in->anim_time); }
+static void rocket_reset(Rocket *r)                                                /* vtbl[17] 0x452ae0 */
+{
+    Instance *in = r->inst; if (r->state == 5 || r->state == 6) audio_fx_stop(11, in, 1); if (r->state == 3) audio_fx_stop(15, in, 1);
+    in->position = r->start_pos; in->quat = r->start_q; r->state = 0; in->noncollide = 0; in->fade_rate = 1.0f; in->fade_target = 0; in->tint_red = 0;
+    r->has_prev = 0; r->exhaust = 0;                                               /* the original leaves the exhaust state alone (ROCKET.md 10.6) */
+    rocket_place(r);
+}
+static Quat quat_from_axes(Vec3 X, Vec3 Y, Vec3 Z)                                 /* images of the model axes = columns of the rotation */
+{
+    float m00 = X.x, m10 = X.y, m20 = X.z, m01 = Y.x, m11 = Y.y, m21 = Y.z, m02 = Z.x, m12 = Z.y, m22 = Z.z, t = m00 + m11 + m22; Quat q;
+    if (t > 0) { float s = sqrtf(t + 1) * 2; q = (Quat){ (m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, s * 0.25f }; }
+    else if (m00 > m11 && m00 > m22) { float s = sqrtf(1 + m00 - m11 - m22) * 2; q = (Quat){ s * 0.25f, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s }; }
+    else if (m11 > m22) { float s = sqrtf(1 + m11 - m00 - m22) * 2; q = (Quat){ (m01 + m10) / s, s * 0.25f, (m12 + m21) / s, (m02 - m20) / s }; }
+    else { float s = sqrtf(1 + m22 - m00 - m11) * 2; q = (Quat){ (m02 + m20) / s, (m12 + m21) / s, s * 0.25f, (m10 - m01) / s }; }
+    return q;
+}
+static Vec3 rocket_aim(const Rocket *r, Vec3 from)
+{
+    Vec3 d = { 0, 0, 1 }; if (r->inst->traj.npoints) { Vec3 p = r->inst->traj.points[0]; d = (Vec3){ p.x - from.x, p.y - from.y, p.z - from.z }; }
+    float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l > 1e-6f) { d.x /= l; d.y /= l; d.z /= l; } return d;
+}
+static void rocket_fly(Rocket *r, float dt)                                        /* 0x452cc0 */
+{
+    Vec3 d = rocket_aim(r, r->start_pos); r->speed += dt * 2000.0f; if (r->speed > r->vmax) r->speed = r->vmax;
+    Instance *in = r->inst; in->position.x += d.x * r->speed * dt; in->position.y += d.y * r->speed * dt; in->position.z += d.z * r->speed * dt;
+}
+static void rockets_update(float dt, Player *pl, int have_player)                  /* think step 0x452e10 */
+{
+    for (int i = 0; i < g_nrockets; i++) {
+        Rocket *r = &g_rockets[i]; Instance *in = r->inst;
+        if (in->fade != in->fade_target) { float st = in->fade_rate * dt; in->fade = in->fade < in->fade_target ? (in->fade + st > in->fade_target ? in->fade_target : in->fade + st) : (in->fade - st < in->fade_target ? in->fade_target : in->fade - st); }
+        if (!r->state) continue;
+        in->tint_red = 0;
+        switch (r->state) {
+        case 1: r->t += dt; if (r->t >= 0.83f) r->state = 2; break;                /* Woody climbs on */
+        case 2: { r->speed = 0; r->t = 0;                                          /* turn target 0x452ebf: model -Y = flight direction, model +Z = up */
+            Vec3 f = rocket_aim(r, in->position), Y = { -f.x, -f.y, -f.z }; float k = Y.y;
+            Vec3 Z = { -Y.x * k, 1 - Y.y * k, -Y.z * k }; float l = sqrtf(Z.x * Z.x + Z.y * Z.y + Z.z * Z.z); if (l < 1e-5f) { Z = (Vec3){ 0, 0, 1 }; l = 1; } Z.x /= l; Z.y /= l; Z.z /= l;
+            Vec3 X = { Y.y * Z.z - Y.z * Z.y, Y.z * Z.x - Y.x * Z.z, Y.x * Z.y - Y.y * Z.x };
+            r->q0 = in->quat; r->q1 = quat_from_axes(X, Y, Z); r->state = 3; audio_fx(15, in, &in->position.x); break; }
+        case 3: r->t += dt; if (r->t > 2.0f) r->t = 2.0f; in->quat = q_slerp(r->q0, r->q1, r->t / 2.0f);
+            if (r->t >= 2.0f) { r->t = 0; r->state = 4; audio_fx_stop(15, in, 1); audio_fx(16, in, &in->position.x); r->exhaust = 1; r->ex_t = 0; } break;
+        case 4: r->t += dt; if (r->t >= 0.3f) { r->t = 0; r->state = 5; audio_fx(10, in, &in->position.x); audio_fx(11, in, &in->position.x); } break;
+        case 5: rocket_fly(r, dt); r->t += dt; if (r->t >= r->fly_time - 1.0f) { r->state = 6; r->t = 0; } break;
+        case 6: rocket_fly(r, dt); r->t += dt; in->tint_red = !((int)(r->t * 20.0f) & 1);   /* 0x4537d0: 10 Hz red / normal */
+            if (r->t >= 1.0f) { audio_fx_stop(11, in, 1); audio_fx(6, in, &in->position.x); r->t = 0; r->state = 7;
+                for (int b = 0; b < 2; b++) for (int q = 0; q < 8; q++) if (g_blasts[q].t <= 0) { g_blasts[q] = (Blast){ in->position, 1e-4f, b ? 400.0f : 1400.0f }; break; } } break;
+        case 7:                                                                    /* blast 600 on the registered actors: here the player (0x44d040) */
+            if (have_player && !pl->dead_kind) { Vec3 d = { pl->inst->position.x - in->position.x, pl->inst->position.y - in->position.y, pl->inst->position.z - in->position.z };
+                if (d.x * d.x + d.y * d.y + d.z * d.z < 600.0f * 600.0f && !getenv("WOODY_GOD")) { float l = sqrtf(d.x * d.x + d.z * d.z); Vec3 away = l > 1e-3f ? (Vec3){ d.x / l, 0, d.z / l } : (Vec3){ 0, 0, 1 };
+                    player_hit(pl, 0, away); player_kill(pl, 6); printf("  ROCKET %u blast kills the player", in->index), puts(""); } }
+            in->fade = in->fade_target = 1.0f; r->t = 0; r->state = 9; break;
+        case 9: r->t += dt; if (r->t >= 0.5f) rocket_reset(r); break;
+        }
+        if (r->exhaust == 1 && (r->ex_t += dt) >= 1.0f) r->exhaust = 2;
+        if (r->state) rocket_place(r);
+        if (getenv("WOODY_FXLOG") && r->state >= 5 && r->state <= 7) printf("rocket %u state %d t %.2f pos %.0f %.0f %.0f speed %.0f", in->index, r->state, r->t, in->position.x, in->position.y, in->position.z, r->speed), puts("");
+    }
+    if (have_player && pl->ride) { Rocket *r = rocket_of(pl->ride); Vec3 d;
+        if (r) { pl->ride_state = r->state; pl->ride_q = r->inst->quat; if (!inst_vector(r->inst, 0, &pl->ride_seat, &d)) pl->ride_seat = r->inst->position; } }
+}
+/* exhaust 0x475440 on the typecode-9 marker (table 0x4abcc8 index 6: flame 100, glows 70 / 60; start-up sputters), smoke puffs image 14,
+ * and the two flat flashes of explosion kind 1 (0x4762e0, R 1400 and 400). The flame is a billboard here, not three crossed quads */
+static void rockets_draw(float dt)
+{
+    static const float white[3] = { 1, 1, 1 };
+    for (int i = 0; i < g_nrockets; i++) {
+        Rocket *r = &g_rockets[i]; Vec3 m, d; if (!r->state || !r->exhaust || r->state >= 7 || !inst_vector(r->inst, 9, &m, &d)) continue;
+        float s = 1.0f, ta = r->ex_t;
+        if (r->exhaust == 1) s = ta < 0.15f ? ta * 6.667f : (ta > 0.3f && ta < 0.45f) ? (ta - 0.3f) * 6.667f : (ta > 0.85f && ta < 1.0f) ? (ta - 0.85f) * 6.667f : 0;
+        r->f1 += dt * 0.05f; r->f2 += dt * 0.15f; r->f3 += dt * 3.0f;
+        float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l > 1e-4f) { d.x /= l; d.y /= l; d.z /= l; }
+        if (s > 0) {
+            float fl = (100.0f + (float)msvc_rand(NULL) / 32767.0f * 10.0f - 5.0f) * s, fp[3] = { m.x + d.x * fl * 0.4f, m.y + d.y * fl * 0.4f, m.z + d.z * fl * 0.4f };
+            hud_world_fx(32, &m.x, 70.0f * s, 1.0f - r->f1, white, 1.0f - 0.2f * sinf(3.14159265f * r->f1));
+            hud_world_fx(32, &m.x, 60.0f * s, 1.0f - r->f2, white, 1.0f - 0.2f * sinf(3.14159265f * r->f2));
+            hud_world_fx(31, fp, fl, r->f3, white, 0.8f);
+            if (r->has_prev && dt > 0) {                                           /* 200 puffs a second spread over the distance covered */
+                r->puff_acc += dt * 200.0f; int n = (int)r->puff_acc; r->puff_acc -= n; if (n > 24) n = 24;
+                for (int k = 0; k < n; k++) { float u = (k + 0.5f) / n; Puff *p = &g_puffs[g_puff_next++ % 96];
+                    p->pos = (Vec3){ r->prev_mk.x + (m.x - r->prev_mk.x) * u, r->prev_mk.y + (m.y - r->prev_mk.y) * u, r->prev_mk.z + (m.z - r->prev_mk.z) * u }; p->t = 1e-4f; p->rot = (float)msvc_rand(NULL) / 32767.0f; }
+            }
+        }
+        r->prev_mk = m; r->has_prev = 1;
+    }
+    for (int i = 0; i < 96; i++) if (g_puffs[i].t > 0) { Puff *p = &g_puffs[i]; float u = p->t / 0.2f; hud_world_fx(14, &p->pos.x, 15.0f * (1 + u), p->rot, white, 0.3f * (1 - u)); if ((p->t += dt) >= 0.2f) p->t = 0; }
+    for (int i = 0; i < 8; i++) if (g_blasts[i].t > 0) { Blast *b = &g_blasts[i]; float u = b->t / 0.3f;
+        hud_world_fx(12, &b->pos.x, b->R * (0.3f + 0.7f * sinf(u * 1.5707963f)), 0, white, 0.3f * cosf(u * 1.5707963f) * 3.0f); if ((b->t += dt) >= 0.3f) b->t = 0; }
+}
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
@@ -440,7 +540,6 @@ static void snd_msg(const EkoMsg *m, Instance *in)
 
 /* animation events of type 4 on the root node = sounds (0x42f5e0 -> 0x43a8f0 -> 0x4695f0, docs/SOUND.md 3):
  * {4, t, ref, probLo, probHi, vol, pitch%, dmin cm, 0}; one random draw per call picks among the variants; the Perso plays 2D */
-static uint32_t msvc_rand(void *user);
 static void anim_sounds(Instance *ii)
 {
     const Model *mo = ii->model;
@@ -476,11 +575,15 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 41) in->visible = 0;   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) in->visible = 0;   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
     case 42: case 43: case 44: case 45: case 56: case 57:
         if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
         break;
+    case 40: if (in && rocket_of(in) && g_player) { Rocket *rk = rocket_of(in);      /* 0x452a50: only at rest, and only when the Perso accepts (state 0, on the ground) */
+            if (rk->state == 0 && player_mount(g_player, in)) { rocket_reset(rk); rk->t = 0; rk->state = 1; in->noncollide = 1; Vec3 d; if (!inst_vector(in, 0, &g_player->ride_seat, &d)) g_player->ride_seat = in->position; g_player->ride_q = in->quat; } } break;
+    case 29: if (in && rocket_of(in)) rocket_reset(rocket_of(in)); break;
+    case 55: if (in && rocket_of(in) && m->nargs > 2) { Rocket *rk = rocket_of(in); if (m->args[1] == 1) rk->fly_time = (float)(int32_t)m->args[2] * 0.01f; else if (m->args[1] == 2) rk->vmax = (float)(int32_t)m->args[2]; } break;
     case 7: if (in) { int k = 0; for (int i = 0; i < g_nretry; i++) if (slot_instance(g_retry[i].args[0]) != in) g_retry[k++] = g_retry[i]; g_nretry = k; } break;
     case 10:                                                                        /* Collect (docs/BONUS.md): the level script saw the player enter the bonus volume */
         if (in && g_player && in->visible && player_collect(g_player, in->type, m->nargs > 1 ? (int)m->args[1] : 0)) in->visible = 0;   /* 0x407850: cell = -1 */
@@ -596,7 +699,7 @@ static void level_free(Level *L)
 {
     g_nlasers = 0; g_nlaunchers = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
-    memset(g_stars, 0, sizeof g_stars); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -752,6 +855,7 @@ int main(int argc, char **argv)
             g_save.chr[g_char].lives = L.player.lives; g_save.chr[g_char].health = L.player.health;          /* the Perso writes straight into the save struct */
             if (g_cam.mode == 4 && !fly) memset(&pin, 0, sizeof pin);              /* cinematic camera: the player is frozen (0x459090) */
             cin_update(&L.vm, dt, g_now);
+            rockets_update(dt, &L.player, L.have_player && !fly);
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             if (L.player.fade_req) { fade_start(0.5f, L.player.fade_req == 1); L.player.fade_req = 0; }           /* door actions 17 / 18 */
             if (g_cam.mode != 0x20 && (L.player.dead_cam_req || (L.player.dead_kind == 7 && !g_cam.death_cam))) {     /* 0x41fb50: kind 1 is watched from where he hung (+100), kind 7 from where the camera is */
@@ -820,7 +924,7 @@ int main(int argc, char **argv)
                         }
                     }
                 }
-                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt);
+                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */

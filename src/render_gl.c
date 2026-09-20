@@ -360,7 +360,7 @@ static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat
     Vec3 w = { a[0] * n.x + a[4] * n.y + a[8] * n.z, a[1] * n.x + a[5] * n.y + a[9] * n.z, a[2] * n.x + a[6] * n.y + a[10] * n.z };
     float l = sqrtf(w.x * w.x + w.y * w.y + w.z * w.z), ndl = l > 1e-6f ? (w.x * inst->ldir.x + w.y * inst->ldir.y + w.z * inst->ldir.z) / l : 0; if (ndl < 0) ndl = 0;
     float vc[3] = { pt->colour.x, pt->colour.y, pt->colour.z }, c[3];
-    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q] * g_mat_scale; }
+    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q] * g_mat_scale; if (q && inst->tint_red) c[q] = 0; }
     bt_color(c[0], c[1], c[2]);
 }
 

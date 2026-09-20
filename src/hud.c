@@ -22,7 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
-    GLuint fx[6];                                         /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7) */
+    GLuint fx[10];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow (docs/ROCKET.md 5) */
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
@@ -63,7 +63,7 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
     return t;
 }
 
-static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : -1; }
+static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
@@ -126,7 +126,7 @@ void hud_free(void)
     for (int i = 0; i < 5; i++) if (H.sky[i]) glDeleteTextures(1, &H.sky[i]);
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
     if (H.beam) glDeleteTextures(1, &H.beam);
-    for (int i = 0; i < 6; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
+    for (int i = 0; i < 10; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }

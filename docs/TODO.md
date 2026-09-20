@@ -13,7 +13,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Idle-variaties 0x59/0x5a | niet geport | PERSO_MOVE.md §4.3 |
 | Gescripte Perso-acties (bericht 1040): 17/18 (deur in/uit, met fade) en teleport (bericht 26) geport; overige acties (10..16, 19: wortelbeweging) alleen stilstaan; bericht 30 (LockMove) niet. Na de teleport staat de volgcamera soms even in een muur (geen camerabotsing bij de cut) | grotendeels | PERSO_DEATH.md §1-2, CINEMATIC.md §6 |
 | Doodsanimaties per soort en hit-animatie geport. Niet: tekstballon (soort 1, `0x478980`), skelet-flits (soort 2/9, `0x477e40`), waterplons (soort 7, `0x478660`), gebukte varianten, race-variant `0x464a00`, wit knipperen bij de onkwetsbaarheidsbonus (`0x44cf50`) | deels | PERSO_DEATH.md §3-6 |
-| Perso-toestand 6 (bom dragen), 8 (berijdbaar object type 20/21) | op hoofdlijnen | OBJECTS.md §2.6, BONUS.md §7 |
+| Perso-toestand 8 (raket berijden, type 20): geport. Niet: afstap-anim (in het origineel ook nergens aangevraagd), type 21 (meerijden op de kanonbom) | grotendeels | ROCKET.md §6 |
+| Perso-toestand 6 (bom dragen) | op hoofdlijnen | BONUS.md §7 |
 | Checkpoints: respawn-positie (1030) | controleren | GAMEFLOW.md |
 | Salto die wegvalt bij springen in de lucht (melding gebruiker) | niet te reproduceren; welke toets/timing? | — |
 | Obstakelsensor van de Mover | niet geport | PERSO_MOVE.md |
@@ -42,7 +43,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | 40 | bom (pool 16, oppakken, explosie r 400) | analyse op hoofdlijnen | BONUS.md §7, OBJECTS.md §3 |
 | 120 / 121 | kist die door een bom opengaat (msgmask 0x20) | analyse op hoofdlijnen | OBJECTS.md §3 |
 | 17 | breekbaar object voor bommen | analyse op hoofdlijnen | OBJECTS.md §3 |
-| 20 / 21 | berijdbaar/afvuurbaar object | op hoofdlijnen | OBJECTS.md §2.6 |
+| 20 | berijdbare raket: geport (opstappen, draaien, ontsteking, rechte vlucht, rood knipperen, explosie r 600 = Kill(6), respawn met fade-in, geluiden 15/16/10/11/6). Vereenvoudigd: vlam als billboard i.p.v. drie gekruiste quads, explosie alleen de twee flitsen (deeltjes `0x4767f0`/`0x4764f0` niet gedecompileerd), geen camerabotsing tijdens de rit (port-keuze), startoriëntatie niet tegen het origineel geverifieerd | grotendeels | ROCKET.md |
+| 21 | bomkanon (W2A/W2B/W2D): Woody rijdt mee op een afgeschoten bom; **geblokkeerd op het bommensysteem (type 40)** | analyse klaar | ROCKET.md §7 |
 | 90 | omgevingsdeeltjes-volume (1501/1502) | analyse op hoofdlijnen | OBJECTS.md §2.4 |
 | 60 | eigen handler (1503/1506) | niet geanalyseerd | OBJECTS.md §3 |
 | 50 / 51 / 52 | laser: reizende puls, bliksemboog, inslag-sprite, straal tegen instanties | kern geport | OBJECTS.md §2.1 |
