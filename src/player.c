@@ -607,7 +607,7 @@ int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39
     if (l > 0.01f) p->yaw = atan2f(-dir.x, -dir.z);
     if (p->invuln_hit < 0.6f) p->invuln_hit = 0.6f;
     p->move_lock = 0; p->atk = 0;
-    p->health -= damage;
+    p->health -= damage; if (p->health < 0) p->health = 0;
     printf("  PLAYER hit, health %.0f\n", p->health);
     if (p->health <= 0) { p->health = 0; return 1; }
     return 0;

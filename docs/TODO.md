@@ -32,7 +32,12 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 |---|---|---|---|
 | 42 | lanceerder: alleen sjabloon 1 / visual 2 (energiebol, rechte lijn) geport; niet: doelzoekend, stuiteren, zwaartekracht, bommenwerper (soort 0), schiet-animatie (param 7/8), straal tegen instanties, lintkleur mogelijk te donker | deels | PROJECTILES.md |
 | 41 | missile-visual (`0x4700e0`: model uit de pool, lint, uitlaat, explosie) en vuurbal (`0x470af0`); alleen gebruikt door vijanden / type 20-21. Instanties worden wel verborgen | analyse klaar | PROJECTILES.md |
-| 7..13 | vijandtypes (7 = schutter) en bazen | ENEMY.md §8 deels | ENEMY.md |
+| 7 / 8 / 9 | schutters: geport. Niet: missile-/vuurbal-visual van hun projectiel (nu de energiebol), obstakelsensor, dwaal-gewichten (bericht 11/19..27), bericht 11/4 reset en 11/5-6, bericht 6 (aan/uit) | grotendeels | ENEMY.md §8 |
+| 13 | spook: geport (half doorzichtig, zweeft op spelerhoogte, schiet om en om, duikt). Niet: vuurbal-visual, patrouille-animaties | grotendeels | ENEMY2.md §3 |
+| 12 | stilstaande bommengooier (eindbaas W2B, 1×): **geblokkeerd op het bommensysteem (type 40)**; zonder hem is W2B niet uit te spelen | analyse klaar | ENEMY2.md §4 |
+| 10 / 11 | vliegende schutter / bommenwerper te voet: in geen enkel level gebruikt | op hoofdlijnen | ENEMY2.md §5-6 |
+| 14 / 15 / 16 | bazen (ctors `0x40eb50`, `0x40d850`, `0x40c730`): W1B, W2D, W3D, WWS | niet geanalyseerd | ENEMY2.md §1 |
+| sterf-effect | 5 deeltjes bij de dood van een vijand (`0x477610`) | niet geport | ENEMY.md |
 | 40 | bom (pool 16, oppakken, explosie r 400) | analyse op hoofdlijnen | BONUS.md §7, OBJECTS.md §3 |
 | 120 / 121 | kist die door een bom opengaat (msgmask 0x20) | analyse op hoofdlijnen | OBJECTS.md §3 |
 | 17 | breekbaar object voor bommen | analyse op hoofdlijnen | OBJECTS.md §3 |

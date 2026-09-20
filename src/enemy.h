@@ -11,6 +11,7 @@ typedef struct { float radius, height, walk, run, dash, see, dy, turn, turn_fast
 
 typedef struct Enemy {
     EnemyParams P; float reload; Vec3 warn, dodge_dir; int throw_hold;   /* shooters */
+    int hand;                                                            /* ghost (type 13): fires from alternating hands */
     Instance *inst; int type;
     int st;                         /* state machine 0x418cf0: 0 patrol, 1 chase, 2 notice, 3 miss, 4 dash, 6 brake, 8 wander, 9 hit, 11 win, 12 dead */
     Vec3 pos, home; float ang;      /* ang: movement angle, direction = (cos, 0, sin) */

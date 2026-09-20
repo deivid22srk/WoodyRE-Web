@@ -21,21 +21,27 @@ static EnemyParams params_for(int type)
     if (type == 6) { p.hp = 2; p.cool = 0.5f; }
     if (type >= 7) { p.dy = 800; p.turn_fast = 12.5664f; p.melee = 150; p.shot_fx = 17; p.steer = 0.2f; }
     if (type == 8) { p.height = 130; p.hp = 2; p.cool = 1.0f; p.reload = 1.5f; p.steer = 0; p.shot_fx = 18; }
+    if (type == 13) { p.walk = 100; p.run = 300; p.dash = 500; p.dy = 10000; p.hp = 3; p.bite = 2; p.cool = 0.5f; p.shot_dmg = 2; p.reload = 1.0f; p.leash = 1000; p.melee = 300; p.shot_fx = 20; }   /* docs/ENEMY2.md 2 */
     if (type == 9) { p.leash = 1000; p.hp = 3; p.bite = 3; p.shot_dmg = 2; p.melee = 10; p.steer = 0; p.shot_fx = 20; }
     return p;
 }
 
 /* logical animation -> main .ins animation and speed divisor (table 0x4b29b8) */
 enum { EA_RUN, EA_WALK, EA_DASH, EA_BRAKE, EA_MISS, EA_WIN, EA_HIT, EA_DEAD, EA_IDLE, EA_TURN };
-static const struct { int anim; float speed; int hold; } g_ea[] = {
+typedef struct { int anim; float speed; int hold; } EAnim;
+static const EAnim g_ea[] = {
     { 2, 3, 0 }, { 4, 3, 0 }, { 13, 10, 0 }, { 15, 2, 1 }, { 14, 3, 1 }, { 18, 1.5f, 1 }, { 11, 4, 1 }, { 12, 3, 1 }, { 6, 3, 0 }, { 16, 3, 0 } };
-static float ea_len(const Enemy *e, int a) { const Model *m = e->inst->model; int s = g_ea[a].anim; return (uint32_t)s < m->nanims ? m->anims[s].duration_s / g_ea[a].speed : 0.5f; }
+/* ghost, type 13 (records 0x4b2190, docs/ENEMY2.md 3.6) */
+static const EAnim g_ea13[] = {
+    { 2, 3, 0 }, { 4, 3, 0 }, { 13, 3, 0 }, { 15, 3, 1 }, { 14, 2, 1 }, { 16, 3, 1 }, { 11, 4, 1 }, { 12, 3, 1 }, { 6, 2, 0 }, { 0, 3, 0 } };
+#define EA(e, a) ((e)->type == 13 ? g_ea13[a] : g_ea[a])
+static float ea_len(const Enemy *e, int a) { const Model *m = e->inst->model; int s = EA(e, a).anim; return (uint32_t)s < m->nanims ? m->anims[s].duration_s / EA(e, a).speed : 0.5f; }
 static void ea_play(Enemy *e, int a)
 {
-    Instance *in = e->inst; const Model *m = in->model; int s = g_ea[a].anim; if ((uint32_t)s >= m->nanims) return;
+    Instance *in = e->inst; const Model *m = in->model; int s = EA(e, a).anim; if ((uint32_t)s >= m->nanims) return;
     if (in->anim != s) { in->anim = s; in->anim_time = 0; }
-    in->anim_speed = g_ea[a].speed;
-    if (g_ea[a].hold && in->anim_time > m->anims[s].duration_s * 0.999f) in->anim_time = m->anims[s].duration_s * 0.999f;
+    in->anim_speed = EA(e, a).speed;
+    if (EA(e, a).hold && in->anim_time > m->anims[s].duration_s * 0.999f) in->anim_time = m->anims[s].duration_s * 0.999f;
 }
 
 float enemy_radius(const Enemy *e) { return e->P.radius; }
@@ -48,15 +54,16 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     Enemy *e = &s->e[s->n++]; Enemy z = { 0 }; *e = z;
     e->inst = inst; e->type = type; e->pos = e->home = inst->position; e->P = params_for(type); e->hp = e->P.hp;
     e->cool = -1; e->attackable = 1; e->speed = e->want_speed = e->P.walk; e->path_dir = 1; e->path_to = 1;
-    e->st = inst->traj.npoints > 1 ? 0 : (type >= 7 ? 3 : 8);
+    e->st = inst->traj.npoints > 1 ? 0 : (type >= 7 && type <= 9 ? 3 : 8); e->hand = rand() & 1;
     if (e->st == 0) { Vec3 a = inst->traj.points[0], b = inst->traj.points[1]; e->ang = atan2f(b.z - a.z, b.x - a.x); }
     inst->scripted = 0;
 }
 
 int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 {
-    if (e->removed || e->st == (e->type >= 7 ? 10 : 12) || e->hit_t > 0 || e->knock_t > 0) return 0;
-    e->st = e->type >= 7 ? 4 : 9; e->hit_t = e->knock_t = 0.25f; e->knock_dir = dir; e->hp -= dmg;
+    int shooter = e->type >= 7 && e->type <= 9;
+    if (e->removed || e->st == (shooter ? 10 : 12) || e->hit_t > 0 || e->knock_t > 0) return 0;
+    e->st = shooter ? 4 : 9; e->hit_t = e->knock_t = 0.25f; e->knock_dir = dir; e->hp -= dmg;
     return e->hp <= 0;
 }
 
@@ -67,6 +74,11 @@ static void steer(Enemy *e, float want, float rate, float dt) { float d = ang_di
 static int enemy_move(Enemy *e, struct Player *pl, Vec3 delta)
 {
     Vec3 to = { e->pos.x + delta.x, e->pos.y, e->pos.z + delta.z }; int found;
+    if (e->type == 13) {                                          /* 0x41b2c0 for subtype >= 9: y is kept, no ledge / step test (P+0x2c/0x30 = 10000), walls still stop it */
+        float l = sqrtf(delta.x * delta.x + delta.z * delta.z), k = l > 1e-4f ? (l + e->P.radius) / l : 1; Vec3 c = { e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z };
+        if (player_segment_blocked(pl, c, (Vec3){ c.x + delta.x * k, c.y, c.z + delta.z * k })) return 0;
+        e->pos.x = to.x; e->pos.z = to.z; return 1;
+    }
     float gy = player_ground_query(pl, e->inst, (Vec3){ to.x, to.y + e->P.height * 0.5f, to.z }, &found);
     if (!found || gy - e->pos.y > E_STEP || e->pos.y - gy > E_STEP) return 0;
     e->pos.x = to.x; e->pos.z = to.z; return 1;
@@ -89,6 +101,8 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != 12) return; }   /* Think 0x41a320 */
     if (e->cool >= 0) e->cool -= dt;
     if (e->hit_t > 0) e->hit_t -= dt;
+    if (e->reload >= 0) e->reload -= dt;
+    if (e->type == 13 && e->st != 12) in->fade = 0.5f;            /* 0x413ab0: fade target 0.5 every frame = half transparent */
     /* FindTarget 0x41af80: no view cone, no line of sight */
     Vec3 tp = pl->pos; float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z;
     int see = !pl->dead_kind && dx * dx + dy * dy + dz * dz < e->P.see * e->P.see && fabsf(dy) < e->P.dy;
@@ -131,13 +145,25 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         break;
     case 2:                                                       /* noticed: turn on the spot first, then run */
         if (!see) { e->st = 8; break; }
-        e->turn_t = fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; e->speed = e->want_speed = e->P.run; e->st = 1;
+        e->turn_t = fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; e->speed = e->want_speed = e->P.run; e->st = 1; if (e->type == 13) e->reload = e->P.reload;
         /* fallthrough */
     case 1:
         if (!see) { e->want_speed = e->P.walk; e->st = 8; break; }
         steer(e, to_player, e->P.turn_fast, dt);
         if ((e->turn_t -= dt) <= 0) { step = (Vec3){ cosf(e->ang) * e->speed * dt, 0, sinf(e->ang) * e->speed * dt }; anim = EA_RUN; } else anim = EA_TURN;
         e->atk_t = ea_len(e, EA_DASH) + 0.5f * ea_len(e, EA_MISS);
+        if (e->type == 13) {                                      /* ghost 0x413d0d: dives within 300 (xz) when it moves at the player (3D dot), else fires while chasing */
+            float d3 = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (dxz <= e->P.melee && d3 > 1e-3f && (cosf(e->ang) * dx + sinf(e->ang) * dz) / d3 > 0.95f) { e->speed = e->want_speed = e->P.dash; e->st = 4; break; }
+            if (e->reload > 0) break;
+            const Model *mo = in->model; uint32_t want = e->hand == 1 ? 0 : 1, seen = 0; Vec3 m0 = { e->pos.x, e->pos.y + e->P.height * 0.6f, e->pos.z };
+            for (uint32_t i = 0; i < mo->nnodes; i++) if (mo->nodes[i].kind == 0x20 && mo->nodes[i].type_code == 1 && mo->nodes[i].npoints >= 1) { if (seen++ == want) { m0 = ins_point_world(in, mo->nodes[i].point_base); break; } }
+            Vec3 sd = { tp.x - m0.x, tp.y - m0.y, tp.z - m0.z }; float sl = sqrtf(sd.x * sd.x + sd.y * sd.y + sd.z * sd.z);
+            if (sl > 1e-3f && !player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, m0))
+                game_enemy_shot(e, m0, (Vec3){ sd.x / sl, sd.y / sl, sd.z / sl }, 1000.0f, e->P.shot_dmg, 0, e->P.shot_fx);   /* straight fireball at the feet (0x414d10) */
+            e->reload += e->P.reload; e->hand ^= 1;
+            break;
+        }
         if (dxz <= e->P.dash * e->atk_t && dxz > 1e-3f && (cosf(e->ang) * dx + sinf(e->ang) * dz) / dxz > 0.95f) { e->speed = e->want_speed = e->P.dash; e->st = 4; }
         break;
     case 4:                                                       /* dash: the only state that hurts the player */
@@ -152,12 +178,12 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         }
         break;
     case 3: anim = EA_MISS; if ((e->t -= dt) <= 0) { e->cool = e->P.cool; e->want_speed = e->P.walk; e->st = 8; } break;
-    case 6: anim = EA_BRAKE; if ((e->t -= dt) <= 0) { e->cool = e->P.cool; e->want_speed = e->P.walk; e->st = 8; } break;
+    case 6: anim = EA_BRAKE; if ((e->t -= dt) <= 0) { if (e->type != 13) e->cool = e->P.cool; e->want_speed = e->P.walk; e->st = 8; } break;
     case 11: anim = EA_WIN; if ((e->t -= dt) <= 0) e->st = 8; break;
     case 9:
         anim = EA_HIT;
-        if (e->hp <= 0) { e->attackable = 0; e->dead_t = 0; e->st = 12; }
-        else if (e->hit_t <= 0) e->st = 8;
+        if (e->hp <= 0) { e->attackable = 0; e->dead_t = e->type == 13 ? (ea_len(e, EA_DEAD) + 1.0f) * 0.5f : 0; e->st = 12; }   /* the ghost starts fading at once */
+        else if (e->hit_t <= 0) { e->st = 8; if (e->type == 13) e->reload = 2.0f * e->P.reload; }
         break;
     case 12: {                                                    /* dead: animation 13, fades out during the second half, then removed */
         anim = EA_DEAD; e->dead_t += dt; float L = ea_len(e, EA_DEAD) + 1.0f;
@@ -168,6 +194,15 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     /* knockback replaces the normal step: v = 600 * t_rest for 0.25 s */
     if (e->knock_t > 0) { e->knock_t -= dt; if (e->knock_t < 0) e->knock_t = 0; float v = dt * E_KNOCK * e->knock_t; step = (Vec3){ e->knock_dir.x * v, 0, e->knock_dir.z * v }; }
     if (step.x != 0 || step.z != 0) { if (!enemy_move(e, pl, step) && e->st == 8) { e->want_ang = e->ang + 3.14159265f; } }
+    if (e->type == 13) {                                          /* height control 0x414f10: feet at the player's feet height (home without a target); frozen when hit / dead */
+        if (e->st != 9 && e->st != 12) {
+            int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+            float want = see ? tp.y - e->pos.y : e->home.y - e->pos.y, stp = see ? e->P.run * dt : e->P.walk * dt;
+            if (see && want > 0 && (pl->jumper.state == 0 || pl->jumper.state == 1 || pl->jumper.state == 7)) stp *= 0.2f;
+            if (want < -0.01f) { e->pos.y += want < -stp ? -stp : want; if (found && e->pos.y < gy) e->pos.y = gy; }
+            else if (want > 0.01f) { float up = want > stp ? stp : want; if (!player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height, e->pos.z }, (Vec3){ e->pos.x, e->pos.y + e->P.height + up, e->pos.z })) e->pos.y += up; }
+        }
+    } else
     /* ground following 0x41a4e0: v += 200*dt - 0.2*v per frame, y -= v, never below the ground */
     { int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
@@ -324,7 +359,12 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
 }
 
 void enemy_warn_dive(Enemy *e, Vec3 d) { if (e->type == 9 && !e->removed && e->st != S_DEAD && e->st != S_HIT) { e->warn = d; e->st = S_DODGE0; } }
-void enemy_player_killed(Enemy *e) { if (e && e->type >= 7 && !e->removed && e->st != S_DEAD) { e->t = sa_len(e, SA_WIN); e->st = S_WIN; } }
+void enemy_player_killed(Enemy *e)
+{
+    if (!e || e->removed) return;
+    if (e->type == 13) { if (e->st != 12) { e->t = ea_len(e, EA_WIN); e->want_speed = e->P.walk; e->st = 11; } }
+    else if (e->type >= 7 && e->st != S_DEAD) { e->t = sa_len(e, SA_WIN); e->st = S_WIN; }
+}
 
 void enemies_msg11(EnemySet *s, Instance *inst, int n, int v)
 {
@@ -351,5 +391,5 @@ void enemies_msg11(EnemySet *s, Instance *inst, int n, int v)
 
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt)
 {
-    for (int i = 0; i < s->n; i++) if (s->e[i].type >= 7) shooter_update(&s->e[i], pl, cam_pos, dt); else enemy_update(&s->e[i], pl, cam_pos, dt);
+    for (int i = 0; i < s->n; i++) if (s->e[i].type >= 7 && s->e[i].type <= 9) shooter_update(&s->e[i], pl, cam_pos, dt); else enemy_update(&s->e[i], pl, cam_pos, dt);
 }
