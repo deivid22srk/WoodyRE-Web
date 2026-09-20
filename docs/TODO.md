@@ -30,7 +30,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 
 | type | wat | status | waar |
 |---|---|---|---|
-| 42 / 41 | lanceerder + missiles, 50 projectielen | zie PROJECTILES.md | OBJECTS.md §2.2 |
+| 42 | lanceerder: alleen sjabloon 1 / visual 2 (energiebol, rechte lijn) geport; niet: doelzoekend, stuiteren, zwaartekracht, bommenwerper (soort 0), schiet-animatie (param 7/8), straal tegen instanties, lintkleur mogelijk te donker | deels | PROJECTILES.md |
+| 41 | missile-visual (`0x4700e0`: model uit de pool, lint, uitlaat, explosie) en vuurbal (`0x470af0`); alleen gebruikt door vijanden / type 20-21. Instanties worden wel verborgen | analyse klaar | PROJECTILES.md |
 | 7..13 | vijandtypes (7 = schutter) en bazen | ENEMY.md §8 deels | ENEMY.md |
 | 40 | bom (pool 16, oppakken, explosie r 400) | analyse op hoofdlijnen | BONUS.md §7, OBJECTS.md §3 |
 | 120 / 121 | kist die door een bom opengaat (msgmask 0x20) | analyse op hoofdlijnen | OBJECTS.md §3 |

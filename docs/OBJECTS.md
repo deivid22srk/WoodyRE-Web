@@ -437,7 +437,7 @@ MESSAGES.md noemt ze ten onrechte "camera"):
 Denk-stap: als `+0x198`: bij elke overgang van `floor((now − t0)/T)` (`0x499ede`) en minstens `T − 0.2` s na het vorige schot: `count--`, `Fire()` (`0x452560`),
 `count == 0` → stop (count −1 = eindeloos). `Fire`: `v = GetVector(this, 0, ·, 0)`; richting = `normalize(v[1] − v[0])`, of bij richtvlag `+0x199` (param 19)
 en een doel: `normalize(target.pos + (0, +0x144, 0) − v[0])`; `+0x108 = v[0]`, `+0x114 = richting`, `+0x140 = target`; projectielsoort `+0x18c != 0` →
-`0x4490a0(&this+0x108)` = vrij slot in de 50 projectielen `0x5d7d48 + i·0x104` (`0x449130` init, update `0x4490f0`/`0x4493c0`, EVENTS.md §3.2);
+`0x4490a0(&this+0x108)` = vrij slot in de 200 projectielen `0x5d7d48 + i·0x104` (PROJECTILES.md) (`0x449130` init, update `0x4490f0`/`0x4493c0`, EVENTS.md §3.2);
 soort 0 → bom `0x44d5d0` + geluid 0xe. Daarna, als `+0x17c` (param 7) een geldige animatie is: eenmalig afspelen in `+0x180` s (param 8).
 1002-parameters (n → veld, schaal; defaults uit de ctor): 0 `+0x128` rauw (1000), 1 `+0x124` rauw, 2 `+0x134` en `+0x184` ×0.01 (5.0), 3 `+0x13c` int,
 4 `+0x138` rauw (20), 5 `+0x144` rauw (150, richthoogte), 6 `+0x188` ×0.01, 7 `+0x17c` int (schiet-anim), 8 `+0x180` ×0.01, 9 `+0x120` rauw (5),
@@ -494,7 +494,7 @@ gedecompileerd. Model 47: behuizing groep 108, twee press-nodes, markers typecod
 | 120 / 121 | "exploding object (chest)": bomexplosie binnen r → fade uit + **msgmask 0x20** (het enige `MSGTEST 32` dat scripts gebruiken); 29 = reset | ctor `0x451650`, vtable `0x4aafd0`, `vtbl[28]` `0x451770`, `vtbl[29]` `0x4517d0`, reset `0x451730` |
 | 17 | breekbaar object voor bommen (`vtbl[0xa0](&pos, r)`), rook op markers typecode 9 | ctor `0x40c3d0`, vtable `0x4a95dc`, Init `0x40c440`, handler `0x40c5e0` |
 | 50 / 52 | laser-varianten (oneindig tot muur / naar doelinstantie), §2.1 | `0x4510c0`, `0x451520`, bericht 53 `0x451622` |
-| 42 + projectielen | §2.2; 50 projectielen `0x5d7d48` (0x104 B), sjablonen `0x5d7ba8` (0x68 B), Press/UnPress door landende projectielen | `0x4490a0`, `0x449130`, `0x4490f0`, `0x4493c0`; visuals `0x4700e0` (missile), `0x46f8a0`, `0x470af0` |
+| 42 + projectielen | §2.2 en **PROJECTILES.md**; 200 projectielen `0x5d7d48` (0x104 B), sjablonen `0x5d7ba8` (0x68 B), Press/UnPress door landende projectielen | `0x4490a0`, `0x449130`, `0x4490f0`, `0x4493c0`; visuals `0x4700e0` (missile), `0x46f8a0`, `0x470af0` |
 | 60 | eigen handler (1503/1506), soort 2 in `inst+8` | vtable `0x4a9194`, handler `0x474a40` (`0x403ca3`) |
 | berichten 15..19 | textuurframe-/UV-override per instantie (INSTANCE.md §2); W1A: 16 12×, 18 10×; **niet in `src/instance.c`** | `0x42d9c3`, `0x42da32`, `0x42daae`, `0x42db0f`, `0x42db86`, lezer `0x47f290` |
 | 1201 / 1202 | typewoord-bit 0x400 (aanvalbaar doel) zetten/wissen | `0x403440` |

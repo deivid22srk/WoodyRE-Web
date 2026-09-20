@@ -66,11 +66,11 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 ## Game (`0x444870`)
 | id | args | gebruik | betekenis |
 |---|---|---|---|
-| 1000 | cam, target | 0 | ✔ camera (sub-object type 6): `0x4522b0(1, 1.0, target)` |
-| 1001 | cam, mode | 94 | ✔ camera `0x452330(mode)` |
-| 1002 | cam, a, b | 513 | ✔ camera `0x452360(a, b)` |
-| 1003 | cam, target, mode, t | 177 | ✔ camera `0x4522b0(mode, t·0.01, target)` |
-| 1004 | cam | 7 | ✔ camera `0x452320()` (reset) |
+| 1000 | inst, target\|−1 | 0 | ✔ **lanceerder** (type 42, typewoord-categorie 6; PROJECTILES.md §4): `0x4522b0(1, 1.0, target)` = één schot bij de eerstvolgende denk-stap |
+| 1001 | inst, soort | 94 | ✔ lanceerder `0x452330(soort)`: reset (`vtbl[17]`) + projectielsjabloon `0x5d7ba8 + soort·0x68` naar `this+0x108`; soort 0 = bommenwerper, 1..3 = projectiel (ctor: 1) |
+| 1002 | inst, n, v | 513 | ✔ lanceerder `0x452360(n, v)`: projectielparameter n = 0..19 (0 snelheid, 1 zwaartekracht, 2 levensduur ×0.01 s, 3 max. stuiters, 4 schade, 5 richthoogte, 7/8 schiet-animatie + duur, 9 straal, 10/11 demping, 12..17 doelzoeken, 18 visueel, 19 richten op doel); tabel in PROJECTILES.md §3 |
+| 1003 | inst, target\|−1, aantal\|−1, t | 177 | ✔ lanceerder `0x4522b0(aantal, t·0.01, target)`: reeks starten, interval t·0.01 s (min. 0.2), aantal −1 = eindeloos, eerste schot direct |
+| 1004 | inst | 7 | ✔ lanceerder `0x452320()`: reeks stoppen (`+0x198 = 0`) |
 | 1010..1050 | … | 0 | ✔ zie GAMEFLOW.md §8 (1030 SaveAuto, 1040/1043 scripted actie, 1042 nabij+kijkrichting, 1048..1050 toetstests) |
 | 1080 | rec | 0 | ✔ `0x456ed0(record)` op `game+0x18` |
 | 1081 | level | 0 | ✔ **GotoLevel**: `0x404b60(1.5, level, 1, 0)` = RequestLevel met 1,5 s fade (hubdeuren; zie GAMEFLOW.md §4) |

@@ -27,6 +27,10 @@ int  hud_sky_images(uint32_t out[5]);                           /* level bank im
 void hud_world_sprites_begin(const float *right, const float *up);
 void hud_world_sprite(int n, const float *pos, float size);
 void hud_world_sprites_end(void);
+/* additive effect sprite (bank 0 image 0, 4 or 6), rotated by `turns` around the view axis; colour = rgb * alpha */
+void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha);
+/* additive ribbon segment with a colour per end (bank 0 image 0) */
+void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw, const float *rgb_a, const float *rgb_b);
 /* additive camera-facing line quad (line primitive 0x471a10, bank 0 image 1): half width hw, colour*alpha at both ends */
 void hud_world_beam(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b);
 

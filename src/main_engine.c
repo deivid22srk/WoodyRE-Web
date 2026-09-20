@@ -293,6 +293,72 @@ static int laser_hits_player(Vec3 a, Vec3 b, const Player *p)
     if (l2 > 1e-6f) { float t = ((p->pos.x - a.x) * d.x + (p->pos.z - a.z) * d.z) / l2; t = t < 0 ? 0 : t > 1 ? 1 : t; float y = a.y + d.y * t - p->pos.y, x = a.x + d.x * t - p->pos.x, zz = a.z + d.z * t - p->pos.z; if (y >= 0 && y <= H && x * x + zz * zz < best) best = x * x + zz * zz; }
     return best <= R * R;
 }
+/* ---- launcher type 42 + projectiles (docs/PROJECTILES.md). Only template kind 1 / visual 2 (the energy bolt every level
+ * script uses): straight line at 1000 u/s, radius 5, 1 heart, removed on any hit or after `life` seconds. Homing, bounces,
+ * gravity, the bomb thrower (kind 0) and the missile / fireball visuals are not ported. */
+typedef struct { Instance *inst, *target; int active, count, aim, kind; float T, t0, last, life; } Launcher;
+typedef struct { int active; const Instance *owner; Vec3 pos, dir, origin; float age, life, dying; } Shot;
+typedef struct { Vec3 pos; float t; } Flash;
+static Launcher g_launchers[32]; static int g_nlaunchers;
+static Shot g_shots[200]; static Flash g_flashes[64];
+static Launcher *launcher_of(const Instance *in) { for (int i = 0; i < g_nlaunchers; i++) if (g_launchers[i].inst == in) return &g_launchers[i]; return NULL; }
+static void flash_add(Vec3 p) { for (int i = 0; i < 64; i++) if (g_flashes[i].t <= 0) { g_flashes[i].pos = p; g_flashes[i].t = 1e-4f; return; } }
+static void launcher_fire(Launcher *l)                                             /* 0x452560 -> 0x4490a0 / 0x449130 */
+{
+    Vec3 p0, d; if (l->kind == 0 || !inst_vector(l->inst, 0, &p0, &d)) return;
+    if (l->aim && l->target) { d.x = l->target->position.x - p0.x; d.y = l->target->position.y + 125.0f - p0.y; d.z = l->target->position.z - p0.z; }
+    float len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (len < 1e-4f) return;
+    for (int i = 0; i < 200; i++) if (!g_shots[i].active) {
+        Shot *s = &g_shots[i]; memset(s, 0, sizeof *s); s->active = 1; s->owner = l->inst; s->pos = s->origin = p0; s->dir = (Vec3){ d.x / len, d.y / len, d.z / len }; s->life = l->life;
+        audio_fx(19, l->inst, &l->inst->position.x); flash_add(p0); return;
+    }
+}
+static void launchers_update(float now, float dt, Player *pl, const GelFile *gel, int player_ok)
+{
+    for (int i = 0; i < g_nlaunchers; i++) {                                       /* think step 0x452780 */
+        Launcher *l = &g_launchers[i]; if (!l->active) continue;
+        if (floorf((now - l->t0) / l->T) > floorf((now - dt - l->t0) / l->T) && now - l->last >= l->T - 0.2f) {
+            l->last = now; launcher_fire(l); if (l->count > 0 && --l->count == 0) l->active = 0;
+        }
+    }
+    for (int i = 0; i < 200; i++) {                                                /* 0x4490f0 / 0x4493c0 */
+        Shot *s = &g_shots[i]; if (!s->active) continue;
+        if (s->dying > 0) { if ((s->dying -= dt) <= 0) s->active = 0; continue; }
+        s->age += dt; Vec3 a = s->pos, b = { a.x + s->dir.x * 1000.0f * dt, a.y + s->dir.y * 1000.0f * dt, a.z + s->dir.z * 1000.0f * dt }; int end = s->age >= s->life;
+        if (!end && player_ok) {                                                   /* swept sphere r 5 against the cylinder r 69: 74, feet - 5 .. feet + 198 */
+            Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float l2 = d.x * d.x + d.z * d.z, t = l2 > 1e-6f ? ((pl->pos.x - a.x) * d.x + (pl->pos.z - a.z) * d.z) / l2 : 0; t = t < 0 ? 0 : t > 1 ? 1 : t;
+            float x = a.x + d.x * t - pl->pos.x, y = a.y + d.y * t - pl->pos.y, z = a.z + d.z * t - pl->pos.z;
+            if (x * x + z * z <= 74.0f * 74.0f && y >= -5.0f && y <= 198.0f) { if (player_hit(pl, 1.0f, s->dir)) player_kill(pl, 3); b = (Vec3){ a.x + d.x * t, a.y + d.y * t, a.z + d.z * t }; end = 1; }
+        }
+        if (!end) { float f = gel_ray_frac(gel, a, b); if (f <= 1.0f) { b = (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }; end = 1; } }
+        s->pos = b; if (end) { flash_add(b); s->dying = 0.133f; if (getenv("WOODY_FXLOG")) printf("shot %d ends at %.0f %.0f %.0f age %.2f from %.0f %.0f %.0f", i, b.x, b.y, b.z, s->age, s->origin.x, s->origin.y, s->origin.z), puts(""); }
+    }
+    for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) { g_flashes[i].t += dt; if (g_flashes[i].t >= 0.4f) g_flashes[i].t = 0; }
+}
+static void launchers_draw(const float *eye)
+{
+    static const float white[3] = { 1, 1, 1 };
+    for (int i = 0; i < 200; i++) {                                                /* visual 2, 0x46f8a0 */
+        const Shot *s = &g_shots[i]; if (!s->active) continue;
+        float t = fmodf(s->age, 2.0f), k = s->dying > 0 ? s->dying / 0.133f : 1.0f;
+        float trav = sqrtf((s->pos.x - s->origin.x) * (s->pos.x - s->origin.x) + (s->pos.y - s->origin.y) * (s->pos.y - s->origin.y) + (s->pos.z - s->origin.z) * (s->pos.z - s->origin.z));
+        float seg = (trav < 400.0f ? trav : 400.0f) * k / 10.0f;                   /* ribbon: 10 segments of 40 behind the head, growing from the muzzle */
+        for (int j = 0; j < 10 && seg > 0.01f; j++) {
+            float u0 = j / 10.0f, u1 = (j + 1) / 10.0f, c0 = cosf(u0 * 1.5707963f), c1 = cosf(u1 * 1.5707963f);
+            float ca[3] = { 0.25f * (1 - u0) * c0, 0.4f * (1 - u0) * c0, 0.45f * c0 }, cb[3] = { 0.25f * (1 - u1) * c1, 0.4f * (1 - u1) * c1, 0.45f * c1 };
+            Vec3 a = { s->pos.x - s->dir.x * seg * j, s->pos.y - s->dir.y * seg * j, s->pos.z - s->dir.z * seg * j }, b = { a.x - s->dir.x * seg, a.y - s->dir.y * seg, a.z - s->dir.z * seg };
+            hud_world_ribbon(&a.x, &b.x, eye, 30.0f, ca, cb);
+        }
+        if (s->dying > 0) continue;
+        hud_world_fx(6, &s->pos.x, 50.0f, t * 255.5f / 512.0f, white, 1.0f);
+        hud_world_fx(6, &s->pos.x, 80.0f, (1.0f - t * 0.5f) * 511.0f / 512.0f, white, 0.5f);
+    }
+    for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) {                         /* muzzle / end flash, 0.4 s */
+        float t = g_flashes[i].t, u = t / 0.4f, size = 200.0f * cosf(u * 1.5707963f);
+        hud_world_fx(6, &g_flashes[i].pos.x, size, t * 256.0f / 512.0f, white, 1.0f - u);
+        hud_world_fx(4, &g_flashes[i].pos.x, size, (1.0f - t * 0.5f) * 512.0f / 512.0f, white, 0.5f - 0.5f * u);
+    }
+}
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
@@ -372,7 +438,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if (in->type >= 4 && in->type <= 6) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if (in->type >= 4 && in->type <= 6) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 41) in->visible = 0;   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
     case 42: case 43: case 44: case 45: case 56: case 57:
         if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
@@ -440,6 +506,16 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
         break;
     case 1152: g_black_frame = 1; break;
+    case 1000: case 1001: case 1002: case 1003: case 1004: if (in) {                                         /* launcher, 0x444870 (docs/PROJECTILES.md) */
+        Launcher *l = launcher_of(in); if (!l) break; int a1 = m->nargs > 1 ? (int)m->args[1] : 0, a2 = m->nargs > 2 ? (int)m->args[2] : 0, a3 = m->nargs > 3 ? (int)m->args[3] : 0;
+        if (m->id == 1001) { l->kind = a1; l->life = 15.0f; l->aim = 0; l->active = 0; }
+        else if (m->id == 1002) { if (a1 == 2) l->life = a2 * 0.01f; else if (a1 == 19) l->aim = a2 != 0; }
+        else if (m->id == 1004) l->active = 0;
+        else {
+            int tgt = m->id == 1000 ? a1 : a1, cnt = m->id == 1000 ? 1 : a2; float T = m->id == 1000 ? 1.0f : a3 * 0.01f; if (T < 0.2f) T = 0.2f;
+            l->target = tgt == -1 ? NULL : slot_instance((uint32_t)tgt); l->count = cnt; l->T = T; l->t0 = (float)g_now + 1e-3f; l->last = (float)g_now - T; l->active = 1;
+        }
+    } break;
     case 50: case 52: case 53: if (in) { Laser *z = laser_of(in); if (z && m->nargs > 1) { if (m->id == 50) z->on = m->args[1] == 1; else if (m->id == 52) z->len = (float)(int)m->args[1]; else z->target = slot_instance(m->args[1]); } } break;
     case 1080: if (m->nargs > 3) { hud_text_open((int)m->args[0], (int)m->args[1], &m->args[3], (int)m->nargs - 3); g_text_var = m->args[2]; printf("  TEXT box at vm t=%d: strings %u %u %u\n", vm->time, m->args[3] & 0xffff, m->nargs > 4 ? m->args[4] & 0xffff : 0, m->nargs > 5 ? m->args[5] & 0xffff : 0); } break;   /* text box 0x456ed0: stays until the script sets var != 0 */
     case 1172: g_hud_ext = 1; break;
@@ -466,7 +542,7 @@ typedef struct {
 static void *read_all(const char *path, size_t *sz);
 static void level_free(Level *L)
 {
-    g_nlasers = 0; hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
+    g_nlasers = 0; g_nlaunchers = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
@@ -651,6 +727,7 @@ int main(int argc, char **argv)
                 anim_sounds(ii);
             }
         }
+        if (!paused) launchers_update((float)g_now, dt, &L.player, &L.gel, L.have_player && !fly && !L.player.dead_kind && !cin_running());
         double pt2 = win_time();
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
         rnd_frame(&L.rnd, &win, &cam, (float)(now - t0));
@@ -685,6 +762,7 @@ int main(int argc, char **argv)
                         }
                     }
                 }
+                launchers_draw(&cam.pos.x);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */
