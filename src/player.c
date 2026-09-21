@@ -64,10 +64,23 @@ static int poly_contains(const GelFile *g, const GelPoly *p, Vec3 q)
     return 1;
 }
 
+/* The query volume of one of the tests below, clamped to the level so an unbounded drop does not walk the
+ * whole tree. Only the polygons of the kd leaves it meets can answer the test (docs/FORMAT_GEL.md 5). */
+static void query_box(const GelFile *g, Vec3 c, float rxz, float ylo, float yhi, float box[6])
+{
+    if (ylo < g->bbox[2] - 1.0f) ylo = g->bbox[2] - 1.0f;
+    if (yhi > g->bbox[3] + 1.0f) yhi = g->bbox[3] + 1.0f;
+    if (yhi < ylo) yhi = ylo;
+    box[0] = c.x - rxz; box[1] = c.x + rxz; box[2] = ylo; box[3] = yhi; box[4] = c.z - rxz; box[5] = c.z + rxz;
+}
+
 float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, int *found)
 {
-    float best = -1e30f; *found = 0;
-    for (uint32_t i = 0; i < g->npolys; i++) {
+    float best = -1e30f, box[6]; *found = 0;
+    query_box(g, p, 1.0f, p.y - max_drop, p.y + step_up, box);
+    GelPolySet ps = gel_polys_in_box(g, box);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        uint32_t i = ps.polys[k];
         const GelPoly *pl = &g->polys[i];
         if (pl->plane[1] < 0.5f || pl->nverts < 3) continue;          /* walkable: normal mostly up */
         float y = -(pl->plane[0] * p.x + pl->plane[2] * p.z + pl->plane[3]) / pl->plane[1];
@@ -102,8 +115,11 @@ static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float ma
             const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip) continue;
             /* cheap reject: instance origin far away horizontally */
             float dx = in->position.x - p.x, dz = in->position.z - p.z; if (dx * dx + dz * dz > 4000.0f * 4000.0f) continue;
-            for (uint32_t ni = 0; ni < m->nnodes; ni++) {
-                const InsNode *n = &m->nodes[ni]; if ((n->kind != 4 && n->kind != 1) || !n->polys) continue;
+            uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+            for (uint32_t ci = 0; ci < ncn; ci++) {
+                uint32_t ni = cn[ci]; const InsNode *n = &m->nodes[ni];
+                float nb[6];                                              /* the node's own box: no floor in it, nothing to test */
+                if (ins_node_world_box(in, ni, nb) && (p.x < nb[0] || p.x > nb[1] || p.z < nb[4] || p.z > nb[5] || nb[3] < p.y - max_drop || nb[2] > p.y + step_up)) continue;
                 for (uint32_t f = 0; f < n->npolys; f++) {
                     const InsPoly *pl = &n->polys[f]; if (pl->nverts < 3) continue;
                     Vec3 a = ins_point_world(in, pl->indices[0]);
@@ -167,14 +183,17 @@ static void poly_push_accum(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q, float r
  * instance hulls are not tested yet. */
 static Vec3 gel_push(const GelFile *g, Vec3 c, float r, float lo, float hi)
 {
-    float acc[4] = { 0, 0, 0, 0 }; Vec3 v[32];
-    for (uint32_t i = 0; i < g->npolys; i++) {
+    float acc[4] = { 0, 0, 0, 0 }, box[6]; Vec3 v[32];
+    query_box(g, c, r, lo, hi, box);
+    GelPolySet ps = gel_polys_in_box(g, box);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        uint32_t i = ps.polys[k];
         const GelPoly *pl = &g->polys[i];
         if (pl->nverts < 3 || pl->nverts > 32 || pl->plane[1] > 0.71f) continue;
         float d0 = pl->plane[0] * c.x + pl->plane[1] * c.y + pl->plane[2] * c.z + pl->plane[3];
         if (d0 < -r - (hi - lo) || d0 > r + (hi - lo)) continue;               /* cheap reject */
         float ymin = 1e30f, ymax = -1e30f;
-        for (uint32_t k = 0; k < pl->nverts; k++) { const GelVert *gv = &g->verts[pl->indices[k]]; v[k] = (Vec3){ gv->x, gv->y, gv->z }; if (gv->y < ymin) ymin = gv->y; if (gv->y > ymax) ymax = gv->y; }
+        for (uint32_t t = 0; t < pl->nverts; t++) { const GelVert *gv = &g->verts[pl->indices[t]]; v[t] = (Vec3){ gv->x, gv->y, gv->z }; if (gv->y < ymin) ymin = gv->y; if (gv->y > ymax) ymax = gv->y; }
         if (ymax < lo || ymin > hi) continue;
         Vec3 q = c; float a = lo > ymin ? lo : ymin, b = hi < ymax ? hi : ymax; if (q.y < a) q.y = a; if (q.y > b) q.y = b;
         poly_push_accum(v, pl->nverts, (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }, q, r, acc);
@@ -192,8 +211,11 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
         for (uint32_t k = 0; k < m->ninstances; k++) {
             const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || !in->node_world) continue;
             float dx = in->position.x - c.x, dz = in->position.z - c.z; if (dx * dx + dz * dz > 3000.0f * 3000.0f) continue;
-            for (uint32_t ni = 0; ni < m->nnodes; ni++) {
-                const InsNode *nd = &m->nodes[ni]; if (nd->kind != 4 || !nd->polys || !nd->npoints) continue;
+            uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+            for (uint32_t ci = 0; ci < ncn; ci++) {
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 4 || !nd->npoints) continue;
+                float nb[6];                                              /* the node's own box against the body cylinder */
+                if (ins_node_world_box(in, ni, nb) && (nb[0] > c.x + r || nb[1] < c.x - r || nb[4] > c.z + r || nb[5] < c.z - r || nb[3] < lo || nb[2] > hi)) continue;
                 Vec3 cen = { 0, 0, 0 };
                 for (uint32_t t = 0; t < nd->npoints; t++) { Vec3 w = ins_point_world(in, nd->point_base + t); cen.x += w.x; cen.y += w.y; cen.z += w.z; }
                 cen.x /= nd->npoints; cen.y /= nd->npoints; cen.z /= nd->npoints;
@@ -221,8 +243,11 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
 static const Instance *g_ground_skip;      /* set by player_ground_query(): instance to ignore instead of the player */
 static float world_ground(const Player *p, Vec3 pt, int *found, const Instance **hit_inst, const InsNode **hit_node)
 {
-    const GelFile *g = p->gel; float best = 1e30f; int f1 = 0, f2; Vec3 gn = { 0, 1, 0 }; int32_t gm = -1;
-    for (uint32_t i = 0; i < g->npolys; i++) {
+    const GelFile *g = p->gel; float best = 1e30f, box[6]; int f1 = 0, f2; Vec3 gn = { 0, 1, 0 }; int32_t gm = -1;
+    query_box(g, pt, 1.0f, g->bbox[2] - 1.0f, pt.y, box);            /* the column under the point */
+    GelPolySet ps = gel_polys_in_box(g, box);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        uint32_t i = ps.polys[k];
         const GelPoly *pl = &g->polys[i];
         if (pl->nverts < 3 || pl->plane[1] <= 1e-5f) continue;
         float dist = pl->plane[0] * pt.x + pl->plane[1] * pt.y + pl->plane[2] * pt.z + pl->plane[3];
@@ -400,8 +425,9 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex)
 /* segment a->b blocked by a world polygon? (line-of-sight veto 0x423a40; instances are not tested yet) */
 static int gel_ray_blocked(const GelFile *g, Vec3 a, Vec3 b)
 {
-    for (uint32_t i = 0; i < g->npolys; i++) {
-        const GelPoly *pl = &g->polys[i]; if (pl->nverts < 3) continue;
+    GelPolySet ps = gel_polys_on_seg(g, a, b);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3) continue;
         float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
         float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
         if ((da > 0) == (db > 0)) continue;
@@ -414,8 +440,9 @@ static int gel_ray_blocked(const GelFile *g, Vec3 a, Vec3 b)
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b)
 {
     float best = 2.0f;
-    for (uint32_t i = 0; i < g->npolys; i++) {
-        const GelPoly *pl = &g->polys[i]; if (pl->nverts < 3) continue;
+    GelPolySet ps = gel_polys_on_seg(g, a, b);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3) continue;
         float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
         float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
         if ((da > 0) == (db > 0)) continue;
