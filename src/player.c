@@ -242,6 +242,21 @@ float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *f
     return y;
 }
 
+/* Landing ring (docs/PERSO_JUMP.md 5): while Woody is off the ground the spot he hangs over is marked on the
+ * floor. Only the states in which he falls under his own weight get one: not while a script drives him, not on
+ * the rocket, not on a wall and not while he is dying. The drop is unlimited, so a pit shows its bottom. */
+int player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal)
+{
+    if (!p->inst || p->on_ground || p->dead_kind || p->script_act || p->ride || p->climb_sub || p->use_root) return 0;
+    const Instance *hi; const InsNode *hn; int found = 0; Vec3 keep = g_ground_n;
+    float y = world_ground(p, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found, &hi, &hn);
+    Vec3 n = g_ground_n; g_ground_n = keep;
+    if (!found) return 0;
+    *pos = (Vec3){ p->pos.x, y, p->pos.z };
+    if (normal) *normal = n;
+    return 1;
+}
+
 /* ---- platform attachment (Perso+0x298, 0x436d80 store / 0x436d20 delta; docs/PERSO_MOVE.md 6.1) -------------
  * While standing on an instance node the contact point is remembered in node space; next frame the node's
  * movement (world(local) - previous world position) is added to the player's displacement. */

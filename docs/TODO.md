@@ -16,6 +16,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Perso-toestand 8 (raket berijden, type 20): geport. Niet: afstap-anim (in het origineel ook nergens aangevraagd), type 21 (meerijden op de kanonbom) | grotendeels | ROCKET.md §6 |
 | Perso-toestand 6 (bom dragen) | op hoofdlijnen | BONUS.md §7 |
 | Checkpoints: respawn-positie (1030) | controleren | GAMEFLOW.md |
+| Landingsring op de vloer onder een springende Woody (issue #1): geport, maar de tekenfunctie van het origineel is niet gevonden (kandidaat `0x44af90`, elk frame na het renderen) – straal, dikte, kleur en helderheid zijn van een schermafdruk geschat, niet gelezen | geport, maten onzeker | PERSO_JUMP.md §5 |
 | Salto die wegvalt bij springen in de lucht (melding gebruiker) | niet te reproduceren; welke toets/timing? | — |
 | Obstakelsensor van de Mover | niet geport | PERSO_MOVE.md |
 | Geometrie-queries zijn brute force, geen kd-tree | werkt, traag bij grote levels | — |
