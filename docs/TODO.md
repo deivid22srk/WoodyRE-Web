@@ -57,10 +57,12 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 
 | wat | status | waar |
 |---|---|---|
-| Deeltjes (vonken, rook, explosies, stof bij landen) | niet geport | — |
+| Deeltjes: de pickup-effecten (`0x4793d0`) zijn geport met hun eigen pool. Niet: vonken bij het klimmen, rook, de explosiedeeltjes van de raket (`0x4767f0`/`0x4764f0`) en stof bij landen | deels | BONUS.md §2.4 |
 | Zwarte contourlijn (SetFlags-bit 0x20) geport. Het origineel blaast alleen hoek 0/1/2 van een quad op (`0x43c42d`); de port alle hoeken, en de afstandsreferentie is de instantie-translatie i.p.v. `inst+0x60` | grotendeels | MODEL_RENDER.md §7 |
 | Modelrendering: mipmaps (het origineel bouwt er 4 met een boxfilter, MIPFILTER POINT); bitreplicatie in de RGB565-decode (het origineel laat de lage bits 0); diepte-sortering van de geblende modelbatches (`0x428d00`, 256 emmers achter-naar-voor) | niet geport | MODEL_RENDER.md recept 9-10 |
-| Pickup-sprite: grootte (volle breedte?) en HUD-animatie bij oppakken | gok / niet geport | BONUS.md, HUD_TEXT.md |
+| Pickup-sprite: de grootte is opgelost - `sprite+0x264` is de halve **diagonaal** (`0x470fee`), dus elke additieve sprite in de port was `1/sqrt(2)` te klein. Rechtgezet in `hud_world_fx` en `hud_world_sprite` | opgelost | BONUS.md §2.4 |
+| HUD-animaties bij het oppakken (invliegend icoon + spoor + getal-pop) en de W-zwerm die 25 bonussen uitbetaalt: geport. Niet: de in-/uitschuif van de $-teller (`+0x3b/+0x3c`), de pauze-HUD (`+0x3d/+0x3e`) en de "min 1" van $ en lading (`+0x3f/+0x41`) | grotendeels | HUD_TEXT.md §4.6 |
+| De vormuitbarsting van type 30/35 spuwt in het origineel 4 resp. 8 deeltjes per **frame**; de port normaliseert dat op 60 Hz zodat de dichtheid niet met het frametempo meeloopt | bewuste afwijking | BONUS.md §2.4 |
 | Lucht: links/rechts-oriëntatie van de kubus | niet geverifieerd | SKY.md |
 | `.vis`-culling (nu frustum-cull per instantie) | niet geport | FORMAT_TEX_COL_VIS_LIT.md |
 | Vsync / fps-begrenzing | niet aanwezig | — |

@@ -154,12 +154,42 @@ visuele "oppakken" bestaat uit het deeltjeseffect + het HUD-icoon.
 
 ### 2.4 Effecten `0x4793d0(n, pos)` (emitter in pool `[0x5e823c]+0xdb8`, 80 B per stuk, max 2000)
 
-| n | callback | levensduur | positie | beschrijving |
-|---|---|---|---|---|
-| 0 | `0x478f70`, param `+0x14 = 1` | 2.0 s | pos + (0, 50, 0) | sterren-ring variant A (type 30) |
-| 1 | `0x478f70`, param 0 | 2.0 s | pos + (0, 50, 0) | sterren-ring variant B (type 35) |
-| 2, 3, 4 | `0x4792d0` | 1.0 s | pos | glitter: 50 deeltjes/s (`acc += dt; n = (int)(acc·50); acc -= n·0.02`), elk 0.2 s (`0x4791f0`), op `pos + (rnd·60−30, (rnd+1)·25, rnd·60−30)`, rnd = `0x43ff40` ∈ [0,1) |
+De pool is een bump-allocator zonder vrije lijst (teller op `+0x27100`); vol ⇒ `0x4793d0` laat het effect
+stilletjes vallen. De driver is `0x470c70` (uit `0x46d040`, `0x401dfa`: na de wereld, vóór de HUD); hij leest de
+grens elke iteratie opnieuw, dus een deeltje dat dit frame ontstaat wordt dit frame al getekend, en ruimt op door
+met de laatste te wisselen. `dt` is geen parameter: elke callback leest zelf `[[0x509adc]+0x38]`.
 
+**Correctie op eerdere lezingen: `0x478f70` is geen sterrenring en `0x4792d0` ziet er niet anders uit. Geen van
+beide tekent iets** — het zijn allebei alleen emitters, en ze zetten allebei hetzelfde deeltje `0x4791f0` in de
+pool. Alle vijf de effecten bestaan dus uit één primitief; ze verschillen alleen in *waar* en *hoe vaak*.
+
+| n | type | levensduur emitter | oorsprong | tempo | deeltje | plaats |
+|---|---|---|---|---|---|---|
+| 0 | 30 extra leven | 2.0 s | pos + (0,50,0) | **4 per frame** | 0.4 s | draaiende **tetraëder** (tabel `0x4b7990` rij 8..11: top r = 20, 3 basispunten r ≈ 44), geschaald met (1−u) |
+| 1 | 35 lading | 2.0 s | pos + (0,50,0) | **8 per frame** | 0.4 s | draaiende **kubushoeken** (rij 0..7, ±40 per as, r = 69.3), geschaald met (1−u) |
+| 2 | 34 Bonus Woody | 1.0 s | wereldpositie van volume-node 0 | 50/s | 0.2 s | doos: x,z ∈ ±30, y ∈ +25..+50 |
+| 3 | 36 uniek item | 1.0 s | inst.pos | 50/s | 0.2 s | idem |
+| 4 | 37/38 race + onkwetsbaar | 1.0 s | inst.pos | 50/s | 0.2 s | idem |
+
+**Het deeltje `0x4791f0`** — een camera-gerichte quad op een **vast** wereldpunt (nooit snelheid, zwaartekracht
+of drift): afbeelding `0x10004` = bank 0 afbeelding 4 (64×64, bpp 24, grijze zachte gloed), kleur (0.5,0.5,0.5) =
+vol wit, **alfa constant 1.0**, **additief ONE/ONE** (vlag 7, bit 3 uit). Het in- en uitvervagen is dus de
+**grootte**, niet de alfa:
+
+> `grootte(u) = 30 · sin(π · ⌊255u⌋ / 256)` en `rotatie = ⌊45u⌋` in 1/512 slag (31.6° over de hele levensduur).
+
+Let op: `sprite+0x264` is de halve **diagonaal** van de quad (`0x470fee..0x4710b3`: elke hoek is
+`(grootte·cos θ, grootte·sin θ)` met θ = rot ± 45°), dus de zijde is `1.4142 × grootte`. Dat geldt voor élke
+sprite met modus 0x12/0x1b, ook de halo van §3.1.
+
+**De vormuitbarsting `0x478f70`** draait de vorm elk frame met drie gehele hoeken
+`(⌊255.5u⌋, ⌊408.8u⌋, ⌊511u⌋)` door `0x46d220` (orthonormaal, det +1) en schaalt hem met `1 − u`: 8 (resp. 4)
+spiraalsporen die op een punt 50 boven de bonus imploderen, ≈ 960 (resp. 480) deeltjes per pickup bij 60 fps.
+Het tempo is **frametempo-afhankelijk** — er zit geen begrenzer in.
+
+**De glitterdoos `0x4792d0`** is dat niet: `acc += dt; n = ⌊acc·50⌋; acc −= n·0.02` (de `d8 e9` op `0x479318` is
+`FSUBR`), dus 50 deeltjes per seconde, ~10 tegelijk in leven. `0x43ff40` = `rand()/32767` ⇒ **[0,1] inclusief**,
+drie keer aangeroepen per deeltje in de volgorde x, y, z.
 ### 2.5 Terugkomen (respawn)
 
 - **Type 34**: `Respawn` `0x44f590` = `0x407790(this, NULL)` (terug in de sector van de eigen positie;
@@ -241,8 +271,9 @@ gebruik-aantal 0 in MESSAGES.md klopt niet voor W1A (elk bonusobject stuurt het,
 | 4 | 34 | `0x4616a0(pos)`; wist eerst byte `hud+0x10` | `hud+0x36` |
 | 5 | 37 | `0x461760(pos)` | `hud+0x37` |
 
-De `0x4613xx`-functies starten een HUD-animatie met de 3D-positie als bron (`0x47b230(pos, …)`,
-duur-constante 0.2 = `0x3e4ccccd`); niet verder uitgewerkt. De HUD-waarden zelf komen elk frame uit
+De `0x4613xx`-functies starten een HUD-animatie met de 3D-positie als bron: het icoon vliegt in 0.2 s lineair
+naar zijn vaste HUD-slot terwijl het van niets naar volle grootte groeit, met een spoor erachter, en daarna popt
+het getal. Volledig uitgewerkt in [HUD_TEXT.md](HUD_TEXT.md) §4.6. De HUD-waarden zelf komen elk frame uit
 `0x44ae60` (Perso → HUD): `0x448380(+0x25c)`, `0x4482c0(levens−1)`, `0x448440(health)`,
 `hud+0x24 = +0x264`, `0x448300(+0x254)`, `0x448340(+0x260)`.
 
@@ -264,7 +295,8 @@ enum { SND_LIFE = 0, SND_ITEM36 = 1, SND_CHARGE = 2, SND_BONUS = 3, SND_25BONUS 
 #define HALO_RGB           0.5f
 #define GLITTER_LIFE       1.0f
 #define GLITTER_RATE       50.0f   /* per seconde, deeltje 0.2 s */
-#define RING_LIFE          2.0f
+#define BURST_LIFE         2.0f   /* de vormuitbarsting van type 30 en 35 */
+#define FX_PARTICLE_MAX    30.0f  /* halve diagonaal; zijde = 1.4142 x zoveel */
 
 /* script: if (volume.flags & 0x10 /*PersoEnter*/) send(10, inst, 0, 0); */
 bool Bonus_OnMessage(CBonus *b, const Msg *m) {          /* 0x44f350 / 0x44f9b0 */
@@ -322,17 +354,21 @@ void Bonus_Update(CBonus *b) {                           /* slot +0x0c, elk fram
    geluid-id 0/2/3/1/5, daarna instantie inactief maken (niet meer tekenen, niet meer in de
    volumetest). Type 38: `invincible = max(invincible, arg·0.01)`, knippertimer = arg·0.01.
 4. In de spelerupdate: `if (bonusCount >= 25) { health<5 ? health++ : lives++; bonusCount -= 25; }`.
-5. Per frame voor elke actieve bonus: additieve billboard op pos + (0,50,0), kleur 0.5, grootte
+5. Per frame voor elke actieve bonus: additieve billboard op pos + (0,50,0), kleur 0.5, halve diagonaal
    `50 + 60·sin²(π·t)` (t in s; periode 1 s), sprite-id per type 0x10013/0x10015/0x10014/0x1002e/0x10017.
    Type 34: gebruik de wereldpositie van de eerste volume-node van het model i.p.v. inst.pos.
-6. Bij oppakken: glitter-emitter (1 s, 50 deeltjes/s, 0.2 s per deeltje, doos ±30 × 25..50 × ±30)
-   voor 34/36/37/38; sterren-ring (2 s, op +50 y) voor 30/35.
+6. Bij oppakken (§2.4): één soort deeltje, een additieve camera-gerichte quad van bank 0 afbeelding 4, kleur wit,
+   alfa 1, `grootte(u) = 30·sin(π·⌊255u⌋/256)` (halve diagonaal!), rotatie `⌊45u⌋/512` slag. Voor 34/36/37/38:
+   1 s lang 50 per seconde in de doos ±30 × +25..+50 × ±30, elk 0.2 s. Voor 30/35: 2 s lang elk frame 4 (tetraëder)
+   resp. 8 (kubus) stuks op een draaiende vorm die met `1−u` op het punt 50 boven de bonus krimpt, elk 0.4 s. Dat
+   tempo is in het origineel per *frame*; normaliseer op 60 Hz als je frametempo varieert.
 7. Draaien/zweven: speel de keyframe-animatie van het model af zoals voor elke instantie; geen
    extra code.
 8. Geen respawn bij dood voor 30/34/35/36/38. Race-herstart: alle type 37 terug in de wereld,
    `race_taken = 0`, `raceCount` = opgeslagen waarde.
 9. Type 36: bij levelstart (eerste Update) verbergen als `save.taken[level][index]`.
-10. HUD: toon `bonus_taken / bonus_total` (niet in levels 1, 11, 18); in race-modus
+10. HUD-animaties bij het oppakken en bij het uitbetalen van 25 W's: zie [HUD_TEXT.md](HUD_TEXT.md) §4.6.
+11. HUD: toon `bonus_taken / bonus_total` (niet in levels 1, 11, 18); in race-modus
     `raceCount / race_total`.
 
 ## 9. Open vragen
@@ -342,10 +378,9 @@ void Bonus_Update(CBonus *b) {                           /* slot +0x0c, elk fram
 2. Het exacte zichtbaarheidscriterium waarmee `0x42a858..` de per-frame lijst vult (welke sectoren)
    is niet uitgewerkt; en `0x479530` schrijft elke keer in hetzelfde sprite-record
    `[0x5e823c]+0xb00` en tekent direct (`0x470f10(…, 0x1b)`), de betekenis van vlag 0x1b is open.
-3. De HUD-animaties `0x461300/0x461420/0x461560/0x4616a0/0x461760` (icoon dat van de 3D-positie
-   naar de teller vliegt?) zijn niet uitgewerkt.
+3. ~~De HUD-animaties~~ — uitgewerkt en geport, zie [HUD_TEXT.md](HUD_TEXT.md) §4.6.
 4. Betekenis van type 36 in speltermen (welk voorwerp; sprite 0x1002e) en van `Perso+0x71c`.
 5. Welke actie `0x458bf0` precies is (verbruikt `Perso+0x254`, animatie 0x13).
-6. Sterren-ring `0x478f70` (tabel `0x4b7990`, consts `0x4abc90/0x4abd60/0x4abc94/0x4ab294`) niet uitgewerkt.
+6. ~~Sterren-ring `0x478f70`~~ — het is geen ring maar een draaiende kubus/tetraëder van vonkbronnen, zie §2.4.
 7. Type 40: toestanden 1..5 (`0x44d850..0x44d96e`) alleen globaal bekeken.
 8. Of de bonusmodellen in het .ins een actieve animatie hebben (draaien/zweven) is niet gecontroleerd.

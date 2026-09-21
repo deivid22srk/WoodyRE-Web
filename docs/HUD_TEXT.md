@@ -358,25 +358,124 @@ hij 0 wordt start de uitschuif-animatie (`0x461a70`, vlag `+0x3c`). Het script m
 zolang de $-teller zichtbaar moet zijn (hub: bij de Jackpot-deur). Tijdens `hud+0xc > 0` verdwijnt het
 bonus-icoon (rij 5–7) en staat de $-teller er.
 
-### 4.6 Animaties (animator `hud+0x30`, aangestuurd uit `0x4480d0`; **slechts op hoofdlijnen gevolgd**)
+### 4.6 Animaties (animator `hud+0x30`, 0x88 B, ctor `0x460620`, aangestuurd uit `0x4480d0`)
 
-Elke vlag `hud+0x34..0x41` hoort bij één lopende animatie; de `0x46xxxx`-functie geeft 1 terug zolang hij loopt.
+Elke vlag `hud+0x34..0x41` hoort bij één lopende animatie; de bijbehorende functie geeft 1 terug zolang hij
+loopt en `0x4480d0` schrijft die teruggave terug in de vlag. `0x447660` (de statische HUD) draait **vóór**
+`0x4480d0`, dus de animaties tekenen eroverheen; de statische HUD laat weg wat een animatie heeft overgenomen.
+
+**Alles is lineair in de tijd en niets vervaagt ooit.** Alle vier hoekkleuren zijn elk frame `0xfe808080`. Een
+"pop" is een fontgrootte, een invliegend icoon "verschijnt" doordat het vanaf nul groeit, en een spoordeeltje
+verdwijnt doordat het naar nul krimpt (additief geblend).
 
 | vlag | start | per frame | wat |
 |---|---|---|---|
-| +0x34 | `0x448380` als de bonusteller daalt (25 → hartje) en health < 5: `0x460bc0` | `0x460bb0` | W vliegt van het icoon naar het nieuwe health-slot `x = 559 − 30·(health+1) − 16` |
-| +0x35 | idem bij health = 5 (→ extra leven): `0x460cc0` | `0x460be0` | W vliegt naar het levens-rondje |
-| +0x36 | pickup type 34 (`0x448510` kind 4 → `0x4616a0(pos)`) | `0x4611b0` | 3D-positie → icoon, duur-constante 0.2 |
-| +0x37 | type 37 → `0x461760` | `0x461270` | idem naar de vlag |
-| +0x38 | type 36 → `0x461420` | `0x460db0` | idem naar de $ |
-| +0x39 | type 30 → `0x461300` | `0x460d20` | idem naar het gezicht |
-| +0x3a | type 35 → `0x461560` | `0x460fb0` | idem naar het silhouet |
+| +0x34 | `0x448380` als de bonusteller daalt en health < 5: `0x460bc0` | `0x460bb0` | de W-zwerm naar het nieuwe hartje |
+| +0x35 | idem bij health = 5 (→ extra leven): `0x460cc0` | `0x460be0` | de W-zwerm naar het portret, daarna de levens-pop |
+| +0x36 | pickup type 34 (`0x448510` kind 4 → `0x4616a0`) | `0x4611b0` | 3D-positie → bonusicoon (sprite 4), spoormodus 0 |
+| +0x37 | type 37 → `0x461760` | `0x461270` | idem met de finishvlag (sprite 5), zelfde slot |
+| +0x38 | type 36 → `0x461420` | `0x460db0` | idem met de $ (sprite 3) naar slot 2, plus de hele $-teller |
+| +0x39 | type 30 → `0x461300` | `0x460d20` | idem met het **eigen gezicht** (sprite `hud+8`) naar slot 6, spoormodus 1 |
+| +0x3a | type 35 → `0x461560` | `0x460fb0` | idem met het silhouet (sprite 6) naar slot 4, plus de ladingteller |
 | +0x3b/+0x3c | §4.5 | `0x461820` / `0x461a00` | $-teller in/uit |
 | +0x3d/+0x3e | `0x448450(1)` / terug | `0x461b60` / `0x461da0` | uitgebreide HUD (pauze) in/uit |
 | +0x3f/+0x40/+0x41 | waarde gedaald ($ `0x462330`, levens `0x4622e0`, lading `0x462380`) | `0x461f70` / `0x461f00` / `0x462020` | "min 1"-animatie |
 
-Voor een eerste port kunnen ze allemaal weg: teken dan de getallen altijd.
+#### Het invliegende icoon (`PickupFly`, 0x50 B; ctor `0x47b170`, start `0x47b230`, tick `0x47b4c0`)
 
+Vijf exemplaren op `animator+0x30..+0x40`, één per pickupsoort. `0x47b230` is **geen projectiehelper**: het is de
+Start van deze klasse, met de projectie erin geschreven. Duur `T = 0.2 s` (vast in de ctor).
+
+```
+(sx,sy) = projectie(wereldpositie)        ; virtueel 640x480; buiten de vier zijvlakken -> Start geeft 0
+dx = tx + spriteW/2 - sx                  ; tx,ty = het vaste slot uit 0x4b3a10
+dy = ty + spriteH/2 - sy
+u  = t / 0.2
+x(t) = sx + u*dx ;  y(t) = sy + u*dy      ; LINEAIR, geen easing
+w(t) = u*spriteW ;  h(t) = u*spriteH      ; het icoon groeit van niets naar volle grootte
+teken rect (x - w/2, y - h/2, w, h), kleur 0xfe808080, blendvlag 8
+laatste frame: precies (tx, ty, spriteW, spriteH) = wat 0x448620 zou tekenen -> naadloze overgang
+```
+
+De projectie (`0x47b230` zelf) gaat tegen `[0x5e86ac]+0x114` (3 rijen van 4 floats, stride 0x10, translatie op
++0x144) en daarna `x = (vp.cx + clipX/w · 0.5 · (vpW−2)) · 640/schermW`, idem y met 480/schermH. **Geen clamping**:
+valt het punt buiten de vier zijvlakken, dan start de vlucht niet en blijft alleen de getal-pop over.
+
+Als de vlucht loopt tekent de bijbehorende tick het getal van **vóór** de pickup op zijn anker (grootte 17), zodat
+de teller pas omspringt als het icoon geland is.
+
+#### Het spoor (`0x47b710`, verdeler `0x47b7b0`)
+
+Het spoor bemonstert dezelfde baan op een vaste stap in *animatietijd* (`0.02 s` voor modus 0, `0.005 s` voor
+modus 1) en zet de monsters in dezelfde deeltjespool als de pickup-effecten (`[0x5e823c]+0xdb8`, §BONUS.md 2.4).
+Beide modi tekenen met **bank 0 afbeelding 4** (64×64 zachte gloed), kleur `0xfe808080`, **additief (vlag 4)**,
+en vervagen niet: ze krimpen.
+
+- **Modus 0** (`0x47b800`, callback `0x47bba0`) — types 34, 36, 37. Levensduur 0.3 s. Het monster wordt zijwaarts
+  verstrooid (`± (rndtab·10 + w/4)` in x en y, teken volgt de reisrichting), krijgt grootte `k·w/4` met
+  `k = 1 + tab[rnd]` en drift `0.2 ×` de snelheid van het icoon, en krimpt lineair naar nul.
+- **Modus 1** (`0x47ba10`, callback `0x47bca0`) — types 30 en 35. Levensduur 0.5 s, **twee** quads per deeltje per
+  frame. Het monster kruipt met een vijfde van de snelheid van het icoon langs de vluchtlijn
+  (`S/L = tau + pt`, `tau = 5·u`) en wijkt daarbij loodrecht uit met
+  `W = sin(2π·⌊1800·S/L⌋/512) · spriteW/2 · S/L`: **een dubbele helix van 1800/512 ≈ 3.5 slagen** die lineair
+  opent tot een halve iconbreedte vlak bij de HUD. `0x47bf00` is geen tekenaar maar een rekenhulpje (7 argumenten,
+  drie floats via uitvoerpointers).
+
+#### De getal-pop (`NumPopup`, 0x24 B; start `0x47c390`, tick `0x47c3d0`)
+
+`Start(x, y, nFasen, s0, s1, duur)`; oneven fase interpoleert `s0 → s1`, even fase `s1 → s0`, lineair, één frame
+vertraagd. Kleur altijd rood `0xfeff0000`, grootte ×0.75 bij een waarde ≥ 100. Elke pickup start
+`(anker, 2, 17.0, 37.0, 0.2)` = 0.4 s totaal. Ankers: kind 4/5 → A0, kind 2 → A1, kind 3 → A2, kind 1 → A3.
+
+#### De W-zwerm (`WSwarm`, 0x20 B; ctor `0x47c4e0`, start `0x47c5b0`, tick `0x47c620`, deeltje `0x47c7c0`)
+
+`0x460bc0` (hartje) en `0x460cc0` (extra leven) sturen **hetzelfde** object `animator+0x04` aan; `0x460cc0` zet
+daarnaast `animator+0x74` en start de levens-pop `(A3, 2, 17.0, 37.0, 0.2)` voor fase 2.
+
+| eigenschap | waarde |
+|---|---|
+| sprite | 4 (grote W, 94×94), als vierkant getekend |
+| bron | (16, 16) = slot 0, het bonusicoon |
+| doel hartje | `(559 − 30·(health_oud+1), 51.5)` — let op: 30, terwijl de hartjesrij op 29 staat |
+| doel extra leven | `(564.5, 51.5)`, een 23 breed vierkant gecentreerd op het **portret** (niet op het levensrondje) |
+| duur per rit | 0.4 s, lineair: `x = 16 + relX·u`, `y = 16 + 35.5·u`, `grootte = 94 − 71·u` |
+| deeltjes | maximaal 3, gespreid: de volgende vertrekt als de voorste `relX/3` voorbij is |
+| teller | start 25.0, **−2.5 per landing** ⇒ 10 landingen; een geland deeltje begint meteen opnieuw |
+| afbouw | zodra de teller < 3.0 blijven net gereset deeltjes staan |
+| einde | teller == 0.0 (exacte float-vergelijking) ⇒ ≈ 1.6 s totaal |
+
+Tijdens de zwerm telt het bonusgetal af: bij elke `⌊teller⌋ % 5 == 0` start `(A0, 1 fase, 17.0 → 0.0, 1.0 s)` met
+waarde `n − 5`, dus **20, 15, 10, 5, 0** die wegkrimpen. Die pop wordt **per levend deeltje één keer** getickt,
+dus hij loopt in de praktijk ~3× zo snel — dat staat zo in de code.
+
+Volgorde bij het opgooien van 25: het gewone pickup-vluchtje (+0x36) gaat voor, want `hud+0x10` (gezet door
+`0x448380`, gewist door `0x448510` kind 4 en door het einde van `0x4611b0`) blokkeert de tick van +0x34/+0x35.
+Zolang die latch staat toont het rondje `24` en daarna popt het `25`.
+
+#### Wat `0x447660` weglaat
+
+- **Levensgetal** (`0x44771e`): weg als `f39 || f40 || (f35 && !f10)`; zolang `f35` loopt is de opgebouwde string
+  sowieso `hud+0x20 − 1`.
+- **Bonus** (`0x44792e`, `0x44794f`): het icoon (sprite 4 in slot 0) en het rondje (sprite 8 in slot 1) **blijven**
+  staan; alleen het getal én de regel "gepakt / totaal" vallen weg bij `f34 || f35`, en het getal alleen bij `f36`.
+- **Hartjesrij** (`0x447ad5`): `if (f34 && i == ftol(health)) continue;` — het binnenkomende hartje wordt
+  overgeslagen tot de W's geland zijn. `f35` raakt de rij niet.
+- **$ en lading**: buiten de pauzepagina komt `0x447660` niet eens tot die rijen (`0x447b18`:
+  `cmp dword ptr [esi], 1 / jne`), dus in gewoon spel tekenen `0x460db0` / `0x460fb0` ze zelf — vandaar dat die
+  ticks `0x448620` aanroepen.
+
+#### $- en ladingteller bij het oppakken (kind 2 en 3)
+
+Een viertraps reeks, ≈ 2.5 s: (1) vlucht 0.2 s samen met het rondje dat van 0×0 naar 34×34 groeit, (2) getal-pop
+0.4 s, (3) 1.5 s stilstaan, (4) rondje krimpt naar 0 terwijl het icoon naar `x = −spriteW` glijdt (0.2 s).
+Het `IconSlide`-object wordt al bij de pickup gestart maar pas in trap 4 getickt.
+
+#### Poortstatus
+
+Geport in `src/hud.c` (`hud_anim_pickup`, `hud_anim_tick`, ge-tickt vanuit `hud_draw`) en `src/render_gl.c`
+(`rnd_project`). De port kijkt zelf naar de tellers om de beloning te herkennen, net als de setter `0x448380`.
+Nog niet geport: de in-/uitschuif van de $-teller (+0x3b/+0x3c), de pauze-HUD (+0x3d/+0x3e) en de "min 1" van $
+en lading (+0x3f/+0x41); de "min 1" van de levens (+0x40) zit er wel in.
 ---------------------------------------------------------------------------------------------------
 
 ## 5. Afbeeldingen en de 2D-blit
