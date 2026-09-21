@@ -1286,6 +1286,13 @@ int main(int argc, char **argv)
             PlayerInput pin = { 0 };
             pin.forward = win.keys[VK_UP] || (!fly && win.keys['W']) || (now - t0 >= walk_at && now - t0 < walk_at + walk_for);
             if (getenv("WOODY_INSTLOG") && (int)(now - t0) != (int)(now - t0 - dt)) { Instance *qi = slot_instance((uint32_t)atoi(getenv("WOODY_INSTLOG"))); if (qi) printf("instlog %u: visible %d fade %.2f type %d scripted %d anim %d pos %.0f %.0f %.0f model %d", qi->index, qi->visible, qi->fade, qi->type, qi->scripted, qi->anim, qi->position.x, qi->position.y, qi->position.z, (int)(qi->model - g_ins.models)), printf(" nw0 %.0f %.0f %.0f cull_r %.0f anim_time %.2f speed %.2f alpha? setflags %x", qi->node_world[0].m[12], qi->node_world[0].m[13], qi->node_world[0].m[14], qi->model->cull_r, qi->anim_time, qi->anim_speed, qi->setflags), puts(""); }
+            /* WOODY_UVLOG=<slot> or =stand (the instance the player is standing on, Perso+0x298): one UV report per
+             * instance, to tell a wrong texture from a wrong projection on a surface that looks untextured */
+            if (getenv("WOODY_UVLOG")) {
+                const char *e = getenv("WOODY_UVLOG"); static const Instance *uv_done;
+                const Instance *qi = e[0] >= '0' && e[0] <= '9' ? slot_instance((uint32_t)atoi(e)) : L.player.att_inst;
+                if (qi && qi != uv_done) { uv_done = qi; rnd_uv_report(&L.rnd, qi); }
+            }
             if (getenv("WOODY_POSLOG") && (int)((now - t0) * 4) != (int)((now - t0 - dt) * 4)) {
                 /* dev = angle between the camera->player direction and his facing: 0 = camera exactly behind him, +-180 = in front of him */
                 float ax = L.player.pos.x - cam.pos.x, az = L.player.pos.z - cam.pos.z, fx = sinf(L.player.yaw), fz = cosf(L.player.yaw);
