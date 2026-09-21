@@ -86,7 +86,8 @@ Start (`0x44ddd8..0x44dfd6`), aanvulling op CINEMATIC §6:
 * geweigerd (return 0) als `state == 2`.
 * `fadeOut (+0x560) = (actie == 17)`, `fadeIn (+0x561) = (actie == 18)`, behalve als subtype `(P+0x104 & 0x3e0)` 0x80/0xa0 is
   (race-personages 4/5) (`0x44dde7..0x44de19`).
-* 17/18: eerst `0x443ff0(P->id)` (alle volumes verlaten, `0x44de36`). `+0x4ec = 0`, `0x44dd70`.
+* 17/18: eerst `0x443ff0(P->id)` (alle volumes verlaten, `0x44de36`). `+0x4ec = 0` (**de vlag van het zij-aanzicht**,
+  CAMERA_SCRIPT §4.2: de speler is niet langer aan het vlak gebonden), `0x44dd70` (aanvalsdoel wissen).
 * `logisch = 0x463e30(actie)`: 17 → record **24** `(17,−1,−1,−1)`, 18 → record **25** `(18,−1,−1,−1)`, beide prio 6000,
   speed 3.0, restart 1. `total = remain (+0x538/+0x53c) = L(logisch)` = 18432/4096/3 = **1.5 s** voor beide.
   `animctl->vtbl[4]()`, `vtbl[2](logisch)`; `+0x540 = actie`; toestand 5.
@@ -105,7 +106,7 @@ if (remain <= 0) {
         f = Mover_GetFacing(M);  f = -f;  Mover_SetFacing(M, &f);        /* 0x445780, ×−1 (0x4a9500), 0x459ff0 */
         Perso_GroundSnap(P);                                              /* 0x462990 */
         animctl->vtbl[2](1);                                              /* idle */
-        if (!P->altMode4ec) Perso_EndScripted(P);                         /* 0x44e5a0: volgcamera, overgang 0.5 s */
+        if (!P->planeMode /*+0x4ec*/) Perso_EndScripted(P);              /* 0x44e5a0, zie onder */
     }                                                                     /* na 17: alleen toestand 0, verder niets */
 }
 ```
@@ -118,8 +119,25 @@ if (remain <= 0) {
 * Tijdlijn 17: t = 0 start, **t = 0.9 s fade-out (0.5 s)**, zwart op 1.4 s, einde 1.5 s ⇒ toestand 0. De one-shot 17 blijft op
   het laatste frame staan (prio 6000, geen lus ⇒ idle kan hem niet vervangen) tot bericht 26 via `0x44a650` de controller
   reset. Tijdlijn 18: t = 0 **fade-in (0.5 s)**, einde 1.5 s.
-* Volgorde in de scripts: `1040 [deur,17]` → wachten → `26 [0, andereDeur, 1]` (toestand is dan 0, dus niet geweigerd) →
-  `1040 [andereDeur,18]`.
+* Volgorde in de scripts: `1040 [deur,17]` → `DELAY 150` → `26 [0, andereDeur, 1]` (toestand is dan 0, dus niet geweigerd) →
+  `1040 [andereDeur,18]`. De DELAY is even lang als de animatie (1,5 s), dus of de teleport nog in toestand 5 valt hangt
+  van de framegrens af; valt hij erin, dan verplaatst pas actie 18 de speler (naar P0) en cut de camera bij de oude positie.
+
+### 2.1 De camera door de hele deursequentie
+
+De enige twee camera-acties zitten in bericht 26 en aan het **eind** van actie 18 — actie 17/18 zelf laten de camera met rust:
+
+| moment | aanroep | effect |
+|---|---|---|
+| bericht 26 (teleport) | `0x458f90` (§1.1), **buiten** de toestand-5-test | harde cut: volgcamera opnieuw **achter de kijkrichting van dat moment** (nog die van de eerste deur) op de nieuwe positie |
+| eind actie 18, na `facing = −facing` | `0x44e5a0`, alleen als `+0x4ec == 0` | `0x41f9d0(0.5)` + `0x41f9f0(1)` + `SetMode(0, 0)`: volgcamera achter de **nieuwe** kijkrichting, met een travelling van 0,5 s |
+
+`0x44e5a0` zelf: `p->targetPtr (+0x18) = &P.pos`, `p+0x28 = −1`, `p->dir (+0x1c) = M-kijkrichting`, `p+0x30 = 0`
+(de `pos.y += 43` / `−= 43` eromheen is een no-op), daarna de drie CamMgr-aanroepen hierboven.
+
+Zonder die laatste reset staat de camera na het uitstappen **vóór** de speler: de camera stond achter de kijkrichting
+"de deur in", en die draait in het laatste frame 180°. De `+0x4ec`-test is er voor deuren die in een zij-aanzicht-stuk
+uitkomen: het script zet dat stuk (bericht 1088) in hetzelfde frame weer aan, en dan blijft mode 0x20 staan.
 
 ---
 

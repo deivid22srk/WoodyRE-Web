@@ -823,6 +823,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             if (p->script_act == 18) {                                     /* he came out backwards: facing flips, ground snap, idle, follow camera */
                 p->yaw += 3.14159265f; int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
                 if (found) { p->pos.y = gy; p->floor_y = gy; } p->lanim = -1; anim_request(p, 0, 1.0f);
+                p->cam_end_req = 1;                                        /* 0x44e5a0: follow camera behind the NEW facing, 0.5 s travelling */
             } else lock_move(p, 0.3f);                                     /* 17: the pose is held until the teleport (message 26) resets the controller */
             p->script_act = 0;
         }
@@ -1040,14 +1041,18 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
     else p->cam_drop *= powf(0.94f, dt * P_REF_FPS);
 }
 
+/* SetMode(0, 0) = message 500 "camera behind the player" (0x41e450 -> 0x4247f0): P = pos - look + (0,100,0), then
+ * one step of 0.1 s and 100 of 0.04 s in behind mode, so the camera settles on its resting point straight away. */
+void player_camera_reset(Player *p)
+{
+    p->cam_init = 1; p->cam_tprev = (Vec3){ p->pos.x, p->pos.y + CAM_TARGET_Y, p->pos.z };
+    p->cam_pos = (Vec3){ p->pos.x - sinf(p->yaw), p->pos.y + 100.0f, p->pos.z - cosf(p->yaw) };
+    camera_step(p, 0.1f, 1, 0, 1); for (int i = 0; i < 100; i++) camera_step(p, 0.04f, 1, 0, 1);   /* Center_Step collides during the pre-simulation too */
+}
+
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
 {
-    if (!p->cam_init) {
-        /* message 500 "camera behind the player": P = pos - look + (0,100,0), one step of 0.1 s and 100 of 0.04 s in behind mode */
-        p->cam_init = 1; p->cam_tprev = (Vec3){ p->pos.x, p->pos.y + CAM_TARGET_Y, p->pos.z };
-        p->cam_pos = (Vec3){ p->pos.x - sinf(p->yaw), p->pos.y + 100.0f, p->pos.z - cosf(p->yaw) };
-        camera_step(p, 0.1f, 1, 0, 1); for (int i = 0; i < 100; i++) camera_step(p, 0.04f, 1, 0, 1);   /* Center_Step collides during the pre-simulation too */
-    }
+    if (!p->cam_init) player_camera_reset(p);
     /* action 0xa: a tap pulls the camera behind the player for 0.5 s at 7*dt, holding it at 3*dt */
     if (behind_key && !p->cam_behind_prev) p->cam_quick_t = 0.5f;
     p->cam_behind_prev = behind_key; if (p->cam_quick_t > 0) p->cam_quick_t -= dt;
@@ -1087,18 +1092,20 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
     p->script_act = act; p->lanim = -1; anim_request(p, act == 17 ? 0x18 : 0x19, 1.0f); p->script_t = anim_len(p, act == 17 ? 0x18 : 0x19, 0); p->script_faded = 0;
-    if (act == 18) { p->fade_req = 2; p->cam_init = 0; }                                     /* fade in 0.5 s on the first frame */
+    if (act == 18) p->fade_req = 2;                                                          /* fade in 0.5 s on the first frame; 0x44dda0 leaves the camera alone */
     player_apply_transform(p);
 }
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44ce11 -> 0x44a650: SetPos + ground snap 0x462990, anim controllers reset, camera cut 0x458f90 */
 {
     for (uint32_t v = 0; v < p->nvol; v++) p->inside[v] = 0;
-    if (p->script_act) return;                                          /* 0x44a650 does nothing in state 5 */
-    int found; float gy = player_ground_query(p, p->inst, (Vec3){ pos.x, pos.y + P_PROBE_Y, pos.z }, &found);
-    if (found) pos.y = gy;
-    p->pos = pos; if (have_dir && dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z);
-    p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->att_inst = NULL; p->lanim = -1;
-    jumper_reset(&p->jumper); p->on_ground = 1; p->cam_init = 0; player_apply_transform(p);
+    if (!p->script_act) {                                               /* 0x44a650 does nothing in state 5 */
+        int found; float gy = player_ground_query(p, p->inst, (Vec3){ pos.x, pos.y + P_PROBE_Y, pos.z }, &found);
+        if (found) pos.y = gy;
+        p->pos = pos; if (have_dir && dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z);
+        p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->att_inst = NULL; p->lanim = -1;
+        jumper_reset(&p->jumper); p->on_ground = 1; player_apply_transform(p);
+    }
+    player_camera_reset(p);                                             /* 0x458f90 sits outside that test and cuts HERE, on the facing of this moment; the door action that follows turns the player without moving the camera */
 }
 void player_script_hold(Player *p, float t) { p->atk = 0; p->charge = 0; p->use_atk_disp = 0; lock_move(p, t); }
 
