@@ -72,6 +72,8 @@ static void cam_set_mode(int mode)                               /* SetMode 0x41
     g_cam.mode = mode; if (mode == 1 && g_player) g_player->cam_init = 0;
 }
 static float ramp_to(float v, float target, float step) { return v < target ? (v + step > target ? target : v + step) : (v - step < target ? target : v - step); }
+/* 0x44de44: a Perso state change (scripted action, teleport, cinematic, death) ends the side view's plane lock */
+static void plane_release(void) { if (!g_cam.plane_on) return; g_cam.plane_on = 0; if (g_cam.mode == 0x20) { g_cam.cut = 1; cam_set_mode(1); } puts("  side view: plane lock released"); }
 static void cam_side_start(Instance *in, int v)                   /* Perso::0x459960 */
 {
     if (g_cam.plane_on) { if (g_cam.mode != 0x20) { g_cam.cut = 1; cam_set_mode(0x20); } return; }
@@ -194,7 +196,7 @@ static void cin_update(EkoVM *vm, float dt, float now)
             for (uint32_t i = 0; i < mo->nnodes && node < 0; i++) if (mo->nodes[i].type_code == 5 && mo->nodes[i].npoints >= 2) node = (int)i;
             if (node < 0) { printf("cinematic: no vector on instance %u\n", g_cin.vec->index); g_cin.remain = 0; break; }
             Vec3 P0 = ins_point_world(g_cin.vec, mo->nodes[node].point_base), P1 = ins_point_world(g_cin.vec, mo->nodes[node].point_base + 1);
-            if (g_player && g_player->inst == m) player_place(g_player, P0, atan2f(P1.x - P0.x, P1.z - P0.z));
+            plane_release(); if (g_player && g_player->inst == m) player_place(g_player, P0, atan2f(P1.x - P0.x, P1.z - P0.z));
             m->scripted = 1; m->visible = 1; inst_play_once(m, g_cin.anim, 3.0f, now);
             for (int i = 0; i < g_cin.nactors; i++) inst_play_once(g_cin.actor[i].inst, g_cin.actor[i].anim, 3.0f, now);
             g_cam.cut = 1; cam_set_mode(0x80);
@@ -605,7 +607,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1030: if (in && g_player) { g_player->spawn_pos = in->position; g_player->spawn_yaw = g_player->yaw; }   /* direction: the instance's vector node when it has one (not parsed), else the current facing */ break;   /* SaveAuto: checkpoint */
     case 1142: g_prop = in; break;
     case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */
-        if (g_player && m->nargs > 1) { Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir); player_script_action(g_player, (int)m->args[1], have, p0, dir); }
+        if (g_player && m->nargs > 1) { plane_release(); Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir); player_script_action(g_player, (int)m->args[1], have, p0, dir); }
         break;
     case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;
     case 26:                                                                                                /* Perso teleport 0x44ce11 [_, inst, mode]: 1 = position, 2 = position + direction of the vector marker */
@@ -613,7 +615,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             Instance *to = slot_instance(m->args[1]); int mode = (int)m->args[2];
             if (to && (mode == 1 || mode == 2)) {
                 Vec3 p0, dir = { 0, 0, 0 }; int have = mode == 2 && (inst_vector(to, 5, &p0, &dir) || inst_vector(to, 0, &p0, &dir));
-                eko_actor_leave_all(vm, g_player->inst->id); player_teleport(g_player, to->position, have, dir);
+                plane_release(); eko_actor_leave_all(vm, g_player->inst->id); player_teleport(g_player, to->position, have, dir);
                 printf("  TELEPORT to inst %u (%.0f %.0f %.0f)", to->index, to->position.x, to->position.y, to->position.z), puts("");
             }
         }
@@ -748,7 +750,7 @@ int main(int argc, char **argv)
     int have_yaw = 0; float yaw_arg = 0;
     double enter_at = -1;                                                         /* --enter T: press Enter on the title after T s (testing) */
     int new_game = 0; const char *next_name = NULL; double next_at = 0;                              /* --next LVL T: change to level LVL after T s (testing) */
-    double walk_for = 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
+    double walk_for = 0, walk_at = getenv("WOODY_WALKAT") ? atof(getenv("WOODY_WALKAT")) : 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     for (int i = (argc > 2 && argv[2][0] != '-') ? 3 : 2; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--cam") && i + 5 < argc) { for (int k = 0; k < 5; k++) cam_args[k] = (float)atof(argv[i + 1 + k]); have_cam = 1; i += 5; fly = 1; }
@@ -822,7 +824,8 @@ int main(int argc, char **argv)
         /* player (provisional controller) + follow camera */
         if (L.have_player && !paused) {
             PlayerInput pin = { 0 };
-            pin.forward = win.keys[VK_UP] || (!fly && win.keys['W']) || (now - t0 < walk_for);
+            pin.forward = win.keys[VK_UP] || (!fly && win.keys['W']) || (now - t0 >= walk_at && now - t0 < walk_at + walk_for);
+            if (getenv("WOODY_POSLOG") && (int)((now - t0) * 4) != (int)((now - t0 - dt) * 4)) printf("pos t %.2f: %.0f %.0f %.0f yaw %.0f ground %d", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.yaw * 57.3f, L.player.on_ground), puts("");
             pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
             pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
             pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_CONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
@@ -941,7 +944,7 @@ int main(int argc, char **argv)
         }
         /* level change: PgUp / PgDn cycle through the levels (debug); a request fades out, swaps the level, fades in */
         for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
-        if (getenv("WOODY_SIDE") && now - t0 >= 1.0 && !g_cam.plane_on && L.have_player) { Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(getenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); }   /* testing: force the side view on a marker instance */
+        { static int side_done; if (getenv("WOODY_SIDE") && now - t0 >= 1.0 && !side_done && L.have_player) { side_done = 1; Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(getenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); } }   /* testing: force the side view on a marker instance */
         if ((next_name && now - t0 >= next_at && !strcmp(next_name, "END")) || (win.keys[VK_END] && !end_prev)) {   /* End key / --next END T: finish the level as its exit door does (message 1083) */
             EkoMsg em; memset(&em, 0, sizeof em); em.id = 1083; on_msg(&L.vm, &em, NULL); if (next_name && !strcmp(next_name, "END")) next_name = NULL;
         }

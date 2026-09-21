@@ -27,6 +27,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Broodkruimelpad (`0x423ab0`) als de camera de speler niet meer ziet | niet geport | CAMERA.md |
 | Railcamera mode 8 (540) | geport, niet in situ getest | CAMERA_SCRIPT.md |
 | Zijaanzicht mode 0x20: teken van de zijkant | onzeker | CAMERA_SCRIPT.md |
+| Zijaanzicht: het vlak-slot eindigt nu bij gescripte actie (1040), teleport (26) en cinematic (`0x44de44`); niet bij dood/respawn op een checkpoint buiten het zijaanzicht | controleren | CAMERA_SCRIPT.md |
 
 ## Objectklassen
 

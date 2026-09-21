@@ -206,7 +206,8 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
                     if (vdot(nrm, vsub(cen, v[0])) > 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }
                     if (nrm.y > 0.71f) continue;                               /* walkable: floor code */
                     Vec3 q = c; float a = lo > ymin ? lo : ymin, b = hi < ymax ? hi : ymax; if (q.y < a) q.y = a; if (q.y > b) q.y = b;
-                    poly_push_accum(v, pl->nverts, nrm, q, r, acc);
+                    float before[4] = { acc[0], acc[1], acc[2], acc[3] }; poly_push_accum(v, pl->nverts, nrm, q, r, acc);
+                    if (getenv("WOODY_PUSHLOG") && (before[0] != acc[0] || before[1] != acc[1] || before[2] != acc[2] || before[3] != acc[3])) printf("push: inst %u model %d node %u type %d fade %.2f at %.0f %.0f %.0f", in->index, (int)mi, ni, in->type, in->fade, c.x, c.y, c.z), puts("");
                 }
             }
         }
