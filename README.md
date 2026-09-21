@@ -58,6 +58,7 @@ python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c s
 ./out/woody.exe extract/Data W1A --cam 537 -1800 -2450 0 -10   # camera: x y z yaw pitch (graden)
 python -m ziglang cc -std=c99 -O2 -o out/leveltest.exe src/level.c src/leveltest.c && ./out/leveltest.exe extract/Data   # parsertest 28 levels
 python -m ziglang cc -std=c99 -O2 -o out/geltest.exe src/level.c src/geltest.c && ./out/geltest.exe    # kd-boom / .vis-queries tegen brute force, zonder gamedata
+cc -std=c99 -O1 -Isrc -Iout -o out/switchtest tools/native/switchtest.c src/level.c -lm   # pikschakelaar (bericht 1042 + rem 0x458e40), zonder gamedata; zie de kop van switchtest.c
 ```
 
 ## Viewer

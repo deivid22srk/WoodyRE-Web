@@ -18,7 +18,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Checkpoints: respawn-positie (1030) | controleren | GAMEFLOW.md |
 | Landingsring op de vloer onder een springende Woody (issue #1): geport, maar de tekenfunctie van het origineel is niet gevonden (kandidaat `0x44af90`, elk frame na het renderen) – straal, dikte, kleur en helderheid zijn van een schermafdruk geschat, niet gelezen | geport, maten onzeker | PERSO_JUMP.md §5 |
 | Salto die wegvalt bij springen in de lucht (melding gebruiker) | niet te reproduceren; welke toets/timing? | — |
-| Obstakelsensor van de Mover | niet geport | PERSO_MOVE.md |
+| Pikschakelaars: bericht 1042 doet nu de hele test van `0x445269` (markervector, toestand 0, op de grond) en remt de zojuist gestarte stormloop af (`0x458e40` = `player_brake_charge`). Zonder die rem ramde Woody elke schakelaar in plaats van hem te pikken | opgelost (issue #21) | OBJECTS.md §1.2 |
+| Obstakelsensor van de Mover (`0x44b2e0`, `p+0x234`): een stormloop remt in het origineel ook af voor een steile rand of muur; in de port loopt hij door tot de botsingscode hem stopt, dus tegen een instantie zonder hull-node stáát hij er half in. Vereist eerst `0x497a30` en de betekenis van resultaattype 3/4 | niet geport | PERSO_FRAME.md §3, PERSO_JUMP.md §2.3 |
 | Grondsoort `P+0x308` wordt gelezen (voor de voetstappen), maar soort 1 (glad/ijs) past de bijdraai-ramp `0x45a850` nog niet aan | deels | PERSO_MOVE.md §6.4, FOOTSTEPS.md §2 |
 | Geometrie-queries lopen nu via de kd-boom van `.gel` (vloer, push-out, zichtlijnen); instantie-hulls worden per knoop met een wereld-bbox afgewezen | opgelost (issue #9) | FORMAT_GEL.md 5 |
 

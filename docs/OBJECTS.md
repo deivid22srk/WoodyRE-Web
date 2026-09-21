@@ -57,8 +57,8 @@ Msgmask 0x20 wordt in de praktijk alleen door chests gezet (`0x451814`, door een
 | 1 | `0x467420` | `teller & 0x7fffffff == 1` = **net ingedrukt** |
 | 2 | `0x467440` | bit 31 = **net losgelaten**: `0x467370` wist bit 31 elk frame en zet hem als teller == 0 en houdtijd > 0 (houdtijd → 0) |
 
-Bij true `SetVar(var, 1)` (`0x4455bb`). **W1A gebruikt overal mode 2.** Let op: GAMEFLOW.md §8 noemt de functies goed, maar
-`src/main_engine.c:371` heeft mode 1 en 2 **verwisseld** (1 = losgelaten, 2 = net ingedrukt).
+Bij true `SetVar(var, 1)` (`0x4455bb`). **W1A gebruikt overal mode 2.** (De port had 1 en 2 een tijd verwisseld; sinds
+issue #21 klopt de tabel hierboven met `src/main_engine.c` en logt `WOODY_SWLOG=1` elke toetstest die 1 oplevert.)
 
 **Bericht 1042 `(inst, dist, hoek, var)`** (`0x445269`), pseudo-C:
 ```c
@@ -83,9 +83,17 @@ de wereldmatrix van die node (`[0x509adc]+0xa0[inst+0x5c + node − 1]`). Return
 
 De test is dus **niet** "kijkt naar de instantie" maar "kijkt dezelfde kant op als de markervector". In de schakelaarmodellen
 ligt het beginpunt op de instantie-oorsprong (model 28/31: punten (0,0,0) en (0,0,−300) onder een node-rotatie; model 41:
-(0,0,0) en (0,100,0)), dus de afstand klopt met `inst.pos`, de richting niet. `src/main_engine.c:361` gebruikt de richting
-speler → instantie: staat de speler in het volume (dus bijna óp de oorsprong) dan is die richting willekeurig en faalt de test
-meestal. Verder ontbreken in de port de voorwaarden *op de grond* en *toestand 0* en het afremmen van de stormloop.
+(0,0,0) en (0,100,0)), dus de afstand klopt met `inst.pos`, de richting niet.
+
+**Stand van de port** (issue #21): `case 1042` in `src/main_engine.c` doet dit nu volledig — markervector (typecode 0, anders 5),
+XZ-afstand tot het *beginpunt*, de kijkrichting tegen de *markerrichting*, alleen voor een Perso in toestand 0 (`player_state_free`)
+op de grond, en bij true `player_brake_charge` = `0x458e40`. Dat laatste is het zichtbare deel: **zonder die rem houdt Woody de
+700 eenh/s van de stormloop en ramt hij de schakelaar in plaats van hem te pikken** (anim 0x12 ís de pik die de speler ziet).
+`WOODY_SWLOG=1` logt per 1042 de afstand, de hoek, de Perso-toestand, de aanval-subtoestand en het antwoord.
+Wat nog ontbreekt is de **obstakelsensor** `0x44b2e0` (`p+0x234`, PERSO_FRAME.md §3): in het origineel remt een stormloop óók af
+voor een steile rand of muur (PERSO_JUMP.md §2.3 toestand 9/10), in de port loopt hij door tot de botsingscode hem tegenhoudt —
+tegen een instantie zonder hull-node betekent dat: tot hij er half in staat. `0x497a30` (de wereldquery die die sensor gebruikt)
+en de betekenis van resultaattype 3/4 zijn nog niet gedecompileerd, dus die sensor is bewust nog niet geport.
 
 **Volgorde in het origineel**: knop loslaten op de grond start in `0x457330` de stormloop (atk = 9, PERSO_JUMP §2.2) in de
 Perso-update; in de VM-tick van hetzelfde frame zet 1050 de variabele, de watcher stuurt 1042, en 1042 remt de stormloop af
@@ -543,8 +551,10 @@ gedecompileerd. Model 47: behuizing groep 108, twee press-nodes, markers typecod
 
 ## 4. Recept voor de port
 
-**A. Pikschakelaars en deuren (`src/main_engine.c`, `src/player.c`)** — hiermee werken alle 15 triggers van W1A.
-1. `case 1048..1050`: mode 0 = ingedrukt, **mode 1 = net ingedrukt, mode 2 = net losgelaten** (nu verwisseld). Zet de variabele eerst op 0, dan op 1 bij true.
+**A. Pikschakelaars en deuren (`src/main_engine.c`, `src/player.c`)** — **geport** (issue #21); hiermee werken alle 15 triggers van W1A.
+Controle zonder gamedata: `tools/native/switchtest.c` (de kop van dat bestand bevat het bouwcommando) licht `case 1042` en
+`inst_vector` mechanisch uit `src/main_engine.c` en drijft de echte aanvalcontroller van `src/player.c` frame voor frame aan.
+1. `case 1048..1050`: mode 0 = ingedrukt, **mode 1 = net ingedrukt, mode 2 = net losgelaten**. Zet de variabele eerst op 0, dan op 1 bij true.
 2. `case 1042`: `var = 0`; eis `player on ground` en Perso-toestand 0 (niet dood, geen scripted hold, niet in toestand 4/8); haal de markervector
    op: nieuwe helper `ins_vector(inst, typecode, n, Vec3 out[2])` in `src/level.c` = n-de node met `kind == 0x20 && type_code == tc && sub_index == 0`,
    `ins_pose()` actueel, `out[k] = mat4_apply(&inst->node_world[node], model->points[node.point_base + k].pos)`; typecode 0, anders 5.
