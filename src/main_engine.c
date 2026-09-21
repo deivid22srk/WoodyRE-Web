@@ -392,12 +392,12 @@ static const float k_fx_shape[12][3] = {                                     /* 
     { 1, 1, 1}, { 1, 1,-1}, { 1,-1, 1}, { 1,-1,-1}, {-1, 1, 1}, {-1, 1,-1}, {-1,-1, 1}, {-1,-1,-1},
     { 0, 0.5f, 0}, {-0.494f,-0.5f, 0.855f}, { 1,-0.5f, 0}, {-0.494f,-0.5f,-0.855f},
 };
-typedef struct { float age, life, acc; Vec3 pos; int kind, shape; } FxRec;   /* kind 0 = shape burst (0x478f70), 1 = sparkle box (0x4792d0), 2 = the particle (0x4791f0) */
+typedef struct { float age, life, acc, rot; Vec3 pos, n; int kind, shape; } FxRec;   /* kind 0 = shape burst (0x478f70), 1 = sparkle box (0x4792d0), 2 = the particle (0x4791f0), 3 = beak impact (0x479c80) */
 static FxRec g_fx[2000]; static int g_nfx;
 static FxRec *fx_new(float life, Vec3 pos, int kind)
 {
     if (g_nfx >= 2000) return NULL;                                          /* 0x4793e7: a full pool silently drops the effect */
-    FxRec *r = &g_fx[g_nfx++]; r->age = 0; r->life = life; r->acc = 0; r->pos = pos; r->kind = kind; r->shape = 0; return r;
+    FxRec *r = &g_fx[g_nfx++]; r->age = 0; r->life = life; r->acc = 0; r->rot = 0; r->pos = pos; r->n = (Vec3){ 0, 0, 0 }; r->kind = kind; r->shape = 0; return r;
 }
 static float fx_rnd(void) { return (float)rand() / (float)RAND_MAX; }        /* 0x43ff40: rand() / 32767, so [0,1] inclusive */
 static void fx_rotmat(int a0, int a1, int a2, float M[9])                    /* 0x46d220; the angles are in 1/512 turn */
@@ -414,6 +414,23 @@ void game_pickup_fx(int n, Vec3 pos)                                         /* 
     FxRec *e;
     if (n == 0 || n == 1) { pos.y += 50.0f; if ((e = fx_new(2.0f, pos, 0)) != NULL) e->shape = n == 0 ? 1 : 0; }   /* tetrahedron resp. cube */
     else if (n >= 2 && n <= 4) fx_new(1.0f, pos, 1);
+}
+/* ---- the beak impact 0x479c80(kind, point, normal) ------------------------------------------------------------
+ * The original sparks wherever the beak lands: the attack probe calls it on every hit (kind 1, no normal,
+ * docs/PERSO_JUMP.md 2.4) and the climb loop every 0.3 s on the wall it hangs in (kind 0, with the wall normal,
+ * docs/OBJECTS.md 1.3). 0x479c80 itself was never disassembled, so WHAT it emits is rebuilt here from the one
+ * impact the docs do describe, the laser hit 0x46efb9: bank 0 image 5 on the hit point plus sparks at 50 a second.
+ * With a normal the mark lies on the pecked face (like the footstep effect 0x47cba0), without one it faces the camera. */
+#define PECK_MARK_LIFE  0.5f                                                 /* a peck every 0.3 s, so the wall keeps two marks */
+#define PECK_MARK_SIZE  45.0f                                                /* half diagonal, so the mark is about as wide as his head */
+#define PECK_SPARK_T    0.2f                                                 /* the sparks are a burst, the mark outlives them */
+#define PECK_SPARK_RATE 50.0f                                                /* sparks a second, as the laser hit 0x46efb9 */
+void game_peck_fx(int kind, Vec3 pos, const Vec3 *n)
+{
+    FxRec *e = fx_new(PECK_MARK_LIFE, pos, 3);
+    if (!e) return;
+    e->shape = kind;                                                         /* which call it came from; both look the same until 0x479c80 is read */
+    e->rot = fx_rnd(); if (n) e->n = *n;
 }
 static void fx_update(float dt)
 {
@@ -434,6 +451,19 @@ static void fx_update(float dt)
                     float X = s * S[0] * 40.0f, Y = s * S[1] * 40.0f, Z = s * S[2] * 40.0f;
                     Vec3 p = { e->pos.x + M[0] * X + M[3] * Y + M[6] * Z, e->pos.y + M[1] * X + M[4] * Y + M[7] * Z, e->pos.z + M[2] * X + M[5] * Y + M[8] * Z };
                     if (!fx_new(0.4f, p, 2)) break;
+                }
+            } else if (e->kind == 3) {                                       /* 0x479c80: the mark the beak leaves on what it hit, plus a burst of sparks */
+                float a = 1.0f - u, size = PECK_MARK_SIZE - 15.0f * u, nn = e->n.x * e->n.x + e->n.y * e->n.y + e->n.z * e->n.z;
+                if (nn > 0.5f) hud_world_decal(5, &e->pos.x, &e->n.x, size, e->rot, white, a);   /* on the pecked face */
+                else hud_world_fx(5, &e->pos.x, size, e->rot, white, a);     /* no normal (an attack probe hit): face the camera */
+                if (e->age > PECK_SPARK_T) continue;
+                float acc = e->acc + dt; int m = (int)(acc * PECK_SPARK_RATE); e->acc = acc - m / PECK_SPARK_RATE;   /* 50 a second, as the laser hit */
+                while (m-- > 0) {
+                    Vec3 o = { (fx_rnd() - 0.5f) * 50.0f, (fx_rnd() - 0.5f) * 50.0f, (fx_rnd() - 0.5f) * 50.0f };
+                    float d = o.x * e->n.x + o.y * e->n.y + o.z * e->n.z;    /* a spark never sits behind the face it came out of */
+                    if (d < 0) { o.x -= d * e->n.x; o.y -= d * e->n.y; o.z -= d * e->n.z; }
+                    Vec3 p = { e->pos.x + o.x + e->n.x * 10.0f, e->pos.y + o.y + e->n.y * 10.0f, e->pos.z + o.z + e->n.z * 10.0f };
+                    if (!fx_new(0.2f, p, 2)) break;
                 }
             } else {                                                         /* 0x4792d0: 50 sparks a second in a box over the bonus, each 0.2 s */
                 float acc = e->acc + dt; int n = (int)(acc * 50.0f); e->acc = acc - n * 0.02f;

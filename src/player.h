@@ -93,6 +93,8 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);   /*
 int  player_segment_blocked(const Player *p, Vec3 a, Vec3 b);   /* world polygons only */
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b);   /* first world polygon hit on a->b as a fraction 0..1, or 2 when nothing is hit */                 /* Perso vt[38] */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
+/* the app's beak impact (0x479c80): kind 1 = attack probe hit, 0 = the wall being climbed; n = surface normal or NULL */
+void game_peck_fx(int kind, Vec3 pos, const Vec3 *n);
 
 /* world queries (brute force over the .gel polygons) */
 float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, int *found);

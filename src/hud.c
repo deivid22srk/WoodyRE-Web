@@ -677,23 +677,47 @@ void hud_world_beam(const float *a, const float *b, const float *eye, float hw, 
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
 }
 
-void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha)
+/* one effect quad: centre c, half diagonal along r and u (which already carry the size and the rotation) */
+static void fx_quad(int image, const float *c, const float *r, const float *u, const float *rgb, float alpha)
 {
-    int n = fx_slot(image), blend = image == 10 || image == 11; if (!H.ok || n < 0 || !H.fx[n] || alpha <= 0 || size <= 0) return;   /* the stars are alpha blended, the rest additive */
-    /* 0x470fee..0x4710b3: every corner is (size*cos t, size*sin t) with t = rot +- 45 deg, so `size` is the half
-     * DIAGONAL, not the half width: the half width is size/sqrt(2) and the side is 1.4142*size */
-    float h = size * 0.70710678f, c = (float)cos(turns * 6.2831853f) * h, s = (float)sin(turns * 6.2831853f) * h, r[3], u[3];
-    for (int i = 0; i < 3; i++) { r[i] = H.sr[i] * c + H.su[i] * s; u[i] = H.su[i] * c - H.sr[i] * s; }
+    int n = fx_slot(image), blend = image == 10 || image == 11; if (!H.ok || n < 0 || !H.fx[n] || alpha <= 0) return;   /* the stars are alpha blended, the rest additive */
     glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[n]);
     if (blend) { glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glColor4f(rgb[0], rgb[1], rgb[2], alpha); }
     else { glBlendFunc(GL_ONE, GL_ONE); glColor3f(rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha); }
     glBegin(GL_QUADS);
-    glTexCoord2f(0, 0); glVertex3f(pos[0] - r[0] + u[0], pos[1] - r[1] + u[1], pos[2] - r[2] + u[2]);
-    glTexCoord2f(0, 1); glVertex3f(pos[0] - r[0] - u[0], pos[1] - r[1] - u[1], pos[2] - r[2] - u[2]);
-    glTexCoord2f(1, 1); glVertex3f(pos[0] + r[0] - u[0], pos[1] + r[1] - u[1], pos[2] + r[2] - u[2]);
-    glTexCoord2f(1, 0); glVertex3f(pos[0] + r[0] + u[0], pos[1] + r[1] + u[1], pos[2] + r[2] + u[2]);
+    glTexCoord2f(0, 0); glVertex3f(c[0] - r[0] + u[0], c[1] - r[1] + u[1], c[2] - r[2] + u[2]);
+    glTexCoord2f(0, 1); glVertex3f(c[0] - r[0] - u[0], c[1] - r[1] - u[1], c[2] - r[2] - u[2]);
+    glTexCoord2f(1, 1); glVertex3f(c[0] + r[0] - u[0], c[1] + r[1] - u[1], c[2] + r[2] - u[2]);
+    glTexCoord2f(1, 0); glVertex3f(c[0] + r[0] + u[0], c[1] + r[1] + u[1], c[2] + r[2] + u[2]);
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
+}
+
+void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha)
+{
+    if (size <= 0) return;
+    /* 0x470fee..0x4710b3: every corner is (size*cos t, size*sin t) with t = rot +- 45 deg, so `size` is the half
+     * DIAGONAL, not the half width: the half width is size/sqrt(2) and the side is 1.4142*size */
+    float h = size * 0.70710678f, c = (float)cos(turns * 6.2831853f) * h, s = (float)sin(turns * 6.2831853f) * h, r[3], u[3];
+    for (int i = 0; i < 3; i++) { r[i] = H.sr[i] * c + H.su[i] * s; u[i] = H.su[i] * c - H.sr[i] * s; }
+    fx_quad(image, pos, r, u, rgb, alpha);
+}
+
+/* the same quad lying ON a surface instead of facing the camera: the impact and footstep effects of the original take
+ * the normal of the surface they mark (0x479c80, 0x47cba0). The mark is lifted 2 units off it so it does not z-fight. */
+void hud_world_decal(int image, const float *pos, const float *n, float size, float turns, const float *rgb, float alpha)
+{
+    if (size <= 0) return;
+    float l = (float)sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]); if (l < 1e-6f) return;
+    float w[3] = { n[0] / l, n[1] / l, n[2] / l }, t[3], b[3], c[3], r[3], u[3];
+    float a[3] = { 0, 1, 0 }; if (w[1] > 0.9f || w[1] < -0.9f) { a[0] = 1; a[1] = 0; }        /* any axis that is not along the normal */
+    t[0] = a[1] * w[2] - a[2] * w[1]; t[1] = a[2] * w[0] - a[0] * w[2]; t[2] = a[0] * w[1] - a[1] * w[0];
+    l = (float)sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]); if (l < 1e-6f) return;
+    for (int i = 0; i < 3; i++) t[i] /= l;
+    b[0] = w[1] * t[2] - w[2] * t[1]; b[1] = w[2] * t[0] - w[0] * t[2]; b[2] = w[0] * t[1] - w[1] * t[0];
+    float h = size * 0.70710678f, cs = (float)cos(turns * 6.2831853f) * h, sn = (float)sin(turns * 6.2831853f) * h;
+    for (int i = 0; i < 3; i++) { r[i] = t[i] * cs + b[i] * sn; u[i] = b[i] * cs - t[i] * sn; c[i] = pos[i] + w[i] * 2.0f; }
+    fx_quad(image, c, r, u, rgb, alpha);
 }
 void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw, const float *rgb_a, const float *rgb_b)
 {

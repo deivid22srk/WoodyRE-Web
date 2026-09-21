@@ -472,7 +472,8 @@ static void jumper_force_fall(Jumper *j, int force)                             
 static int attack_probe(Player *p, Vec3 v)                                                          /* 0x4575b0 */
 {
     Vec3 a = { p->pos.x, p->pos.y + 5.0f, p->pos.z }, b = { a.x + v.x, a.y + v.y, a.z + v.z };
-    if (!gel_ray_blocked(p->gel, a, b)) return 0;
+    float f = gel_ray_frac(p->gel, a, b); if (f > 1.0f) return 0;
+    game_peck_fx(1, (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }, NULL);   /* 0x4575b0: the beak sparks on any hit */
     int found; const Instance *hi; const InsNode *hn;
     float gy = world_ground(p, (Vec3){ p->pos.x, p->pos.y + 1.0f, p->pos.z }, &found, &hi, &hn);
     int n = (found && p->pos.y - gy > 100.0f) ? 0xe : 0xd;
@@ -688,12 +689,13 @@ static Vec3 climb_probe_to(const Player *p, Vec3 from) { Vec3 to = { from.x + si
 static int climb_try(Player *p)
 {
     if (p->regrab > 0 || p->climb_sub) return 0;
-    Vec3 from = { p->pos.x, p->pos.y + 40.0f, p->pos.z }, n; const Instance *wi; int peck = 0;
-    if (!climb_ray(p, from, climb_probe_to(p, from), &n, &wi, &peck) || !peck || fabsf(n.y) > 0.05f) return 0;
+    Vec3 from = { p->pos.x, p->pos.y + 40.0f, p->pos.z }, to = climb_probe_to(p, from), n; const Instance *wi; int peck = 0;
+    if (!climb_ray(p, from, to, &n, &wi, &peck) || !peck || fabsf(n.y) > 0.05f) return 0;
     float l = sqrtf(n.x * n.x + n.z * n.z); if (l < 1e-4f) return 0;
     p->wall_n = (Vec3){ n.x / l, 0, n.z / l }; p->wall_inst = wi; p->yaw = atan2f(-p->wall_n.x, -p->wall_n.z);
     p->climb_sub = p->on_ground ? 1 : 2; p->grip = 0.8f; p->peck_t = 0.3f; jumper_reset(&p->jumper);   /* 0x462c90 at 0x4650ce */
     p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->vel = (Vec3){ 0, 0, 0 }; p->use_atk_disp = 0;
+    { float f = g_climb_frac; game_peck_fx(1, (Vec3){ from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f, from.z + (to.z - from.z) * f }, NULL); }   /* the hit that grabs is a probe hit, and those spark (0x4575b0) */
     printf("  CLIMB grab on instance %u\n", wi->index);
     return 1;
 }
@@ -712,12 +714,16 @@ static void climb_update(Player *p, const PlayerInput *in, float dt)
         float s = 300.0f * dt, a = in->left ? -s : in->right ? s : 0;
         p->pos.y += 250.0f * dt;                                        /* always upwards, no input needed (P+0x74) */
         p->pos.x += side.x * a; p->pos.z += side.z * a;
-        Vec3 from = { p->pos.x, p->pos.y + 40.0f, p->pos.z }, n; const Instance *wi; int peck = 0;
-        if (climb_ray(p, from, climb_probe_to(p, from), &n, &wi, &peck)) {
+        Vec3 from = { p->pos.x, p->pos.y + 40.0f, p->pos.z }, to = climb_probe_to(p, from), n; const Instance *wi; int peck = 0;
+        if (climb_ray(p, from, to, &n, &wi, &peck)) {
             if (!peck) { p->climb_sub = 4; break; }
             /* 0x4aa164: pressed against the wall at 200 u/s; the cylinder stops at its radius (the root motion of the climb-over counts on it) */
             { float gap = g_climb_frac * (P_RADIUS + 100.0f) - P_RADIUS, st = 200.0f * dt; if (st > gap) st = gap; if (st > 0) { p->pos.x -= p->wall_n.x * st; p->pos.z -= p->wall_n.z * st; } }
-            if ((p->peck_t -= dt) <= 0) p->peck_t += 0.3f;              /* spark every 0.3 s (0x479c80): particles are not ported */
+            if ((p->peck_t -= dt) <= 0) {                               /* a peck every 0.3 s: 0x479c80(0, hit point, wall normal) */
+                float f = g_climb_frac * 0.95f;                         /* 0x4a9c9c: just short of the wall, so the mark sits on it */
+                p->peck_t += 0.3f;
+                game_peck_fx(0, (Vec3){ from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f, from.z + (to.z - from.z) * f }, &n);
+            }
         } else {
             /* nothing in front any more: the top, when within 50 of the wall instance's typecode-0 marker */
             const Model *wm = p->wall_inst->model; int top = 0; float ty = 0;
