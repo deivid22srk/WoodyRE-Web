@@ -1213,10 +1213,10 @@ void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44c
         p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f;
         jumper_reset(&p->jumper); p->on_ground = 1; player_apply_transform(p);
     }
-    p->cam_cut_req = 1;                                                 /* 0x458f90 sits outside that test: 0x41f9f0(2) + SetMode(0, 0). The camera places itself in the next camera update, after
-                                                                         * the rest of this script tick: a door sends message 26 and then 1040 / action 18, and only that action knows where and
-                                                                         * facing which way he comes out (mode 1 of message 26 carries no direction). Cutting right here would put the camera
-                                                                         * on the old facing, in the wall beside the new door, for the whole 1.5 s of the walk-out. */
+    /* 0x458f90 (the camera cut that sits outside that test) is in the message-26 handler: it has to run in script order, because
+     * what the rest of the tick does with the camera has to win over it. The follow camera still seats itself one frame later,
+     * on the position and facing a door action gives him (mode 1 of message 26 carries no direction), because SetMode(0, 0)
+     * only clears cam_init and player_camera() re-seats on the next camera update - which runs after the tick. */
 }
 void player_script_hold(Player *p, float t) { p->atk = 0; p->charge = 0; p->use_atk_disp = 0; lock_move(p, t); }
 
