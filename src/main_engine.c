@@ -60,6 +60,8 @@ static struct {
     int plane_on, side; Vec3 plane_a, plane_d; float sv_par[8];   /* sv_par: lat 1000, ahead 300, h 340, h_up 500, h_down 0, rate_h 400, rate_a 700, rate_lat 200 */
     float sv_a, sv_h, sv_lat, sv_s;
     int death_cam;                                               /* engine use of mode 2 (0x41fb50 from 0x459030): the camera stops and watches the player fall */
+    /* mode 0x80 (docs/CAMERA_SCRIPT.md 4.3): the camera comes from a camera track in the animation an instance plays */
+    Instance *anim_inst; int anim_letterbox; Vec3 anim_eye, anim_tgt;   /* CamMgr+0x5d4, +0x618 & 2, +0x1d0, +0x5d8 */
 } g_cam = { 1 };
 static const float k_sv_defaults[8] = { 1000, 300, 340, 500, 0, 400, 700, 200 };
 static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
@@ -69,7 +71,8 @@ static void cam_set_mode(int mode)                               /* SetMode 0x41
         g_cam.look_from = g_cam.active ? g_cam.look_cur : g_cam.look_off; g_cam.from_pos = g_cam.pos;
         g_cam.active = 1; if (g_cam.dur <= 0) g_cam.dur = 2.0f; g_cam.elapsed = 0; g_cam.t = 0;
     } else g_cam.active = 0;
-    g_cam.mode = mode; if (mode == 1 && g_player) g_player->cam_init = 0;
+    g_cam.mode = mode; if (mode != 0x80) g_cam.anim_inst = NULL;
+    if (mode == 1 && g_player) g_player->cam_init = 0;
 }
 static float ramp_to(float v, float target, float step) { return v < target ? (v + step > target ? target : v + step) : (v - step < target ? target : v - step); }
 /* 0x44de44: a Perso state change (scripted action, teleport, cinematic, death) ends the side view's plane lock */
@@ -128,14 +131,18 @@ static Vec3 rail_target(const Trajectory *tr, Vec3 c, float d, Vec3 prev)
 static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 {
     Vec3 P, T;
-    if (g_cam.mode == 0x80 && g_cin.main_inst) {                 /* camera from the animation of the cinematic's main instance (0x42fa80): cut, no smoothing */
-        Instance *I = g_cin.main_inst; const Model *mo = I->model; Vec3 eye, tgt;
-        float L = (uint32_t)I->slot[0] < mo->nanims && mo->anims[I->slot[0]].duration_s > 0 ? mo->anims[I->slot[0]].duration_s : 1.0f;
-        if (ins_camera_eval(I, I->slot[0], I->a_pos / L, &eye, &tgt)) {
-            Vec3 to = { tgt.x - eye.x, tgt.y - eye.y, tgt.z - eye.z };
-            cam->pos = eye; cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z)); cam->letterbox = 1; cam->fov_deg = 68.04f;
-            g_cam.pos = eye; g_cam.active = 0; return;
-        }
+    if (g_cam.mode == 0x80 && g_cam.anim_inst) {                 /* 0x41f1ee: camera from the animation of CamMgr+0x5d4 (0x42fa80): cut, no smoothing.
+                                                                  * That instance is the cinematic's main instance (0x44ed3f, letterboxed) or the Perso
+                                                                  * himself during a scripted door action (0x44df7d, never letterboxed). */
+        Instance *I = g_cam.anim_inst; const Model *mo = I->model; Vec3 eye, tgt;
+        float L = (uint32_t)I->anim < mo->nanims && mo->anims[I->anim].duration_s > 0 ? mo->anims[I->anim].duration_s : 1.0f;
+        if (ins_camera_eval(I, I->anim, I->anim_time / L, &eye, &tgt)) { g_cam.anim_eye = eye; g_cam.anim_tgt = tgt; }
+        /* 0x41f21d sits inside the "has a camera track" test and 0x41f240 outside it, so an animation without one
+         * leaves the previous eye and target standing: the camera holds that frame instead of snapping elsewhere */
+        {   Vec3 e = g_cam.anim_eye, t = g_cam.anim_tgt, to = { t.x - e.x, t.y - e.y, t.z - e.z };
+            cam->pos = e; cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z));
+            cam->letterbox = g_cam.anim_letterbox; cam->fov_deg = g_cam.anim_letterbox ? 68.04f : 83.97f;
+            g_cam.pos = e; g_cam.active = 0; return; }
     }
     if (g_cam.death_cam && !p->dead_kind) { g_cam.death_cam = 0; g_cam.cut = 1; cam_set_mode(1); }   /* respawn: hard cut back to the follow camera (0x41f9f0(2), SetMode(0,0)) */
     if (g_cam.mode == 0x20 && g_cam.plane_on) {                  /* 0x424bf0 */
@@ -199,6 +206,7 @@ static void cin_update(EkoVM *vm, float dt, float now)
             plane_release(); if (g_player && g_player->inst == m) player_place(g_player, P0, atan2f(P1.x - P0.x, P1.z - P0.z));
             m->scripted = 1; m->visible = 1; inst_play_once(m, g_cin.anim, 3.0f, now);
             for (int i = 0; i < g_cin.nactors; i++) inst_play_once(g_cin.actor[i].inst, g_cin.actor[i].anim, 3.0f, now);
+            g_cam.anim_inst = m; g_cam.anim_letterbox = 1;                  /* 0x44ed3f / 0x44ed53: CamMgr+0x5d4 = the main instance, +0x618 |= 2 */
             g_cam.cut = 1; cam_set_mode(0x80);
         }
         break;
@@ -793,7 +801,20 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1030: if (in && g_player) { g_player->spawn_pos = in->position; g_player->spawn_yaw = g_player->yaw; }   /* direction: the instance's vector node when it has one (not parsed), else the current facing */ break;   /* SaveAuto: checkpoint */
     case 1142: g_prop = in; break;
     case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */
-        if (g_player && m->nargs > 1) { plane_release(); Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir); player_script_action(g_player, (int)m->args[1], have, p0, dir); }
+        if (g_player && m->nargs > 1) {
+            plane_release(); Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir);
+            player_script_action(g_player, (int)m->args[1], have, p0, dir);
+            /* 0x44df67 is the tail of 0x44dda0 itself, not a state-change hook (correcting docs/CAMERA_SCRIPT.md 4.3):
+             * if the animation this action just started carries a camera track, that track becomes the camera. Woody's
+             * animations 17 and 18 both have one, with the eye 371 units off his own axis - that is the sideways shot
+             * of him walking into the door. 0x44df92 clears CamMgr+0x618 bit 1: no letterbox, unlike a cinematic. The
+             * Perso+0x558 test at 0x44df73 is always true (set 24 instructions earlier) and is not ported. */
+            {   Instance *pi = g_player->inst; Vec3 e, t;
+                if (pi && (uint32_t)pi->anim < pi->model->nanims && ins_camera_eval(pi, pi->anim, 0.0f, &e, &t)) {
+                    g_cam.anim_inst = pi; g_cam.anim_letterbox = 0; g_cam.anim_eye = e; g_cam.anim_tgt = t;
+                    g_cam.cut = 1; cam_set_mode(0x80);                          /* 0x41f9f0(2) = cut, 0x41f410(7, 0) = mask 1 << 7 */
+                } }
+        }
         break;
     case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;
     case 26:                                                                                                /* Perso teleport 0x44ce11 [_, inst, mode]: 1 = position, 2 = position + direction of the vector marker */
@@ -942,6 +963,7 @@ int main(int argc, char **argv)
     int have_yaw = 0; float yaw_arg = 0;
     double enter_at = -1;                                                         /* --enter T: press Enter on the title after T s (testing) */
     int pick_type = 0, pre_bonus = -1; float pre_health = -1; double pick_at = 0;   /* --pickup TYPE T, --bonus N, --health N (testing) */
+    int door_inst = -1, door_act = 17; double door_at = -1;                        /* --door INST ACT T (testing) */
     int new_game = 0; const char *next_name = NULL; double next_at = 0;                              /* --next LVL T: change to level LVL after T s (testing) */
     double walk_for = 0, walk_at = getenv("WOODY_WALKAT") ? atof(getenv("WOODY_WALKAT")) : 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     for (int i = (argc > 2 && argv[2][0] != '-') ? 3 : 2; i < argc; i++) {
@@ -955,6 +977,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--fly")) fly = 1;
         else if (!strcmp(argv[i], "--enter") && i + 1 < argc) { enter_at = atof(argv[i + 1]); i += 1; }
         else if (!strcmp(argv[i], "--pickup") && i + 2 < argc) { pick_type = atoi(argv[i + 1]); pick_at = atof(argv[i + 2]); i += 2; }   /* --pickup TYPE T: collect a bonus of that type in front of the camera (testing) */
+        else if (!strcmp(argv[i], "--door") && i + 3 < argc) { door_inst = atoi(argv[i + 1]); door_act = atoi(argv[i + 2]); door_at = atof(argv[i + 3]); i += 3; }   /* --door INST ACT T: send the script's own message 1040 (17 = walk into the door, 18 = come out) at T (testing) */
         else if (!strcmp(argv[i], "--bonus") && i + 1 < argc) { pre_bonus = atoi(argv[i + 1]); i += 1; }                                 /* --bonus N: start with N W's in the counter (testing) */
         else if (!strcmp(argv[i], "--health") && i + 1 < argc) { pre_health = (float)atof(argv[i + 1]); i += 1; }                        /* --health N: hearts before the pickup (testing) */
         else if (!strcmp(argv[i], "--yaw") && i + 1 < argc) { have_yaw = 1; yaw_arg = (float)atof(argv[i + 1]) * 3.14159265f / 180; i += 1; }   /* with --pos: facing in degrees */
@@ -1160,6 +1183,12 @@ int main(int argc, char **argv)
                 if (fx >= 0) game_pickup_fx(fx, fp);
                 if (kind && g_npick < 8) { g_pick[g_npick].kind = kind; g_pick[g_npick].pos = fp; g_npick++; }
                 pick_type = 0;
+            }
+            if (door_at >= 0 && now - t0 >= door_at && L.have_player) {  /* --door: the message a door script sends, on the real handler */
+                EkoMsg dm; memset(&dm, 0, sizeof dm);
+                dm.id = 1040; dm.nargs = 2; dm.args[0] = 0x1000000u | (uint32_t)door_inst; dm.args[1] = (uint32_t)door_act;
+                on_msg(&L.vm, &dm, NULL); door_at = -1;
+                printf("  --door: 1040 [inst %d, action %d]", door_inst, door_act), puts("");
             }
             for (int i = 0; i < g_npick; i++) {                          /* 0x448510: the flight starts from where the bonus was on screen */
                 float sc[2]; int on = rnd_project(&win, &cam, g_pick[i].pos, &sc[0], &sc[1]);

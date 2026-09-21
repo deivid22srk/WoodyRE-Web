@@ -1094,9 +1094,10 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
     p->script_act = act; p->lanim = -1; anim_request(p, act == 17 ? 0x18 : 0x19, 1.0f); p->script_t = anim_len(p, act == 17 ? 0x18 : 0x19, 0); p->script_faded = 0;
-    if (act == 18) { p->fade_req = 2; p->cam_cut_req = 1; }   /* fade in 0.5 s on the first frame. 0x44dda0 leaves the camera alone; the cut belongs to message 26, which arrives in the same
-                                                               * script tick - but 0x44a650 refuses to move him while the previous action is still running, and this action does place him
-                                                               * (pos = P0 of the door vector, 0x44dec4), so the camera has to follow that placement in either case */
+    if (act == 18) p->fade_req = 2;   /* fade in 0.5 s on the first frame (0x44dc2b). The camera is NOT cut here: the tail of 0x44dda0
+                                       * puts it on the animation's own camera track (message 1040 in main_engine.c) and a cut back to the
+                                       * follow camera would undo that one frame later. Coming out of the door ends with 0x44e5a0, a 0.5 s
+                                       * blend back to it - that is cam_end_req, raised when the action runs out. */
     player_apply_transform(p);
 }
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44ce11 -> 0x44a650: SetPos + ground snap 0x462990, anim controllers reset, camera cut 0x458f90 */
