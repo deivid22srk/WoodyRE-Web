@@ -571,12 +571,32 @@ static void env_update(float dt)
     }
 }
 
+/* 0x47d440 draw: a butterfly is not a sprite but two squares hinged along the flight direction. V = the direction
+ * flattened with a fixed +0.5 y, B0/B1 an orthonormal pair across it (0x46d320); the hinge angle
+ * theta = 134.30 + 45.00 * cos(2 pi f t) sweeps 89.3..179.3 degrees at f = 3.90625 Hz (0x47d866: the table value
+ * squared, times 128, subtracted from 255 and used as an angle). Wing 1 takes U = cos(t) B0 + sin(t) B1, wing 2
+ * U' = -cos(t) B0 + sin(t) B1, so the two mirror about B1: flat open at one end of the sweep, folded together at
+ * the other. Each square is 21.2132 (= 30 cos45) half-extents along V and U, its centre pushed 20.2757 along U so
+ * the hinge edge sits on the particle, plus a 3-unit vertical bob in quadrature (0x47da2c). */
 static void env_draw(void)
 {
     for (int i = 0; i < g_nflies; i++) {
         Fly *f = &g_flies[i];
-        float wing = -sinf(2 * 3.14159265f * 3.90625f * f->phase);                /* 0x47d9aa: index 2 * 1000 steps/s through a 512-entry cosine table = 3.90625 Hz, signed */
-        hud_world_env_sprite(f->img, &f->pos.x, 30.0f, wing);                     /* [esi+0x264] = 30 units; the original draws a second, mirrored quad for the far wing, which the port leaves out */
+        Vec3 V = { f->dir.x, 0.5f, f->dir.z };
+        float l = sqrtf(V.x * V.x + V.y * V.y + V.z * V.z); if (l < 1e-6f) continue;
+        V.x /= l; V.y /= l; V.z /= l;
+        Vec3 B0 = { V.z, 0, -V.x };                                            /* horizontal, across the flight direction */
+        l = sqrtf(B0.x * B0.x + B0.z * B0.z); if (l < 1e-6f) { B0 = (Vec3){ 1, 0, 0 }; l = 1; }
+        B0.x /= l; B0.z /= l;
+        Vec3 B1 = { V.y * B0.z - V.z * B0.y, V.z * B0.x - V.x * B0.z, V.x * B0.y - V.y * B0.x };
+        float w = 2 * 3.14159265f * 3.90625f * f->phase;
+        float th = (134.30f + 45.0f * cosf(w)) * 3.14159265f / 180.0f, c = cosf(th), sn = sinf(th), bob = 3.0f * sinf(w);
+        for (int k = 0; k < 2; k++) {
+            float cc = k ? -c : c;
+            Vec3 U = { cc * B0.x + sn * B1.x, cc * B0.y + sn * B1.y, cc * B0.z + sn * B1.z };
+            float ctr[3] = { f->pos.x + 20.2757f * U.x, f->pos.y + 20.2757f * U.y + bob, f->pos.z + 20.2757f * U.z };
+            hud_world_wing(f->img, ctr, &U.x, &V.x, 21.2132f);
+        }
     }
 }
 

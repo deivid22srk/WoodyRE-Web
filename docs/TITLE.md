@@ -160,12 +160,26 @@ eigenaar: buiten ⇒ `dir = normalize(instantiepositie − pos)`. Toestandsmachi
 frame (`0x4a94c4`, beginnen te dalen), 1 → 2 zodra de onderkant van het volume is bereikt (`inst+0x10c`,
 `0x472911`; geland, `dir.y = 0`), 2 → 0 met kans ≈ 0,008 per frame (`0x4abd94`).
 
-**Tekenen**: camera-gerichte quad van **30** eenheden (`[esi+0x264]`), modus `0x28` — **alfablend met colour-key,
-precies dezelfde tekenstatus als de bonus-sprites**, niet additief; diffuus = neutraal (0.5, 0.5, 0.5, 1.0). De
-breedte wordt geschaald met een cosinustabel van 512 ingangen (`[0x5e823c]`, gebouwd in `0x40248f`), index
-`2·1000·fase` ⇒ **3,90625 Hz**, en het resultaat wordt **met teken** gebruikt: de quad gaat door nul en klapt om —
-dat is de vleugelslag. Het origineel tekent er nog een tweede, gespiegelde quad bij (`0x47da84` én `0x47dc6b`, met
-de basis genegeerd door `[0x4a9500] = −1`).
+**Tekenen — géén sprite maar twee scharnierende vleugels** (`0x47d78b..0x47dc6b`, quad-opbouw `0x470f10`). De
+tekenstatus is wél die van een sprite: modus `0x28`, **alfablend met colour-key, precies dezelfde status als de
+bonus-sprites**, niet additief, diffuus = neutraal (0.5, 0.5, 0.5, 1.0). De geometrie:
+
+- **V** (`+0x23c`) = de vliegrichting met een vaste `y = 0.5`, genormaliseerd — de scharnieras. **B0**, **B1** =
+  een orthonormaal paar er loodrecht op (`0x46d320`).
+- Hoek uit de cosinustabel van 512 ingangen (`[0x5e823c]`, `cos(i·2π/512)`, gebouwd in `0x40248f`): de
+  tabelwaarde op index `ftol(1000·fase)` wordt **met zichzelf vermenigvuldigd** (`0x47d869`), ×128, en van 255
+  afgetrokken. Gesloten vorm: **θ(t) = 134,30° + 45,00°·cos(2π·f·t)**, dus 89,3°…179,3°, met
+  **f = 2·1000/512 = 3,90625 Hz** (`F = [ebp+8]`, 1000 in de vlucht, 166,667 in de trage tak `0x47d767`).
+- Vleugel 1: **U = cos θ·B0 + sin θ·B1**; vleugel 2: **U′ = −cos θ·B0 + sin θ·B1** (`0x47da8c`, alleen het teken
+  van de B0-component draait). Ze spiegelen dus om B1: aan het ene uiteinde van de slag liggen ze bijna vlak
+  (178,6° uit elkaar), aan het andere bijna tegen elkaar (1,4°) — open en dicht als een boek.
+- Elke vleugel is een **vierkant met halve zijde 21,2132** (= 30·cos 45°; hoekpunten op 45/135/225/315°,
+  `0x470f94`, `table2[18] = 64`) in het vlak van V en U, met **UV-set 4** (`0x470e96`, = set 0 gespiegeld in u).
+- Middelpunt = `pos + 20,2757·U + (0, 3·sin(2π·f·t), 0)` (`0x47d99b`, `0x47da2c`): de scharnierrand ligt daardoor
+  op het deeltje zelf, en er zit een verticale dobber van ±3 eenheden in kwadratuur op.
+
+`+0x254..0x25c` (R = U × V) wordt wel berekend en later genegeerd, maar `0x470f10` leest op deze tak alleen V en U.
+Een port die de tabelwaarde als *breedte* gebruikt krijgt een stilstaand vlak vlekje: de animatie zit in de hoek.
 
 ## 3.2 De bevroren stipjes in de lucht zijn een port-artefact
 

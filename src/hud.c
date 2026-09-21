@@ -338,18 +338,19 @@ void hud_world_sprite(int n, const float *pos, float size)
     glTexCoord2f(1, 0); glVertex3f(c[0] + H.sr[0] * h + H.su[0] * h, c[1] + H.sr[1] * h + H.su[1] * h, c[2] + H.sr[2] * h + H.su[2] * h);
     glEnd();
 }
-/* butterfly of an environment instance (0x47d440 draw): camera-facing quad of `size` units around pos, no +50 offset,
- * the right vector scaled by `wing` so the wings fold. Drawn between hud_world_sprites_begin/end like the pickups. */
-void hud_world_env_sprite(int n, const float *pos, float size, float wing)
+/* one wing of a butterfly (0x47d440 / 0x470f10): a square of 2*half units in the plane of u and v, centred on c. It is
+ * NOT camera-facing - the two wings share a hinge along v (the flight direction) and swing about it. Corner angles
+ * 45/135/225/315 degrees (0x470f94, table2[18] = 64) with the UV set of case 4 (0x470e96). Between
+ * hud_world_sprites_begin/end, like the pickups: the original submits it with the same mode 0x28. */
+void hud_world_wing(int n, const float *c, const float *u, const float *v, float half)
 {
     if (!H.ok || n < 0 || n >= 4 || !H.env[n]) return;
-    float h = size * 0.5f, w = h * wing;                    /* signed: the quad passes through zero width and flips over, which is the fold */
     glBindTexture(GL_TEXTURE_2D, H.env[n]);
     glBegin(GL_QUADS);
-    glTexCoord2f(0, 0); glVertex3f(pos[0] - H.sr[0] * w + H.su[0] * h, pos[1] - H.sr[1] * w + H.su[1] * h, pos[2] - H.sr[2] * w + H.su[2] * h);
-    glTexCoord2f(0, 1); glVertex3f(pos[0] - H.sr[0] * w - H.su[0] * h, pos[1] - H.sr[1] * w - H.su[1] * h, pos[2] - H.sr[2] * w - H.su[2] * h);
-    glTexCoord2f(1, 1); glVertex3f(pos[0] + H.sr[0] * w - H.su[0] * h, pos[1] + H.sr[1] * w - H.su[1] * h, pos[2] + H.sr[2] * w - H.su[2] * h);
-    glTexCoord2f(1, 0); glVertex3f(pos[0] + H.sr[0] * w + H.su[0] * h, pos[1] + H.sr[1] * w + H.su[1] * h, pos[2] + H.sr[2] * w + H.su[2] * h);
+    glTexCoord2f(1, 0); glVertex3f(c[0] + (v[0] + u[0]) * half, c[1] + (v[1] + u[1]) * half, c[2] + (v[2] + u[2]) * half);
+    glTexCoord2f(1, 1); glVertex3f(c[0] + (-v[0] + u[0]) * half, c[1] + (-v[1] + u[1]) * half, c[2] + (-v[2] + u[2]) * half);
+    glTexCoord2f(0, 1); glVertex3f(c[0] - (v[0] + u[0]) * half, c[1] - (v[1] + u[1]) * half, c[2] - (v[2] + u[2]) * half);
+    glTexCoord2f(0, 0); glVertex3f(c[0] + (v[0] - u[0]) * half, c[1] + (v[1] - u[1]) * half, c[2] + (v[2] - u[2]) * half);
     glEnd();
 }
 void hud_world_sprites_end(void) { glDisable(GL_ALPHA_TEST); glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDisable(GL_TEXTURE_2D); }
