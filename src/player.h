@@ -108,6 +108,9 @@ int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 
  * dust 0x476140(pos + (0,30,0), &ground normal, 3, 0.25, 1.5) on ground type 2. */
 void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind);
 void game_land_dust(Vec3 pos, Vec3 normal);
+/* and the beak impact 0x479c80(kind, point, normal), on the same primitives (docs/OBJECTS.md 1.6):
+ * kind 1 = a hit of the attack probe (no normal), 0 = the wall he is climbing */
+void game_peck_fx(int kind, Vec3 pos, const Vec3 *n);
 
 /* world queries (brute force over the .gel polygons) */
 float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, int *found);

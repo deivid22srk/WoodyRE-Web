@@ -8,7 +8,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | wat | status | waar |
 |---|---|---|
 | Klim-over volgt de wortelbeweging van .ins-anim 15 (`0x44e290`); nu een lerp | zie OBJECTS.md §1.5 | `src/player.c` `climb_update` case 3 |
-| Klimmen: geen botsing met de wereld (zijwaarts door muren), geen vonken (`0x479c80`) | analyse klaar | OBJECTS.md §1.3 |
+| Klimmen: geen botsing met de wereld (zijwaarts door muren) | analyse klaar | OBJECTS.md §1.3 |
 | Bukken (actie 5), rondkijken (actie 7) | niet geanalyseerd | PERSO_MOVE.md |
 | Idle-variaties 0x59/0x5a | niet geport | PERSO_MOVE.md §4.3 |
 | Gescripte Perso-acties (bericht 1040/1140): 17/18 (deur in/uit, met fade), teleport (bericht 26), beide camera-acties en nu ook de **wortelbeweging** (`0x44e290`) van alle overige acties (10..16, 19, 74..78) geport; bericht 30 (LockMove) niet | grotendeels | PERSO_DEATH.md §1-2.1, CINEMATIC.md §6, OBJECTS.md §1.5 |
@@ -60,8 +60,9 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 
 | wat | status | waar |
 |---|---|---|
-| Deeltjes: de pickup-effecten (`0x4793d0`) zijn geport met hun eigen pool. Niet: vonken bij het klimmen, rook en de explosiedeeltjes van de raket (`0x4767f0`/`0x4764f0`) | deels | BONUS.md §2.4 |
+| Deeltjes: de pickup-effecten (`0x4793d0`) zijn geport met hun eigen pool. Niet: rook en de explosiedeeltjes van de raket (`0x4767f0`/`0x4764f0`) | deels | BONUS.md §2.4 |
 | Voetstappen: de trigger (loopcyclus 0.38/0.9, soort 2/3 op de grondsoort) en het landingsstof staan er; de effectfuncties `0x47cba0` en `0x476140` zelf zijn niet gedecompileerd, dus beeld, levensduur en kleur zijn een reconstructie | trigger geport, beeld gereconstrueerd | FOOTSTEPS.md |
+| Pikinslag `0x479c80` (afdruk + vonken bij het klimmen en bij elke treffer van de aanvalsstraal): aanroepplekken en timing zijn bewezen, de functie zelf is niet gedecompileerd, dus de afdruk (dezelfde markeringspool als de voetstappen) en de vonken zijn een reconstructie | trigger geport, beeld gereconstrueerd (issue #4) | OBJECTS.md §1.6 |
 | Zwarte contourlijn (SetFlags-bit 0x20) geport. Het origineel blaast alleen hoek 0/1/2 van een quad op (`0x43c42d`); de port alle hoeken, en de afstandsreferentie is de instantie-translatie i.p.v. `inst+0x60` | grotendeels | MODEL_RENDER.md §7 |
 | Modelrendering: mipmaps (het origineel bouwt er 4 met een boxfilter, MIPFILTER POINT); bitreplicatie in de RGB565-decode (het origineel laat de lage bits 0); diepte-sortering van de geblende modelbatches (`0x428d00`, 256 emmers achter-naar-voor) | niet geport | MODEL_RENDER.md recept 9-10 |
 | Pickup-sprite: de grootte is opgelost - `sprite+0x264` is de halve **diagonaal** (`0x470fee`), dus elke additieve sprite in de port was `1/sqrt(2)` te klein. Rechtgezet in `hud_world_fx` en `hud_world_sprite` | opgelost | BONUS.md §2.4 |

@@ -631,6 +631,36 @@ void game_land_dust(Vec3 pos, Vec3 normal)                                   /* 
     }
     if (getenv("WOODY_FXLOG")) printf("landing dust at %.0f %.0f %.0f", pos.x, pos.y, pos.z), puts("");
 }
+/* ---- the beak impact 0x479c80(kind, point, normal) ------------------------------------------------------------
+ * The original marks every place the beak lands: the attack probe calls it on any hit (kind 1, no normal,
+ * docs/PERSO_JUMP.md 2.4) and the climb loop every 0.3 s on the wall he hangs in (kind 0, with the wall normal,
+ * docs/OBJECTS.md 1.3/1.6). Like 0x47cba0 above it is known by its call sites only - not decompiled - so what is
+ * drawn is a reconstruction on the same two primitives: a mark that lies in the pecked face, mirrored every other
+ * peck so a column of them is not stamped out, and a burst of the standard particle 0x4791f0 for the sparks
+ * (the laser hit 0x46efb9, the one impact the docs do describe, throws those at 50 a second). Without a normal
+ * there is no face to mark and only the sparks are left. */
+#define PECK_MARK_LIFE 2.0f                                                  /* a peck every 0.3 s climbing at 250 u/s: a trail of marks up the wall */
+#define PECK_MARK_SIZE 22.0f                                                 /* half diagonal: a beak, not a foot */
+#define PECK_SPARKS    10                                                    /* = the 50 a second of the laser hit over the 0.2 s of a peck */
+void game_peck_fx(int kind, Vec3 pos, const Vec3 *n)                         /* 0x479c80 */
+{
+    static int side;
+    Vec3 nn = n ? vunit(*n) : (Vec3){ 0, 0, 0 };
+    if (n) {
+        Mark *m = mark_new();
+        m->pos = pos; m->n = nn; m->t = 0; m->mirror = (side = !side);
+        m->dir = fabsf(nn.y) < 0.9f ? (Vec3){ 0, 1, 0 } : (Vec3){ 1, 0, 0 };   /* he climbs upwards, so the mark stands up in the wall */
+        m->life = PECK_MARK_LIFE; m->size = PECK_MARK_SIZE; m->strength = 0.45f;
+    }
+    for (int i = 0; i < PECK_SPARKS; i++) {
+        Vec3 o = { (fx_rnd() - 0.5f) * 50.0f, (fx_rnd() - 0.5f) * 50.0f, (fx_rnd() - 0.5f) * 50.0f };
+        float d = o.x * nn.x + o.y * nn.y + o.z * nn.z;                      /* a spark never sits behind the face it came out of */
+        if (d < 0) { o.x -= d * nn.x; o.y -= d * nn.y; o.z -= d * nn.z; }
+        Vec3 p = { pos.x + o.x + nn.x * 10.0f, pos.y + o.y + nn.y * 10.0f, pos.z + o.z + nn.z * 10.0f };
+        if (!fx_new(0.2f, p, 2)) break;
+    }
+    if (getenv("WOODY_FXLOG")) printf("peck kind %d at %.0f %.0f %.0f%s", kind, pos.x, pos.y, pos.z, n ? " (marked)" : ""), puts("");
+}
 static void steps_draw(float dt)
 {
     static const float mark_rgb[3] = { 0.55f, 0.45f, 0.35f }, dust_rgb[3] = { 1.0f, 0.95f, 0.85f };

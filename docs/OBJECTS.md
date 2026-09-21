@@ -166,7 +166,7 @@ case 2:                                                                /* 0x4652
     Ray(&from, &to, -1);                                               /* 0x4359b0 */
     if (hitKind == 2) {
         if (typecode(hit press node) != 4) { p->sub = 4; return; }     /* 0x465549 */
-        if ((p->peckT -= dt) <= 0) { p->peckT += 0.3f; Spark(0, from + (to-from)*frac*0.95f, &n); }   /* 0x479c80, 0x4a9c9c */
+        if ((p->peckT -= dt) <= 0) { p->peckT += 0.3f; Spark(0, from + (to-from)*frac*0.95f, &n); }   /* 0x479c80, 0x4a9c9c: §1.6 */
         return;
     }
     /* straal raakt niets meer: bovenkant */
@@ -193,7 +193,8 @@ hierboven vereenvoudigd) en de inhoud van `0x44e290` (alleen het begin gelezen: 
 | **495** | 51 (node 4 = `0x401`) | (514, 0, 1905) | x 247..747, y −1000..1000, z 1905..2105 | (513, 1000, 2106) → +z | eerste klimwand; gloed 486 (type 70, model 49) op (510, −791, 1891). Pik het vlak z = 1905 (speler kijkt naar +Z) |
 | **52** | 11 (node 2 = `0x401`) | (4130, 501, 3153) | x 3953..4303, y 1..801, z 2976..3328 | (4130, 802, 3328) → +z | naast de zuilen 53/54 van schakelaar 309; gloed 487 op (3919, 161, 3147) |
 
-Beide modellen: textuurgroep 78 (16×16, vlaggen `0x00b20002` = additieve gloed) op de "pik hier"-vlakken (nodes 4..7 resp. 5..6),
+Beide modellen: textuurgroep 78 (16×16, vlaggen `0x00b20002` = additieve gloed) op de "pik hier"-vlakken (nodes 4..7 resp. 5..6;
+onbelicht getekend sinds LIGHTING.md recept 5 — de afdruk die het pikken zélf achterlaat is §1.6),
 een hull-node en gewone press-nodes (typecode 0) om op te staan.
 
 ### 1.4 Camera tijdens het klimmen
@@ -328,6 +329,39 @@ Voor de port: `ins_root_end()` (`src/level.h`) doet al `E`; nodig is een variant
 `over_to = E.t`, `yaw_end = atan2(−E.r2.x, −E.r2.z)`… let op het teken: `Mover_SetDir` krijgt `−E.rij2` als **kijkrichting**; per frame
 `cam_target = lerp(pos, q(f), f)`, model blijft op `pos` staan met de wortel-track van anim 15 aan; op het einde `pos = E.t` + snap-to-ground.
 Onzeker: of de port-renderer de wortel-translatie van animaties al toepast (zo niet, teken het model dan op `q(f)` zonder menging).
+
+### 1.6 Pikinslag `0x479c80(soort, punt, normaal)` — afdruk en vonken
+
+De engine roept dit effect aan op elke plek waar de snavel neerkomt:
+
+| aanroeper | argumenten | bron |
+|---|---|---|
+| aanvalsstraal `0x4575b0`, bij **elke** treffer (wereld of instantie), vóór de pikbaar-test | `(1, &trefpunt, 0)` — géén normaal | PERSO_JUMP.md §2.4 |
+| klimlus `0x4651d0` sub 2, elke 0.3 s zolang de straal een typecode-4-node raakt | `(0, from + (to−from)·frac·0.95, &wandnormaal)` | `0x4a9c9c`, §1.3 |
+
+De **inhoud** van `0x479c80` is nooit gedisassembleerd (PERSO_JUMP.md §5 noemt hem bij de open vragen), alleen zijn aanroepen.
+Vast staat dat hij een punt en optioneel een oppervlaktenormaal krijgt — dezelfde vorm als het voetstap-effect
+`0x47cba0(pos, normaal, richting, links/rechts, grondsoort)` (FOOTSTEPS.md, PERSO_MOVE.md §4.3) — dus het effect richt zich
+naar het vlak dat het markeert, en het zit in dezelfde effectenmodule als de pickup-deeltjes (BONUS.md §2.4).
+
+**Wat de port tekent** (`game_peck_fx`, `src/main_engine.c`) is daarom een **reconstructie**, op dezelfde twee primitieven als
+de voetstappen, plus het enige inslageffect dat wél ontleed is: de lasertreffer `0x46efb9` (§2.1) = een sprite op het trefpunt
+plus **vonken 50/s**.
+
+| | port |
+|---|---|
+| afdruk | één record in de markeringspool van FOOTSTEPS.md (`Mark`, 48 stuks, de oudste wijkt): `hud_world_decal` legt de quad ín het geraakte vlak (halve diagonaal 22, sterkte 0.45, 2 s, staat 1 s en vervaagt daarna), rechtop in de wand omdat Woody omhoog klimt, om en om gespiegeld zodat een rij pikgaten er niet gestempeld uitziet |
+| vonken | een uitbarsting van 10 × het standaarddeeltje `0x4791f0` (beeld 4, 0.2 s) in een bol van ±25 om het punt, 10 eenheden vóór het vlak en nooit erachter — evenveel als de 50/s van de lasertreffer over de 0.3 s van één pik |
+| zonder normaal | geen vlak om te markeren (de aanvalsstraal geeft er geen mee): alleen de vonken |
+
+Bij het klimmen levert dat een spoor van pikgaten op de wand op: pik elke 0.3 s, 250 eenh/s omhoog, dus om de ~75 eenheden een
+afdruk die 2 s blijft. `WOODY_FXLOG=1` logt elke pik; `WOODY_STEPIMG=<n>` kiest een ander bank-0-beeld voor de afdruk (zie FOOTSTEPS.md §4).
+De gloeiende "pik hier"-vlakken van de klimwand zelf zijn iets anders: dat zijn modelvlakken met textuurgroepvlag bit 1
+(§1.3), die sinds LIGHTING.md recept 5 (issue #5) onbelicht additief getekend worden.
+
+**Onzeker / met Frida op `0x479c80` te controleren**: aantal, kleur, grootte en levensduur van de deeltjes; of de afdruk in het
+origineel blijft liggen (een echte decal op de geometrie) in plaats van uit te doven; en waarin soort 0 en 1 van elkaar verschillen.
+`0x47cba0` (voetstappen) en `0x476140` (stof bij landen) horen bij dezelfde familie en zijn evenmin gelezen (FOOTSTEPS.md).
 
 ## 2. Klassen
 

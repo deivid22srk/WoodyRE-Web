@@ -386,7 +386,7 @@ void Perso_AttackUpdate(Perso *p)   /* 0x457a50 */
 `Perso_AttackProbe 0x4575b0(p, v)`: straal van `a = p+0xc + (0,5,0)` (`0x4a9884`) naar `a + v`
 (`0x4359b0(&a, &b, −1)`); `[0x53a554]` = trefsoort (0 niets, 1 wereld, 2 instantie), `[0x53a558]` = fractie.
 Geen treffer ⇒ 0 (log "On Ground during air attack" als onGround – no-op). Treffer: vonk-effect
-`0x479c80(1, &trefpunt, 0)`; als trefsoort 2 en de polygoon-vlag `(poly[0] & 0xff00) == 0x400` van instantie
+`0x479c80(1, &trefpunt, 0)` (OBJECTS.md §1.6); als trefsoort 2 en de polygoon-vlag `(poly[0] & 0xff00) == 0x400` van instantie
 `[0x53a560]` (poly-index `[0x53a58c]`, 0x90 B per poly): `0x464e00(p, inst)` – vereist `p+0x524 < 0`,
 `p+0x26c == 0`, en wandnormaal `|n.y| ≤ 0.05` (`0x4ab7d0`, f64; normaal uit `0x4b3108`); dan
 `p+0x510 = normalize(n.x, 0, n.z)`, `p+0x51c = inst` ⇒ **toestand 8**: `T = AnimLen(0xf,0)`, anim 0xf,
@@ -520,4 +520,5 @@ of het origineel hem op de grondnormaal legt of horizontaal, en of andere actore
   is niet gedecompileerd.
 * `vtbl[37]` (+0x94) en `vtbl[39]` (+0x9c) van de vijandklassen (wat doet een treffer per vijandtype, welke
   scriptevents volgen) zijn niet gevolgd.
-* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (harde landing) en `0x479c80` (vonk) zijn niet gelezen.
+* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (harde landing) en `0x479c80` (vonk) zijn niet gelezen. De port tekent op de
+  aanroepplekken van `0x479c80` wel een inslag (afdruk + vonken), maar die vorm is een reconstructie — zie OBJECTS.md §1.6.
