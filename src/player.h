@@ -6,7 +6,8 @@
  * events (trigger volumes, world_collision press nodes, msgmask 0x200).
  * Attacks (0x457a50): peck dash, rebounds, charge run and brake; logical animation chains (table 0x4b6180).
  * Not ported yet: attack targets/hits/recoil (no actors yet), peckable surfaces, ducking, look-around, sliding on
- * steep slopes, ground kinds, platform carry, damage/death, camera breadcrumb path, cfg key mapping.
+ * steep slopes, platform carry, damage/death, camera breadcrumb path, cfg key mapping. The ground type of the floor
+ * (Perso+0x308) is read, but only the footstep effect uses it: the slippery turn ramp of type 1 is not ported.
  * Geometry queries are brute force over the .gel polygons instead of the original kd-tree cells. */
 #ifndef WOODY_PLAYER_H
 #define WOODY_PLAYER_H
@@ -34,6 +35,7 @@ typedef struct Player {
     Instance *inst;                 /* the Woody instance (model 0, instance 0) */
     const GelFile *gel;
     const InsFile *ins;
+    const TexFile *tex;             /* the level's textures: the ground type byte of the floor polygon's group */
     Vec3 pos, vel;                  /* pos = feet (instance origin) */
     float yaw;                      /* facing, radians; forward = (sin yaw, 0, cos yaw) */
     float speed;                    /* horizontal speed along the facing direction (Mover RampA, 0x45b110) */
@@ -46,8 +48,10 @@ typedef struct Player {
     Vec3 push_dir; float push_t, push_speed;                         /* knockback (Mover RampC) */
     int game_state; float game_t, fade; int mask10_frames;           /* Game sequence 0x4459c0; fade = screen brightness */
     Vec3 spawn_pos; float spawn_yaw;
-    int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264 */
+    int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus, race_total;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264, [0x5e54f4] */
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
+    int ground_kind;                /* Perso+0x308 (0x4628e0): 0 normal, 1 slippery, 2 dust/sand/snow (docs/PERSO_MOVE.md 6.4) */
+    float step_u;                   /* footsteps (docs/FOOTSTEPS.md): the fraction of the walk cycle at the previous frame, -1 = not walking */
     /* attack controller (Perso+0x5b4..): sub-state, timer, displacement, air window, charge; move lock = Perso+0x238 */
     /* peck climbing, Perso state 4 (0x4651d0, docs/OBJECTS.md 1.3): sub 1 grab, 2 climbing, 3 over the top, 4 let go */
     int use_root; Vec3 root_pos;   /* climb-over: pos is frozen, the root track carries the model; camera follows root_pos */
@@ -66,14 +70,15 @@ typedef struct Player {
     Vec3 cam_tprev; float cam_drop, cam_quick_t; int cam_behind_prev;   /* previous target, look-point drop while airborne, action 0xa */
     /* death / hit animations, scripted door actions (docs/PERSO_DEATH.md) */
     float dead_T, nograv_t, hit_anim_t; int dead_ground, hit_anim, dead_cam_req;
-    int script_act; float script_t; int script_faded, fade_req, cam_end_req, cam_cut_req;   /* fade_req: 1 = fade out 0.5 s, 2 = fade in 0.5 s; cam_cut_req: 0x458f90, hard cut behind him; cam_end_req: 0x44e5a0, back to the follow camera (all consumed by the app) */
+    int script_act, script_log; float script_t, script_total; int script_faded, fade_req, cam_end_req, cam_cut_req;   /* fade_req: 1 = fade out 0.5 s, 2 = fade in 0.5 s; cam_cut_req: 0x458f90, hard cut behind him; cam_end_req: 0x44e5a0, back to the follow camera (all consumed by the app) */
     /* Perso state 8: riding a class-20 rocket (docs/ROCKET.md 6). The app fills ride_state / ride_seat / ride_q before the update */
     Instance *ride; int ride_state; Vec3 ride_seat, ride_p0; Quat ride_q, ride_q0, ride_cur; float ride_t; int ride_jprev, ride_aprev;
     /* statistics */
+    float play_time;                /* Perso+0x710 accumulator (0x453ca0): seconds played in this level, one of the five result stats */
     uint32_t events_sent;
 } Player;
 
-int  player_init(Player *p, InsFile *ins, const GelFile *gel);
+int  player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex);
 void player_bind(Player *p, Instance *inst);           /* SetTypeInstance 1/2/3/18/19: this instance is the player */
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
@@ -91,10 +96,18 @@ void player_kill(Player *p, int kind);
 Quat q_slerp(Quat a, Quat b, float u);
 int  player_mount(Player *p, Instance *obj);           /* 0x465740: only in state 0 on the ground */
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir);   /* message 26 (0x44ce11); the caller leaves all volumes in the VM */
-void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);   /* message 1040 (0x44dda0): 17 = into a door, 18 = out of it */
+/* message 1040 / 1140 (0x44dda0): the action number IS the raw .ins animation. 17 = into a door, 18 = out of it;
+ * 10..16, 19 and 72..78 (the results animations) run with the root motion of 0x44e290. */
+void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);
 int  player_segment_blocked(const Player *p, Vec3 a, Vec3 b);   /* world polygons only */
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b);   /* first world polygon hit on a->b as a fraction 0..1, or 2 when nothing is hit */                 /* Perso vt[38] */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
+
+/* footstep effects, drawn by the app (main_engine.c) as the pickup effects are (docs/FOOTSTEPS.md)
+ * 0x47cba0(pos, ground normal, direction, foot 0/1, kind 2 or 3) twice per walk cycle, and the landing
+ * dust 0x476140(pos + (0,30,0), &ground normal, 3, 0.25, 1.5) on ground type 2. */
+void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind);
+void game_land_dust(Vec3 pos, Vec3 normal);
 
 /* world queries (brute force over the .gel polygons) */
 float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, int *found);

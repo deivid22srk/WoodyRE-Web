@@ -64,10 +64,23 @@ static int poly_contains(const GelFile *g, const GelPoly *p, Vec3 q)
     return 1;
 }
 
+/* The query volume of one of the tests below, clamped to the level so an unbounded drop does not walk the
+ * whole tree. Only the polygons of the kd leaves it meets can answer the test (docs/FORMAT_GEL.md 5). */
+static void query_box(const GelFile *g, Vec3 c, float rxz, float ylo, float yhi, float box[6])
+{
+    if (ylo < g->bbox[2] - 1.0f) ylo = g->bbox[2] - 1.0f;
+    if (yhi > g->bbox[3] + 1.0f) yhi = g->bbox[3] + 1.0f;
+    if (yhi < ylo) yhi = ylo;
+    box[0] = c.x - rxz; box[1] = c.x + rxz; box[2] = ylo; box[3] = yhi; box[4] = c.z - rxz; box[5] = c.z + rxz;
+}
+
 float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, int *found)
 {
-    float best = -1e30f; *found = 0;
-    for (uint32_t i = 0; i < g->npolys; i++) {
+    float best = -1e30f, box[6]; *found = 0;
+    query_box(g, p, 1.0f, p.y - max_drop, p.y + step_up, box);
+    GelPolySet ps = gel_polys_in_box(g, box);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        uint32_t i = ps.polys[k];
         const GelPoly *pl = &g->polys[i];
         if (pl->plane[1] < 0.5f || pl->nverts < 3) continue;          /* walkable: normal mostly up */
         float y = -(pl->plane[0] * p.x + pl->plane[2] * p.z + pl->plane[3]) / pl->plane[1];
@@ -90,6 +103,7 @@ static int point_in_tri_xz(Vec3 a, Vec3 b, Vec3 c, Vec3 q)
     return (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0);
 }
 static Vec3 g_ground_n = { 0, 1, 0 };   /* normal of the last world_ground() hit ([0x4b3108..10]) */
+static int32_t g_ground_mat = -1;       /* material of that hit when it is a world polygon ([0x53a554] == 1, poly+8), else -1 */
 static Vec3 g_ins_n;
 static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float max_drop, int *found, const Instance *skip,
                              const Instance **hit_inst, const InsNode **hit_node)
@@ -101,8 +115,11 @@ static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float ma
             const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip) continue;
             /* cheap reject: instance origin far away horizontally */
             float dx = in->position.x - p.x, dz = in->position.z - p.z; if (dx * dx + dz * dz > 4000.0f * 4000.0f) continue;
-            for (uint32_t ni = 0; ni < m->nnodes; ni++) {
-                const InsNode *n = &m->nodes[ni]; if ((n->kind != 4 && n->kind != 1) || !n->polys) continue;
+            uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+            for (uint32_t ci = 0; ci < ncn; ci++) {
+                uint32_t ni = cn[ci]; const InsNode *n = &m->nodes[ni];
+                float nb[6];                                              /* the node's own box: no floor in it, nothing to test */
+                if (ins_node_world_box(in, ni, nb) && (p.x < nb[0] || p.x > nb[1] || p.z < nb[4] || p.z > nb[5] || nb[3] < p.y - max_drop || nb[2] > p.y + step_up)) continue;
                 for (uint32_t f = 0; f < n->npolys; f++) {
                     const InsPoly *pl = &n->polys[f]; if (pl->nverts < 3) continue;
                     Vec3 a = ins_point_world(in, pl->indices[0]);
@@ -166,14 +183,17 @@ static void poly_push_accum(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q, float r
  * instance hulls are not tested yet. */
 static Vec3 gel_push(const GelFile *g, Vec3 c, float r, float lo, float hi)
 {
-    float acc[4] = { 0, 0, 0, 0 }; Vec3 v[32];
-    for (uint32_t i = 0; i < g->npolys; i++) {
+    float acc[4] = { 0, 0, 0, 0 }, box[6]; Vec3 v[32];
+    query_box(g, c, r, lo, hi, box);
+    GelPolySet ps = gel_polys_in_box(g, box);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        uint32_t i = ps.polys[k];
         const GelPoly *pl = &g->polys[i];
         if (pl->nverts < 3 || pl->nverts > 32 || pl->plane[1] > 0.71f) continue;
         float d0 = pl->plane[0] * c.x + pl->plane[1] * c.y + pl->plane[2] * c.z + pl->plane[3];
         if (d0 < -r - (hi - lo) || d0 > r + (hi - lo)) continue;               /* cheap reject */
         float ymin = 1e30f, ymax = -1e30f;
-        for (uint32_t k = 0; k < pl->nverts; k++) { const GelVert *gv = &g->verts[pl->indices[k]]; v[k] = (Vec3){ gv->x, gv->y, gv->z }; if (gv->y < ymin) ymin = gv->y; if (gv->y > ymax) ymax = gv->y; }
+        for (uint32_t t = 0; t < pl->nverts; t++) { const GelVert *gv = &g->verts[pl->indices[t]]; v[t] = (Vec3){ gv->x, gv->y, gv->z }; if (gv->y < ymin) ymin = gv->y; if (gv->y > ymax) ymax = gv->y; }
         if (ymax < lo || ymin > hi) continue;
         Vec3 q = c; float a = lo > ymin ? lo : ymin, b = hi < ymax ? hi : ymax; if (q.y < a) q.y = a; if (q.y > b) q.y = b;
         poly_push_accum(v, pl->nverts, (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }, q, r, acc);
@@ -191,8 +211,11 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
         for (uint32_t k = 0; k < m->ninstances; k++) {
             const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || !in->node_world) continue;
             float dx = in->position.x - c.x, dz = in->position.z - c.z; if (dx * dx + dz * dz > 3000.0f * 3000.0f) continue;
-            for (uint32_t ni = 0; ni < m->nnodes; ni++) {
-                const InsNode *nd = &m->nodes[ni]; if (nd->kind != 4 || !nd->polys || !nd->npoints) continue;
+            uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+            for (uint32_t ci = 0; ci < ncn; ci++) {
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 4 || !nd->npoints) continue;
+                float nb[6];                                              /* the node's own box against the body cylinder */
+                if (ins_node_world_box(in, ni, nb) && (nb[0] > c.x + r || nb[1] < c.x - r || nb[4] > c.z + r || nb[5] < c.z - r || nb[3] < lo || nb[2] > hi)) continue;
                 Vec3 cen = { 0, 0, 0 };
                 for (uint32_t t = 0; t < nd->npoints; t++) { Vec3 w = ins_point_world(in, nd->point_base + t); cen.x += w.x; cen.y += w.y; cen.z += w.z; }
                 cen.x /= nd->npoints; cen.y /= nd->npoints; cen.z /= nd->npoints;
@@ -220,25 +243,29 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
 static const Instance *g_ground_skip;      /* set by player_ground_query(): instance to ignore instead of the player */
 static float world_ground(const Player *p, Vec3 pt, int *found, const Instance **hit_inst, const InsNode **hit_node)
 {
-    const GelFile *g = p->gel; float best = 1e30f; int f1 = 0, f2; Vec3 gn = { 0, 1, 0 };
-    for (uint32_t i = 0; i < g->npolys; i++) {
+    const GelFile *g = p->gel; float best = 1e30f, box[6]; int f1 = 0, f2; Vec3 gn = { 0, 1, 0 }; int32_t gm = -1;
+    query_box(g, pt, 1.0f, g->bbox[2] - 1.0f, pt.y, box);            /* the column under the point */
+    GelPolySet ps = gel_polys_in_box(g, box);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        uint32_t i = ps.polys[k];
         const GelPoly *pl = &g->polys[i];
         if (pl->nverts < 3 || pl->plane[1] <= 1e-5f) continue;
         float dist = pl->plane[0] * pt.x + pl->plane[1] * pt.y + pl->plane[2] * pt.z + pl->plane[3];
         if (dist <= 0 || dist / pl->plane[1] >= best) continue;
         Vec3 q = { pt.x, pt.y - dist / pl->plane[1], pt.z };
-        if (poly_contains(g, pl, q)) { best = dist / pl->plane[1]; f1 = 1; gn = (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }; }
+        if (poly_contains(g, pl, q)) { best = dist / pl->plane[1]; f1 = 1; gn = (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }; gm = (int32_t)pl->material; }
     }
     float y1 = pt.y - best;
     float y2 = ins_floor_below(p->ins, pt, 0.0f, 1e9f, &f2, g_ground_skip ? g_ground_skip : p->inst, hit_inst, hit_node);
-    if (f2 && (!f1 || y2 > y1)) { *found = 1; g_ground_n = g_ins_n; return y2; }
-    *hit_inst = NULL; *hit_node = NULL; *found = f1; g_ground_n = f1 ? gn : (Vec3){ 0, 1, 0 }; return f1 ? y1 : pt.y;
+    if (f2 && (!f1 || y2 > y1)) { *found = 1; g_ground_n = g_ins_n; g_ground_mat = -1; return y2; }
+    *hit_inst = NULL; *hit_node = NULL; *found = f1; g_ground_n = f1 ? gn : (Vec3){ 0, 1, 0 }; g_ground_mat = f1 ? gm : -1; return f1 ? y1 : pt.y;
 }
 
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found)
 {
     const Instance *hi; const InsNode *hn; Vec3 keep = g_ground_n;
-    g_ground_skip = skip; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_ground_n = keep;
+    int32_t keep_mat = g_ground_mat;
+    g_ground_skip = skip; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_ground_n = keep; g_ground_mat = keep_mat;
     return y;
 }
 
@@ -248,13 +275,24 @@ float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *f
 int player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal)
 {
     if (!p->inst || p->on_ground || p->dead_kind || p->script_act || p->ride || p->climb_sub || p->use_root) return 0;
-    const Instance *hi; const InsNode *hn; int found = 0; Vec3 keep = g_ground_n;
+    const Instance *hi; const InsNode *hn; int found = 0; Vec3 keep = g_ground_n; int32_t keep_mat = g_ground_mat;
     float y = world_ground(p, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found, &hi, &hn);
-    Vec3 n = g_ground_n; g_ground_n = keep;
+    Vec3 n = g_ground_n; g_ground_n = keep; g_ground_mat = keep_mat;
     if (!found) return 0;
     *pos = (Vec3){ p->pos.x, y, p->pos.z };
     if (normal) *normal = n;
     return 1;
+}
+
+/* ground type Perso+0x308 (0x4628e0 -> 0x46295f): byte 3 of the flag word of the texture group behind the material of
+ * the floor polygon ("m_nGroundType", docs/FORMAT_TEX_COL_VIS_LIT.md 1). 1 = slippery, 2 = dust/sand/snow. Only world
+ * polygons have one: a floor made by an instance node, a polygon without a material (bit 15) or a missing .tex is 0. */
+static int ground_type(const Player *p, int32_t mat)
+{
+    if (mat < 0 || (mat & 0x8000) || !p->tex) return 0;
+    uint32_t mi = (uint32_t)mat; if (mi >= p->tex->nmaterials) return 0;
+    uint32_t g = p->tex->materials[mi].group; if (g >= p->tex->ngroups) return 0;
+    return (int)(p->tex->groups[g].flags >> 24);
 }
 
 /* ---- platform attachment (Perso+0x298, 0x436d80 store / 0x436d20 delta; docs/PERSO_MOVE.md 6.1) -------------
@@ -369,11 +407,11 @@ void player_bind(Player *p, Instance *inst)
     p->spawn_pos = p->pos; p->spawn_yaw = p->yaw;
 }
 
-int player_init(Player *p, InsFile *ins, const GelFile *gel)
+int player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex)
 {
     memset(p, 0, sizeof *p);
     if (!ins->nmodels || !ins->models[0].ninstances) return -1;
-    p->gel = gel; p->ins = ins; p->cur_col = 0xffffffffu;
+    p->gel = gel; p->ins = ins; p->tex = tex; p->cur_col = 0xffffffffu; p->step_u = -1.0f;
     player_bind(p, &ins->models[0].instances[0]);
     p->jumper.state = 2; p->jumper.armed = 1;                      /* 0x462c90 reset */
     p->health = 3.0f; p->lives = 3; p->game_state = 2; p->fade = 1.0f; p->lanim = -1;
@@ -402,8 +440,9 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel)
 /* segment a->b blocked by a world polygon? (line-of-sight veto 0x423a40; instances are not tested yet) */
 static int gel_ray_blocked(const GelFile *g, Vec3 a, Vec3 b)
 {
-    for (uint32_t i = 0; i < g->npolys; i++) {
-        const GelPoly *pl = &g->polys[i]; if (pl->nverts < 3) continue;
+    GelPolySet ps = gel_polys_on_seg(g, a, b);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3) continue;
         float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
         float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
         if ((da > 0) == (db > 0)) continue;
@@ -416,8 +455,9 @@ static int gel_ray_blocked(const GelFile *g, Vec3 a, Vec3 b)
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b)
 {
     float best = 2.0f;
-    for (uint32_t i = 0; i < g->npolys; i++) {
-        const GelPoly *pl = &g->polys[i]; if (pl->nverts < 3) continue;
+    GelPolySet ps = gel_polys_on_seg(g, a, b);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3) continue;
         float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
         float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
         if ((da > 0) == (db > 0)) continue;
@@ -446,10 +486,14 @@ static const LogAnim *log_anim(int n)
         { 0x18, {{17,-1,-1,-1},3,1} }, { 0x19, {{18,-1,-1,-1},3,1} }, { 0x1f, {{20,0,0,0},3,1} }, { 0x20, {{22,0,0,0},3,1} },
         { 0x25, {{29,30,30,30},3,1} }, { 0x26, {{28,30,30,30},3,1} }, { 0x29, {{31,-1,-1,-1},3,1} }, { 0x2a, {{27,-1,-1,-1},3,1} },
         { 0x3b, {{84,-1,-1,-1},3,1} }, { 0x3c, {{80,-1,-1,-1},3,1} }, { 0x3d, {{81,82,82,82},3,1} }, { 0x3e, {{82,82,82,82},3,1} },   /* rocket: mount, sit, ignition, flight */
-        { 0x2b, {{37,-1,-1,-1},3,1} }, { 0x2e, {{35,-1,-1,-1},3,1} }, { 0x2f, {{48,33,33,33},3,1} }, { 0x30, {{85,-1,-1,-1},3,1} } };
+        { 0x2b, {{37,-1,-1,-1},3,1} }, { 0x2e, {{35,-1,-1,-1},3,1} }, { 0x2f, {{48,33,33,33},3,1} }, { 0x30, {{85,-1,-1,-1},3,1} },
+        /* results screen (docs/CINEMATIC.md 6): one-shot records for the .ins animations 74..78, all speed 3 */
+        { 0x1a, {{74,-1,-1,-1},3,1} }, { 0x1b, {{75,-1,-1,-1},3,1} }, { 0x1c, {{78,-1,-1,-1},3,1} }, { 0x1d, {{76,-1,-1,-1},3,1} }, { 0x1e, {{77,-1,-1,-1},3,1} } };
     for (unsigned i = 0; i < sizeof x / sizeof x[0]; i++) if (x[i].n == n) return &x[i].a;
     return (n >= 0 && n < 0x18) ? &t[n] : &t[0];
 }
+/* 0x463e30: a scripted action names a raw .ins animation; the logical record is the first one that starts with it */
+static int log_from_raw(int act) { for (int n = 0; n < 0x80; n++) if (log_anim(n)->sub[0] == act) return n; return -1; }
 static float anim_len(const Player *p, int n, int k)                       /* 0x436b90 AnimLen(n, k) */
 {
     const LogAnim *a = log_anim(n); const Model *m = p->inst->model; int s = a->sub[k];
@@ -478,6 +522,8 @@ static void anim_request(Player *p, int n, float rate)                     /* 0x
  * auto-steer (9,10), brake (11), hit loop against the enemies. Not ported: peckable surfaces (8), the steep-edge test,
  * rumble. The dash additionally ends on landing, which the original leaves to its ray probe. */
 static void lock_move(Player *p, float t) { p->move_lock = t; p->ramp_phase = 0; p->speed = 0; }   /* 0x44cce0 */
+/* did the fraction of a looping animation pass `t` between the previous frame and this one? */
+static int phase_passed(float prev, float cur, float t) { return cur >= prev ? (t > prev && t <= cur) : (t > prev || t <= cur); }
 static void jumper_reset(Jumper *j) { memset(j, 0, sizeof *j); j->state = 2; j->armed = 1; }       /* 0x462c90 */
 static void jumper_force_fall(Jumper *j, int force)                                                 /* 0x463170 */
 {
@@ -648,7 +694,7 @@ static void player_reset(Player *p)                                     /* vt[17
     jumper_reset(&p->jumper); p->on_ground = 1; p->invuln_respawn = 1.0f; p->invuln_hit = 0; p->move_lock = 0;
     if (p->health <= 0) p->health = 3.0f;
     p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
-    p->att_inst = NULL; p->lanim = -1; p->cam_init = 0;
+    p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0;
 }
 /* Game sequence 0x4459c0: 2 play -> (dead) 3 wait death_delay - 1 s -> 4 fade out 1 s -> lose a life -> 0 wait 0.25 s,
  * respawn -> 1 fade in 1 s -> 2. p->fade is the screen brightness (1 = normal). */
@@ -792,7 +838,7 @@ static void player_apply_transform(Player *p)
 
 void player_place(Player *p, Vec3 pos, float yaw)
 {
-    p->pos = pos; p->yaw = yaw; p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->atk = 0; p->move_lock = 0; p->lanim = -1;
+    p->pos = pos; p->yaw = yaw; p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->atk = 0; p->move_lock = 0; p->lanim = -1; p->step_u = -1.0f;
     jumper_reset(&p->jumper); p->on_ground = 1; p->cam_init = 0; player_apply_transform(p);
 }
 
@@ -819,6 +865,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
 {
     if (dt <= 0) return;
     p->vy_corr = 0;
+    p->play_time += dt;                                                   /* 0x453ca0: the accumulator Perso+0x710 runs in every state, it is the level time on the results screen */
     if (p->move_lock > 0) p->move_lock -= dt;
     if (p->invuln_respawn > 0) p->invuln_respawn -= dt;
     if (p->invuln_hit > 0) p->invuln_hit -= dt;
@@ -833,14 +880,30 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->regrab > 0) p->regrab -= dt;
     if (p->hit_anim_t > 0) p->hit_anim_t -= dt;
     if (p->dead_kind) p->dead_T += dt;
-    if (!p->dead_kind && p->script_act) {                                  /* state 5, 0x44db50: the Perso stands still, the walk is in the root track of anim 17 / 18 */
-        anim_request(p, p->script_act == 17 ? 0x18 : 0x19, 1.0f);
+    if (!p->dead_kind && p->script_act) {                                  /* state 5, 0x44db50: the Perso stands still, the movement is in the root track of the animation */
+        int door = p->script_act == 17 || p->script_act == 18;
+        anim_request(p, p->script_log, 1.0f);
         if (p->script_act == 17 && !p->script_faded && p->script_t < 0.6f) { p->script_faded = 1; p->fade_req = 1; }
-        if ((p->script_t -= dt) <= 0) {
+        p->script_t -= dt;
+        if (!door) {                                                       /* 0x44e290 (docs/OBJECTS.md 1.5): pos stays put, the root track of the action carries the model */
+            float rest = p->script_t > 0 ? p->script_t : 0, f = p->script_total > 0 ? (p->script_total - rest) / p->script_total : 1.0f;
+            Vec3 q, fw;
+            if (ins_root_at(p->inst, p->script_act, f, 1, &q, &fw)) {
+                p->use_root = 1;
+                p->root_pos = (Vec3){ p->pos.x + (q.x - p->pos.x) * f, p->pos.y + (q.y - p->pos.y) * f, p->pos.z + (q.z - p->pos.z) * f };
+            }
+        }
+        if (p->script_t <= 0) {
             if (p->script_act == 18) {                                     /* he came out backwards: facing flips, ground snap, idle, follow camera */
                 p->yaw += 3.14159265f; int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
                 if (found) { p->pos.y = gy; p->floor_y = gy; } p->lanim = -1; anim_request(p, 0, 1.0f);
                 p->cam_end_req = 1;                                        /* 0x44e5a0: follow camera behind the NEW facing, 0.5 s travelling */
+            } else if (!door) {                                            /* last frame of 0x44e290: he ends where the root track left him, facing -E.row2 */
+                Vec3 q, fw;
+                if (ins_root_at(p->inst, p->script_act, 1.0f, 1, &q, &fw)) { p->pos = q; if (fw.x * fw.x + fw.z * fw.z > 1e-6f) p->yaw = atan2f(fw.x, fw.z); }
+                int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
+                if (found) { p->pos.y = gy; p->floor_y = gy; }             /* SnapToGround 0x462990 */
+                p->use_root = 0; p->lanim = -1; anim_request(p, 0, 1.0f); p->cam_end_req = 1;
             } else lock_move(p, 0.3f);                                     /* 17: the pose is held until the teleport (message 26) resets the controller */
             p->script_act = 0;
         }
@@ -964,6 +1027,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         if (found) p->floor_y = gy;
         if (found && np.y - gy < 1.0f) { p->on_ground = 1; np.y = gy; } else p->on_ground = 0;
         p->ground_n = p->on_ground ? g_ground_n : (Vec3){ 0, 1, 0 };            /* 0x45a110 -> Mover+0xd0 */
+        p->ground_kind = found ? ground_type(p, g_ground_mat) : 0;              /* 0x4628e0 -> Perso+0x308 */
         attach_store(p, p->on_ground ? hit_inst : NULL, hit_node, np);  /* 0x436d80 / 0x436d10 */
     }
     if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; player_kill(p, 7); }     /* below the world: "disappear" death (the original leaves this to script volumes) */
@@ -997,8 +1061,25 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         else if (js == 6) {
             if (p->jumper.hard_fall) { want = 0xa; lock_move(p, anim_len(p, 0xa, 0)); }     /* hard landing blocks movement */
             else if (p->ramp_phase != 2) want = 8;
+            if (p->ground_kind == 2) game_land_dust((Vec3){ p->pos.x, p->pos.y + 30.0f, p->pos.z }, p->ground_n);   /* 0x464486: 0x476140(&pos + (0,30,0), &normal, 3, 0.25, 1.5) */
         }
         anim_request(p, want, rate);
+        /* footsteps (docs/FOOTSTEPS.md): in the walk cycle (logical animation 3) 0x463f40 puts a foot down when the
+         * fraction of the cycle passes 0.38 (0x4ab278) and 0.9 (0x4a94b8) and calls the effect 0x47cba0 for it. */
+        {
+            const Model *pm = p->inst->model; float u = -1.0f;
+            if (p->lanim == 3 && p->on_ground && (uint32_t)p->inst->anim < pm->nanims) {
+                float dur = pm->anims[p->inst->anim].duration_s;
+                if (dur > 0) { u = fmodf(p->inst->anim_time / dur, 1.0f); if (u < 0) u += 1.0f; }
+            }
+            if (u >= 0 && p->step_u >= 0) {
+                Vec3 f = { sinf(p->yaw), 0, cosf(p->yaw) };                     /* the walk direction is the facing (Mover+0x10) */
+                int kind = p->ground_kind == 2 ? 3 : 2;                         /* 0x464231: dust ground gets kind 3 */
+                if (phase_passed(p->step_u, u, 0.38f)) game_footstep(p->pos, p->ground_n, f, 0, kind);
+                if (phase_passed(p->step_u, u, 0.90f)) game_footstep(p->pos, p->ground_n, f, 1, kind);
+            }
+            p->step_u = u;
+        }
     }
 
     /* world_collision events: standing on a press node with type code 1 (0x436f00, docs/EVENTS.md 3.2/3.3).
@@ -1103,12 +1184,13 @@ int player_mount(Player *p, Instance *obj)                              /* 0x465
 }
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
 {
-    if (p->dead_kind) return;
-    if (act != 17 && act != 18) { player_script_hold(p, 2.0f); return; }
+    if (p->dead_kind) return;                                       /* 0x44dda0 refuses state 2 (dead) */
+    int lg = log_from_raw(act);                                     /* the action number is the raw .ins animation (docs/CINEMATIC.md 6) */
+    if (lg < 0) { printf("  scripted action %d: no logical record, standing still", act), puts(""); player_script_hold(p, 2.0f); return; }
     p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
-    p->script_act = act; p->lanim = -1; anim_request(p, act == 17 ? 0x18 : 0x19, 1.0f); p->script_t = anim_len(p, act == 17 ? 0x18 : 0x19, 0); p->script_faded = 0;
+    p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = anim_len(p, lg, 0); p->script_faded = 0;
     if (act == 18) p->fade_req = 2;   /* fade in 0.5 s on the first frame (0x44dc2b). The camera is NOT cut here: the tail of 0x44dda0
                                        * puts it on the animation's own camera track (message 1040 in main_engine.c) and a cut back to the
                                        * follow camera would undo that one frame later. Coming out of the door ends with 0x44e5a0, a 0.5 s
@@ -1122,7 +1204,7 @@ void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44c
         int found; float gy = player_ground_query(p, p->inst, (Vec3){ pos.x, pos.y + P_PROBE_Y, pos.z }, &found);
         if (found) pos.y = gy;
         p->pos = pos; if (have_dir && dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z);
-        p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->att_inst = NULL; p->lanim = -1;
+        p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f;
         jumper_reset(&p->jumper); p->on_ground = 1; player_apply_transform(p);
     }
     p->cam_cut_req = 1;                                                 /* 0x458f90 sits outside that test: 0x41f9f0(2) + SetMode(0, 0). The camera places itself in the next camera update, after

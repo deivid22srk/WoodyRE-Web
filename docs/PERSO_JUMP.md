@@ -486,7 +486,9 @@ schermafdruk afgelezen. Beste kandidaat om te lezen: **`0x44af90(Perso)`**, de e
 die elk frame ná het renderen draait (`0x401dbd` → `0x44b4a0`, PERSO_FRAME.md §1 stap 24, naast
 `0x44ae60` Perso_UpdateHUD) — precies de plaats voor een grond-decal. Het gereedschap is er ook: de
 sprite-primitief `0x470f10` tekent zonder vlagbit 0 géén billboard maar een quad in het vlak met de normaal uit
-`S+0x230` (PERSO_DEATH.md §4.1, PROJECTILES.md §5.3), dus een platte quad op de grondnormaal.
+`S+0x230` (PERSO_DEATH.md §4.1, PROJECTILES.md §5.3), dus een platte quad op de grondnormaal. De port heeft die
+primitief sinds de voetstappen ook (`hud_world_decal`, FOOTSTEPS.md §4): zodra bekend is welk beeld en welke
+vlaggen het origineel gebruikt, kan de ring hieronder daardoor vervangen worden.
 
 Wat de port doet — `player_landing_ring` (`src/player.c`), `hud_world_ring` (`src/hud.c`), aanroep in
 `src/main_engine.c` tussen de wereld en de HUD:

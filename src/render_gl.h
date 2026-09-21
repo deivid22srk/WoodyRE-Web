@@ -23,10 +23,17 @@ void win_swap(Window *w);
 void win_close(Window *w);
 double win_time(void);                        /* seconds, high resolution */
 
+/* One texture group's share of the world, baked once. `idx` is what the current frame actually draws out of it:
+ * the triangles of the faces the visibility pass kept (see rnd_frame). */
+struct WorldBatch { uint32_t group; uint32_t ntris; float *pos; float *uv; uint8_t *col;
+                    uint32_t *idx, nidx, idx_cap; uint32_t *face; };   /* face: per triangle, only for the light batches */
+/* Where a world face ended up in the batches, so the visibility pass can put its triangles back in. */
+struct FaceBatch { uint32_t tri0, ntris, group; uint8_t lit; };
+
 typedef struct {
     TexFile *tex; GelFile *gel; InsFile *ins;
     /* world geometry baked into vertex arrays per texture group */
-    struct WorldBatch { uint32_t group; uint32_t ntris; float *pos; float *uv; uint8_t *col; } *batches; uint32_t nbatches;
+    struct WorldBatch *batches; uint32_t nbatches;
     /* static lighting from the .lit (docs/LIGHTING.md): lit faces are drawn in passes (ambient fill, additive light
      * polygons, texture x2), everything else in one pass */
     const LitFile *lit; struct WorldBatch *litb;      /* lit faces per texture group (same count as batches) */
@@ -35,9 +42,16 @@ typedef struct {
     float last_time;
     int have_sky; uint32_t sky_tex[5]; float sky_hu, sky_hv;   /* sky cube (docs/SKY.md): +z, +x, -z, -x, top */
     int show_world, show_instances, wireframe;
+    /* visibility (0x42a980 / 0x42ac10): which sectors of the .gel the camera can see, and the faces that go with them */
+    const VisFile *vis;                                /* .vis potentially visible sets, NULL when the level has none */
+    int cull;                                          /* 0 = draw the whole level, 1 = frustum only, 2 = frustum + .vis */
+    struct FaceBatch *face_batch;                      /* per world face */
+    uint32_t *face_stamp, stamp_gen;                   /* the frame stamp of poly+4: one face is collected once */
+    uint8_t *sec_vis, *sec_prev; int pvs_on, sec_dirty;/* per sector: visible now / last frame */
+    uint32_t drawn_tris, total_tris; uint32_t nsec_vis;
 } Renderer;
 
-int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit);   /* lit may be NULL */
+int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis);   /* lit / vis may be NULL */
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s);
 void rnd_fade(float brightness);             /* darken the finished frame: 1 = normal, 0 = black */
 void rnd_free(Renderer *r);

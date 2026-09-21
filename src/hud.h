@@ -28,6 +28,13 @@ void hud_anim_pickup(int kind, const float *screen, int face);
 /* House menu pages (docs/TITLE.md 5): page 0 = "Press a key", page 1 = New game / Load game / Options / Quit; logo = House.rck image 1 */
 void hud_title_draw(int page, int sel, int want_logo, float dt);
 void hud_title_reset(void);
+/* a panel page of the common menu class (docs/TITLE.md 5.1): the items centred from y = yfrac * 480, one cell
+ * (62 * S / 40) apart, size 30 shrinking until the widest one fits, the selected one blinking away at 2 Hz. */
+void hud_menu_page(const uint32_t *ids, int n, float yfrac, int sel, float dt);
+/* the results screen after a level (docs/GAMEFLOW.md 5.1, docs/HUD_TEXT.md 6): the two collectible categories with
+ * their "+50 %" bonus, the level time and the score. `level` is the number printed behind string 127 "Level". */
+typedef struct { int level, race, high, cats; int total_a, got_a, total_b, got_b; float time; int score, best; } HudResults;
+void hud_results_draw(const HudResults *r, int show_ok, float dt);
 int  hud_sky_images(uint32_t out[5]);                           /* level bank images in cube order 3,0,1,2,4 when the bank has >= 5 images, else 0 */
 /* pickups are sprites, not meshes (docs/BONUS.md 3.1, 0x479530): n = 0 life, 1 charge, 2 W, 3 $, 4 flag. Call between the 3D frame and hud_begin. */
 void hud_world_sprites_begin(const float *right, const float *up);
@@ -36,6 +43,11 @@ void hud_world_wing(int n, const float *c, const float *u, const float *v, float
 void hud_world_sprites_end(void);
 /* additive effect sprite (bank 0 image 0, 4 or 6), rotated by `turns` around the view axis; colour = rgb * alpha */
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha);
+/* a sprite that lies in a plane instead of facing the camera (0x4717d7: without flag bit 0 the quad is built on the
+ * normal S+0x230..0x238), turned so that +v runs along `dir`, optionally mirrored (flag 0x40, docs/PERSO_DEATH.md).
+ * `size` is the half diagonal, as for every sprite. It darkens what is under it by `rgb * strength`, see hud.c. */
+void hud_world_decal(int image, const float *pos, const float *normal, const float *dir, float size, int mirror, const float *rgb, float strength);
+int  hud_step_image(void);                                      /* bank 0 image used for the footstep mark (WOODY_STEPIMG) */
 /* additive ribbon segment with a colour per end (bank 0 image 0) */
 void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw, const float *rgb_a, const float *rgb_b);
 /* additive camera-facing line quad (line primitive 0x471a10, bank 0 image 1): half width hw, colour*alpha at both ends */
