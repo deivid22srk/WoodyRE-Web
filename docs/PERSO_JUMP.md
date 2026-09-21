@@ -386,7 +386,7 @@ void Perso_AttackUpdate(Perso *p)   /* 0x457a50 */
 `Perso_AttackProbe 0x4575b0(p, v)`: straal van `a = p+0xc + (0,5,0)` (`0x4a9884`) naar `a + v`
 (`0x4359b0(&a, &b, −1)`); `[0x53a554]` = trefsoort (0 niets, 1 wereld, 2 instantie), `[0x53a558]` = fractie.
 Geen treffer ⇒ 0 (log "On Ground during air attack" als onGround – no-op). Treffer: vonk-effect
-`0x479c80(1, &trefpunt, 0)`; als trefsoort 2 en de polygoon-vlag `(poly[0] & 0xff00) == 0x400` van instantie
+`0x479c80(1, &trefpunt, 0)` (OBJECTS.md §1.6); als trefsoort 2 en de polygoon-vlag `(poly[0] & 0xff00) == 0x400` van instantie
 `[0x53a560]` (poly-index `[0x53a58c]`, 0x90 B per poly): `0x464e00(p, inst)` – vereist `p+0x524 < 0`,
 `p+0x26c == 0`, en wandnormaal `|n.y| ≤ 0.05` (`0x4ab7d0`, f64; normaal uit `0x4b3108`); dan
 `p+0x510 = normalize(n.x, 0, n.z)`, `p+0x51c = inst` ⇒ **toestand 8**: `T = AnimLen(0xf,0)`, anim 0xf,
@@ -475,7 +475,35 @@ als `atk != 0` of `p+0x694`: niets; jumper-toestand 2 ⇒ `0x463f40` (loop/idle-
 
 In toestand 1 (`p+0x21c == 1`) gebruikt `0x4642f0` de set 0x6b..0x6f, met argument 1 de set 0x47..0x4c.
 
-## 5. Open vragen
+## 5. Landingsring onder de speler (port-reconstructie, issue #1)
+
+Zodra Woody los van de grond is ligt er in het origineel een **heldere ring op de vloer onder hem**: de plek
+waar hij neerkomt. Het is niet de schaduw — die is geprojecteerde geometrie (LIGHTING.md §4), ligt er ook als
+hij gewoon loopt en heeft de vorm van het model; de ring hoort bij de sprong en verdwijnt bij de landing.
+
+**Niet gedecompileerd.** De tekenfunctie is in `Woody.exe` nog niet aangewezen; de ring hieronder is van een
+schermafdruk afgelezen. Beste kandidaat om te lezen: **`0x44af90(Perso)`**, de enige nog ongelezen Perso-functie
+die elk frame ná het renderen draait (`0x401dbd` → `0x44b4a0`, PERSO_FRAME.md §1 stap 24, naast
+`0x44ae60` Perso_UpdateHUD) — precies de plaats voor een grond-decal. Het gereedschap is er ook: de
+sprite-primitief `0x470f10` tekent zonder vlagbit 0 géén billboard maar een quad in het vlak met de normaal uit
+`S+0x230` (PERSO_DEATH.md §4.1, PROJECTILES.md §5.3), dus een platte quad op de grondnormaal. De port heeft die
+primitief sinds de voetstappen ook (`hud_world_decal`, FOOTSTEPS.md §4): zodra bekend is welk beeld en welke
+vlaggen het origineel gebruikt, kan de ring hieronder daardoor vervangen worden.
+
+Wat de port doet — `player_landing_ring` (`src/player.c`), `hud_world_ring` (`src/hud.c`), aanroep in
+`src/main_engine.c` tussen de wereld en de HUD:
+
+| | |
+|---|---|
+| wanneer | zolang `on_ground == 0` én de speler onder eigen gewicht valt: niet dood, geen gescripte actie (toestand 5), niet op de raket (toestand 8), niet aan een wand (toestand 4) en niet tijdens de klim-over-wortelbeweging. Niet in cinematics, in de vrije camera of buiten een speelbaar level |
+| waar | `GetHeight` (`world_ground`, `0x435650`) vanaf de voeten + 43 (`P+0x00`) recht omlaag, dus zowel wereldpolygonen als de press-/hull-nodes van instanties (ook op een bewegend platform). Geen maximumval: boven een put licht de bodem op; geen vloer gevonden ⇒ geen ring. De ring staat recht onder hem, er wordt niet vooruit gerekend met zijn horizontale snelheid |
+| hoe | een ring in het vlak van de gevonden vloernormaal, 3 eenheden erboven (anders z-fight hij met de vloer), straal **69** = de botsingsstraal van de Perso (`P+0x04`), bandbreedte ±12 % van de straal, wit, additief, helderheid 0.7, 48 segmenten. Vaste maat: de ring krimpt of vervaagt niet met de hoogte. De helderheid zit in de vertexkleuren (0 op beide randen, vol op de straal), dus de band heeft geen harde rand en er is geen textuur voor nodig |
+| stelschroeven | `WOODY_RING=<straal>` zet de straal, `WOODY_RING=0` schakelt de ring uit |
+
+Onzeker zolang `0x44af90` niet gelezen is: straal, dikte, kleur en helderheid, of de ring pulseert of meedraait,
+of het origineel hem op de grondnormaal legt of horizontaal, en of andere actoren er ook een krijgen.
+
+## 6. Open vragen
 
 * Subtoestand 2 (pik-dash) heeft **geen eigen time-out**: hij eindigt alleen door een muur-/grondtreffer van
   `0x4575b0` (50 langs de dashrichting, daarna 100 horizontaal) of een doelwittreffer. Omdat de richting
@@ -492,4 +520,5 @@ In toestand 1 (`p+0x21c == 1`) gebruikt `0x4642f0` de set 0x6b..0x6f, met argume
   is niet gedecompileerd.
 * `vtbl[37]` (+0x94) en `vtbl[39]` (+0x9c) van de vijandklassen (wat doet een treffer per vijandtype, welke
   scriptevents volgen) zijn niet gevolgd.
-* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (harde landing) en `0x479c80` (vonk) zijn niet gelezen.
+* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (harde landing) en `0x479c80` (vonk) zijn niet gelezen. De port tekent op de
+  aanroepplekken van `0x479c80` wel een inslag (afdruk + vonken), maar die vorm is een reconstructie — zie OBJECTS.md §1.6.

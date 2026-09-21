@@ -22,7 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
-    GLuint fx[10];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow (docs/ROCKET.md 5) */
+    GLuint fx[11];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow (docs/ROCKET.md 5); slot 10 = the footstep mark (docs/FOOTSTEPS.md) */
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint env[4];                                        /* bank 0 images 53..56: the butterflies of the environment instances (0x47e050 picks one of the four) */
@@ -64,7 +64,10 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
     return t;
 }
 
-static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : -1; }
+/* which bank 0 image the footstep mark uses. 0x47cba0 is not decompiled, so its image is unknown: the port takes
+ * the soft cloud (image 14) and WOODY_STEPIMG=<n> tries another one (docs/FOOTSTEPS.md 4). */
+int hud_step_image(void) { static int v = -1; if (v < 0) { const char *e = getenv("WOODY_STEPIMG"); v = e ? atoi(e) : 14; if (v < 0) v = 14; } return v; }
+static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : image == hud_step_image() ? 10 : -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
@@ -129,7 +132,7 @@ void hud_free(void)
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
     for (int i = 0; i < 4; i++) if (H.env[i]) glDeleteTextures(1, &H.env[i]);
     if (H.beam) glDeleteTextures(1, &H.beam);
-    for (int i = 0; i < 10; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
+    for (int i = 0; i < 11; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }
@@ -585,30 +588,122 @@ void hud_text_draw(int closed, float dt)
     for (int i = 0; i < H.box.n; i++) { const uint16_t *s = hud_string(H.box.id[i]); if (s) font_draw(H.box.x[i], H.box.y[i], s, col); }
 }
 
-/* ---------------------------------------------------------------- House menu pages (docs/TITLE.md 5) */
+/* ---------------------------------------------------------------- menu pages (docs/TITLE.md 5) */
 void hud_title_reset(void) { H.logo_v = 0; H.menu_t = 0; }
+
+/* the item list of the common page class (0x446640): one size S for the whole page, shrunk until the widest item
+ * fits in 640; y = yfrac * 480 and a cell (62 * S / 40) per item; the selected item is left out while the blink
+ * phase is under 0.25 s - the original has no cursor and no colour difference. Advancing the phase is the caller's
+ * job (0x4464f0 does it once per frame), so hud_menu_page and hud_title_draw never both tick it. */
+static void page_items(const uint32_t *ids, int n, float yfrac, int sel)
+{
+    float S = 30.0f;                                                  /* 0x4b39a8 */
+    for (int i = 0; i < n; i++) {
+        const uint16_t *s = hud_string(ids[i]); if (!s) continue;
+        while (S > 15.0f) { font_size(S); if (font_measure(s) < 640.0f) break; S -= 1.0f; }
+    }
+    font_size(S);
+    float y = yfrac * 480.0f, cell = font_cell();
+    for (int i = 0; i < n; i++) {
+        const uint16_t *s = hud_string(ids[i]);
+        if (s && !(i == sel && H.menu_t < 0.25f)) font_draw(320 - font_measure(s) * 0.5f, y, s, 0xff808080);
+        y += cell;
+    }
+    font_size(17.0f);
+}
+
+void hud_menu_page(const uint32_t *ids, int n, float yfrac, int sel, float dt)
+{
+    if (!H.ok) return;
+    H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;           /* [0x5d7b1c], wraps at 0.5 (0x4b39a4) */
+    page_items(ids, n, yfrac, sel);
+}
 
 void hud_title_draw(int page, int sel, int want_logo, float dt)
 {
     if (!H.ok) return;
+    static const uint32_t items0[1] = { 21 };                        /* "Press a key" */
     static const uint32_t items1[4] = { 22, 23, 36, 2 };             /* New game, Load game, Options, Quit */
     H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;
-    int hide_sel = H.menu_t < 0.25f;                                  /* the selected item blinks at 2 Hz; no colour highlight, no cursor */
+    if (page == 0) page_items(items0, 1, 0.7f, 0);
+    else if (page == 1) page_items(items1, 4, 0.55f, sel);
     font_size(30.0f);
-    if (page == 0) {
-        const uint16_t *s = hud_string(21);                           /* "Press a key", y fraction 0.7 */
-        if (s && !hide_sel) font_draw(320 - font_measure(s) * 0.5f, 336, s, 0xff808080);
-    } else if (page == 1) {
-        for (int i = 0; i < 4; i++) {
-            const uint16_t *s = hud_string(items1[i]);
-            if (s && !(i == sel && hide_sel)) font_draw(320 - font_measure(s) * 0.5f, 264 + 46.5f * i, s, 0xff808080);
-        }
-    }
     if (H.logo && H.logo_v > 0) {                                     /* 0x446b00: alpha = 254 * v / 5, source 0,0,209,247 at (216,16) */
         uint32_t c = (uint32_t)(254.0f * H.logo_v / 5.0f) << 24 | 0x808080;
         quad(216, 16, 209, 247, H.logo, 0, 0, 209.0f / H.logo_w, 247.0f / H.logo_h, c, c, c, c);
     }
     if (want_logo) { H.logo_v += 5 * dt; if (H.logo_v > 5) H.logo_v = 5; } else H.logo_v = 0;
+    font_size(17.0f);
+}
+
+/* ---------------------------------------------------------------- results screen (docs/GAMEFLOW.md 5.1, HUD_TEXT.md 6)
+ * The strings are the ones the original reserves for it (12 CLEARED!!, 13 RESULTS, 15 OK, 17 HIGH SCORE, 46 points,
+ * 127 Level, 128 Seconds, 129 Final Score, 130 "Total Score :" and the characters 7 "%", 8 "=", 10 ":", 11 "+"), the
+ * two categories are the ones the score formula 0x453cb0 uses, and each one gets its "+ 50 %" when it is complete.
+ * The layout itself (the 20-odd Measure/Draw pairs of 0x454963..0x455d97) is NOT decompiled: the placement below is
+ * this port's, and so is the dark backdrop (drawn like the text box of message 1080). String 14 "TOTAL" has no place
+ * here yet because nothing says where the original puts it. */
+static uint16_t g_row[64]; static int g_rown;
+static void row_reset(void) { g_rown = 0; g_row[0] = 0; }
+static void row_str(uint32_t ref)
+{
+    const uint16_t *s = hud_string(ref);
+    for (; s && *s && g_rown < 62; s++) g_row[g_rown++] = *s;
+    g_row[g_rown] = 0;
+}
+static void row_space(void)                                          /* Common string 40 is "a a": its middle code is the space glyph */
+{
+    const uint16_t *s = hud_string(40);
+    if (s && s[0] && s[1] && g_rown < 62) { g_row[g_rown++] = s[1]; g_row[g_rown] = 0; }
+}
+static void row_num(int v)
+{
+    uint16_t d[16]; int n = number_codes(d, v);
+    for (int i = 0; i < n && g_rown < 62; i++) g_row[g_rown++] = d[i];
+    g_row[g_rown] = 0;
+}
+static float row_draw(float x, float y, int right, uint32_t col)     /* right: x is the right edge */
+{
+    float w = font_measure(g_row);
+    font_draw(right ? x - w : x, y, g_row, col);
+    return w;
+}
+
+void hud_results_draw(const HudResults *r, int show_ok, float dt)
+{
+    if (!H.ok) return;
+    H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;
+    const uint32_t col = 0xff808080;                                  /* the menu colour: 0x80 per channel is 1.0 (docs/HUD_TEXT.md 5.2) */
+    const float L = 150, R = 490, rows = 42;
+    quad(96, 14, 448, 464, 0, 0, 0, 0, 0, 0x60000000, 0x60000000, 0x60000000, 0x60000000);   /* backdrop, like the 1080 text box: black at half the text alpha */
+    font_size(35.0f);
+    { const uint16_t *s = hud_string(12); if (s) font_draw(320 - font_measure(s) * 0.5f, 28, s, col); }     /* CLEARED!! */
+    font_size(30.0f);
+    { const uint16_t *s = hud_string(13); if (s) font_draw(320 - font_measure(s) * 0.5f, 78, s, col); }     /* RESULTS */
+    font_size(24.0f);
+    float y = 132;
+    row_reset(); row_str(127); row_space(); row_str(10); row_draw(L, y, 0, col);                            /* "Level :" */
+    row_reset(); row_num(r->level); row_draw(R, y, 1, col);
+    y += rows;
+    for (int cat = r->race ? 1 : 0; cat < 2; cat++) {                                                       /* the score categories of 0x453cb0; a race level only counts the second one */
+        int got = cat ? r->got_b : r->got_a, tot = cat ? r->total_b : r->total_a;
+        sprite_rect(cat ? 4 : 12, L, y - 6, 40, 40);                                                        /* sprite 4 = the W of the HUD; 12 is the 64x64 icon of image 64 the HUD never draws */
+        row_reset(); row_num(got); row_space(); row_str(8); row_space(); row_num(tot);                       /* "got = total" */
+        if (tot && got == tot) { row_space(); row_space(); row_str(11); row_num(50); row_str(7); }           /* "+50%" */
+        row_draw(R, y, 1, col);
+        y += rows;
+    }
+    row_reset(); row_str(128); row_space(); row_str(10); row_draw(L, y, 0, col);                            /* "Seconds :" */
+    row_reset(); row_num((int)r->time); row_draw(R, y, 1, col);
+    y += rows + 10;
+    row_reset(); row_str(129); row_space(); row_str(10); row_draw(L, y, 0, col);                            /* "Final Score :" */
+    row_reset(); row_num(r->score); row_space(); row_str(46); row_draw(R, y, 1, col);                        /* "<score> points" */
+    y += rows;
+    if (r->high) { const uint16_t *s = hud_string(17); if (s && H.menu_t >= 0.25f) font_draw(320 - font_measure(s) * 0.5f, y, s, col); }   /* HIGH SCORE, blinking with the menu phase */
+    y += rows;
+    row_reset(); row_str(130); row_draw(L, y, 0, col);                                                       /* "Total Score :" (the best run of this level) */
+    row_reset(); row_num(r->best > r->score ? r->best : r->score); row_draw(R, y, 1, col);
+    if (show_ok) { const uint32_t ok = 15; page_items(&ok, 1, 0.90f, 0); }                                    /* the panel item of page 0x1e */
     font_size(17.0f);
 }
 
@@ -648,6 +743,39 @@ void hud_world_wing(int n, const float *c, const float *u, const float *v, float
     glEnd();
 }
 void hud_world_sprites_end(void) { glDisable(GL_ALPHA_TEST); glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDisable(GL_TEXTURE_2D); }
+
+/* ring lying in the plane through c with normal n (the landing marker, docs/PERSO_JUMP.md 5). The band runs from
+ * radius-hw to radius+hw and carries its brightness in the vertex colours: 0 at both rims, rgb*alpha at radius, so
+ * it has no hard edge and needs no texture. Additive, like the other world effects. */
+#define RING_SEGS 48
+void hud_world_ring(const float *c, const float *n, float radius, float hw, const float *rgb, float alpha)
+{
+    if (!H.ok || radius <= 0 || hw <= 0 || alpha <= 0) return;
+    float up[3] = { n[0], n[1], n[2] }, l = (float)sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+    if (l < 1e-6f) return;
+    for (int i = 0; i < 3; i++) up[i] /= l;
+    float ax[3] = { 1, 0, 0 }; if (fabs(up[0]) > 0.9f) { ax[0] = 0; ax[2] = 1; }           /* any axis that is not parallel to n */
+    float u[3] = { ax[1] * up[2] - ax[2] * up[1], ax[2] * up[0] - ax[0] * up[2], ax[0] * up[1] - ax[1] * up[0] };
+    l = (float)sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); if (l < 1e-6f) return;
+    for (int i = 0; i < 3; i++) u[i] /= l;
+    float v[3] = { up[1] * u[2] - up[2] * u[1], up[2] * u[0] - up[0] * u[2], up[0] * u[1] - up[1] * u[0] };
+    glDisable(GL_ALPHA_TEST); glDisable(GL_TEXTURE_2D); glBlendFunc(GL_ONE, GL_ONE);
+    for (int band = 0; band < 2; band++) {                                                 /* inner rim -> core, core -> outer rim */
+        float r0 = band ? radius : radius - hw, r1 = band ? radius + hw : radius;
+        glBegin(GL_TRIANGLE_STRIP);
+        for (int i = 0; i <= RING_SEGS; i++) {
+            float a = 6.2831853f * (float)i / (float)RING_SEGS, ca = (float)cos(a), sa = (float)sin(a);
+            float d[3] = { u[0] * ca + v[0] * sa, u[1] * ca + v[1] * sa, u[2] * ca + v[2] * sa };
+            for (int e = 0; e < 2; e++) {                                                  /* the core edge is bright, the rim edge is black */
+                float r = e ? r1 : r0, w = (e == 0) == (band != 0) ? alpha : 0.0f;
+                glColor3f(rgb[0] * w, rgb[1] * w, rgb[2] * w);
+                glVertex3f(c[0] + d[0] * r, c[1] + d[1] * r, c[2] + d[2] * r);
+            }
+        }
+        glEnd();
+    }
+    glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
+}
 
 int hud_sky_images(uint32_t out[5])
 {
@@ -692,6 +820,34 @@ void hud_world_fx(int image, const float *pos, float size, float turns, const fl
     glTexCoord2f(0, 1); glVertex3f(pos[0] - r[0] - u[0], pos[1] - r[1] - u[1], pos[2] - r[2] - u[2]);
     glTexCoord2f(1, 1); glVertex3f(pos[0] + r[0] - u[0], pos[1] + r[1] - u[1], pos[2] + r[2] - u[2]);
     glTexCoord2f(1, 0); glVertex3f(pos[0] + r[0] + u[0], pos[1] + r[1] + u[1], pos[2] + r[2] + u[2]);
+    glEnd();
+    glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
+}
+/* ---- ground mark of a footstep (docs/FOOTSTEPS.md): a sprite that lies in a plane instead of facing the camera
+ * (0x4717d7 builds the quad on the normal S+0x230..0x238 when flag bit 0 is off), turned so that +v runs along the
+ * walking direction (flag bit 2 = rotation) and mirrored in u for the other foot (flag bit 0x40, value 2 = mirrored).
+ * `size` is the half diagonal, as everywhere (0x470fee). What 0x47cba0 draws is not decompiled, so the port prints
+ * the mark as `dst * (1 - rgb*strength)`: the only ground-ish image it has is a white cloud on black whose alpha is a
+ * constant 1, and an alpha blend of that is a dark square. Multiplying keeps the black of the texture out of it. */
+void hud_world_decal(int image, const float *pos, const float *normal, const float *dir, float size, int mirror, const float *rgb, float strength)
+{
+    int n = fx_slot(image); if (!H.ok || n < 0 || !H.fx[n] || strength <= 0 || size <= 0) return;
+    float N[3] = { normal[0], normal[1], normal[2] }, l = (float)sqrt(N[0] * N[0] + N[1] * N[1] + N[2] * N[2]);
+    if (l < 1e-6f) { N[0] = 0; N[1] = 1; N[2] = 0; } else { N[0] /= l; N[1] /= l; N[2] /= l; }
+    float d = dir[0] * N[0] + dir[1] * N[1] + dir[2] * N[2];
+    float v[3] = { dir[0] - N[0] * d, dir[1] - N[1] * d, dir[2] - N[2] * d };
+    l = (float)sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); if (l < 1e-6f) return;
+    v[0] /= l; v[1] /= l; v[2] /= l;
+    float u[3] = { v[1] * N[2] - v[2] * N[1], v[2] * N[0] - v[0] * N[2], v[0] * N[1] - v[1] * N[0] };
+    if (mirror) { u[0] = -u[0]; u[1] = -u[1]; u[2] = -u[2]; }
+    float h = size * 0.70710678f, c[3] = { pos[0] + N[0] * 3.0f, pos[1] + N[1] * 3.0f, pos[2] + N[2] * 3.0f };   /* lifted off the floor: coplanar it z-fights */
+    glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[n]);
+    glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR); glColor3f(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(c[0] - u[0] * h + v[0] * h, c[1] - u[1] * h + v[1] * h, c[2] - u[2] * h + v[2] * h);
+    glTexCoord2f(0, 1); glVertex3f(c[0] - u[0] * h - v[0] * h, c[1] - u[1] * h - v[1] * h, c[2] - u[2] * h - v[2] * h);
+    glTexCoord2f(1, 1); glVertex3f(c[0] + u[0] * h - v[0] * h, c[1] + u[1] * h - v[1] * h, c[2] + u[2] * h - v[2] * h);
+    glTexCoord2f(1, 0); glVertex3f(c[0] + u[0] * h + v[0] * h, c[1] + u[1] * h + v[1] * h, c[2] + u[2] * h + v[2] * h);
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }

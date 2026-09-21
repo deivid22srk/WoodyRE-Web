@@ -16,4 +16,6 @@ out/*.png
 out/*.ppm
 out/*.exe
 out/*.pdb
+out/synth.*
+out/trunc.*
 woodyre.sav

@@ -157,6 +157,22 @@ wordt `(entry_count + total_pairs)*8 + 4` bytes gealloceerd en gevuld als
 Interpretatie: per cel één of twee lijsten van vanuit die cel zichtbare cellen (PVS) met een
 vlag per cel. Validatie: celaantal == `.gel` cells op alle levels.
 
+### Gebruik in de port
+`src/level.c::vis_load` leest het bestand met `world+0x20` uit de `.gel` als aantal en controleert dat elk
+eerste woord van een paar een geldige sectorindex is en dat `total_pairs` klopt; anders wordt het bestand
+genegeerd en valt de renderer terug op alleen frustum-culling. Per frame zoekt `world_visibility`
+(`src/render_gl.c`) met `gel_sector` (`0x4081c0`) de sector van de camera op, neemt de **vereniging** van al zijn
+lijsten (1 of 2, de betekenis van `id` is immers niet bevestigd — een vereniging kan alleen te véél tonen),
+voegt de eigen sector toe en gooit daarna elke sector weg waarvan de bbox buiten het beeldfrustum valt. Van de
+overgebleven sectoren worden de polygoonlijsten (`.gel` sectie 7) gestempeld zoals `0x42ac10` dat doet, zodat
+een vlak dat in meerdere sectoren staat één keer getekend wordt. `vis_load` print bij het laden min/gemiddeld/max
+aantal zichtbare sectoren en hoeveel sectoren zichzelf noemen, zodat meteen te zien is of de lezing klopt;
+**F4** zet de culling stap voor stap uit (frustum + `.vis` → alleen frustum → hele level).
+
+De port gebruikt de sector-polygoonlijst en niet de groep uit het tweede woord van een paar: 22 van de 28 levels
+hebben één groep over alle polygonen, dus daarmee zou er niets wegvallen. De vlag/groep wordt daarom (nog) niet
+gelezen.
+
 ### Onzeker
 - Buiten loader en destructor (`0x407a80`) is geen code gevonden die `world+0x28` leest; de
   betekenis van `id` (0/1) en de vlag is dus niet uit code bevestigd.

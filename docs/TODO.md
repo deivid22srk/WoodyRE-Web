@@ -8,17 +8,19 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | wat | status | waar |
 |---|---|---|
 | Klim-over volgt de wortelbeweging van .ins-anim 15 (`0x44e290`); nu een lerp | zie OBJECTS.md §1.5 | `src/player.c` `climb_update` case 3 |
-| Klimmen: geen botsing met de wereld (zijwaarts door muren), geen vonken (`0x479c80`) | analyse klaar | OBJECTS.md §1.3 |
+| Klimmen: geen botsing met de wereld (zijwaarts door muren) | analyse klaar | OBJECTS.md §1.3 |
 | Bukken (actie 5), rondkijken (actie 7) | niet geanalyseerd | PERSO_MOVE.md |
 | Idle-variaties 0x59/0x5a | niet geport | PERSO_MOVE.md §4.3 |
-| Gescripte Perso-acties (bericht 1040): 17/18 (deur in/uit, met fade), teleport (bericht 26) en beide camera-acties (cut bij de teleport, `0x44e5a0` aan het eind van 18) geport; overige acties (10..16, 19: wortelbeweging) alleen stilstaan; bericht 30 (LockMove) niet | grotendeels | PERSO_DEATH.md §1-2.1, CINEMATIC.md §6 |
+| Gescripte Perso-acties (bericht 1040/1140): 17/18 (deur in/uit, met fade), teleport (bericht 26), beide camera-acties en nu ook de **wortelbeweging** (`0x44e290`) van alle overige acties (10..16, 19, 74..78) geport; bericht 30 (LockMove) niet | grotendeels | PERSO_DEATH.md §1-2.1, CINEMATIC.md §6, OBJECTS.md §1.5 |
 | Doodsanimaties per soort en hit-animatie geport. Niet: tekstballon (soort 1, `0x478980`), skelet-flits (soort 2/9, `0x477e40`), waterplons (soort 7, `0x478660`), gebukte varianten, race-variant `0x464a00`, wit knipperen bij de onkwetsbaarheidsbonus (`0x44cf50`) | deels | PERSO_DEATH.md §3-6 |
 | Perso-toestand 8 (raket berijden, type 20): geport. Niet: afstap-anim (in het origineel ook nergens aangevraagd), type 21 (meerijden op de kanonbom) | grotendeels | ROCKET.md §6 |
 | Perso-toestand 6 (bom dragen) | op hoofdlijnen | BONUS.md §7 |
 | Checkpoints: respawn-positie (1030) | controleren | GAMEFLOW.md |
+| Landingsring op de vloer onder een springende Woody (issue #1): geport, maar de tekenfunctie van het origineel is niet gevonden (kandidaat `0x44af90`, elk frame na het renderen) – straal, dikte, kleur en helderheid zijn van een schermafdruk geschat, niet gelezen | geport, maten onzeker | PERSO_JUMP.md §5 |
 | Salto die wegvalt bij springen in de lucht (melding gebruiker) | niet te reproduceren; welke toets/timing? | — |
 | Obstakelsensor van de Mover | niet geport | PERSO_MOVE.md |
-| Geometrie-queries zijn brute force, geen kd-tree | werkt, traag bij grote levels | — |
+| Grondsoort `P+0x308` wordt gelezen (voor de voetstappen), maar soort 1 (glad/ijs) past de bijdraai-ramp `0x45a850` nog niet aan | deels | PERSO_MOVE.md §6.4, FOOTSTEPS.md §2 |
+| Geometrie-queries lopen nu via de kd-boom van `.gel` (vloer, push-out, zichtlijnen); instantie-hulls worden per knoop met een wereld-bbox afgewezen | opgelost (issue #9) | FORMAT_GEL.md 5 |
 
 ## Camera
 
@@ -58,7 +60,9 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 
 | wat | status | waar |
 |---|---|---|
-| Deeltjes: de pickup-effecten (`0x4793d0`) zijn geport met hun eigen pool. Niet: vonken bij het klimmen, rook, de explosiedeeltjes van de raket (`0x4767f0`/`0x4764f0`) en stof bij landen | deels | BONUS.md §2.4 |
+| Deeltjes: de pickup-effecten (`0x4793d0`) zijn geport met hun eigen pool. Niet: rook en de explosiedeeltjes van de raket (`0x4767f0`/`0x4764f0`) | deels | BONUS.md §2.4 |
+| Voetstappen: de trigger (loopcyclus 0.38/0.9, soort 2/3 op de grondsoort) en het landingsstof staan er; de effectfuncties `0x47cba0` en `0x476140` zelf zijn niet gedecompileerd, dus beeld, levensduur en kleur zijn een reconstructie | trigger geport, beeld gereconstrueerd | FOOTSTEPS.md |
+| Pikinslag `0x479c80` (afdruk + vonken bij het klimmen en bij elke treffer van de aanvalsstraal): aanroepplekken en timing zijn bewezen, de functie zelf is niet gedecompileerd, dus de afdruk (dezelfde markeringspool als de voetstappen) en de vonken zijn een reconstructie | trigger geport, beeld gereconstrueerd (issue #4) | OBJECTS.md §1.6 |
 | Zwarte contourlijn (SetFlags-bit 0x20) geport. Het origineel blaast alleen hoek 0/1/2 van een quad op (`0x43c42d`); de port alle hoeken, en de afstandsreferentie is de instantie-translatie i.p.v. `inst+0x60` | grotendeels | MODEL_RENDER.md §7 |
 | Modelrendering: mipmaps (het origineel bouwt er 4 met een boxfilter, MIPFILTER POINT); bitreplicatie in de RGB565-decode (het origineel laat de lage bits 0); diepte-sortering van de geblende modelbatches (`0x428d00`, 256 emmers achter-naar-voor) | niet geport | MODEL_RENDER.md recept 9-10 |
 | Pickup-sprite: de grootte is opgelost - `sprite+0x264` is de halve **diagonaal** (`0x470fee`), dus elke additieve sprite in de port was `1/sqrt(2)` te klein. Rechtgezet in `hud_world_fx` en `hud_world_sprite` | opgelost | BONUS.md §2.4 |
@@ -68,15 +72,17 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Wereldvlakken met materiaalbit 15 (onzichtbaar, alleen collision) werden als vlakke grijze platen getekend, o.a. de "glasplaat" in W1A; het origineel slaat ze over vóór de vlaktekenaar (`0x42acd3`). Ook geen lichtvlek en geen schaduw meer op zo'n vlak | opgelost (issue #2) | FORMAT_GEL.md §1 |
 | Lensflare `0x474a90` van licht-objecten: **niet porten**, de registratietabel wordt alleen door bericht 1510 gevuld en dat komt in geen enkel level voor | n.v.t. | LIGHTING.md §1.1 |
 | Lucht: links/rechts-oriëntatie van de kubus | niet geverifieerd | SKY.md |
-| `.vis`-culling (nu frustum-cull per instantie) | niet geport | FORMAT_TEX_COL_VIS_LIT.md |
+| `.vis`-culling: sector van de camera -> `.vis`-lijst -> frustum op de sectorboxen; alleen de vlakken van die sectoren gaan naar de kaart, instanties erbuiten krijgen geen licht, schaduw of tekenbeurt | opgelost (issue #9) | FORMAT_TEX_COL_VIS_LIT.md 3 |
 | Vsync / fps-begrenzing | niet aanwezig | — |
+| `.col` (objecten per bladcel) wordt niet geladen; de port beslist per instantie met `gel_sectors_in_box` op zijn bolstraal welke sectoren hij raakt | bewuste afwijking | FORMAT_TEX_COL_VIS_LIT.md 2 |
 
 ## 2D, menu's, spelverloop
 
 | wat | status | waar |
 |---|---|---|
 | Titel: Opties doet niets, Stoppen slaat de bevestiging over, Laden gaat direct naar de hub, attract-timer | niet geport | TITLE.md |
-| Pauzemenu, resultatenscherm, baas-levensbalk | niet geport | HUD_TEXT.md, GAMEFLOW.md |
+| Resultatenscherm na een level (paneel, juichen, score, "opslaan?"): geport volgens GAMEFLOW §5.2. Niet: de echte layout van het paneel (`0x454963..0x455d97`), de slotkeuze-pagina's en de pauze-/overlayvlaggen van pagina 0x1e | grotendeels | GAMEFLOW.md §5.1-5.2, HUD_TEXT.md §6 |
+| Pauzemenu, baas-levensbalk | niet geport | HUD_TEXT.md, GAMEFLOW.md |
 | HNM-logo's en -films | niet geport | — |
 | Toetsen uit `Woody.cfg`, joystick | niet geport | — |
 | Savegame: eigen `woodyre.sav`, niet het originele formaat | bewust | GAMEFLOW.md |

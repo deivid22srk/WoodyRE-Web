@@ -232,12 +232,14 @@ static void cin_update(EkoVM *vm, float dt, float now)
 
 /* ---- progress (docs/GAMEFLOW.md 6): the active save struct is the only player state that survives a level change.
  * Kept in our own file (woodyre.sav), not in the original's Woody.sav. */
-typedef struct { int32_t lives, unique, charges; float health; uint8_t done[29]; } SaveChar;
+typedef struct { int32_t lives, unique, charges; float health; uint8_t done[29];
+                 int32_t best[29], stats[29][4]; float stat_time[29]; } SaveChar;   /* rec+0x00 best, rec+0x04 done, rec+0x28..0x38 the five stats of that run */
 static struct { uint32_t magic; SaveChar chr[3]; } g_save;
 static int g_char, g_unlock_all;                                 /* cfg+0x380: 0 Woody, 1 Knothead, 2 Splinter */
-static void save_reset(void) { memset(&g_save, 0, sizeof g_save); g_save.magic = 0x31565357; for (int c = 0; c < 3; c++) { g_save.chr[c].lives = 9; g_save.chr[c].health = 3.0f; } }   /* 0x44ffa0 */
-static void save_write(void) { FILE *f = fopen("woodyre.sav", "wb"); if (f) { fwrite(&g_save, sizeof g_save, 1, f); fclose(f); } }
-static void save_read(void) { FILE *f = fopen("woodyre.sav", "rb"); save_reset(); if (f) { if (fread(&g_save, sizeof g_save, 1, f) != 1 || g_save.magic != 0x31565357) save_reset(); fclose(f); } }
+#define SAVE_MAGIC 0x32565357u                                   /* "WSV2": the record grew a best score, so older files are dropped */
+static void save_reset(void) { memset(&g_save, 0, sizeof g_save); g_save.magic = SAVE_MAGIC; for (int c = 0; c < 3; c++) { g_save.chr[c].lives = 9; g_save.chr[c].health = 3.0f; } }   /* 0x44ffa0 */
+static int  save_write(void) { FILE *f = fopen("woodyre.sav", "wb"); if (!f) return 0; int ok = fwrite(&g_save, sizeof g_save, 1, f) == 1; fclose(f); return ok; }   /* 0x450b30; the menu shows page 8 or 9 */
+static void save_read(void) { FILE *f = fopen("woodyre.sav", "rb"); save_reset(); if (f) { if (fread(&g_save, sizeof g_save, 1, f) != 1 || g_save.magic != SAVE_MAGIC) save_reset(); fclose(f); } }
 static int char_of_level(int i) { return i <= 10 ? 0 : i <= 17 ? 1 : i <= 24 ? 2 : i == 25 ? 0 : -1; }   /* byte table 0x404830; -1 = unchanged */
 /* LevelIsEnable 0x450470 (table 0x450694): the done flag of the predecessor. The original reads it in the block of the
  * current character; here in the block of the predecessor's own character (otherwise K1A could never open from KWS). */
@@ -267,6 +269,135 @@ static int inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir)
     }
     return 0;
 }
+/* ---- results screen (docs/GAMEFLOW.md 5.1 and 10.1): the hub script ends a level with 1140 [door, var], the engine
+ * puts the Perso on the door vector with scripted action 0x4a (he comes down at the door with his parasol, animation
+ * 74 with its own camera track) and runs the state machine perso+0x724 while menu page 0x1e is up:
+ *   0 arriving  -> the Perso is free again: action 0x4b (the pose that holds the panel), panel visible (state 1)
+ *   1 panel     -> OK: n = categories with collected == total != 0 (0x453cf0), n unique items (0x44c840),
+ *                  cheer action 0x4e (n != 0) or 0x4c (0x453fc0), state 2 / 3, panel hidden
+ *   2 / 3 cheer -> cheer over: action 0x4d and state 4 (0x454020)
+ *   4 score     -> score 0x453cb0 into the save when it beats the record (0x450230), then page 6 "Do you want to save?"
+ *   5 leaving   -> 0x454050 started a 0.5 s fade-out and set +0x744 = 0.5; after it: prop hidden, fade-in 0.5 s,
+ *                  camera back (0x41f9f0(2)), the Perso in front of the door and SetVar(perso+0x728, 1) (0x45422c),
+ *                  which is what the hub script has been waiting for.
+ * The exact end position of state 5 (0x454244..) and the layout of the panel are not decompiled; see docs/GAMEFLOW.md 10. */
+static struct { int have, level; int stats[4]; float time; } g_stats;   /* app+0x74: copied from perso+0x710 by EndLevel (0x404c21) */
+static struct {
+    int on, state;                          /* perso+0x724 */
+    uint32_t var;                           /* perso+0x728: the variable 1140 came with */
+    float t;                                /* perso+0x744 */
+    int page, sel;                          /* menu page 0x1e / 6 / 8 / 9 and its selected item */
+    int race, cats, score, best, high;
+    Vec3 door_p, door_d;
+} g_res;
+
+static int results_race(int level) { return level == 0xd || level == 0xf || level == 0x11 || level == 0x14 || level == 0x16 || level == 0x18; }   /* the R-levels */
+static int results_score(const int *st, float time, int race)                      /* 0x453cb0 */
+{
+    int s = 0, t = (int)time;
+    if (!race) { s += (t < 1800 ? 1800 - t : 0) * 10; s += st[2] * 100 + (st[0] && st[2] == st[0] ? st[2] * 50 : 0); }
+    return s + st[3] * 100 + (st[1] && st[3] == st[1] ? st[3] * 50 : 0);                                              /* a complete category is worth 50 % more */
+}
+static int results_cats(const int *st) { return (st[0] && st[2] == st[0]) + (st[1] && st[3] == st[1]); }               /* 0x453cf0 */
+/* the number behind string 127 "Level": the position of the level inside its own character's set */
+static int results_level_no(int level) { return level >= 2 && level <= 10 ? level - 1 : level >= 12 && level <= 17 ? level - 11 : level >= 19 && level <= 24 ? level - 18 : level; }
+
+static void script_action_camera(void)      /* the tail of 0x44dda0: an action whose animation carries a camera track becomes the camera (0x44df67) */
+{
+    Instance *pi = g_player ? g_player->inst : NULL; Vec3 e, t;
+    if (pi && (uint32_t)pi->anim < pi->model->nanims && ins_camera_eval(pi, pi->anim, 0.0f, &e, &t)) {
+        g_cam.anim_inst = pi; g_cam.anim_letterbox = 0; g_cam.anim_eye = e; g_cam.anim_tgt = t;
+        g_cam.cut = 1; cam_set_mode(0x80);                                         /* 0x41f9f0(2) = cut, 0x41f410(7, 0) = mask 1 << 7; no letterbox, unlike a cinematic */
+    }
+}
+static void results_action(int act) { Vec3 z = { 0, 0, 0 }; if (g_player) { player_script_action(g_player, act, 0, z, z); script_action_camera(); } }
+
+static void results_capture(void)           /* 0x404c21: memcpy(app+0x74, perso+0x710, 20) before the level is unloaded */
+{
+    int race = g_player && (g_player->inst->type == 18 || g_player->inst->type == 19);
+    int total = 0, dead = 0;
+    for (int i = 0; i < g_enemies.n; i++) { total++; if (g_enemies.e[i].hp <= 0) dead++; }
+    g_stats.have = 1; g_stats.level = g_level;
+    g_stats.stats[0] = total;                                                        /* [0x4c5330]: every enemy counts itself in PostLoad */
+    g_stats.stats[1] = g_player ? (race ? g_player->race_total : g_player->bonus_total) : 0;   /* [0x5e54f4] / [0x5e54e4] */
+    g_stats.stats[2] = dead;                                                         /* [0x4c532c], which EndLevel copies over stat[2] */
+    g_stats.stats[3] = g_player ? (race ? g_player->race_bonus : g_player->bonus_got) : 0;     /* [0x5e54e8] */
+    g_stats.time = g_player ? g_player->play_time : 0.0f;                            /* the accumulator perso+0x710+0x10 */
+    printf("  RESULTS stats of %s: %d/%d enemies, %d/%d bonuses, %.0f s", k_levels[g_level], g_stats.stats[2], g_stats.stats[0], g_stats.stats[3], g_stats.stats[1], g_stats.time), puts("");
+}
+
+static void results_begin(EkoVM *vm, Instance *door, uint32_t var)                    /* 0x453d90 */
+{
+    Vec3 p0, dir; int have = inst_vector(door, 5, &p0, &dir) || inst_vector(door, 0, &p0, &dir);
+    if (!have) { float y = inst_yaw(door) + 3.14159265f; p0 = door->position; dir = (Vec3){ sinf(y), 0, cosf(y) }; }   /* no marker: out of the door */
+    memset(&g_res, 0, sizeof g_res);
+    g_res.on = 1; g_res.state = 0; g_res.var = var; g_res.page = 0x1e; g_res.door_p = p0; g_res.door_d = dir;
+    if (!g_stats.have) { g_stats.level = g_prev_level; g_stats.time = 0; memset(g_stats.stats, 0, sizeof g_stats.stats); }   /* started straight in the hub */
+    int lvl = g_stats.level, c = char_of_level(lvl) < 0 ? g_char : char_of_level(lvl);
+    g_res.race = results_race(lvl);
+    g_res.score = results_score(g_stats.stats, g_stats.time, g_res.race);
+    g_res.best = (lvl >= 0 && lvl < 29) ? g_save.chr[c].best[lvl] : 0;
+    g_res.high = g_res.score > g_res.best;
+    eko_set_var(vm, var, 0);
+    player_script_action(g_player, 0x4a, have, p0, dir);                              /* 0x453dbb: the arrival at the hub door */
+    script_action_camera();
+    if (g_prop) { g_prop->position = p0; mat4_from_trs(&g_prop->world, g_prop->position, g_prop->quat, g_prop->scale); g_prop->visible = 1; }   /* 0x4077f0 on perso+0x748 */
+    printf("  RESULTS begin: level %s, score %d, best %d%s", k_levels[lvl >= 0 && lvl < 29 ? lvl : 0], g_res.score, g_res.best, g_res.high ? " (new record)" : ""), puts("");
+}
+
+static void results_store(void)                                                       /* 0x450230 / 0x450260 / 0x450380..0x450440 */
+{
+    int lvl = g_stats.level; if (lvl < 0 || lvl >= 29) return;
+    SaveChar *sc = &g_save.chr[char_of_level(lvl) < 0 ? g_char : char_of_level(lvl)];
+    if (g_res.score <= sc->best[lvl]) return;
+    sc->best[lvl] = g_res.score;
+    for (int i = 0; i < 4; i++) sc->stats[lvl][i] = g_stats.stats[i];
+    sc->stat_time[lvl] = g_stats.time;
+}
+static void results_close(void) { fade_start(0.5f, 1); g_res.state = 5; g_res.t = 0.5f; g_res.page = 0; }   /* 0x454050 */
+
+static void results_update(EkoVM *vm, float dt, int ok, int up, int dn)               /* the table 0x4542c4 of 0x454090 */
+{
+    if (!g_res.on || !g_player) return;
+    switch (g_res.state) {
+    case 0:                                                                            /* he is coming down; wait until the Perso is free again (+0x21c == 0) */
+        if (!g_player->script_act) { results_action(0x4b); g_res.state = 1; }
+        break;
+    case 1:                                                                            /* 0x454560: the panel is up, OK closes it */
+        if (ok) {
+            g_res.cats = results_cats(g_stats.stats);
+            g_player->unique_items += g_res.cats;                                      /* 0x44c840: n unique items straight into the save block */
+            g_save.chr[g_char].unique = g_player->unique_items;
+            results_action(g_res.cats ? 0x4e : 0x4c);                                  /* 0x453fc0: 0x453fd6 cheering, 0x453ffd shrugging */
+            g_res.state = g_res.cats ? 2 : 3; audio_fx(63, NULL, NULL);
+        }
+        break;
+    case 2: case 3:
+        if (!g_player->script_act) { results_action(0x4d); results_store(); g_res.state = 4; g_res.page = 6; g_res.sel = 1; }   /* 0x454020; the cursor starts on the first selectable item, "Yes" */
+        break;
+    case 4:                                                                            /* "Do you want to save?" over the panel (pages 6 -> 8/9 -> 6) */
+        if (g_res.page == 6) {
+            if (up || dn) g_res.sel = g_res.sel == 1 ? 2 : 1;                          /* item 0 is a fixed heading and is skipped (0x446920) */
+            if (ok) {
+                if (g_res.sel == 1) { g_res.page = save_write() ? 8 : 9; g_res.sel = 1; }   /* one woodyre.sav, so no slot pages 5 / 0x17 / 0xc */
+                else results_close();
+            }
+        } else if (ok) { g_res.page = 6; g_res.sel = 2; }                              /* 8 "Game Saved" / 9 "Save failed." -> back to the question (0x405358), now on "No" */
+        break;
+    default:                                                                           /* 5: the fade-out is running */
+        if ((g_res.t -= dt) > 0) break;
+        if (g_prop) g_prop->visible = 0;                                               /* 0x407850 */
+        fade_start(0.5f, 0);
+        g_player->script_act = 0; g_player->use_root = 0;                              /* "No" can come before 0x4d has played out; its root motion must not move him after this */
+        player_place(g_player, g_res.door_p, (g_res.door_d.x * g_res.door_d.x + g_res.door_d.z * g_res.door_d.z) > 1e-6f ? atan2f(g_res.door_d.x, g_res.door_d.z) : g_player->yaw);
+        g_cam.cut = 1; cam_set_mode(1); g_player->cam_init = 0;                        /* 0x41f9f0(2) + SetMode(0, 0) */
+        eko_set_var(vm, g_res.var, 1);                                                 /* 0x45422c: the hub script opens the next door */
+        save_write(); g_res.on = 0; g_res.page = 0; g_stats.have = 0;
+        puts("  RESULTS done");
+        break;
+    }
+}
+
 /* ---- lasers: classes 50 / 51 / 52 (docs/OBJECTS.md 2.1). One beam per typecode-0 vector marker; off until message 50.
  * 51: marker start along the marker direction for `len` (message 52, default 400), cut at the first world polygon;
  * 50: endless until the first hit; 52: to the marker start of the target instance (message 53). Touching a beam kills (Kill(2)). */
@@ -445,6 +576,109 @@ static void fx_update(float dt)
             continue;
         }
         g_fx[i] = g_fx[--g_nfx]; i--;                                        /* 0x470cf4: swap with the last and look at this slot again */
+    }
+}
+
+/* ---- footsteps (docs/FOOTSTEPS.md) -----------------------------------------------------------------------------
+ * The walk cycle calls 0x47cba0(pos, ground normal, direction, foot, kind) twice per turn and a landing on ground
+ * type 2 calls 0x476140(pos + (0,30,0), &normal, 3, 0.25, 1.5). Both effect functions are known by their call site
+ * only - they are not decompiled - so what is drawn here is a reconstruction with the primitives the port has: a
+ * mark that lies in the ground plane and is mirrored between the two feet (faint and short on ordinary ground,
+ * kind 2; a lasting print on dust, sand or snow, kind 3), plus a puff of the smoke image for kind 3 and three
+ * puffs on landing. The step SOUND is not from here: it comes from the type 4 events of the animation (docs/SOUND.md 3). */
+typedef struct { Vec3 pos, n, dir; float t, life, size, strength; int mirror; } Mark;
+typedef struct { Vec3 pos, vel; float t, life, size0, size1, rot; } Dust;
+static Mark g_marks[48]; static Dust g_dust[64];
+static Mark *mark_new(void)
+{
+    Mark *pick = &g_marks[0]; float oldest = -1;
+    for (int i = 0; i < 48; i++) { if (g_marks[i].life <= 0) return &g_marks[i]; if (g_marks[i].t > oldest) { oldest = g_marks[i].t; pick = &g_marks[i]; } }
+    return pick;                                                             /* full: the oldest print makes room */
+}
+static void dust_new(Vec3 pos, Vec3 vel, float life, float size0, float size1)
+{
+    for (int i = 0; i < 64; i++) if (g_dust[i].life <= 0) {
+        g_dust[i].pos = pos; g_dust[i].vel = vel; g_dust[i].t = 0; g_dust[i].life = life;
+        g_dust[i].size0 = size0; g_dust[i].size1 = size1; g_dust[i].rot = fx_rnd(); return;
+    }
+}
+static Vec3 vunit(Vec3 v) { float l = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); if (l < 1e-6f) return (Vec3){ 0, 1, 0 }; v.x /= l; v.y /= l; v.z /= l; return v; }
+void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind)      /* 0x47cba0, from 0x463f40 */
+{
+    Vec3 n = vunit(normal), d = vunit(dir);
+    Vec3 side = vunit((Vec3){ d.y * n.z - d.z * n.y, d.z * n.x - d.x * n.z, d.x * n.y - d.y * n.x });
+    float off = foot ? 22.0f : -22.0f;                                       /* the two feet beside the Perso position; the original passes only the flag */
+    Vec3 fp = { pos.x + side.x * off, pos.y + side.y * off, pos.z + side.z * off };
+    Mark *m = mark_new();
+    m->pos = fp; m->n = n; m->dir = d; m->t = 0; m->mirror = foot;
+    m->life = kind == 3 ? 4.0f : 0.6f; m->size = kind == 3 ? 36.0f : 30.0f; m->strength = kind == 3 ? 0.6f : 0.22f;
+    if (kind == 3) {                                                         /* dust ground: the foot kicks a little of it up behind itself */
+        Vec3 v = { -d.x * 30.0f + n.x * 40.0f, -d.y * 30.0f + n.y * 40.0f, -d.z * 30.0f + n.z * 40.0f };
+        dust_new((Vec3){ fp.x + n.x * 10.0f, fp.y + n.y * 10.0f, fp.z + n.z * 10.0f }, v, 0.45f, 14.0f, 34.0f);
+    }
+    if (getenv("WOODY_FXLOG")) printf("footstep %s kind %d at %.0f %.0f %.0f", foot ? "right" : "left", kind, fp.x, fp.y, fp.z), puts("");
+}
+void game_land_dust(Vec3 pos, Vec3 normal)                                   /* 0x476140(&pos + (0,30,0), &normal, 3, 0.25, 1.5), argument 3 = the number of particles */
+{
+    Vec3 n = vunit(normal);
+    Vec3 a = vunit(fabsf(n.y) < 0.9f ? (Vec3){ n.z, 0, -n.x } : (Vec3){ 1, 0, 0 });     /* two axes in the ground plane */
+    Vec3 b = { n.y * a.z - n.z * a.y, n.z * a.x - n.x * a.z, n.x * a.y - n.y * a.x };
+    for (int i = 0; i < 3; i++) {
+        float t = (i + fx_rnd() * 0.5f) * 2.0944f;                           /* three directions spread around the landing point */
+        Vec3 o = { a.x * cosf(t) + b.x * sinf(t), a.y * cosf(t) + b.y * sinf(t), a.z * cosf(t) + b.z * sinf(t) };
+        Vec3 v = { o.x * 150.0f + n.x * 60.0f, o.y * 150.0f + n.y * 60.0f, o.z * 150.0f + n.z * 60.0f };
+        dust_new(pos, v, 0.5f, 18.0f, 52.0f);
+    }
+    if (getenv("WOODY_FXLOG")) printf("landing dust at %.0f %.0f %.0f", pos.x, pos.y, pos.z), puts("");
+}
+/* ---- the beak impact 0x479c80(kind, point, normal) ------------------------------------------------------------
+ * The original marks every place the beak lands: the attack probe calls it on any hit (kind 1, no normal,
+ * docs/PERSO_JUMP.md 2.4) and the climb loop every 0.3 s on the wall he hangs in (kind 0, with the wall normal,
+ * docs/OBJECTS.md 1.3/1.6). Like 0x47cba0 above it is known by its call sites only - not decompiled - so what is
+ * drawn is a reconstruction on the same two primitives: a mark that lies in the pecked face, mirrored every other
+ * peck so a column of them is not stamped out, and a burst of the standard particle 0x4791f0 for the sparks
+ * (the laser hit 0x46efb9, the one impact the docs do describe, throws those at 50 a second). Without a normal
+ * there is no face to mark and only the sparks are left. */
+#define PECK_MARK_LIFE 2.0f                                                  /* a peck every 0.3 s climbing at 250 u/s: a trail of marks up the wall */
+#define PECK_MARK_SIZE 22.0f                                                 /* half diagonal: a beak, not a foot */
+#define PECK_SPARKS    10                                                    /* = the 50 a second of the laser hit over the 0.2 s of a peck */
+void game_peck_fx(int kind, Vec3 pos, const Vec3 *n)                         /* 0x479c80 */
+{
+    static int side;
+    Vec3 nn = n ? vunit(*n) : (Vec3){ 0, 0, 0 };
+    if (n) {
+        Mark *m = mark_new();
+        m->pos = pos; m->n = nn; m->t = 0; m->mirror = (side = !side);
+        m->dir = fabsf(nn.y) < 0.9f ? (Vec3){ 0, 1, 0 } : (Vec3){ 1, 0, 0 };   /* he climbs upwards, so the mark stands up in the wall */
+        m->life = PECK_MARK_LIFE; m->size = PECK_MARK_SIZE; m->strength = 0.45f;
+    }
+    for (int i = 0; i < PECK_SPARKS; i++) {
+        Vec3 o = { (fx_rnd() - 0.5f) * 50.0f, (fx_rnd() - 0.5f) * 50.0f, (fx_rnd() - 0.5f) * 50.0f };
+        float d = o.x * nn.x + o.y * nn.y + o.z * nn.z;                      /* a spark never sits behind the face it came out of */
+        if (d < 0) { o.x -= d * nn.x; o.y -= d * nn.y; o.z -= d * nn.z; }
+        Vec3 p = { pos.x + o.x + nn.x * 10.0f, pos.y + o.y + nn.y * 10.0f, pos.z + o.z + nn.z * 10.0f };
+        if (!fx_new(0.2f, p, 2)) break;
+    }
+    if (getenv("WOODY_FXLOG")) printf("peck kind %d at %.0f %.0f %.0f%s", kind, pos.x, pos.y, pos.z, n ? " (marked)" : ""), puts("");
+}
+static void steps_draw(float dt)
+{
+    static const float mark_rgb[3] = { 0.55f, 0.45f, 0.35f }, dust_rgb[3] = { 1.0f, 0.95f, 0.85f };
+    for (int i = 0; i < 48; i++) {
+        Mark *m = &g_marks[i]; if (m->life <= 0) continue;
+        float u = m->t / m->life; if (u >= 1.0f) { m->life = 0; continue; }
+        float k = u < 0.5f ? 1.0f : (1.0f - u) * 2.0f;                       /* the print stays, then fades away over the second half of its life */
+        hud_world_decal(hud_step_image(), &m->pos.x, &m->n.x, &m->dir.x, m->size, m->mirror, mark_rgb, m->strength * k);
+        m->t += dt;
+    }
+    for (int i = 0; i < 64; i++) {
+        Dust *d = &g_dust[i]; if (d->life <= 0) continue;
+        float u = d->t / d->life; if (u >= 1.0f) { d->life = 0; continue; }
+        hud_world_fx(14, &d->pos.x, d->size0 + (d->size1 - d->size0) * u, d->rot, dust_rgb, 0.3f * (1.0f - u));
+        d->pos.x += d->vel.x * dt; d->pos.y += d->vel.y * dt; d->pos.z += d->vel.z * dt;
+        float slow = 1.0f - 2.5f * dt; if (slow < 0) slow = 0;               /* the puff runs out of speed as it fades */
+        d->vel.x *= slow; d->vel.y *= slow; d->vel.z *= slow;
+        d->t += dt;
     }
 }
 
@@ -750,7 +984,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) in->visible = 0; if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; that page is not ported, so keep them out of sight */   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) in->visible = 0; if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; that page is not ported, so keep them out of sight */   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1501: case 1504: {                                                         /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
         EnvInst *E = in ? env_of(in) : NULL;
         if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
@@ -795,6 +1029,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1083:                                                                                              /* EndLevel 0x404be0 */
         if (g_level == 1 || g_level == 11 || g_level == 18 || g_level == 25) { request_level(0, 0.5f); break; }    /* from a hub: to the title */
         if (g_level >= 0 && g_level < 29) g_save.chr[g_char].done[g_level] = 1;
+        results_capture();                                                                                  /* memcpy(app+0x74, perso+0x710, 20): the results screen runs in the hub, after the switch */
         save_write(); request_level(g_char == 0 ? 1 : g_char == 1 ? 11 : 18, 0.5f); break;
     case 1082: if (m->nargs > 1) eko_set_var(vm, m->args[1], level_is_enable((int)m->args[0])); break;
     case 1085: if (m->nargs > 1) eko_set_var(vm, m->args[1], m->args[0] < 29 ? g_save.chr[g_char].done[m->args[0]] : 0); break;   /* LevelIsDone 0x4509e0 */
@@ -809,11 +1044,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
              * animations 17 and 18 both have one, with the eye 371 units off his own axis - that is the sideways shot
              * of him walking into the door. 0x44df92 clears CamMgr+0x618 bit 1: no letterbox, unlike a cinematic. The
              * Perso+0x558 test at 0x44df73 is always true (set 24 instructions earlier) and is not ported. */
-            {   Instance *pi = g_player->inst; Vec3 e, t;
-                if (pi && (uint32_t)pi->anim < pi->model->nanims && ins_camera_eval(pi, pi->anim, 0.0f, &e, &t)) {
-                    g_cam.anim_inst = pi; g_cam.anim_letterbox = 0; g_cam.anim_eye = e; g_cam.anim_tgt = t;
-                    g_cam.cut = 1; cam_set_mode(0x80);                          /* 0x41f9f0(2) = cut, 0x41f410(7, 0) = mask 1 << 7 */
-                } }
+            script_action_camera();
         }
         break;
     case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;
@@ -827,12 +1058,8 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             }
         }
         break;
-    case 1140:                                                                                              /* hub: player at the door he came out of (0x453d90); the results screen is skipped */
-        if (in && g_player && m->nargs > 1) {
-            g_player->pos = in->position; g_player->yaw = inst_yaw(in) + 3.14159265f;   /* out of the door */ g_player->floor_y = g_player->pos.y; g_player->vel = (Vec3){ 0, 0, 0 }; g_player->cam_init = 0;
-            if (g_prop) g_prop->position = in->position;
-            save_write(); eko_set_var(vm, m->args[1], 1);                                                   /* 0x45422c: what the script gets when the results screen closes */
-        }
+    case 1140:                                                                                              /* hub: the player arrives at the door he came out of and the results screen runs (0x453d90) */
+        if (in && g_player && m->nargs > 1) results_begin(vm, in, m->args[1]);
         break;
     case 1042:                                                                                              /* near `inst` (xz) and facing it within `angle` degrees */
         if (m->nargs > 3) {
@@ -900,7 +1127,7 @@ static uint32_t msvc_rand(void *user) { (void)user; g_seed = g_seed * 214013u + 
 
 /* one loaded level: everything that is torn down and rebuilt on a level change (the window and GL context stay) */
 typedef struct {
-    char name[32]; TexFile tex; GelFile gel; LitFile lit; int have_lit; void *code; EkoVM vm; Renderer rnd;
+    char name[32]; TexFile tex; GelFile gel; LitFile lit; int have_lit; VisFile vis; int have_vis; void *code; EkoVM vm; Renderer rnd;
     Player player; int have_player; double t0;
 } Level;
 static void *read_all(const char *path, size_t *sz);
@@ -908,8 +1135,8 @@ static void level_free(Level *L)
 {
     g_nlasers = 0; g_nlaunchers = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
-    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
-    rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
+    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
 static int level_load(Level *L, const char *dir, const char *lvl)
@@ -926,9 +1153,10 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     L->vm.on_msg = on_msg; L->vm.on_warn = on_warn; L->vm.rand_fn = msvc_rand;
     printf("%s: %u polys, %u verts, %u textures, %u models, %u slots, %u script objects\n", lvl, L->gel.npolys, L->gel.nverts, L->tex.ngroups, g_ins.nmodels, g_ins.nslots, L->vm.nobj);
     snprintf(path, sizeof path, "%s/%s/%s.lit", dir, lvl, lvl); L->have_lit = lit_load(&L->lit, path) == 0;
+    snprintf(path, sizeof path, "%s/%s/%s.vis", dir, lvl, lvl); L->have_vis = vis_load(&L->vis, path, L->gel.nsectors) == 0;   /* 0x408260: what each sector can see */
     if (getenv("WOODY_CELLLOG")) printf("  gel: %u cells, %u sectors, %u kd nodes | lit: %u lights, %u sector light lists\n", L->gel.ncells, L->gel.nsectors, L->gel.nkd, L->lit.nlights, L->lit.nsectors);
-    rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL);
-    L->have_player = player_init(&L->player, &g_ins, &L->gel) == 0;
+    rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL, L->have_vis ? &L->vis : NULL);
+    L->have_player = player_init(&L->player, &g_ins, &L->gel, &L->tex) == 0;
     g_player = L->have_player ? &L->player : NULL;
     for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
     if (L->have_player) { L->player.inst->scripted = 0; L->player.enemies = &g_enemies; }
@@ -944,7 +1172,8 @@ static int level_load(Level *L, const char *dir, const char *lvl)
                                                                                   * so a variable one of them writes (1082 LevelIsEnable for the level-select doors) wakes its
                                                                                   * object in the first tick instead of in an init whose wake lists are cleared at the end */
     eko_msg_reset(&L->vm);
-    if (L->have_player) { SaveChar *sc = &g_save.chr[g_char]; L->player.lives = sc->lives; L->player.health = sc->health > 0 ? sc->health : 1.0f; }   /* 0x44a6a0 / 0x44a759 */
+    if (L->have_player) { SaveChar *sc = &g_save.chr[g_char]; L->player.lives = sc->lives; L->player.health = sc->health > 0 ? sc->health : 1.0f;
+                          L->player.unique_items = sc->unique; L->player.special_charges = sc->charges; }   /* 0x44a6a0 / 0x44a759 */
     L->t0 = win_time();
     return 0;
 }
@@ -984,9 +1213,13 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--unlock")) g_unlock_all = 1;                       /* every level door open */
         else if (!strcmp(argv[i], "--newgame")) new_game = 1;                          /* ignore woodyre.sav */
         else if (!strcmp(argv[i], "--prev") && i + 1 < argc) { g_prev_level = level_index(argv[i + 1]); i += 1; }   /* --prev LVL: pretend we came from LVL (hub spawn point) */
+        else if (!strcmp(argv[i], "--stats") && i + 5 < argc) {                        /* --stats TOTAL_A GOT_A TOTAL_B GOT_B SECONDS: the five level statistics the results screen shows (testing) */
+            g_stats.have = 1; g_stats.stats[0] = atoi(argv[i + 1]); g_stats.stats[2] = atoi(argv[i + 2]);
+            g_stats.stats[1] = atoi(argv[i + 3]); g_stats.stats[3] = atoi(argv[i + 4]); g_stats.time = (float)atof(argv[i + 5]); i += 5; }
         else if (!strcmp(argv[i], "--next") && i + 2 < argc) { next_name = argv[i + 1]; next_at = atof(argv[i + 2]); i += 2; }
     }
     Window win; if (win_open(&win, "WoodyRE", 1280, 800)) return 1;
+    if (g_stats.have) g_stats.level = g_prev_level;                                    /* --stats belongs to the level --prev says we came from */
     if (new_game) save_reset(); else save_read();
     if (!getenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
     static Level L; g_level = level_index(lvl); if (level_load(&L, dir, lvl)) return 1;
@@ -1001,7 +1234,7 @@ int main(int argc, char **argv)
     if (!L.have_player) fly = 1;
     if (L.have_player && have_pos) { L.player.pos.x = pos_args[0]; L.player.pos.y = pos_args[1]; L.player.pos.z = pos_args[2]; L.player.floor_y = L.player.pos.y - 1000.0f; }
     if (L.have_player && have_yaw) L.player.yaw = yaw_arg;
-    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, enter_prev = 0, l_prev = 0, new_game_pending = 0, title_page = 0, title_sel = 0, title_prev[2] = {0, 0}; float title_t = 0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
+    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, enter_prev = 0, l_prev = 0, new_game_pending = 0, title_page = 0, title_sel = 0, title_prev[2] = {0, 0}; float title_t = 0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[4] = {0, 0, 0, 0}, p_prev = 0, f5_prev = 0, menu_prev[3] = {0, 0, 0}; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
         double now = win_time(); float dt = (float)(now - last); last = now;
@@ -1023,6 +1256,12 @@ int main(int argc, char **argv)
         if (cam.pitch > 1.5f) cam.pitch = 1.5f; if (cam.pitch < -1.5f) cam.pitch = -1.5f;
         /* toggles */
         for (int k = 0; k < 3; k++) { int down = win.keys[VK_F1 + k]; if (down && !f_prev[k]) { if (k == 0) L.rnd.show_world ^= 1; else if (k == 1) L.rnd.show_instances ^= 1; else L.rnd.wireframe ^= 1; } f_prev[k] = down; }
+        {   /* F4 steps the visibility back: frustum + .vis -> frustum only -> the whole level every frame */
+            static const char *cn[3] = { "off (whole level)", "frustum only", "frustum + .vis" };
+            int down = win.keys[VK_F4], top = L.gel.nsectors ? (L.rnd.vis ? 2 : 1) : 0;
+            if (down && !f_prev[3]) { L.rnd.cull = L.rnd.cull ? L.rnd.cull - 1 : top; L.rnd.sec_dirty = 1; printf("culling: %s\n", cn[L.rnd.cull]); }
+            f_prev[3] = down;
+        }
         if (win.keys['P'] && !p_prev) paused ^= 1; p_prev = win.keys['P'];
         if (win.keys[VK_TAB] && !tab_prev && sel) {                                   /* next instance with animations */
             Instance *nxt = NULL; int found = 0;
@@ -1063,6 +1302,11 @@ int main(int argc, char **argv)
             pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
             pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
             pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_CONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
+            /* menu keys: confirm (action 0xc), up (2) and down (3), all "just pressed" like 0x467420 */
+            int mk[3] = { win.keys[VK_RETURN] || win.keys[VK_SPACE], win.keys[VK_UP] || win.keys['W'], win.keys[VK_DOWN] || win.keys['S'] };
+            int menu_ok = mk[0] && !menu_prev[0], menu_up = mk[1] && !menu_prev[1], menu_dn = mk[2] && !menu_prev[2];
+            for (int k = 0; k < 3; k++) menu_prev[k] = mk[k];
+            if (g_res.on) memset(&pin, 0, sizeof pin);                              /* Perso state 9: the results screen has the controls */
             if (g_level == 0 && !fly) {                                             /* title: House is the backdrop of the menu (docs/GAMEFLOW.md 5); the 2D menu pages are not ported */
                 memset(&pin, 0, sizeof pin);
                 if (g_pose && !g_cin.state) { L.player.pos = g_pose->position; L.player.yaw = inst_yaw(g_pose); L.player.vel = (Vec3){ 0, 0, 0 }; }
@@ -1090,6 +1334,7 @@ int main(int argc, char **argv)
             for (int k = 0; k < 3; k++) g_act_prev[k] = g_act_now[k];
             g_act_now[0] = pin.left; g_act_now[1] = pin.right; g_act_now[2] = pin.action;
             g_save.chr[g_char].lives = L.player.lives; g_save.chr[g_char].health = L.player.health;          /* the Perso writes straight into the save struct */
+            g_save.chr[g_char].unique = L.player.unique_items; g_save.chr[g_char].charges = L.player.special_charges;   /* 0x44c800 / 0x44c840 */
             if (g_cam.mode == 4 && !fly) memset(&pin, 0, sizeof pin);              /* cinematic camera: the player is frozen (0x459090) */
             cin_update(&L.vm, dt, g_now);
             rockets_update(dt, &L.player, L.have_player && !fly);
@@ -1101,6 +1346,7 @@ int main(int argc, char **argv)
                 /* but only when the side view is off: 0x44dcf1 skips it while Perso+0x4ec is set, and the script turns
                  * that on again (message 1088) in the same frame as the end of the action for a door into a side section */
                 if (!g_cam.plane_on) { g_cam.dur = 0.5f; g_cam.dur_from_speed = 0; g_cam.cut = 0; cam_set_mode(1); } }
+            if (g_res.on) results_update(&L.vm, dt, menu_ok, menu_up, menu_dn);      /* 0x454090: after the action tick, so a finished action starts the next one in the same frame */
             if (g_cam.mode != 0x20 && (L.player.dead_cam_req || (L.player.dead_kind == 7 && !g_cam.death_cam))) {     /* 0x41fb50: kind 1 is watched from where he hung (+100), kind 7 from where the camera is */
                 g_cam.fix_pos = L.player.dead_kind == 7 ? g_cam.pos : (Vec3){ L.player.pos.x, L.player.pos.y + 100.0f, L.player.pos.z };
                 g_cam.fix_target = L.player.inst; g_cam.fix_f = g_cam.look_off.y; cam_set_mode(2); g_cam.death_cam = 1;
@@ -1155,6 +1401,17 @@ int main(int argc, char **argv)
                     if (ii->type == 34 && ii->node_world) { p[0] = ii->node_world[0].m[12]; p[1] = ii->node_world[0].m[13]; p[2] = ii->node_world[0].m[14]; }
                     hud_world_sprite(n, p, size);
                 }
+                if (L.have_player && !fly && !cin_running() && g_level >= 1 && g_level <= 24) {
+                    /* landing ring (docs/PERSO_JUMP.md 5): while Woody hangs in the air the floor under him carries a
+                     * bright ring. WOODY_RING overrides its radius, WOODY_RING=0 switches it off. */
+                    static const float white[3] = { 1, 1, 1 };
+                    const char *rv = getenv("WOODY_RING"); float rr = rv ? (float)atof(rv) : 69.0f;   /* default = the Perso collision radius P+0x04 */
+                    Vec3 rp, rn;
+                    if (rr > 0 && player_landing_ring(&L.player, &rp, &rn)) {
+                        float rc[3] = { rp.x + rn.x * 3.0f, rp.y + rn.y * 3.0f, rp.z + rn.z * 3.0f };   /* 3 units clear of the floor, or it z-fights with it */
+                        hud_world_ring(rc, &rn.x, rr, rr * 0.12f, white, 0.7f);
+                    }
+                }
                 env_draw();
                 for (int li = 0; li < g_nlasers; li++) {                            /* Lazer_Draw 0x46e530: core (1,.7,.7) width 6 + glow (1,.4,.4) width 30 pulsing 0.5..1, ends fade over 70 */
                     Laser *z = &g_lasers[li]; if (!z->on || !z->inst->visible) continue;
@@ -1174,7 +1431,7 @@ int main(int argc, char **argv)
                         }
                     }
                 }
-                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
+                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */
@@ -1203,13 +1460,24 @@ int main(int argc, char **argv)
             }
             g_npick = 0;
             hud_begin(win.width, win.height);
-            if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
+            if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && !g_res.on && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
                 const Player *pl = &L.player; int race = pl->inst->type == 18 || pl->inst->type == 19;
                 HudState hs = { g_char, race, pl->lives, race ? pl->race_bonus : pl->bonus_count, race ? pl->race_bonus : pl->bonus_got, pl->bonus_total,
                                 g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, paused || g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };
                 hud_draw(&hs, dt);
             }
             if (g_level == 0 && !fly) hud_title_draw(g_next_level >= 0 ? -1 : title_page, title_sel, title_page >= 0 && g_next_level < 0, dt);
+            if (g_res.on) {                                                          /* menu page 0x1e: the panel is up in state 1 (0x454560) and hidden while he cheers (0x454580) */
+                int page_up = g_res.page == 6 || g_res.page == 8 || g_res.page == 9;
+                if (g_res.state == 1 || g_res.state == 4) {
+                    HudResults hr = { results_level_no(g_stats.level), g_res.race, g_res.high, g_res.cats,
+                                      g_stats.stats[0], g_stats.stats[2], g_stats.stats[1], g_stats.stats[3], g_stats.time, g_res.score, g_res.best };
+                    hud_results_draw(&hr, g_res.state == 1, page_up ? 0.0f : dt);    /* one blink phase per frame: the page below ticks it when it is up */
+                }
+                if (g_res.page == 6) { static const uint32_t q[3] = { 35, 5, 6 }; hud_menu_page(q, 3, 0.4f, g_res.sel, dt); }            /* "Do you want to save?" / Yes / No */
+                else if (g_res.page == 8) { static const uint32_t q[2] = { 67, 4 }; hud_menu_page(q, 2, 0.4f, g_res.sel, dt); }          /* "Game Saved" / Continue */
+                else if (g_res.page == 9) { static const uint32_t q[2] = { 59, 4 }; hud_menu_page(q, 2, 0.4f, g_res.sel, dt); }          /* "Save failed." / Continue */
+            }
             { uint32_t v = g_text_var & 0xffffff; hud_text_draw(v < L.vm.nvars && L.vm.varval[v] != 0, paused ? 0 : dt); }
             hud_end(); g_hud_ext = 0;
         }

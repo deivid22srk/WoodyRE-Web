@@ -103,9 +103,10 @@ static void batch_reserve(struct WorldBatch *b, uint32_t extra_tris, uint32_t *c
     if (b->ntris + extra_tris <= *cap) return;
     *cap = (b->ntris + extra_tris) * 2 + 64;
     b->pos = (float *)realloc(b->pos, (size_t)*cap * 9 * sizeof(float)); b->uv = (float *)realloc(b->uv, (size_t)*cap * 6 * sizeof(float)); b->col = (uint8_t *)realloc(b->col, (size_t)*cap * 9);
+    if (b->face) b->face = (uint32_t *)realloc(b->face, (size_t)*cap * 4);
 }
 /* one light polygon (flush 0x4293f0 / 0x42c320): constant colour C*k, radial texture 15 - round(k*15.49) */
-static void light_poly(Renderer *r, const LitLight *L, const float *plane, const int32_t *idx, uint32_t n, uint32_t cap[16])
+static void light_poly(Renderer *r, const LitLight *L, const float *plane, const int32_t *idx, uint32_t n, uint32_t cap[16], uint32_t face)
 {
     if (n < 3) return;
     float dist = plane[0] * L->pos.x + plane[1] * L->pos.y + plane[2] * L->pos.z + plane[3], R = L->range;
@@ -118,7 +119,7 @@ static void light_poly(Renderer *r, const LitLight *L, const float *plane, const
     if (ul < 1e-4f) { U[0] = plane[1]; U[1] = plane[2]; U[2] = plane[0]; float d = U[0] * plane[0] + U[1] * plane[1] + U[2] * plane[2]; for (int q = 0; q < 3; q++) U[q] -= plane[q] * d; ul = sqrtf(U[0] * U[0] + U[1] * U[1] + U[2] * U[2]); if (ul < 1e-4f) return; }
     for (int q = 0; q < 3; q++) U[q] /= ul;
     float W[3] = { plane[1] * U[2] - plane[2] * U[1], plane[2] * U[0] - plane[0] * U[2], plane[0] * U[1] - plane[1] * U[0] };
-    struct WorldBatch *b = &r->lightb[ti]; batch_reserve(b, n - 2, &cap[ti]);
+    struct WorldBatch *b = &r->lightb[ti]; if (!b->face) b->face = (uint32_t *)malloc(4); batch_reserve(b, n - 2, &cap[ti]);
     uint8_t col[3]; for (int q = 0; q < 3; q++) { float c = L->colour[q] * k; col[q] = (uint8_t)(c < 0 ? 0 : c > 255 ? 255 : c); }
     for (uint32_t t = 1; t + 1 < n; t++) {
         const float *pv[3] = { lit_vpos(r, idx[0], t0), lit_vpos(r, idx[t], t1), lit_vpos(r, idx[t + 1], t2) };
@@ -128,6 +129,7 @@ static void light_poly(Renderer *r, const LitLight *L, const float *plane, const
             b->uv[o * 2] = 0.5f + s * (d[0] * W[0] + d[1] * W[1] + d[2] * W[2]); b->uv[o * 2 + 1] = 0.5f + s * (d[0] * U[0] + d[1] * U[1] + d[2] * U[2]);
             b->col[o * 3] = col[0]; b->col[o * 3 + 1] = col[1]; b->col[o * 3 + 2] = col[2];
         }
+        b->face[b->ntris] = face;
         b->ntris++;
     }
 }
@@ -160,10 +162,17 @@ static int gel_face_invisible(const GelFile *g, const TexFile *t, uint32_t i)
     return (mat & 0x8000) || (mat & 0x7fff) >= t->nmaterials || t->materials[mat & 0x7fff].group >= t->ngroups;
 }
 
-int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit)
+int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis)
 {
     memset(r, 0, sizeof *r); r->tex = tex; r->gel = gel; r->ins = ins; r->show_world = r->show_instances = r->show_light = 1;
     r->lit = (lit && lit->nlights) ? lit : NULL;
+    r->vis = (vis && vis->nsectors == gel->nsectors) ? vis : NULL;
+    r->cull = gel->nsectors ? (r->vis ? 2 : 1) : 0;
+    r->face_batch = (struct FaceBatch *)calloc(gel->npolys ? gel->npolys : 1, sizeof(struct FaceBatch));
+    r->face_stamp = (uint32_t *)calloc(gel->npolys ? gel->npolys : 1, 4);
+    r->sec_vis = (uint8_t *)calloc(gel->nsectors ? gel->nsectors : 1, 1);
+    r->sec_prev = (uint8_t *)calloc(gel->nsectors ? gel->nsectors : 1, 1);
+    r->sec_dirty = 1;
     for (uint32_t g = 0; g < tex->ngroups; g++) {
         TexGroup *tg = &tex->groups[g]; tg->gl_frames = (uint32_t *)calloc(tg->frame_count ? tg->frame_count : 1, 4);
         for (uint32_t f = 0; f < tg->frame_count; f++) tg->gl_frames[f] = upload_texture(tg, (int)f);
@@ -195,6 +204,8 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
         int multipass = r->lit && lit_face[i] && !(gflags & 3);
         struct WorldBatch *b = multipass ? &r->litb[grp] : &r->batches[grp];
         batch_reserve(b, p->nverts - 2, &cap[grp * 2 + multipass]);
+        r->face_batch[i].tri0 = b->ntris; r->face_batch[i].group = grp;
+        r->face_batch[i].ntris = p->nverts - 2; r->face_batch[i].lit = (uint8_t)multipass;
         for (uint32_t k = 1; k + 1 < p->nverts; k++) {
             uint32_t idx[3] = { p->indices[0], p->indices[k], p->indices[k + 1] };
             for (int c = 0; c < 3; c++) {
@@ -237,14 +248,111 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
         uint32_t lcap[16] = { 0 }; light_textures(r);
         for (uint32_t l = 0; l < r->lit->nlights; l++) {
             const LitLight *L = &r->lit->lights[l];
-            for (uint32_t k = 0; k < L->na; k++) if (L->a[k] < gel->npolys && !gel_face_invisible(gel, tex, L->a[k])) { const GelPoly *p = &gel->polys[L->a[k]]; light_poly(r, L, p->plane, (const int32_t *)p->indices, p->nverts, lcap); }   /* no light spot on a face that is not drawn */
-            for (uint32_t k = 0; k < L->nc; k++) light_poly(r, L, L->c[k].plane, L->c[k].indices, L->c[k].n, lcap);
+            /* no light spot on a face that is not drawn; a fragment whose face index is unusable is kept, the
+             * visibility pass keeps those too */
+            for (uint32_t k = 0; k < L->na; k++) if (L->a[k] < gel->npolys && !gel_face_invisible(gel, tex, L->a[k])) { const GelPoly *p = &gel->polys[L->a[k]]; light_poly(r, L, p->plane, (const int32_t *)p->indices, p->nverts, lcap, L->a[k]); }
+            for (uint32_t k = 0; k < L->nc; k++) if (L->c[k].face >= gel->npolys || !gel_face_invisible(gel, tex, L->c[k].face)) light_poly(r, L, L->c[k].plane, L->c[k].indices, L->c[k].n, lcap, L->c[k].face);
         }
         uint32_t nl = 0; for (int t = 0; t < 16; t++) nl += r->lightb[t].ntris;
         printf("lighting: %u lights, %u light triangles\n", r->lit->nlights, nl);
     }
+    for (uint32_t i = 0; i < r->nbatches; i++) r->total_tris += r->batches[i].ntris + r->litb[i].ntris;
+    printf("world: %u triangles, %u sectors, %u kd cells, %u loose faces; culling %s\n",
+           r->total_tris, gel->nsectors, gel->ncells, gel->nloose,
+           !r->cull ? "off (no sectors)" : r->vis ? "frustum + .vis" : "frustum (no .vis)");
     return 0;
 }
+
+/* ---- visibility (0x42a980 / 0x42ac10) ---------------------------------------------------------
+ * The original never hands the whole level to the device. It looks up the sector the camera stands in, takes the
+ * list of sectors the .vis says are reachable from there, and stamps the faces of those - each face once, however
+ * many cells list it. The port does the same and then drops every sector whose box misses the view frustum, which
+ * the original gets for free from its portal walk. The result is one index list per batch; the vertex arrays
+ * themselves are built once and never touched again.
+ *
+ * Everything degrades to "draw it all": a camera in no sector (the free camera outside the level), a level without
+ * sectors, a .vis that does not match the .gel, and cull mode 0 from F4. */
+static void frustum_planes(const FreeCamera *cam, Vec3 fw, Vec3 rt, Vec3 up, float aspect, float fy, float zn, float zf, float pl[6][4])
+{
+    float ty = 1.0f / fy, tx = ty * aspect;
+    Vec3 n[6] = { fw, { -fw.x, -fw.y, -fw.z },
+                  { fw.x * tx - rt.x, fw.y * tx - rt.y, fw.z * tx - rt.z },     /* the four side planes hold */
+                  { fw.x * tx + rt.x, fw.y * tx + rt.y, fw.z * tx + rt.z },     /* |v.rt| <= tx * v.fw and */
+                  { fw.x * ty - up.x, fw.y * ty - up.y, fw.z * ty - up.z },     /* |v.up| <= ty * v.fw */
+                  { fw.x * ty + up.x, fw.y * ty + up.y, fw.z * ty + up.z } };
+    float off[6] = { -zn, zf, 0, 0, 0, 0 };
+    for (int i = 0; i < 6; i++) {
+        pl[i][0] = n[i].x; pl[i][1] = n[i].y; pl[i][2] = n[i].z;
+        pl[i][3] = off[i] - (n[i].x * cam->pos.x + n[i].y * cam->pos.y + n[i].z * cam->pos.z);
+    }
+}
+#define CULL_SLACK 4.0f                        /* the boxes are exact; a hair of slack for the float rounding in them */
+static int aabb_in_frustum(const float pl[6][4], const float b[6])
+{
+    for (int i = 0; i < 6; i++) {              /* the corner furthest along the normal: outside it, the box is outside */
+        float x = pl[i][0] > 0 ? b[1] : b[0], y = pl[i][1] > 0 ? b[3] : b[2], z = pl[i][2] > 0 ? b[5] : b[4];
+        if (pl[i][0] * x + pl[i][1] * y + pl[i][2] * z + pl[i][3] < -CULL_SLACK) return 0;
+    }
+    return 1;
+}
+static void idx_reserve(struct WorldBatch *b, uint32_t extra)
+{
+    if (b->nidx + extra <= b->idx_cap) return;
+    b->idx_cap = (b->nidx + extra) * 2 + 256; b->idx = (uint32_t *)realloc(b->idx, (size_t)b->idx_cap * 4);
+}
+static void add_face(Renderer *r, uint32_t f)
+{
+    if (f >= r->gel->npolys || r->face_stamp[f] == r->stamp_gen) return;
+    r->face_stamp[f] = r->stamp_gen;
+    const struct FaceBatch *fb = &r->face_batch[f]; if (!fb->ntris) return;
+    struct WorldBatch *b = (fb->lit ? r->litb : r->batches) + fb->group;
+    idx_reserve(b, fb->ntris * 3);
+    for (uint32_t k = 0; k < fb->ntris * 3; k++) b->idx[b->nidx++] = fb->tri0 * 3 + k;
+}
+static void world_visibility(Renderer *r, const FreeCamera *cam, const float pl[6][4])
+{
+    const GelFile *g = r->gel; uint32_t ns = g->nsectors;
+    r->pvs_on = 0;
+    if (!r->cull || !ns || !g->sectors) { r->drawn_tris = r->total_tris; r->nsec_vis = ns; return; }
+    memset(r->sec_vis, 0, ns);
+    int32_t cs = r->cull >= 2 && r->vis ? gel_sector(g, cam->pos) : -1;
+    uint32_t npairs = 0;
+    if (cs >= 0 && (uint32_t)cs < r->vis->nsectors) {                          /* 0x42a980: the .vis list of that sector */
+        const VisSector *S = &r->vis->sectors[cs];
+        for (uint32_t e = 0; e < S->nlists; e++) {
+            const VisList *L = &r->vis->pool[S->first + e];
+            npairs += L->npairs;
+            for (uint32_t k = 0; k < L->npairs; k++) r->sec_vis[L->pairs[2 * k]] = 1;   /* the union of both lists: the
+                                                     * meaning of the list id is not confirmed, and a union can only show too much */
+        }
+    }
+    if (npairs) { r->sec_vis[cs] = 1; r->pvs_on = 1; }                         /* the camera's own sector is always in */
+    else memset(r->sec_vis, 1, ns);                                            /* no sector, or an empty list: show everything */
+    r->nsec_vis = 0;
+    for (uint32_t i = 0; i < ns; i++) if (r->sec_vis[i]) { if (aabb_in_frustum(pl, g->sectors[i].bbox)) r->nsec_vis++; else r->sec_vis[i] = 0; }
+    /* the index lists only have to be rebuilt when the set of sectors changed */
+    if (!r->sec_dirty && !memcmp(r->sec_vis, r->sec_prev, ns)) return;
+    memcpy(r->sec_prev, r->sec_vis, ns); r->sec_dirty = 0;
+    for (uint32_t i = 0; i < r->nbatches; i++) { r->batches[i].nidx = 0; r->litb[i].nidx = 0; }
+    if (++r->stamp_gen == 0) { memset(r->face_stamp, 0, (size_t)g->npolys * 4); r->stamp_gen = 1; }
+    for (uint32_t i = 0; i < ns; i++) if (r->sec_vis[i]) { const GelCell *S = &g->sectors[i]; for (uint32_t k = 0; k < S->npolys; k++) add_face(r, S->polys[k]); }
+    for (uint32_t k = 0; k < g->nloose; k++) add_face(r, g->loose[k]);         /* faces no sector lists: always drawn */
+    r->drawn_tris = 0;
+    for (uint32_t i = 0; i < r->nbatches; i++) r->drawn_tris += (r->batches[i].nidx + r->litb[i].nidx) / 3;
+    for (int t = 0; t < 16; t++) {              /* the .lit light polygons follow the face they lie on */
+        struct WorldBatch *b = &r->lightb[t]; b->nidx = 0; if (!b->ntris || !b->face) continue;
+        idx_reserve(b, b->ntris * 3);
+        for (uint32_t q = 0; q < b->ntris; q++) if (b->face[q] >= g->npolys || r->face_stamp[b->face[q]] == r->stamp_gen)
+            for (int c = 0; c < 3; c++) b->idx[b->nidx++] = q * 3 + c;      /* a fragment without a usable face is kept */
+    }
+}
+/* the triangles of one batch that survived the visibility pass */
+static void batch_draw(const Renderer *r, const struct WorldBatch *b)
+{
+    if (!r->cull) glDrawArrays(GL_TRIANGLES, 0, (GLsizei)b->ntris * 3);
+    else if (b->nidx) glDrawElements(GL_TRIANGLES, (GLsizei)b->nidx, GL_UNSIGNED_INT, b->idx);
+}
+static int batch_empty(const Renderer *r, const struct WorldBatch *b) { return r->cull ? !b->nidx : !b->ntris; }
 
 int rnd_screenshot(const Window *w, const char *path)
 {
@@ -258,9 +366,10 @@ int rnd_screenshot(const Window *w, const char *path)
 
 void rnd_free(Renderer *r)
 {
-    for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); }
+    for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->batches[i].idx); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); free(r->litb[i].idx); }
     free(r->batches); free(r->litb); free(r->face_bound);
-    for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
+    free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev);
+    for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); free(r->lightb[t].idx); free(r->lightb[t].face); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
     for (uint32_t g = 0; r->tex && g < r->tex->ngroups; g++) {                 /* the level's textures live in the GL context, not in the TexFile */
         TexGroup *tg = &r->tex->groups[g]; if (!tg->gl_frames) continue;
         for (uint32_t f = 0; f < tg->frame_count; f++) { GLuint id = tg->gl_frames[f]; if (id) glDeleteTextures(1, &id); }
@@ -355,15 +464,7 @@ static void set_material(const Renderer *r, uint32_t material, const Material **
 
 /* ---- model lighting (0x42e3e4 light choice, 0x43b912 light vector, 0x43bce4 vertex colour; docs/LIGHTING.md 3).
  * Simplified to one light vector per instance (the original keeps one per model part). */
-static const int32_t *model_owner(Model *m)
-{
-    if (!m->owner) {
-        m->owner = (int32_t *)malloc((size_t)(m->npoints ? m->npoints : 1) * 4);
-        for (uint32_t i = 0; i < m->npoints; i++) m->owner[i] = -1;
-        for (uint32_t n = 0; n < m->nnodes; n++) for (uint32_t k = 0; k < m->nodes[n].npoints; k++) if (m->nodes[n].point_base + k < m->npoints && m->owner[m->nodes[n].point_base + k] < 0) m->owner[m->nodes[n].point_base + k] = (int32_t)n;
-    }
-    return m->owner;
-}
+static const int32_t *model_owner(Model *m) { ins_point_owner(m, 0); return m->owner; }   /* the table level.c builds */
 /* 0x42e3e4..0x42e573: the candidate lights of an instance are the lights of its sector (the .lit trailer, lightsys+0x10,
  * indexed by inst+0x1c). n == 0 means no light and no shadow; n == 1 is taken without any test; otherwise the first
  * light that sees the point wins and, when none does, the one whose shadow plane the point is least far behind. Taking
@@ -417,6 +518,30 @@ static void instance_light(const Renderer *r, Instance *inst, float dt)
     }
     if (inst->light >= 0) for (int q = 0; q < 3; q++) inst->lcol[q] = lf->lights[inst->light].colour[q];
 }
+static Vec3 g_cam_pos;                 /* the camera of this frame, for the per polygon back-face test and the culling */
+
+/* Is this instance drawn at all this frame? The cone test on the model's bounding sphere is what the port already
+ * did. On top of it, 0x42aa0b only walks the instances that belong to the sectors the visibility pass kept, so an
+ * instance whose sphere lies entirely in sectors the camera cannot see goes as well. Whenever the sector lookup
+ * cannot be sure - a sphere reaching outside the level, or more sectors than fit in the buffer - the instance stays. */
+static int instance_visible(Renderer *r, Instance *inst, float aspect, float fy, Vec3 fw, Vec3 rt, Vec3 up)
+{
+    Model *m = inst->model;
+    if (m->cull_r <= 0) { float mx = 1; for (uint32_t pi = 0; pi < m->npoints; pi++) { const Vec3 *q = &m->points[pi].pos; float d2 = q->x * q->x + q->y * q->y + q->z * q->z; if (d2 > mx) mx = d2; } m->cull_r = sqrtf(mx) * 1.5f + 50.0f; }
+    const float *wm = inst->node_world ? inst->node_world[0].m : inst->world.m;
+    float sx = sqrtf(wm[0] * wm[0] + wm[1] * wm[1] + wm[2] * wm[2]); if (sx < 1) sx = 1;
+    float R = m->cull_r * sx, dx = wm[12] - g_cam_pos.x, dy = wm[13] - g_cam_pos.y, dz = wm[14] - g_cam_pos.z;
+    float vz = dx * fw.x + dy * fw.y + dz * fw.z, vx = dx * rt.x + dy * rt.y + dz * rt.z, vy = dx * up.x + dy * up.y + dz * up.z;
+    float ty = 1.0f / fy, tx = ty * aspect, zz = vz + R;
+    if (zz < 0 || fabsf(vx) > zz * tx + R * 1.5f || fabsf(vy) > zz * ty + R * 1.5f) return 0;
+    if (r->pvs_on) {
+        float box[6] = { wm[12] - R, wm[12] + R, wm[13] - R, wm[13] + R, wm[14] - R, wm[14] + R };
+        int32_t sec[64]; uint32_t n = gel_sectors_in_box(r->gel, box, sec, 64), k;
+        if (n && n < 64) { for (k = 0; k < n; k++) if (r->sec_vis[sec[k]]) break; if (k == n) return 0; }
+    }
+    return 1;
+}
+
 /* vertex colour: vcol * 0.3 + max(0, N.Ldir) * C, drawn MODULATE2X.
  * Except on a blended face: 0x43d91d tests the flag 0x43d7cf raises for polygon flags 0x20/0x40 (group flag bit 1,
  * copied into the polygon at load by 0x428020) and jumps straight past the lit RGB at v+0x24..0x2c. It writes
@@ -529,7 +654,7 @@ static void draw_cast_shadows(const Renderer *r)
             /* 0x42e2c3/0x42e377/0x42e417: no sector, fade >= 0.98 or an empty sector light list drop the shadow. Whether
              * the light SEES the caster is never tested - a character standing in shadow still casts one, from the
              * fallback light (0x42e524). */
-            if (!caster || !inst->visible || inst->fade > 0.98f || inst->light < 0 || !inst->node_world) continue;
+            if (!caster || !inst->drawn || inst->light < 0 || !inst->node_world) continue;   /* drawn: the original gates the caster on the same sector visibility */
             cast_shadow(r, inst);
         }
     }
@@ -572,7 +697,6 @@ static void event_frames(const Instance *inst, uint32_t out[4])
  * must survive. Drawing the back faces too is not just wasted fill: a back face has its normals pointing away, so
  * lit_vertex_colour() gives it ndl = 0 and only the 0.6 * vcol ambient term, and wherever front and back tie in depth
  * (exactly along a silhouette) the dark one can win - a dark rim around every character. */
-static Vec3 g_cam_pos;
 static const float *poly_plane(Model *m, const InsNode *n, InsPoly *p)
 {
     if (!p->plane_ok) {
@@ -833,12 +957,27 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         if (tg->frame_count > 1 && tg->anim_duration > 0 && ((tg->flags >> 8) & 0xff) != 2) tg->gl_tex = tg->gl_frames[(uint32_t)(time_s / tg->anim_duration * tg->frame_count) % tg->frame_count];
     }
     glDepthMask(GL_TRUE); glDisable(GL_BLEND); glClearColor(0.08f, 0.09f, 0.11f, 1); glClearStencil(0); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-    static double T[5]; static int TN; double q0 = win_time();
-    {   /* pose every visible instance up front: the cast shadows are drawn inside the world passes */
+    static double T[6]; static int TN; double q0 = win_time();
+    /* camera basis and frustum first: what is visible decides what still has to be lit and drawn */
+    float aspect = w->height ? (float)w->width / (float)w->height : 1.333f, zn = 5.0f, zf = 200000.0f;
+    if (cam->letterbox) aspect /= 0.75f;                     /* the image strip is 3/4 as tall, see the viewport below */
+    float f = 1.0f / tanf(cam->fov_deg * 3.14159265f / 360.0f);
+    Vec3 fw = cam_forward(cam), rt = cam_right(cam);
+    Vec3 up = { rt.y * fw.z - rt.z * fw.y, rt.z * fw.x - rt.x * fw.z, rt.x * fw.y - rt.y * fw.x };   /* right x forward */
+    float frust[6][4]; frustum_planes(cam, fw, rt, up, aspect, f, zn, zf, frust);
+    { double a = win_time(); world_visibility(r, cam, frust); T[5] += win_time() - a; }
+    {   /* Pose every visible instance, on screen or not: player.c collides against node_world, so a platform that
+         * stops being posed stops carrying the player. Lighting and shadows only go to what is actually drawn. */
         float dt = time_s - r->last_time; if (dt < 0 || dt > 0.25f) dt = 0.016f; r->last_time = time_s;
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
-            Instance *inst = &m->instances[k]; if (!inst->visible || inst->fade > 0.98f) continue;
-            ins_pose(inst, inst->anim, inst->anim_time); if (r->lit) instance_light(r, inst, dt); } }
+            Instance *inst = &m->instances[k]; inst->drawn = 0;
+            if (!inst->visible || inst->fade > 0.98f) continue;                /* 0x42e374 */
+            ins_pose(inst, inst->anim, inst->anim_time); } }
+        for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
+            Instance *inst = &m->instances[k];
+            if (!inst->visible || inst->fade > 0.98f) continue;
+            inst->drawn = instance_visible(r, inst, aspect, f, fw, rt, up);
+            if (inst->drawn && r->lit) instance_light(r, inst, dt); } }
     }
     glEnable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GEQUAL, 127.0f / 255.0f);   /* 0x47ec50/0x47ec5c: ALPHAREF 0x7f, GREATEREQUAL. The device stays on CULL_NONE; the culling is per polygon on the CPU */
     glPolygonMode(GL_FRONT_AND_BACK, r->wireframe ? GL_LINE : GL_FILL);
@@ -847,18 +986,14 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
 
     /* projection: the world data is right-handed (3ds Max export, y up after the -90 deg x instance rotation), so a plain GL frustum */
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
-    float aspect = w->height ? (float)w->width / (float)w->height : 1.333f, zn = 5.0f, zf = 200000.0f;
     if (cam->letterbox) {                     /* image strip y = 30..390 of 480: black above (30) and below (90), docs/CAMERA_SCRIPT.md 2.4 */
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
-        glViewport(0, (int)(w->height * (cam->letterbox == 1 ? 0.125f : 0.1875f)), w->width, (int)(w->height * 0.75f)); aspect /= 0.75f;   /* 1 = centred (cinematics, 0x41f8d0), 2 = shifted up (mode 4) */
+        glViewport(0, (int)(w->height * (cam->letterbox == 1 ? 0.125f : 0.1875f)), w->width, (int)(w->height * 0.75f));   /* 1 = centred (cinematics, 0x41f8d0), 2 = shifted up (mode 4) */
     }
-    float f = 1.0f / tanf(cam->fov_deg * 3.14159265f / 360.0f);
     float proj[16] = { f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (zf + zn) / (zn - zf), -1, 0, 0, 2 * zf * zn / (zn - zf), 0 };
     glMultMatrixf(proj);
     /* view: look-at from the free camera */
     glMatrixMode(GL_MODELVIEW); glLoadIdentity();
-    Vec3 fw = cam_forward(cam), rt = cam_right(cam);
-    Vec3 up = { rt.y * fw.z - rt.z * fw.y, rt.z * fw.x - rt.x * fw.z, rt.x * fw.y - rt.y * fw.x };   /* right x forward */
     float view[16] = { rt.x, up.x, -fw.x, 0, rt.y, up.y, -fw.y, 0, rt.z, up.z, -fw.z, 0,          /* GL camera looks along -z */
                        -(rt.x * cam->pos.x + rt.y * cam->pos.y + rt.z * cam->pos.z), -(up.x * cam->pos.x + up.y * cam->pos.y + up.z * cam->pos.z), (fw.x * cam->pos.x + fw.y * cam->pos.y + fw.z * cam->pos.z), 1 };
     glLoadMatrixf(view);
@@ -883,26 +1018,26 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_COLOR_ARRAY); glEnableClientState(GL_TEXTURE_COORD_ARRAY);
         set_blend(pass);
         for (uint32_t i = 0; i < r->nbatches; i++) {
-            struct WorldBatch *b = &r->batches[i]; if (!b->ntris || group_blended(r, b->group) != pass) continue;
+            struct WorldBatch *b = &r->batches[i]; if (batch_empty(r, b) || group_blended(r, b->group) != pass) continue;
             glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->tex->groups[b->group].gl_tex);
             glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(3, GL_UNSIGNED_BYTE, 0, b->col);
-            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)b->ntris * 3);
+            batch_draw(r, b);
         }
         if (pass == 0 && r->lit) {
             /* 1. ambient fill: flat 0x4C4C4C, opaque, writes z */
             glDisable(GL_TEXTURE_2D); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glDisable(GL_ALPHA_TEST);
             if (r->show_light) glColor3f(LIT_AMB, LIT_AMB, LIT_AMB); else glColor3f(1, 1, 1);
-            for (uint32_t i = 0; i < r->nbatches; i++) { struct WorldBatch *b = &r->litb[i]; if (!b->ntris) continue; glVertexPointer(3, GL_FLOAT, 0, b->pos); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)b->ntris * 3); }
+            for (uint32_t i = 0; i < r->nbatches; i++) { struct WorldBatch *b = &r->litb[i]; if (batch_empty(r, b)) continue; glVertexPointer(3, GL_FLOAT, 0, b->pos); batch_draw(r, b); }
             glEnableClientState(GL_COLOR_ARRAY); glEnableClientState(GL_TEXTURE_COORD_ARRAY);
             glDepthMask(GL_FALSE); glDepthFunc(GL_LEQUAL); glEnable(GL_BLEND);
             /* 2. light polygons, additive (flush 0x4293f0) */
             if (r->show_light) {
                 glBlendFunc(GL_ONE, GL_ONE); glEnable(GL_TEXTURE_2D); glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -1.0f);
                 for (int t = 0; t < 16; t++) {
-                    struct WorldBatch *b = &r->lightb[t]; if (!b->ntris) continue;
+                    struct WorldBatch *b = &r->lightb[t]; if (batch_empty(r, b)) continue;
                     glBindTexture(GL_TEXTURE_2D, r->light_tex[t]);
                     glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(3, GL_UNSIGNED_BYTE, 0, b->col);
-                    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)b->ntris * 3);
+                    batch_draw(r, b);
                 }
                 glDisable(GL_POLYGON_OFFSET_FILL);
             }
@@ -910,10 +1045,10 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             /* 3. texture pass: 2 * src * dst (0x4296a4) */
             glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
             for (uint32_t i = 0; i < r->nbatches; i++) {
-                struct WorldBatch *b = &r->litb[i]; if (!b->ntris) continue;
+                struct WorldBatch *b = &r->litb[i]; if (batch_empty(r, b)) continue;
                 glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->tex->groups[b->group].gl_tex);
                 glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(3, GL_UNSIGNED_BYTE, 0, b->col);
-                glDrawArrays(GL_TRIANGLES, 0, (GLsizei)b->ntris * 3);
+                batch_draw(r, b);
             }
             glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDepthFunc(GL_LESS); glEnable(GL_ALPHA_TEST);
         }
@@ -924,16 +1059,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) {
             Model *m = &r->ins->models[mi];
             for (uint32_t k = 0; k < m->ninstances; k++) {
-                Instance *inst = &m->instances[k]; if (!inst->visible || inst->fade > 0.98f) continue;   /* 0x42e374 */
-                {   /* frustum cull on a bounding sphere (the original only draws the instances of the visible sectors) */
-                    if (m->cull_r <= 0) { float mx = 1; for (uint32_t pi = 0; pi < m->npoints; pi++) { const Vec3 *q = &m->points[pi].pos; float d2 = q->x * q->x + q->y * q->y + q->z * q->z; if (d2 > mx) mx = d2; } m->cull_r = sqrtf(mx) * 1.5f + 50.0f; }
-                    const float *wm = inst->node_world ? inst->node_world[0].m : inst->world.m;
-                    float sx = sqrtf(wm[0] * wm[0] + wm[1] * wm[1] + wm[2] * wm[2]); if (sx < 1) sx = 1;
-                    float R = m->cull_r * sx, dx = wm[12] - cam->pos.x, dy = wm[13] - cam->pos.y, dz = wm[14] - cam->pos.z;
-                    float vz = dx * fw.x + dy * fw.y + dz * fw.z, vx = dx * rt.x + dy * rt.y + dz * rt.z, vy = dx * up.x + dy * up.y + dz * up.z;
-                    float ty = 1.0f / f, tx = ty * aspect, zz = vz + R;
-                    if (zz < 0 || fabsf(vx) > zz * tx + R * 1.5f || fabsf(vy) > zz * ty + R * 1.5f) continue;
-                }
+                Instance *inst = &m->instances[k]; if (!inst->drawn) continue;
                 { static double mt[512]; static int mn; double b0 = win_time(); draw_instance(r, inst, pass); if (pass == 0) draw_outline(r, inst); if (mi < 512) mt[mi] += win_time() - b0; if (getenv("WOODY_PROF2") && pass == 1 && mi == r->ins->nmodels - 1 && k == m->ninstances - 1 && ++mn == 120) { for (uint32_t z = 0; z < r->ins->nmodels && z < 512; z++) if (mt[z] / 120 * 1000 > 0.3) { printf("   model %u: %.2f ms (%u nodes, %u tris, %u inst)", z, mt[z] / 120 * 1000, r->ins->models[z].nnodes, r->ins->models[z].ntris, r->ins->models[z].ninstances); puts(""); } } }
             }
         }
@@ -943,7 +1069,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     }
     set_blend(0);
     T[4] += win_time() - q0;
-    if (getenv("WOODY_PROF") && ++TN == 60) { printf("  RND ms: pose %.2f shadows %.2f instances %.2f total %.2f", T[0] / 60 * 1000, T[2] / 60 * 1000, T[3] / 60 * 1000, T[4] / 60 * 1000); puts(""); T[0] = T[2] = T[3] = T[4] = 0; TN = 0; }
+    if (getenv("WOODY_PROF") && ++TN == 60) { printf("  RND ms: pose %.2f cull %.2f shadows %.2f instances %.2f total %.2f | world %u/%u tris, %u/%u sectors%s", T[0] / 60 * 1000, T[5] / 60 * 1000, T[2] / 60 * 1000, T[3] / 60 * 1000, T[4] / 60 * 1000, r->drawn_tris, r->total_tris, r->nsec_vis, r->gel->nsectors, r->pvs_on ? " (.vis)" : ""); puts(""); T[0] = T[2] = T[3] = T[4] = T[5] = 0; TN = 0; }
     (void)time_s;
 }
 
