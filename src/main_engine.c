@@ -579,6 +579,79 @@ static void fx_update(float dt)
     }
 }
 
+/* ---- footsteps (docs/FOOTSTEPS.md) -----------------------------------------------------------------------------
+ * The walk cycle calls 0x47cba0(pos, ground normal, direction, foot, kind) twice per turn and a landing on ground
+ * type 2 calls 0x476140(pos + (0,30,0), &normal, 3, 0.25, 1.5). Both effect functions are known by their call site
+ * only - they are not decompiled - so what is drawn here is a reconstruction with the primitives the port has: a
+ * mark that lies in the ground plane and is mirrored between the two feet (faint and short on ordinary ground,
+ * kind 2; a lasting print on dust, sand or snow, kind 3), plus a puff of the smoke image for kind 3 and three
+ * puffs on landing. The step SOUND is not from here: it comes from the type 4 events of the animation (docs/SOUND.md 3). */
+typedef struct { Vec3 pos, n, dir; float t, life, size, strength; int mirror; } Mark;
+typedef struct { Vec3 pos, vel; float t, life, size0, size1, rot; } Dust;
+static Mark g_marks[48]; static Dust g_dust[64];
+static Mark *mark_new(void)
+{
+    Mark *pick = &g_marks[0]; float oldest = -1;
+    for (int i = 0; i < 48; i++) { if (g_marks[i].life <= 0) return &g_marks[i]; if (g_marks[i].t > oldest) { oldest = g_marks[i].t; pick = &g_marks[i]; } }
+    return pick;                                                             /* full: the oldest print makes room */
+}
+static void dust_new(Vec3 pos, Vec3 vel, float life, float size0, float size1)
+{
+    for (int i = 0; i < 64; i++) if (g_dust[i].life <= 0) {
+        g_dust[i].pos = pos; g_dust[i].vel = vel; g_dust[i].t = 0; g_dust[i].life = life;
+        g_dust[i].size0 = size0; g_dust[i].size1 = size1; g_dust[i].rot = fx_rnd(); return;
+    }
+}
+static Vec3 vunit(Vec3 v) { float l = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); if (l < 1e-6f) return (Vec3){ 0, 1, 0 }; v.x /= l; v.y /= l; v.z /= l; return v; }
+void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind)      /* 0x47cba0, from 0x463f40 */
+{
+    Vec3 n = vunit(normal), d = vunit(dir);
+    Vec3 side = vunit((Vec3){ d.y * n.z - d.z * n.y, d.z * n.x - d.x * n.z, d.x * n.y - d.y * n.x });
+    float off = foot ? 22.0f : -22.0f;                                       /* the two feet beside the Perso position; the original passes only the flag */
+    Vec3 fp = { pos.x + side.x * off, pos.y + side.y * off, pos.z + side.z * off };
+    Mark *m = mark_new();
+    m->pos = fp; m->n = n; m->dir = d; m->t = 0; m->mirror = foot;
+    m->life = kind == 3 ? 4.0f : 0.6f; m->size = kind == 3 ? 36.0f : 30.0f; m->strength = kind == 3 ? 0.6f : 0.22f;
+    if (kind == 3) {                                                         /* dust ground: the foot kicks a little of it up behind itself */
+        Vec3 v = { -d.x * 30.0f + n.x * 40.0f, -d.y * 30.0f + n.y * 40.0f, -d.z * 30.0f + n.z * 40.0f };
+        dust_new((Vec3){ fp.x + n.x * 10.0f, fp.y + n.y * 10.0f, fp.z + n.z * 10.0f }, v, 0.45f, 14.0f, 34.0f);
+    }
+    if (getenv("WOODY_FXLOG")) printf("footstep %s kind %d at %.0f %.0f %.0f", foot ? "right" : "left", kind, fp.x, fp.y, fp.z), puts("");
+}
+void game_land_dust(Vec3 pos, Vec3 normal)                                   /* 0x476140(&pos + (0,30,0), &normal, 3, 0.25, 1.5), argument 3 = the number of particles */
+{
+    Vec3 n = vunit(normal);
+    Vec3 a = vunit(fabsf(n.y) < 0.9f ? (Vec3){ n.z, 0, -n.x } : (Vec3){ 1, 0, 0 });     /* two axes in the ground plane */
+    Vec3 b = { n.y * a.z - n.z * a.y, n.z * a.x - n.x * a.z, n.x * a.y - n.y * a.x };
+    for (int i = 0; i < 3; i++) {
+        float t = (i + fx_rnd() * 0.5f) * 2.0944f;                           /* three directions spread around the landing point */
+        Vec3 o = { a.x * cosf(t) + b.x * sinf(t), a.y * cosf(t) + b.y * sinf(t), a.z * cosf(t) + b.z * sinf(t) };
+        Vec3 v = { o.x * 150.0f + n.x * 60.0f, o.y * 150.0f + n.y * 60.0f, o.z * 150.0f + n.z * 60.0f };
+        dust_new(pos, v, 0.5f, 18.0f, 52.0f);
+    }
+    if (getenv("WOODY_FXLOG")) printf("landing dust at %.0f %.0f %.0f", pos.x, pos.y, pos.z), puts("");
+}
+static void steps_draw(float dt)
+{
+    static const float mark_rgb[3] = { 0.55f, 0.45f, 0.35f }, dust_rgb[3] = { 1.0f, 0.95f, 0.85f };
+    for (int i = 0; i < 48; i++) {
+        Mark *m = &g_marks[i]; if (m->life <= 0) continue;
+        float u = m->t / m->life; if (u >= 1.0f) { m->life = 0; continue; }
+        float k = u < 0.5f ? 1.0f : (1.0f - u) * 2.0f;                       /* the print stays, then fades away over the second half of its life */
+        hud_world_decal(hud_step_image(), &m->pos.x, &m->n.x, &m->dir.x, m->size, m->mirror, mark_rgb, m->strength * k);
+        m->t += dt;
+    }
+    for (int i = 0; i < 64; i++) {
+        Dust *d = &g_dust[i]; if (d->life <= 0) continue;
+        float u = d->t / d->life; if (u >= 1.0f) { d->life = 0; continue; }
+        hud_world_fx(14, &d->pos.x, d->size0 + (d->size1 - d->size0) * u, d->rot, dust_rgb, 0.3f * (1.0f - u));
+        d->pos.x += d->vel.x * dt; d->pos.y += d->vel.y * dt; d->pos.z += d->vel.z * dt;
+        float slow = 1.0f - 2.5f * dt; if (slow < 0) slow = 0;               /* the puff runs out of speed as it fades */
+        d->vel.x *= slow; d->vel.y *= slow; d->vel.z *= slow;
+        d->t += dt;
+    }
+}
+
 static void launchers_draw(const float *eye)
 {
     static const float white[3] = { 1, 1, 1 };
@@ -1024,7 +1097,7 @@ static uint32_t msvc_rand(void *user) { (void)user; g_seed = g_seed * 214013u + 
 
 /* one loaded level: everything that is torn down and rebuilt on a level change (the window and GL context stay) */
 typedef struct {
-    char name[32]; TexFile tex; GelFile gel; LitFile lit; int have_lit; void *code; EkoVM vm; Renderer rnd;
+    char name[32]; TexFile tex; GelFile gel; LitFile lit; int have_lit; VisFile vis; int have_vis; void *code; EkoVM vm; Renderer rnd;
     Player player; int have_player; double t0;
 } Level;
 static void *read_all(const char *path, size_t *sz);
@@ -1032,8 +1105,8 @@ static void level_free(Level *L)
 {
     g_nlasers = 0; g_nlaunchers = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
-    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
-    rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
+    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
 static int level_load(Level *L, const char *dir, const char *lvl)
@@ -1050,9 +1123,10 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     L->vm.on_msg = on_msg; L->vm.on_warn = on_warn; L->vm.rand_fn = msvc_rand;
     printf("%s: %u polys, %u verts, %u textures, %u models, %u slots, %u script objects\n", lvl, L->gel.npolys, L->gel.nverts, L->tex.ngroups, g_ins.nmodels, g_ins.nslots, L->vm.nobj);
     snprintf(path, sizeof path, "%s/%s/%s.lit", dir, lvl, lvl); L->have_lit = lit_load(&L->lit, path) == 0;
+    snprintf(path, sizeof path, "%s/%s/%s.vis", dir, lvl, lvl); L->have_vis = vis_load(&L->vis, path, L->gel.nsectors) == 0;   /* 0x408260: what each sector can see */
     if (getenv("WOODY_CELLLOG")) printf("  gel: %u cells, %u sectors, %u kd nodes | lit: %u lights, %u sector light lists\n", L->gel.ncells, L->gel.nsectors, L->gel.nkd, L->lit.nlights, L->lit.nsectors);
-    rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL);
-    L->have_player = player_init(&L->player, &g_ins, &L->gel) == 0;
+    rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL, L->have_vis ? &L->vis : NULL);
+    L->have_player = player_init(&L->player, &g_ins, &L->gel, &L->tex) == 0;
     g_player = L->have_player ? &L->player : NULL;
     for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
     if (L->have_player) { L->player.inst->scripted = 0; L->player.enemies = &g_enemies; }
@@ -1130,7 +1204,7 @@ int main(int argc, char **argv)
     if (!L.have_player) fly = 1;
     if (L.have_player && have_pos) { L.player.pos.x = pos_args[0]; L.player.pos.y = pos_args[1]; L.player.pos.z = pos_args[2]; L.player.floor_y = L.player.pos.y - 1000.0f; }
     if (L.have_player && have_yaw) L.player.yaw = yaw_arg;
-    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, enter_prev = 0, l_prev = 0, new_game_pending = 0, title_page = 0, title_sel = 0, title_prev[2] = {0, 0}; float title_t = 0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0, menu_prev[3] = {0, 0, 0}; uint32_t frames = 0; double fps_t = t0;
+    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, enter_prev = 0, l_prev = 0, new_game_pending = 0, title_page = 0, title_sel = 0, title_prev[2] = {0, 0}; float title_t = 0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[4] = {0, 0, 0, 0}, p_prev = 0, f5_prev = 0, menu_prev[3] = {0, 0, 0}; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
         double now = win_time(); float dt = (float)(now - last); last = now;
@@ -1152,6 +1226,12 @@ int main(int argc, char **argv)
         if (cam.pitch > 1.5f) cam.pitch = 1.5f; if (cam.pitch < -1.5f) cam.pitch = -1.5f;
         /* toggles */
         for (int k = 0; k < 3; k++) { int down = win.keys[VK_F1 + k]; if (down && !f_prev[k]) { if (k == 0) L.rnd.show_world ^= 1; else if (k == 1) L.rnd.show_instances ^= 1; else L.rnd.wireframe ^= 1; } f_prev[k] = down; }
+        {   /* F4 steps the visibility back: frustum + .vis -> frustum only -> the whole level every frame */
+            static const char *cn[3] = { "off (whole level)", "frustum only", "frustum + .vis" };
+            int down = win.keys[VK_F4], top = L.gel.nsectors ? (L.rnd.vis ? 2 : 1) : 0;
+            if (down && !f_prev[3]) { L.rnd.cull = L.rnd.cull ? L.rnd.cull - 1 : top; L.rnd.sec_dirty = 1; printf("culling: %s\n", cn[L.rnd.cull]); }
+            f_prev[3] = down;
+        }
         if (win.keys['P'] && !p_prev) paused ^= 1; p_prev = win.keys['P'];
         if (win.keys[VK_TAB] && !tab_prev && sel) {                                   /* next instance with animations */
             Instance *nxt = NULL; int found = 0;
@@ -1303,7 +1383,7 @@ int main(int argc, char **argv)
                         }
                     }
                 }
-                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
+                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */

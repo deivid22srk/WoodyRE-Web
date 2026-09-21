@@ -48,6 +48,54 @@ int tex_load(TexFile *t, const char *path)
 void tex_free(TexFile *t) { for (uint32_t g = 0; g < t->ngroups; g++) free(t->groups[g].frames); free(t->groups); free(t->materials); free(t->data); memset(t, 0, sizeof *t); }
 
 /* ---------------------------------------------------------------- .gel */
+/* Scratch of the kd queries below. It hangs off the level so the query functions can stay const: the frame stamp
+ * is the port's equivalent of the dword at poly+4 that 0x407000 and 0x42ac10 use to handle a polygon only once
+ * when several cells list it. */
+struct GelQuery {
+    uint32_t *stamp, gen;                      /* per polygon: the generation that last collected it */
+    uint32_t *out, n, cap;                     /* the polygons of the running query */
+    uint32_t *all; int off;                    /* 0..npolys-1, built on demand for levels without a kd-tree */
+    int32_t *stack; uint32_t scap;             /* node stack of the box query */
+    struct SegNode *segs;                      /* node + clipped segment stack of the segment query */
+};
+struct SegNode { int32_t node; float a[3], b[3]; };
+
+/* One cell record (0x407f33 / 0x4080e6): u32 npoly, u32 poly[npoly], f32 bbox[6], i32 link[6], u32 nnodes,
+ * node[nnodes]. The six neighbour links and their local subtrees are only a shortcut from a cell to the cell
+ * next to it; the port descends from the root instead, so it skips them. */
+static int read_cells(Rd *r, GelCell *out, uint32_t n)
+{
+    for (uint32_t i = 0; i < n && !r->err; i++) {
+        GelCell *c = &out[i];
+        c->npolys = ru32(r);
+        c->polys = (const uint32_t *)rraw(r, 4 * (size_t)c->npolys);
+        for (int k = 0; k < 6; k++) c->bbox[k] = rf32(r);
+        r->pos += 24;                                        /* i32 link[6] */
+        { uint32_t nn = ru32(r); r->pos += 16 * (size_t)nn; }
+        if (r->pos > r->size) r->err = 1;
+    }
+    return r->err;
+}
+
+static void gel_build_queries(GelFile *g)
+{
+    g->q = (struct GelQuery *)calloc(1, sizeof *g->q);
+    g->q->stamp = (uint32_t *)calloc(g->npolys ? g->npolys : 1, 4);
+    g->q->off = getenv("WOODY_NOKD") != NULL;      /* fall back to scanning the whole level, to tell a tree bug from a collision bug */
+    /* A kd leaf that lies above every sector root belongs to no sector, and a polygon can miss every cell list.
+     * Such polygons have no place in the tree to be found from, so both the renderer and the queries always take
+     * them along. In well built levels there are none. */
+    uint8_t *seen = (uint8_t *)calloc(g->npolys ? g->npolys : 1, 1);
+    for (uint32_t i = 0; i < g->ncells; i++) for (uint32_t k = 0; k < g->cells[i].npolys; k++) { uint32_t q = g->cells[i].polys[k]; if (q < g->npolys) seen[q] |= 1; }
+    for (uint32_t i = 0; i < g->nsectors; i++) for (uint32_t k = 0; k < g->sectors[i].npolys; k++) { uint32_t q = g->sectors[i].polys[k]; if (q < g->npolys) seen[q] |= 2; }
+    for (uint32_t i = 0; i < g->npolys; i++) if (seen[i] != 3) g->nloose++;
+    if (g->nloose) {
+        g->loose = (uint32_t *)malloc((size_t)g->nloose * 4); g->nloose = 0;
+        for (uint32_t i = 0; i < g->npolys; i++) if (seen[i] != 3) g->loose[g->nloose++] = i;
+    }
+    free(seen);
+}
+
 int gel_load(GelFile *g, const char *path)
 {
     memset(g, 0, sizeof *g);
@@ -61,32 +109,32 @@ int gel_load(GelFile *g, const char *path)
         for (int k = 0; k < 4; k++) p->plane[k] = rf32(&r);
         p->indices = ru32s(&r, p->nverts);
     }
-    /* portals */
+    /* portals: only the group lists below address them */
     uint32_t nport = ru32(&r); ru32(&r);
     for (uint32_t i = 0; i < nport; i++) { uint32_t n = ru32(&r); r.pos += 16 + 4 * (size_t)n; }
-    /* groups */
-    uint32_t ngroups = ru32(&r); r.pos += 4 * (size_t)ngroups;
-    for (uint32_t i = 0; i < ngroups; i++) { uint32_t k = ru32(&r); r.pos += 8 * (size_t)k; }
+    /* groups (zones): count x exclusive end index, then a portal list per group */
+    g->ngroups = ru32(&r);
+    g->groups = (GelGroup *)calloc(g->ngroups ? g->ngroups : 1, sizeof(GelGroup));
+    for (uint32_t i = 0, prev = 0; i < g->ngroups; i++) { uint32_t end = ru32(&r); g->groups[i].first = prev; g->groups[i].end = end; prev = end; }
+    for (uint32_t i = 0; i < g->ngroups; i++) { uint32_t k = ru32(&r); r.pos += 8 * (size_t)k; }
     g->nverts = ru32(&r);
     g->verts = (GelVert *)calloc(g->nverts, sizeof(GelVert));
     for (uint32_t i = 0; i < g->nverts; i++) { g->verts[i].x = rf32(&r); g->verts[i].y = rf32(&r); g->verts[i].z = rf32(&r); g->verts[i].colour = ru32(&r); }
-    /* cells (0x407f33): u32 npoly, u32 poly[], float bbox[6], i32 link[6], u32 nnodes, node[nnodes]. The port does not
-     * use the cells themselves, but they have to be walked to reach the kd-tree behind them: the sector a point is in
-     * is what selects the lights of an instance (docs/LIGHTING.md 3). */
+    /* cells (0x407f33) and, with the same record, the sectors behind the kd-tree */
     g->ncells = ru32(&r);
-    for (uint32_t i = 0; i < g->ncells && !r.err; i++) {
-        uint32_t n = ru32(&r); r.pos += 4 * (size_t)n + 24 + 24;
-        uint32_t m = ru32(&r); r.pos += 16 * (size_t)m;
-        if (r.pos > r.size) r.err = 1;
-    }
+    g->cells = (GelCell *)calloc(g->ncells ? g->ncells : 1, sizeof(GelCell));
+    read_cells(&r, g->cells, g->ncells);
     g->nkd = ru32(&r);
     g->kd = (KdNode *)calloc(g->nkd ? g->nkd : 1, sizeof(KdNode));
     for (uint32_t i = 0; i < g->nkd && !r.err; i++) {
         int32_t t = (int32_t)ru32(&r); g->kd[i].axis = (int16_t)(t & 0xffff); g->kd[i].sector = t >> 16;
         g->kd[i].d = rf32(&r); g->kd[i].le = (int32_t)ru32(&r); g->kd[i].gt = (int32_t)ru32(&r);
     }
-    g->nsectors = ru32(&r);                    /* the sector records themselves are only needed for sector visibility */
+    g->nsectors = ru32(&r);
+    g->sectors = (GelCell *)calloc(g->nsectors ? g->nsectors : 1, sizeof(GelCell));
+    read_cells(&r, g->sectors, g->nsectors);
     if (r.err) { fprintf(stderr, "%s: parse error\n", path); return -1; }
+    gel_build_queries(g);
     float *b = g->bbox; b[0] = b[2] = b[4] = 1e30f; b[1] = b[3] = b[5] = -1e30f;
     for (uint32_t i = 0; i < g->nverts; i++) {
         GelVert *v = &g->verts[i];
@@ -96,7 +144,13 @@ int gel_load(GelFile *g, const char *path)
     }
     return 0;
 }
-void gel_free(GelFile *g) { for (uint32_t i = 0; i < g->npolys; i++) free(g->polys[i].indices); free(g->polys); free(g->verts); free(g->kd); free(g->data); memset(g, 0, sizeof *g); }
+void gel_free(GelFile *g)
+{
+    for (uint32_t i = 0; i < g->npolys; i++) free(g->polys[i].indices);
+    free(g->polys); free(g->verts); free(g->kd); free(g->groups); free(g->cells); free(g->sectors); free(g->loose);
+    if (g->q) { free(g->q->stamp); free(g->q->out); free(g->q->all); free(g->q->stack); free(g->q->segs); free(g->q); }
+    free(g->data); memset(g, 0, sizeof *g);
+}
 
 /* 0x4081c0: which sector a point falls in - walk down from the root until a node carries a sector index */
 int32_t gel_sector(const GelFile *g, Vec3 p)
@@ -114,6 +168,182 @@ int32_t gel_sector(const GelFile *g, Vec3 p)
     }
     return -1;
 }
+
+/* 0x408180: which kd leaf cell a point falls in - down to a leaf, whatever sectors are passed on the way */
+int32_t gel_cell(const GelFile *g, Vec3 p)
+{
+    if (!g->ncells) return -1;
+    if (!g->nkd) return 0;
+    const float v[3] = { p.x, p.y, p.z };
+    int32_t i = 0;
+    for (uint32_t guard = 0; guard <= g->nkd; guard++) {
+        const KdNode *n = &g->kd[i];
+        if (n->axis < 0 || n->axis > 2) return -1;
+        int32_t c = v[n->axis] + n->d <= 0 ? n->le : n->gt;
+        if (c < 0) { uint32_t k = (uint32_t)~c; return k < g->ncells ? (int32_t)k : -1; }
+        if ((uint32_t)c >= g->nkd) return -1;
+        i = c;
+    }
+    return -1;
+}
+
+/* ---- polygon queries over the kd-tree ---------------------------------------------------------
+ * A cell lists every polygon that crosses it, so the polygons of the cells a query volume meets are exactly the
+ * ones that can answer it. A polygon that reaches into several cells is collected once, by its frame stamp. */
+#define GEL_QEPS 0.5f                          /* a point exactly on a split plane must reach both sides */
+
+static void q_reserve(struct GelQuery *q, uint32_t extra)
+{
+    if (q->n + extra <= q->cap) return;
+    q->cap = (q->n + extra) * 2 + 256; q->out = (uint32_t *)realloc(q->out, (size_t)q->cap * 4);
+}
+static void q_add(const GelFile *g, const uint32_t *polys, uint32_t n)
+{
+    struct GelQuery *q = g->q; q_reserve(q, n);
+    for (uint32_t k = 0; k < n; k++) {
+        uint32_t i = polys[k];
+        if (i >= g->npolys || q->stamp[i] == q->gen) continue;
+        q->stamp[i] = q->gen; q->out[q->n++] = i;
+    }
+}
+static void q_begin(const GelFile *g)
+{
+    struct GelQuery *q = g->q; q->n = 0;
+    if (++q->gen == 0) { memset(q->stamp, 0, (size_t)g->npolys * 4); q->gen = 1; }
+    if (g->nloose) q_add(g, g->loose, g->nloose);
+}
+static GelPolySet q_all(const GelFile *g)      /* no tree: the whole level, as before */
+{
+    struct GelQuery *q = g->q;
+    if (!q->all) { q->all = (uint32_t *)malloc((size_t)(g->npolys ? g->npolys : 1) * 4); for (uint32_t i = 0; i < g->npolys; i++) q->all[i] = i; }
+    GelPolySet s = { g->npolys, q->all }; return s;
+}
+static int32_t *q_stack(const GelFile *g)
+{
+    struct GelQuery *q = g->q;
+    if (q->scap < g->nkd + 4) { q->scap = g->nkd + 4; q->stack = (int32_t *)realloc(q->stack, (size_t)q->scap * sizeof(int32_t)); }
+    return q->stack;
+}
+
+GelPolySet gel_polys_in_box(const GelFile *g, const float box[6])
+{
+    if (!g->ncells || !g->q || g->q->off) return q_all(g);
+    q_begin(g);
+    if (!g->nkd) q_add(g, g->cells[0].polys, g->cells[0].npolys);
+    else {
+        int32_t *st = q_stack(g); uint32_t sp = 0; st[sp++] = 0;
+        while (sp) {
+            const KdNode *n = &g->kd[st[--sp]];
+            if (n->axis < 0 || n->axis > 2) continue;
+            float split = -n->d;                                       /* the test is p[axis] + d <= 0 */
+            for (int side = 0; side < 2; side++) {
+                if (side == 0 ? box[n->axis * 2] > split + GEL_QEPS : box[n->axis * 2 + 1] <= split - GEL_QEPS) continue;
+                int32_t c = side == 0 ? n->le : n->gt;
+                if (c < 0) { uint32_t k = (uint32_t)~c; if (k < g->ncells) q_add(g, g->cells[k].polys, g->cells[k].npolys); }
+                else if ((uint32_t)c < g->nkd && sp < g->nkd + 4) st[sp++] = c;
+            }
+        }
+    }
+    { GelPolySet s = { g->q->n, g->q->out }; return s; }
+}
+
+GelPolySet gel_polys_on_seg(const GelFile *g, Vec3 a, Vec3 b)
+{
+    if (!g->ncells || !g->q || g->q->off) return q_all(g);
+    q_begin(g);
+    if (!g->nkd) { q_add(g, g->cells[0].polys, g->cells[0].npolys); GelPolySet s = { g->q->n, g->q->out }; return s; }
+    struct GelQuery *q = g->q;
+    if (!q->segs) q->segs = (struct SegNode *)malloc((size_t)(g->nkd + 4) * sizeof(struct SegNode));
+    uint32_t sp = 0;
+    { struct SegNode *e = &q->segs[sp++]; e->node = 0; e->a[0] = a.x; e->a[1] = a.y; e->a[2] = a.z; e->b[0] = b.x; e->b[1] = b.y; e->b[2] = b.z; }
+    while (sp) {
+        struct SegNode e = q->segs[--sp];
+        const KdNode *n = &g->kd[e.node];
+        if (n->axis < 0 || n->axis > 2) continue;
+        float split = -n->d, da = e.a[n->axis] - split, db = e.b[n->axis] - split;
+        float lo = da < db ? da : db, hi = da < db ? db : da;
+        int crosses = (da <= 0) != (db <= 0); float m[3];
+        if (crosses) { float t = da / (da - db); for (int k = 0; k < 3; k++) m[k] = e.a[k] + (e.b[k] - e.a[k]) * t; }
+        for (int side = 0; side < 2; side++) {
+            if (side == 0 ? lo > GEL_QEPS : hi <= -GEL_QEPS) continue;      /* nothing of the segment on this side */
+            const float *sa = e.a, *sb = e.b;
+            if (crosses) { if ((da <= 0) == (side == 0)) sb = m; else sa = m; }   /* hand each side its own half */
+            int32_t c = side == 0 ? n->le : n->gt;
+            if (c < 0) { uint32_t k = (uint32_t)~c; if (k < g->ncells) q_add(g, g->cells[k].polys, g->cells[k].npolys); }
+            else if ((uint32_t)c < g->nkd && sp < g->nkd + 4) { struct SegNode *o = &q->segs[sp++]; o->node = c; memcpy(o->a, sa, 12); memcpy(o->b, sb, 12); }
+        }
+    }
+    { GelPolySet s = { q->n, q->out }; return s; }
+}
+
+/* 0x4081c0 widened to a box: every sector whose root node the box can reach. Each sector has exactly one root
+ * node, so no sector comes out twice. */
+uint32_t gel_sectors_in_box(const GelFile *g, const float box[6], int32_t *out, uint32_t max)
+{
+    uint32_t n = 0;
+    if (!g->nsectors || !g->nkd || !g->q) return 0;
+    int32_t *st = q_stack(g); uint32_t sp = 0; st[sp++] = 0;
+    while (sp) {
+        const KdNode *nd = &g->kd[st[--sp]];
+        if (nd->sector >= 0) { if ((uint32_t)nd->sector < g->nsectors && n < max) out[n++] = nd->sector; continue; }
+        if (nd->axis < 0 || nd->axis > 2) continue;
+        float split = -nd->d;
+        for (int side = 0; side < 2; side++) {
+            if (side == 0 ? box[nd->axis * 2] > split + GEL_QEPS : box[nd->axis * 2 + 1] <= split - GEL_QEPS) continue;
+            int32_t c = side == 0 ? nd->le : nd->gt;
+            if (c >= 0 && (uint32_t)c < g->nkd && sp < g->nkd + 4) st[sp++] = c;   /* a leaf before a sector root has no sector */
+        }
+    }
+    return n;
+}
+
+/* ---------------------------------------------------------------- .vis */
+/* Loader 0x408260: one record per sector, holding one or two lists of (sector, flag) pairs - the sectors that can
+ * be seen from this one (docs/FORMAT_TEX_COL_VIS_LIT.md 3). */
+int vis_load(VisFile *v, const char *path, uint32_t nsectors)
+{
+    memset(v, 0, sizeof *v);
+    if (!nsectors) return -1;
+    v->data = read_file(path, &v->size); if (!v->data) return -1;
+    Rd r = { v->data, 0, v->size, 0 };
+    v->nsectors = nsectors;
+    v->sectors = (VisSector *)calloc(nsectors, sizeof(VisSector));
+    uint32_t cap = nsectors * 2 + 8, n = 0;
+    v->pool = (VisList *)calloc(cap, sizeof(VisList));
+    for (uint32_t s = 0; s < nsectors && !r.err; s++) {
+        uint32_t nlists = ru32(&r), total = ru32(&r), sum = 0;
+        if (nlists > 1024) { r.err = 1; break; }
+        if (n + nlists > cap) { cap = (n + nlists) * 2 + 8; v->pool = (VisList *)realloc(v->pool, (size_t)cap * sizeof(VisList)); }
+        v->sectors[s].nlists = nlists; v->sectors[s].first = n;
+        for (uint32_t e = 0; e < nlists && !r.err; e++) {
+            VisList *L = &v->pool[n++];
+            L->id = ru32(&r); L->npairs = ru32(&r);
+            if (8 * (size_t)L->npairs > r.size - r.pos) { r.err = 1; break; }
+            L->pairs = (const uint32_t *)rraw(&r, 8 * (size_t)L->npairs);
+            for (uint32_t k = 0; k < L->npairs; k++) if (L->pairs[2 * k] >= nsectors) { r.err = 1; break; }
+            sum += L->npairs;
+        }
+        if (sum != total) r.err = 1;
+    }
+    if (r.err || r.pos != r.size) { fprintf(stderr, "%s: does not match the .gel (%u sectors), ignored\n", path, nsectors); vis_free(v); return -1; }
+    /* How much this actually culls, and the one property a potentially visible set must have: a sector sees itself.
+     * Nothing outside the loader reads these lists in the original (docs/FORMAT_TEX_COL_VIS_LIT.md 3), so the reading
+     * of the pairs rests on the .gel loader; print enough to see at a glance whether it holds up on a level. */
+    { uint32_t mn = 0xffffffffu, mx = 0, self = 0; double sum = 0;
+      for (uint32_t s = 0; s < nsectors; s++) {
+          uint32_t n = 0, has = 0;
+          for (uint32_t e = 0; e < v->sectors[s].nlists; e++) {
+              const VisList *L = &v->pool[v->sectors[s].first + e];
+              n += L->npairs;
+              for (uint32_t k = 0; k < L->npairs; k++) if (L->pairs[2 * k] == s) has = 1;
+          }
+          sum += n; if (n < mn) mn = n; if (n > mx) mx = n; self += has;
+      }
+      printf(".vis: %u sectors see %u..%u others (avg %.0f), %u of %u list themselves\n", nsectors, mn, mx, sum / nsectors, self, nsectors);
+    }
+    return 0;
+}
+void vis_free(VisFile *v) { free(v->sectors); free(v->pool); free(v->data); memset(v, 0, sizeof *v); }
 
 /* ---------------------------------------------------------------- .ins */
 static void read_trajectory(Rd *r, Trajectory *t)
@@ -265,7 +495,7 @@ void ins_free(InsFile *f)
         Model *m = &f->models[i];
         for (uint32_t j = 0; j < m->nnodes; j++) { InsNode *n = &m->nodes[j]; for (uint32_t k = 0; k < n->npolys && n->polys; k++) free(n->polys[k].indices); free(n->polys); free(n->pos_refs); free(n->rot_refs); free(n->event_refs); }
         for (uint32_t j = 0; j < m->ninstances; j++) { free(m->instances[j].ids); free(m->instances[j].traj.points); free(m->instances[j].node_world); }
-        free(m->owner); free(m->nodes); free(m->anims); free(m->points); free(m->tris); free(m->instances); free(m->volume_nodes); free(m->mesh_nodes);
+        free(m->owner); free(m->coll); free(m->nodes); free(m->anims); free(m->points); free(m->tris); free(m->instances); free(m->volume_nodes); free(m->mesh_nodes);
     }
     for (uint32_t i = 0; i < f->ncameras; i++) free(f->cameras[i].traj.points);
     free(f->models); free(f->cameras); free(f->slots); free(f->cam_slots); free(f->data); memset(f, 0, sizeof *f);
@@ -334,7 +564,7 @@ int lit_load(LitFile *l, const char *path)
         L->nb = ru32(&r); L->b = ru32s(&r, L->nb);
         L->nc = ru32(&r); ru32(&r); L->c = (LitPoly *)calloc(L->nc ? L->nc : 1, sizeof(LitPoly));
         for (uint32_t k = 0; k < L->nc && !r.err; k++) {
-            LitPoly *p = &L->c[k]; p->n = ru32(&r); for (int q = 0; q < 4; q++) p->plane[q] = rf32(&r); ru32(&r);
+            LitPoly *p = &L->c[k]; p->n = ru32(&r); for (int q = 0; q < 4; q++) p->plane[q] = rf32(&r); p->face = ru32(&r);
             if (p->n > 4096) { r.err = 1; p->n = 0; break; }
             p->indices = (int32_t *)ru32s(&r, p->n);
         }
@@ -487,11 +717,68 @@ void ins_pose(Instance *inst, int anim, float t)
     pose_rec(inst, top, &inst->world, anim, tf);
 }
 
+/* Which node owns a point. Walking the node list per point (as this did) is O(nodes) on every single vertex, and
+ * the collision code asks it for every vertex of every hull polygon it looks at; the answer is fixed, so build it
+ * once per model. The lowest node index that claims a point wins, exactly as the walk did. */
 int ins_point_owner(const Model *m, uint32_t pi)
 {
-    for (uint32_t i = 0; i < m->nnodes; i++) if (pi >= m->nodes[i].point_base && pi < m->nodes[i].point_base + m->nodes[i].npoints) return (int)i;
-    return -1;
+    if (!m->owner) {
+        Model *mm = (Model *)m;
+        mm->owner = (int32_t *)malloc((size_t)(m->npoints ? m->npoints : 1) * 4);
+        for (uint32_t i = 0; i < (m->npoints ? m->npoints : 1); i++) mm->owner[i] = -1;
+        for (uint32_t n = 0; n < m->nnodes; n++) for (uint32_t k = 0; k < m->nodes[n].npoints; k++) {
+            uint32_t q = m->nodes[n].point_base + k; if (q < m->npoints && mm->owner[q] < 0) mm->owner[q] = (int32_t)n;
+        }
+    }
+    return pi < m->npoints ? (int)m->owner[pi] : -1;
 }
+/* The nodes the collision code has to consider at all. Models without any (most scenery) are then dropped in one
+ * test instead of walking their whole node list on every ground query. */
+const uint32_t *ins_collision_nodes(const Model *m, uint32_t *count)
+{
+    if (!m->coll_ok) {
+        Model *mm = (Model *)m;
+        for (uint32_t i = 0; i < m->nnodes; i++) if ((m->nodes[i].kind == 1 || m->nodes[i].kind == 4) && m->nodes[i].polys) mm->ncoll++;
+        if (mm->ncoll) {
+            mm->coll = (uint32_t *)malloc((size_t)mm->ncoll * 4); mm->ncoll = 0;
+            for (uint32_t i = 0; i < m->nnodes; i++) if ((m->nodes[i].kind == 1 || m->nodes[i].kind == 4) && m->nodes[i].polys) mm->coll[mm->ncoll++] = i;
+        }
+        mm->coll_ok = 1;
+    }
+    *count = m->ncoll; return m->coll;
+}
+
+/* World aabb of one node: its own points are fixed in the node's space, so the box is built once and only has to be
+ * transformed by the node's current matrix (the absolute-value trick, three dot products per axis). */
+int ins_node_world_box(const Instance *inst, uint32_t ni, float out[6])
+{
+    const Model *m = inst->model; if (ni >= m->nnodes || !inst->node_world) return 0;
+    InsNode *n = &((Model *)m)->nodes[ni];
+    if (!n->box_state) {
+        n->box_state = n->npoints ? 1 : -1;
+        float *b = n->box; b[0] = b[2] = b[4] = 1e30f; b[1] = b[3] = b[5] = -1e30f;
+        for (uint32_t k = 0; k < n->npoints; k++) {
+            uint32_t q = n->point_base + k;
+            /* ins_point_world() puts a point in the space of the node that owns it; if that is not this node the
+             * box would be in the wrong space, so give up on it for this node. */
+            if (q >= m->npoints || ins_point_owner(m, q) != (int)ni) { n->box_state = -1; break; }
+            Vec3 p = m->points[q].pos; p.x -= n->pivot.x; p.y -= n->pivot.y; p.z -= n->pivot.z;
+            const float v[3] = { p.x, p.y, p.z };
+            for (int a = 0; a < 3; a++) { if (v[a] < b[a * 2]) b[a * 2] = v[a]; if (v[a] > b[a * 2 + 1]) b[a * 2 + 1] = v[a]; }
+        }
+    }
+    if (n->box_state < 0) return 0;
+    const float *M = inst->node_world[ni].m;
+    float c[3], e[3];
+    for (int a = 0; a < 3; a++) { c[a] = (n->box[a * 2] + n->box[a * 2 + 1]) * 0.5f; e[a] = (n->box[a * 2 + 1] - n->box[a * 2]) * 0.5f; }
+    for (int a = 0; a < 3; a++) {                        /* row a of the matrix (column major: element (a, j) = M[j*4+a]) */
+        float wc = M[a] * c[0] + M[4 + a] * c[1] + M[8 + a] * c[2] + M[12 + a];
+        float we = fabsf(M[a]) * e[0] + fabsf(M[4 + a]) * e[1] + fabsf(M[8 + a]) * e[2];
+        out[a * 2] = wc - we; out[a * 2 + 1] = wc + we;
+    }
+    return 1;
+}
+
 Vec3 ins_point_world(const Instance *inst, uint32_t pi)
 {
     const Model *m = inst->model; int o = ins_point_owner(m, pi);

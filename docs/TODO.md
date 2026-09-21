@@ -18,7 +18,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Checkpoints: respawn-positie (1030) | controleren | GAMEFLOW.md |
 | Salto die wegvalt bij springen in de lucht (melding gebruiker) | niet te reproduceren; welke toets/timing? | — |
 | Obstakelsensor van de Mover | niet geport | PERSO_MOVE.md |
-| Geometrie-queries zijn brute force, geen kd-tree | werkt, traag bij grote levels | — |
+| Grondsoort `P+0x308` wordt gelezen (voor de voetstappen), maar soort 1 (glad/ijs) past de bijdraai-ramp `0x45a850` nog niet aan | deels | PERSO_MOVE.md §6.4, FOOTSTEPS.md §2 |
+| Geometrie-queries lopen nu via de kd-boom van `.gel` (vloer, push-out, zichtlijnen); instantie-hulls worden per knoop met een wereld-bbox afgewezen | opgelost (issue #9) | FORMAT_GEL.md 5 |
 
 ## Camera
 
@@ -58,7 +59,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 
 | wat | status | waar |
 |---|---|---|
-| Deeltjes: de pickup-effecten (`0x4793d0`) zijn geport met hun eigen pool. Niet: vonken bij het klimmen, rook, de explosiedeeltjes van de raket (`0x4767f0`/`0x4764f0`) en stof bij landen | deels | BONUS.md §2.4 |
+| Deeltjes: de pickup-effecten (`0x4793d0`) zijn geport met hun eigen pool. Niet: vonken bij het klimmen, rook en de explosiedeeltjes van de raket (`0x4767f0`/`0x4764f0`) | deels | BONUS.md §2.4 |
+| Voetstappen: de trigger (loopcyclus 0.38/0.9, soort 2/3 op de grondsoort) en het landingsstof staan er; de effectfuncties `0x47cba0` en `0x476140` zelf zijn niet gedecompileerd, dus beeld, levensduur en kleur zijn een reconstructie | trigger geport, beeld gereconstrueerd | FOOTSTEPS.md |
 | Zwarte contourlijn (SetFlags-bit 0x20) geport. Het origineel blaast alleen hoek 0/1/2 van een quad op (`0x43c42d`); de port alle hoeken, en de afstandsreferentie is de instantie-translatie i.p.v. `inst+0x60` | grotendeels | MODEL_RENDER.md §7 |
 | Modelrendering: mipmaps (het origineel bouwt er 4 met een boxfilter, MIPFILTER POINT); bitreplicatie in de RGB565-decode (het origineel laat de lage bits 0); diepte-sortering van de geblende modelbatches (`0x428d00`, 256 emmers achter-naar-voor) | niet geport | MODEL_RENDER.md recept 9-10 |
 | Pickup-sprite: de grootte is opgelost - `sprite+0x264` is de halve **diagonaal** (`0x470fee`), dus elke additieve sprite in de port was `1/sqrt(2)` te klein. Rechtgezet in `hud_world_fx` en `hud_world_sprite` | opgelost | BONUS.md §2.4 |
@@ -67,8 +69,9 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Geblende modelvlakken (neonreclame, het kruis/de pijl naast een deur, lichtbalken, lampgloed) werden door de belichting gehaald en waren in de schaduw zwart; het origineel tekent ze onbelicht op `1.0 × textuur` | opgelost (issue #5) | LIGHTING.md recept 5 |
 | Lensflare `0x474a90` van licht-objecten: **niet porten**, de registratietabel wordt alleen door bericht 1510 gevuld en dat komt in geen enkel level voor | n.v.t. | LIGHTING.md §1.1 |
 | Lucht: links/rechts-oriëntatie van de kubus | niet geverifieerd | SKY.md |
-| `.vis`-culling (nu frustum-cull per instantie) | niet geport | FORMAT_TEX_COL_VIS_LIT.md |
+| `.vis`-culling: sector van de camera -> `.vis`-lijst -> frustum op de sectorboxen; alleen de vlakken van die sectoren gaan naar de kaart, instanties erbuiten krijgen geen licht, schaduw of tekenbeurt | opgelost (issue #9) | FORMAT_TEX_COL_VIS_LIT.md 3 |
 | Vsync / fps-begrenzing | niet aanwezig | — |
+| `.col` (objecten per bladcel) wordt niet geladen; de port beslist per instantie met `gel_sectors_in_box` op zijn bolstraal welke sectoren hij raakt | bewuste afwijking | FORMAT_TEX_COL_VIS_LIT.md 2 |
 
 ## 2D, menu's, spelverloop
 

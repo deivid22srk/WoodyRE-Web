@@ -22,7 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
-    GLuint fx[10];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow (docs/ROCKET.md 5) */
+    GLuint fx[11];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow (docs/ROCKET.md 5); slot 10 = the footstep mark (docs/FOOTSTEPS.md) */
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint env[4];                                        /* bank 0 images 53..56: the butterflies of the environment instances (0x47e050 picks one of the four) */
@@ -64,7 +64,10 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
     return t;
 }
 
-static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : -1; }
+/* which bank 0 image the footstep mark uses. 0x47cba0 is not decompiled, so its image is unknown: the port takes
+ * the soft cloud (image 14) and WOODY_STEPIMG=<n> tries another one (docs/FOOTSTEPS.md 4). */
+int hud_step_image(void) { static int v = -1; if (v < 0) { const char *e = getenv("WOODY_STEPIMG"); v = e ? atoi(e) : 14; if (v < 0) v = 14; } return v; }
+static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : image == hud_step_image() ? 10 : -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
@@ -129,7 +132,7 @@ void hud_free(void)
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
     for (int i = 0; i < 4; i++) if (H.env[i]) glDeleteTextures(1, &H.env[i]);
     if (H.beam) glDeleteTextures(1, &H.beam);
-    for (int i = 0; i < 10; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
+    for (int i = 0; i < 11; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }
@@ -784,6 +787,34 @@ void hud_world_fx(int image, const float *pos, float size, float turns, const fl
     glTexCoord2f(0, 1); glVertex3f(pos[0] - r[0] - u[0], pos[1] - r[1] - u[1], pos[2] - r[2] - u[2]);
     glTexCoord2f(1, 1); glVertex3f(pos[0] + r[0] - u[0], pos[1] + r[1] - u[1], pos[2] + r[2] - u[2]);
     glTexCoord2f(1, 0); glVertex3f(pos[0] + r[0] + u[0], pos[1] + r[1] + u[1], pos[2] + r[2] + u[2]);
+    glEnd();
+    glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
+}
+/* ---- ground mark of a footstep (docs/FOOTSTEPS.md): a sprite that lies in a plane instead of facing the camera
+ * (0x4717d7 builds the quad on the normal S+0x230..0x238 when flag bit 0 is off), turned so that +v runs along the
+ * walking direction (flag bit 2 = rotation) and mirrored in u for the other foot (flag bit 0x40, value 2 = mirrored).
+ * `size` is the half diagonal, as everywhere (0x470fee). What 0x47cba0 draws is not decompiled, so the port prints
+ * the mark as `dst * (1 - rgb*strength)`: the only ground-ish image it has is a white cloud on black whose alpha is a
+ * constant 1, and an alpha blend of that is a dark square. Multiplying keeps the black of the texture out of it. */
+void hud_world_decal(int image, const float *pos, const float *normal, const float *dir, float size, int mirror, const float *rgb, float strength)
+{
+    int n = fx_slot(image); if (!H.ok || n < 0 || !H.fx[n] || strength <= 0 || size <= 0) return;
+    float N[3] = { normal[0], normal[1], normal[2] }, l = (float)sqrt(N[0] * N[0] + N[1] * N[1] + N[2] * N[2]);
+    if (l < 1e-6f) { N[0] = 0; N[1] = 1; N[2] = 0; } else { N[0] /= l; N[1] /= l; N[2] /= l; }
+    float d = dir[0] * N[0] + dir[1] * N[1] + dir[2] * N[2];
+    float v[3] = { dir[0] - N[0] * d, dir[1] - N[1] * d, dir[2] - N[2] * d };
+    l = (float)sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); if (l < 1e-6f) return;
+    v[0] /= l; v[1] /= l; v[2] /= l;
+    float u[3] = { v[1] * N[2] - v[2] * N[1], v[2] * N[0] - v[0] * N[2], v[0] * N[1] - v[1] * N[0] };
+    if (mirror) { u[0] = -u[0]; u[1] = -u[1]; u[2] = -u[2]; }
+    float h = size * 0.70710678f, c[3] = { pos[0] + N[0] * 3.0f, pos[1] + N[1] * 3.0f, pos[2] + N[2] * 3.0f };   /* lifted off the floor: coplanar it z-fights */
+    glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[n]);
+    glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR); glColor3f(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(c[0] - u[0] * h + v[0] * h, c[1] - u[1] * h + v[1] * h, c[2] - u[2] * h + v[2] * h);
+    glTexCoord2f(0, 1); glVertex3f(c[0] - u[0] * h - v[0] * h, c[1] - u[1] * h - v[1] * h, c[2] - u[2] * h - v[2] * h);
+    glTexCoord2f(1, 1); glVertex3f(c[0] + u[0] * h - v[0] * h, c[1] + u[1] * h - v[1] * h, c[2] + u[2] * h - v[2] * h);
+    glTexCoord2f(1, 0); glVertex3f(c[0] + u[0] * h + v[0] * h, c[1] + u[1] * h + v[1] * h, c[2] + u[2] * h + v[2] * h);
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }

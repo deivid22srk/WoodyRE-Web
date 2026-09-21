@@ -39,14 +39,25 @@ met wortelbeweging en eigen cameratrack), het paneel met de scores komt op, hij 
 `src/player.c` is een VOORLOPIGE spelerbesturing (nog niet de gedecompileerde Perso-klasse): camera-relatief lopen, zwaartekracht,
 vloer/muur-botsing op de `.gel`-polygonen en op de hull-nodes van instanties, volgcamera, en triggervolumes (convexe volume-nodes)
 die `eko_vol_perso_enter/in/leave` naar de script-VM sturen; `--walk T` loopt T seconden vooruit voor tests. W1A komt nu overeen met een screenshot van het origineel (spiegeling, kleuren, oriëntatie van de zwevende schotels, gloei-effecten).
+
+**Zichtbaarheid (`0x42a980`/`0x42ac10`, issue #9).** De kd-boom en de sectoren van `.gel` (secties 5-7) en de `.vis` worden nu
+geladen en gebruikt, zoals het origineel dat doet. Per frame: de sector waar de camera in staat → de `.vis`-lijst van die sector →
+frustumtest op de sectorboxen → alleen de polygonen van wat overblijft gaan naar de kaart (met het framestempel van `poly+4`, zodat
+een vlak dat in meerdere sectoren staat één keer wordt getekend). Instanties buiten die sectoren krijgen geen belichting, schaduw of
+tekenbeurt meer; poseren doen ze wél, want `player.c` botst tegen `node_world`. Dezelfde boom draagt nu ook alle geometrie-queries
+(vloer onder een punt, push-out tegen muren, zichtlijnen) die eerst het hele level afliepen — per frame gebeurde dat tien tot dertig
+keer, één keer per vijand erbij. `src/geltest.c` controleert die queries op synthetische data tegen brute force.
+`F4` zet de culling stap voor stap uit als er iets verdwijnt dat er hoort te zijn, `WOODY_PROF=1` toont per frame hoeveel driehoeken
+en sectoren er overblijven en `WOODY_NOKD=1` laat de queries weer het hele level aflopen.
 ```bash
 python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c src/main_engine.c src/player.c src/instance.c src/enemy.c src/ekovm.c src/audio.c src/hud.c -lopengl32 -lgdi32 -luser32 -lwinmm
 ./out/woody.exe extract/Data                     # zonder level: het titelscherm (House, level 0); Enter start, daarna de hub
-./out/woody.exe extract/Data W1A                 # pijltjes/WASD lopen (t.o.v. camera), spatie springen, F5 vrije camera (dan WASD + rechtermuisknop), [ ] animatie, Tab instantie, F1-F3 toggles
+./out/woody.exe extract/Data W1A                 # pijltjes/WASD lopen (t.o.v. camera), spatie springen, F5 vrije camera (dan WASD + rechtermuisknop), [ ] animatie, Tab instantie, F1-F4 toggles (F4 = culling)
 ./out/woody.exe extract/Data W1A --shot out/s.ppm 3   # screenshot na 3 s en stoppen
 ./out/woody.exe extract/Data WWS --prev W1A --stats 12 12 25 20 245   # resultatenscherm: terug uit W1A met die statistieken
 ./out/woody.exe extract/Data W1A --cam 537 -1800 -2450 0 -10   # camera: x y z yaw pitch (graden)
 python -m ziglang cc -std=c99 -O2 -o out/leveltest.exe src/level.c src/leveltest.c && ./out/leveltest.exe extract/Data   # parsertest 28 levels
+python -m ziglang cc -std=c99 -O2 -o out/geltest.exe src/level.c src/geltest.c && ./out/geltest.exe    # kd-boom / .vis-queries tegen brute force, zonder gamedata
 ```
 
 ## Viewer

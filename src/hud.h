@@ -43,6 +43,11 @@ void hud_world_wing(int n, const float *c, const float *u, const float *v, float
 void hud_world_sprites_end(void);
 /* additive effect sprite (bank 0 image 0, 4 or 6), rotated by `turns` around the view axis; colour = rgb * alpha */
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha);
+/* a sprite that lies in a plane instead of facing the camera (0x4717d7: without flag bit 0 the quad is built on the
+ * normal S+0x230..0x238), turned so that +v runs along `dir`, optionally mirrored (flag 0x40, docs/PERSO_DEATH.md).
+ * `size` is the half diagonal, as for every sprite. It darkens what is under it by `rgb * strength`, see hud.c. */
+void hud_world_decal(int image, const float *pos, const float *normal, const float *dir, float size, int mirror, const float *rgb, float strength);
+int  hud_step_image(void);                                      /* bank 0 image used for the footstep mark (WOODY_STEPIMG) */
 /* additive ribbon segment with a colour per end (bank 0 image 0) */
 void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw, const float *rgb_a, const float *rgb_b);
 /* additive camera-facing line quad (line primitive 0x471a10, bank 0 image 1): half width hw, colour*alpha at both ends */
