@@ -317,7 +317,7 @@ De klok (en dus ook de padvolger) draait alleen voor instanties met een cel (`+0
 |---|---|
 | +0x00 | vtable (`0x4aa31c`; [2] = update/teken `0x42e2b0`, [3] = denk-stap, [8] = botsing `0x433140`, [17] = anim-reset `0x42e250`, [22] = berichten) |
 | +0x04 | id `0x01000000 + slot` |
-| +0x08 | vlaggen: bits 0-4 soort (1 = instantie, 2 = type 60, 3 = camera); 0x20 = geen her-cellen op geanimeerde positie (`0x43f2ed`); 0x40 = niet-botsbaar |
+| +0x08 | vlaggen: bits 0-4 soort (1 = instantie, **2 = een `.lit`-lichtrecord** – gezet door de `.lit`-lader op `0x40ae60` (`and edx, 0xffffffe2 / or edx, 2`), vtable `0x4a9508`, Update = de lege `0x462c60`; niet "type 60" zoals hier eerder stond –, 3 = camera); 0x20 = geen her-cellen op geanimeerde positie (`0x43f2ed`); 0x40 = niet-botsbaar |
 | +0x0c..0x14 | positie |
 | +0x18 | resultaat van `0x40a0c0(pos, −1)` (−1 als verborgen) |
 | +0x1c | wereldcel (−1 = verborgen/buiten de wereld) |

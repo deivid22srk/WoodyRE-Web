@@ -59,6 +59,16 @@ Er is **geen N·L** op de wereld, alleen lineaire afstandsval.
    gezien wordt (BSP-query), anders alleen `Ldir *= 0.85`; vertexkleur
    `= vcol·0.3 + max(0, N·Ldir)·C` (schaal 0..255), getekend met MODULATE **2×**. In de
    schaduw zakt een figuur dus in ~10 frames naar `0.6·vcol`.
+   **Uitzondering: een vlak van een geblende textuurgroep (vlagbit 1) krijgt géén belichting.** `0x428020`
+   kopieert de groepsvlaggen 1-2 bij het laden naar de polygoonvlaggen 0x20/0x40, `0x43d7b9` test `0x60` en
+   zet `[0x5ac8d8] = 1`, en `0x43d91d` springt daarmee over de belichte RGB op `v+0x24..0x2c` heen: er wordt
+   `0x00iiiiii` geschreven met `i = (int)(alpha · 0.5)` (`0x43d9a4`) en `alpha = (1 − inst+0x6c) · 255`
+   (`0x43b504`). Voor een instantie die niet uitvervaagt is dat `i = 128`, onder MODULATE 2× dus precies
+   `1.0 × textuur`. Neonreclame, het rode kruis / de groene pijl naast een deur en de lichtbalken erboven
+   zijn daarom **altijd even fel**, waar ze ook staan. De intensiteitsbyte `tex+0x46` wordt nergens gelezen.
+   Alleen modelvlakken doen dit: `.gel`-wereldpolygonen krijgen de vlaggen nooit (`0x42801a` zit in de
+   `.ins`-lader) en geskinde driehoeken evenmin (`0x43e107` zet `[0x5ac8d8] = 0`). In de data van alle 28
+   levels staat geen enkele wereldpolygoon of geskinde driehoek in een geblende groep.
 6. Er is **geen blob-schaduw** (§4); de schaduw onder Woody is echte, vanuit het licht
    geprojecteerde modelgeometrie, en alleen als de detailoptie aan staat (§5).
 
@@ -69,7 +79,7 @@ Er is **geen N·L** op de wereld, alleen lineaire afstandsval.
 | Adres | Aanroep | Wat |
 |---|---|---|
 | `0x401922` | `0x4843e0(0.3)` | per frame: `renderer+0x1ac = 0.6` (factor onbelichte faces), `renderer+0x1b0 = 0x4C4C4C` (`(int)(0.3·256)` = 76 in R, G en B) = **AMB**. Renderer = `[0x5e86ac]` = `[0x509adc]` (zelfde object, `0x42a451`/`0x48407e`) |
-| `0x401d78` | `0x42b400` | objecten updaten; voor zichtbare licht-objecten (soort 2) `0x474a90`: halo/flare met zichtlijntest `0x497ed0` – geen invloed op de wereldbelichting |
+| `0x401d78` | `0x42b400` | objecten updaten; voor zichtbare licht-objecten (soort 2 = een `.lit`-lichtrecord, `0x40ae60`) `0x474a90`: lensflare met zichtlijntest `0x497ed0` – geen invloed op de wereldbelichting. **Onbereikbaar in het uitgeleverde spel**: `0x474a90` loopt alleen over de tabel `0x5e8428` (64 plaatsen), en die wordt uitsluitend gevuld door de handler van bericht **1510** (`0x46cf02`) – dat bericht komt in geen van de 28 levelscripts voor (wel alle andere ids 1500..1511). De tabel blijft dus leeg en de functie keert altijd meteen terug op `0x474abe`. Niet porten |
 | `0x401d85` | `0x42abc0` | `lightsys+0x28[face] = 0` voor alle faces van de zichtbare sectoren |
 | `0x401d91` | `0x42b380` | instanties tekenen; schaduwontvangende faces krijgen hier ook vlag 2 (`0x42eb73`, `0x42ecbc`) |
 | `0x401d99` | `0x42b4e0` | **lichtpas** (onvoorwaardelijk, niet afhankelijk van een optie) |

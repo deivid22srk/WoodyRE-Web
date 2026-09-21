@@ -95,7 +95,10 @@ SEND 510 [316, 140, 0]   ; cam 316 -> Woody + 140             SEND 520 [285, 0, 
 ...  (volume verlaten)                                       DELAY 160: ... animaties/geluid ...
 SEND 570 [316, t]; SEND 580 [316, 1]; SEND 500 [316]          SEND 580 [285, 2]; SEND 500 [285]
 ```
-Hubs (WWS/KWS/SWS): per leveldeur `580 cam 2; 520 cam 0 deur` … `580 cam 2; 500 cam` (13× in WWS).
+Hubs (WWS/KWS/SWS): dat `580 cam 2; 520 cam …` (13× in WWS) hoort bij de **gebiedspoort-filmpjes** (object 258:
+`26 [0, 260, 2]; 580 [259, 2]; 520 [259, 0, 11]`), niet bij de leveldeuren. Een leveldeur stuurt **geen enkel
+camerabericht**: `1081 [level]; 1040 [deur, 17]; 1602 …; 3 [marker, …]`. De camera komt daar uit de animatie zelf
+(mode 0x80, §4.3). Een deurenpaar binnen de hub idem: `1040 [302, 17]` … `DELAY 150` … `1040 [303, 18]`.
 Rail: `580 cam 1|2; 540 cam d` … `500 cam`.
 
 ## 2. Mode 2 (bericht 510) en mode 4 (bericht 520)
@@ -289,15 +292,39 @@ Dus een horizontaal kijkende zijcamera op 1000 eenheden van het vlak, die 300 vo
 `0x459b55/0x459b4b` `+0x3c = 400` en `+0x40 = 700` zetten.) Gebruik: W1A/K1A/S1A 29×, W1B 24×, W2B 51×, W2D 84×, W3C 124×,
 W3D 114×; typisch `1110 2 150; 1110 1 500; 1110 3 0; 1110 7 200` rond een volume, en `1088 inst 1|2` bij binnenkomst.
 
-### 4.3 Mode 0x80 = camera uit de animatie van een instantie (cinematic-animaties)
+### 4.3 Mode 0x80 = camera uit de animatie van een instantie (deuren én cinematics)
 
 `CamMgr_Update` `0x41f1ee`: `inst = CamMgr+0x5d4`; als `0x42feb0(inst, inst->anim (+0xb0))` (model heeft een node van
 soort **0x80** met een track voor deze animatie): `0x42fa40(inst, &state, &pos, &CamMgr+0x5d8)` → `0x42fa80`: zoekt de
 nodes van soort **0x80 (camera)** en **0x180 (camera-doel)** in het model (`inst+0xf8`), evalueert hun positie-tracks
-(`0x43a660`) op de huidige animatietijd, transformeert met de instantie en bouwt de look-at; `state.pos = pos`,
-`lookOffset (+0xc4) = +0x5d8`. Het Woody-model heeft precies twee zulke nodes (`insparse`: `80:2`).
-Ingeschakeld (altijd met cut) door de Perso-toestandswissel `0x44df67..0x44dfad` (als de nieuwe animatie een cameratrack
-heeft en `Perso+0x558`) en door het cinematic-object `0x44ed6e`. Letterbox 1 als `CamMgr+0x618 & 2` (`0x41f5ab`).
+(`0x43a660`) op de huidige animatietijd (in **keyframes**: `nframes · t`), transformeert met de instantie en bouwt de
+look-at; `state.pos = pos`, `CamMgr+0xc4 = +0x5d8`. Let op: in deze mode staat in `+0xc4` een **absolute wereldpositie**
+(het getransformeerde doelpunt), geen offset zoals in de modes 1/2/4, en `+0x278` wordt hier niet geschreven.
+De zoeklus op `0x42fb39` heeft **geen eindtest**: hij stopt pas als beide nodes gevonden zijn, dus een model met een
+oog-node zonder doel-node loopt de nodetabel uit. Faalt `0x42feb0`, dan wordt de hele tak overgeslagen en blijven het
+vorige oog en doel staan – de camera **bevriest** op dat beeld in plaats van terug te springen.
+
+Twee aanzetters, allebei met cut (`0x41f9f0(2)`) en `SetMode(7, 0)` (de eerste parameter is een **schuif**: masker
+`1 << 7`):
+
+* **de gescripte Perso-actie zelf**, `0x44df67..0x44dfb2` – dat is de *staart van `0x44dda0`*, niet een aparte
+  toestandswissel (correctie op een eerdere lezing van dit document). Hij **wist** `CamMgr+0x618` bit 1
+  (`0x44df92 and edi, 0xfffffffd`): de deurcamera heeft dus **nooit** letterbox. De test op `Perso+0x558` is altijd
+  waar (24 instructies eerder gezet, alleen gewist door de Perso-reset `0x44ac7e`) en hoeft niet geport te worden.
+* **het cinematic-object**, `0x44ed3f` + `0x44ed53 or esi, 2` – die **zet** de bit, dus mét letterbox
+  (`0x41f5ab` leest `CamMgr+0x618 & 2`). De per-frame handler `0x4598c4` herstelt de bit zolang mode 0x80 loopt,
+  daarom moeten beide aanzetters hem schrijven.
+
+Het Woody-model heeft precies twee zulke nodes (`insparse`: `80:2`): index 140 met vlaggen `0x080` (oog) en 141 met
+`0x180` (doel), allebei top-level. Ze dragen een track op de animaties **17, 18, 41..47, 49, 50, 53..78, 80..84** –
+dus op de twee deuracties én op de cinematics. In animatie 17 staat het oog op lokaal `(−371, −78, 178)`: 371 eenheden
+**naast** Woody's eigen as op hoofdhoogte, kijkend naar een punt op die as. Dat is het zijaanzicht waarin je hem de
+deur in ziet lopen. Beide animaties zijn 900 frames / 4.5 s en lopen op snelheid 3, dus 1.5 s – precies de `DELAY 150`
+die de hubscripts tussen `1040 [deur, 17]` en `1040 [andere deur, 18]` zetten.
+
+**Verlaten.** Actie 18 eindigt in `0x44db60` op `0x44e5a0`: `SetTransitionDuration(0.5)`, `SetTransition(1)` = *blend*,
+`SetMode(0, 0)` = volgcamera – tenzij het zijaanzicht intussen weer aanstaat (`Perso+0x4ec`). Actie 17 herstelt de
+camera **nooit**: die blijft op de laatste trackframe staan tot het level wisselt of de teleport `0x458f90` hard cut.
 
 ### 4.4 Mode 0x200 = first person (Perso-toestand 3)
 

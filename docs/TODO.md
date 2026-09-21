@@ -26,6 +26,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 |---|---|---|
 | Broodkruimelpad (`0x423ab0`) als de camera de speler niet meer ziet | niet geport | CAMERA.md |
 | Railcamera mode 8 (540) | geport, niet in situ getest | CAMERA_SCRIPT.md |
+| Mode 0x80 (camera uit de animatietrack) geldt nu ook voor de deuracties 17/18, niet alleen voor cinematics — het zijaanzicht waarin Woody de deur in loopt | opgelost (issue #8) | CAMERA_SCRIPT.md §4.3 |
 | Zijaanzicht mode 0x20: teken van de zijkant | onzeker | CAMERA_SCRIPT.md |
 | Zijaanzicht: het vlak-slot eindigt nu bij gescripte actie (1040), teleport (26) en cinematic (`0x44de44`); niet bij dood/respawn op een checkpoint buiten het zijaanzicht | controleren | CAMERA_SCRIPT.md |
 
@@ -63,6 +64,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Pickup-sprite: de grootte is opgelost - `sprite+0x264` is de halve **diagonaal** (`0x470fee`), dus elke additieve sprite in de port was `1/sqrt(2)` te klein. Rechtgezet in `hud_world_fx` en `hud_world_sprite` | opgelost | BONUS.md §2.4 |
 | HUD-animaties bij het oppakken (invliegend icoon + spoor + getal-pop) en de W-zwerm die 25 bonussen uitbetaalt: geport. Niet: de in-/uitschuif van de $-teller (`+0x3b/+0x3c`), de pauze-HUD (`+0x3d/+0x3e`) en de "min 1" van $ en lading (`+0x3f/+0x41`) | grotendeels | HUD_TEXT.md §4.6 |
 | De vormuitbarsting van type 30/35 spuwt in het origineel 4 resp. 8 deeltjes per **frame**; de port normaliseert dat op 60 Hz zodat de dichtheid niet met het frametempo meeloopt | bewuste afwijking | BONUS.md §2.4 |
+| Geblende modelvlakken (neonreclame, het kruis/de pijl naast een deur, lichtbalken, lampgloed) werden door de belichting gehaald en waren in de schaduw zwart; het origineel tekent ze onbelicht op `1.0 × textuur` | opgelost (issue #5) | LIGHTING.md recept 5 |
+| Lensflare `0x474a90` van licht-objecten: **niet porten**, de registratietabel wordt alleen door bericht 1510 gevuld en dat komt in geen enkel level voor | n.v.t. | LIGHTING.md §1.1 |
 | Lucht: links/rechts-oriëntatie van de kubus | niet geverifieerd | SKY.md |
 | `.vis`-culling (nu frustum-cull per instantie) | niet geport | FORMAT_TEX_COL_VIS_LIT.md |
 | Vsync / fps-begrenzing | niet aanwezig | — |
