@@ -579,6 +579,25 @@ static const float *poly_plane(Model *m, const InsNode *n, InsPoly *p)
     }
     return p->plane;
 }
+/* the UV of one vertex of a node polygon: the helper projection when this mesh has a helper child (0x43b74d-0x43b908),
+ * otherwise the planar projection of the pivot-relative rest point (0x43da37). lp = point - node pivot, wp = its world
+ * position. Shared with rnd_uv_report() so the report cannot drift from what is drawn. */
+static void node_poly_uv(const Instance *inst, int helper, const Material *mat, Vec3 lp, Vec3 wp, float *u, float *v)
+{
+    const Model *m = inst->model; const InsNode *h = helper >= 0 ? &m->nodes[helper] : NULL; Vec3 q;
+    if (h && h->helper_a != 0 && h->helper_b != 0 && affine_inv_apply(&inst->node_world[helper], wp, &q)) {
+        float ha = h->helper_mode == 0 ? q.y : q.x, hb = h->helper_mode == 2 ? q.y : q.z;
+        *u = 0.5f - ha / h->helper_b; *v = hb / h->helper_a - 0.5f;
+    } else material_uv(mat, lp.x, lp.y, lp.z, u, v);
+}
+/* the helper child of a mesh node, or -1: the renderer looks for a helper (kind 0x10) whose parent is this mesh
+ * (0x43b716-0x43b746) */
+static int node_helper(const Model *m, uint32_t ni)
+{
+    for (uint32_t j = 0; j < m->nnodes; j++) if (m->nodes[j].kind == 0x10 && m->nodes[j].parent == (int32_t)ni) return (int)j;
+    return -1;
+}
+
 static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int pass, uint32_t frame, int helper)
 {
     Model *m = inst->model; InsNode *n = &m->nodes[ni]; const Material *mat;
@@ -592,14 +611,7 @@ static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int 
             InsPoint *pt = &m->points[p->indices[c]];
             Vec3 lp = { pt->pos.x - n->pivot.x, pt->pos.y - n->pivot.y, pt->pos.z - n->pivot.z };
             Vec3 wp = mat4_apply(&inst->node_world[ni], lp);
-            if (mat) {
-                float u, v; Vec3 q; const InsNode *h = helper >= 0 ? &m->nodes[helper] : NULL;
-                if (h && h->helper_a != 0 && h->helper_b != 0 && affine_inv_apply(&inst->node_world[helper], wp, &q)) {
-                    float ha = h->helper_mode == 0 ? q.y : q.x, hb = h->helper_mode == 2 ? q.y : q.z;
-                    u = 0.5f - ha / h->helper_b; v = hb / h->helper_a - 0.5f;
-                } else material_uv(mat, lp.x, lp.y, lp.z, &u, &v);              /* planar projection of the pivot-relative point (0x43da37) */
-                bt_texcoord(u, v);
-            }
+            if (mat) { float u, v; node_poly_uv(inst, helper, mat, lp, wp, &u, &v); bt_texcoord(u, v); }
             { float base[3] = { 1, 1, 1 }; if (!mat && (p->material & 0x8000)) argb1555_to_rgb(p->material, base); if (mat || (p->material & 0x8000)) lit_vertex_colour(r, inst, &inst->node_world[ni], pt, base); }
             bt_vertex(wp.x, wp.y, wp.z);
         }
@@ -615,8 +627,7 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
     /* rigid node polygons: only mesh nodes, never those with typecode 2 (0x43b6c2) */
     for (uint32_t ni = 0; ni < m->nnodes; ni++) {
         InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || n->type_code == 2) continue;
-        int helper = -1;
-        for (uint32_t j = 0; j < m->nnodes; j++) if (m->nodes[j].kind == 0x10 && m->nodes[j].parent == (int32_t)ni) { helper = (int)j; break; }
+        int helper = node_helper(m, ni);
         uint32_t lid = (n->type_code >= 5 && n->type_code <= 8) ? evf[n->type_code - 5] : 0;
         draw_node_polys(r, inst, ni, pass, 0, helper);
         if (lid) { bt_flush(); glDepthFunc(GL_LEQUAL); draw_node_polys(r, inst, ni, pass, lid, -1); bt_flush(); glDepthFunc(GL_LESS); }   /* eyelid layer on top of the eyeball */
@@ -648,6 +659,62 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
             }
         }
         bt_end();
+    }
+}
+
+/* ---- WOODY_UVLOG (test helper): per mesh node and material of one instance, the texture group it binds and the UV
+ * range this renderer generates for it. A surface whose polygons each span far less than one tile samples a single
+ * texel and comes out as one flat colour; a span of tens of tiles is a projection that does not belong to the polygon.
+ * A sane model polygon lands in 0..1 (docs/MODEL_RENDER.md 4). The same numbers as tools/modeluv.py formula B and
+ * helperuv.py, but on the running pose and with the texture frame the instance really binds. */
+void rnd_uv_report(const Renderer *r, const Instance *inst)
+{
+    const Model *m = inst->model;
+    printf("uvlog inst %u model %d: %u nodes, %u anims, anim %d, tex_mode %d fac %.2f, pos %.0f %.0f %.0f", inst->index,
+           (int)(m - r->ins->models), m->nnodes, m->nanims, inst->anim, inst->tex_mode, inst->tex_fac,
+           inst->world.m[12], inst->world.m[13], inst->world.m[14]); puts("");
+    for (uint32_t ni = 0; ni < m->nnodes; ni++) {
+        const InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || !n->npolys) continue;
+        int helper = node_helper(m, ni);
+        printf("  node %u tc %u pivot (%.1f %.1f %.1f) polys %u", ni, n->type_code, n->pivot.x, n->pivot.y, n->pivot.z, n->npolys);
+        if (helper >= 0) printf(" helper %d (mode %u, v_c %.1f v_8 %.1f)", helper, m->nodes[helper].helper_mode, m->nodes[helper].helper_a, m->nodes[helper].helper_b);
+        puts("");
+        for (uint32_t k = 0; k < n->npolys; k++) {
+            uint32_t mi = n->polys[k].material; int seen = 0;
+            for (uint32_t q = 0; q < k && !seen; q++) seen = n->polys[q].material == mi;
+            if (seen) continue;
+            const Material *mat = (mi & 0x8000) || mi >= r->tex->nmaterials ? NULL : &r->tex->materials[mi];
+            float u0 = 1e30f, u1 = -1e30f, v0 = 1e30f, v1 = -1e30f, span = 0; uint32_t np = 0;
+            for (uint32_t q = k; q < n->npolys; q++) {
+                const InsPoly *p = &n->polys[q]; if (p->material != mi || p->nverts < 3) continue;
+                np++; if (!mat) continue;
+                float pu0 = 1e30f, pu1 = -1e30f, pv0 = 1e30f, pv1 = -1e30f;
+                for (uint32_t c = 0; c < p->nverts; c++) {
+                    const InsPoint *pt = &m->points[p->indices[c]];
+                    Vec3 lp = { pt->pos.x - n->pivot.x, pt->pos.y - n->pivot.y, pt->pos.z - n->pivot.z };
+                    float u, v; node_poly_uv(inst, helper, mat, lp, mat4_apply(&inst->node_world[ni], lp), &u, &v);
+                    if (u < pu0) pu0 = u; if (u > pu1) pu1 = u; if (v < pv0) pv0 = v; if (v > pv1) pv1 = v;
+                }
+                if (pu0 < u0) u0 = pu0; if (pu1 > u1) u1 = pu1; if (pv0 < v0) v0 = pv0; if (pv1 > v1) v1 = pv1;
+                if (pu1 - pu0 > span) span = pu1 - pu0; if (pv1 - pv0 > span) span = pv1 - pv0;
+            }
+            if (!mat) { printf("    mat %04x flat colour, polys %u", mi, np); puts(""); continue; }
+            if (mat->group >= r->tex->ngroups) { printf("    mat %04x group %u OUT OF RANGE, polys %u", mi, mat->group, np); puts(""); continue; }
+            const TexGroup *g = &r->tex->groups[mat->group];
+            uint32_t fr = inst->tex_mode ? tex_frame(inst, g) : 0; if (fr >= g->frame_count) fr = 0;
+            printf("    mat %04x group %u (%ux%u flags %08x frames %u dur %.2f) frame %u polys %u u[%8.2f %8.2f] v[%8.2f %8.2f] widest poly %.2f",
+                   mi, mat->group, g->width, g->height, g->flags, g->frame_count, g->anim_duration, fr, np, u0, u1, v0, v1, span); puts("");
+        }
+    }
+    for (uint32_t t = 0; t < m->ntris; t++) {                                  /* skinned triangles: explicit UVs, three pairs per material (0x43e39a) */
+        uint32_t mi = m->tris[t].material; int seen = 0;
+        for (uint32_t q = 0; q < t && !seen; q++) seen = m->tris[q].material == mi;
+        if (seen) continue;
+        uint32_t np = 0; for (uint32_t q = t; q < m->ntris; q++) if (m->tris[q].material == mi) np++;
+        if ((mi & 0x8000) || mi >= r->tex->nmaterials) { printf("  tris mat %04x flat colour, tris %u", mi, np); puts(""); continue; }
+        const Material *mat = &r->tex->materials[mi];
+        printf("  tris mat %04x group %u tris %u uv (%.2f %.2f) (%.2f %.2f) (%.2f %.2f)", mi, mat->group, np,
+               mat->m[0], mat->m[1], mat->m[3], mat->m[4], mat->m[6], mat->m[7]); puts("");
     }
 }
 

@@ -43,6 +43,7 @@ void rnd_fade(float brightness);             /* darken the finished frame: 1 = n
 void rnd_free(Renderer *r);
 void rnd_set_sky(Renderer *r, const uint32_t tex[5]);   /* level bank images 3,0,1,2,4 replace the group's own frames when the bank has >= 5 images (0x5e8670) */
 int  rnd_screenshot(const Window *w, const char *path);   /* binary PPM of the current back buffer */
+void rnd_uv_report(const Renderer *r, const Instance *inst);   /* WOODY_UVLOG: texture group + generated UV range per mesh node and material */
 Vec3 cam_forward(const FreeCamera *c);
 Vec3 cam_right(const FreeCamera *c);
 /* the projection inlined in 0x47b230: a world point into the 640x480 HUD space. 0 = outside the four side planes
