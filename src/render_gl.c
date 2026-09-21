@@ -645,6 +645,82 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
     }
 }
 
+/* ---- outline (0x43ea30, fed by the two back-face lists 0x43b3f0 collects): the back faces once more, every vertex
+ * pushed out along its own normal, flat black, at the same depth as the model. Only for instances that the level
+ * script gave SetFlags bit 0x20 (message 45) - characters and a handful of props - and only within 1500 units.
+ * w = d/300 up to 2.5, then 5 - d/300 (0x43b4ce..0x43b4f3), so the rim keeps a constant width on screen. Drawn after
+ * the model with the ordinary depth test: outside the silhouette the hull is all there is, and where it pokes through
+ * a concave fold it beats the model - that is where the creases along a snout or a finger come from. */
+static float *g_ol; static uint32_t g_ol_n, g_ol_cap;
+static void ol_push(Vec3 a, Vec3 b, Vec3 c)
+{
+    if (g_ol_n + 1 > g_ol_cap) { g_ol_cap = g_ol_cap * 2 + 1024; g_ol = (float *)realloc(g_ol, (size_t)g_ol_cap * 9 * sizeof(float)); }
+    float *o = &g_ol[(size_t)g_ol_n * 9]; o[0] = a.x; o[1] = a.y; o[2] = a.z; o[3] = b.x; o[4] = b.y; o[5] = b.z; o[6] = c.x; o[7] = c.y; o[8] = c.z; g_ol_n++;
+}
+static Vec3 ol_vertex(const Instance *inst, const Mat4 *M, const InsPoint *pt, Vec3 pivot, float w)
+{
+    Vec3 n = pt->normal; float l = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);   /* the original normalises at load (0x427c01), the port does not */
+    if (l > 1e-6f) { n.x /= l; n.y /= l; n.z /= l; } else { n.x = n.y = n.z = 0; }
+    Vec3 lp = { pt->pos.x - pivot.x + w * n.x, pt->pos.y - pivot.y + w * n.y, pt->pos.z - pivot.z + w * n.z };
+    (void)inst; return mat4_apply(M, lp);
+}
+static void draw_outline(const Renderer *r, Instance *inst)
+{
+    if (!(inst->setflags & 0x20) || !inst->node_world) return;                  /* 0x43b423; the second gate is the cfg detail level, 2 in the shipped Woody.cfg */
+    const float *wm = inst->world.m;
+    float dx = wm[12] - g_cam_pos.x, dy = wm[13] - g_cam_pos.y, dz = wm[14] - g_cam_pos.z;
+    float w = sqrtf(dx * dx + dy * dy + dz * dz) / 300.0f;
+    if (w > 2.5f) { w = 5.0f - w; if (w <= 0) return; }
+    { const char *e = getenv("WOODY_OLW"); if (e) w *= (float)atof(e); }     /* test helper: scale the rim */
+    Model *m = inst->model; const int32_t *own = model_owner(m); const Vec3 zero = { 0, 0, 0 };
+    g_ol_n = 0;
+    for (uint32_t ni = 0; ni < m->nnodes; ni++) {
+        InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || n->type_code == 2) continue;
+        if (n->type_code >= 5 && n->type_code <= 8) continue;                   /* 0x43bf65 throws the eyelid layer's back faces away */
+        Vec3 cl; if (!affine_inv_apply(&inst->node_world[ni], g_cam_pos, &cl)) continue;
+        for (uint32_t k = 0; k < n->npolys; k++) {
+            InsPoly *p = &n->polys[k];
+            if (p->nverts < 3 || (p->flags & 2) || (p->flags & 0x60)) continue; /* double sided and blended polygons never outline (0x43c0c2) */
+            const float *pl = poly_plane(m, n, p);
+            if (pl[0] * cl.x + pl[1] * cl.y + pl[2] * cl.z + pl[3] > 0) continue;   /* front facing: the model pass drew it */
+            Vec3 v[3];
+            for (uint32_t c = 0; c < p->nverts; c++) {
+                Vec3 q = ol_vertex(inst, &inst->node_world[ni], &m->points[p->indices[c]], n->pivot, w);
+                if (c == 0) v[0] = q; else { v[1] = v[2]; v[2] = q; if (c >= 2) ol_push(v[0], v[2], v[1]); }
+            }
+        }
+    }
+    for (uint32_t t = 0; t < m->ntris; t++) {
+        InsTri *tr = &m->tris[t];
+        uint32_t idx[3] = { tr->i0, tr->i1, tr->i2 }; Vec3 wp[3]; const Mat4 *MM[3]; Vec3 pv[3];
+        for (int c = 0; c < 3; c++) {
+            int o = own[idx[c]]; pv[c] = o >= 0 ? m->nodes[o].pivot : zero;
+            Vec3 lp = { m->points[idx[c]].pos.x - pv[c].x, m->points[idx[c]].pos.y - pv[c].y, m->points[idx[c]].pos.z - pv[c].z };
+            MM[c] = o >= 0 ? &inst->node_world[o] : &inst->world; wp[c] = mat4_apply(MM[c], lp);
+        }
+        float ux = wp[0].x - wp[1].x, uy = wp[0].y - wp[1].y, uz = wp[0].z - wp[1].z;
+        float vx = wp[0].x - wp[2].x, vy = wp[0].y - wp[2].y, vz = wp[0].z - wp[2].z;
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        if (nx * (g_cam_pos.x - wp[0].x) + ny * (g_cam_pos.y - wp[0].y) + nz * (g_cam_pos.z - wp[0].z) > 0) continue;   /* front facing */
+        Vec3 e[3];
+        for (int c = 0; c < 3; c++) e[c] = ol_vertex(inst, MM[c], &m->points[idx[c]], pv[c], w);
+        ol_push(e[0], e[2], e[1]);
+    }
+    if (g_shlog) printf("  OL inst %u setflags %x w %.2f tris %u fade %.2f", inst->index, inst->setflags, w, g_ol_n, inst->fade), puts("");
+    if (!g_ol_n) return;
+    bt_flush();
+    float a = 2.0f * (1.0f - inst->fade); if (a > 1) a = 1;                     /* 0x43ece9: twice the opacity, clamped */
+    glDisable(GL_TEXTURE_2D); glDisable(GL_ALPHA_TEST); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    if (a < 0.999f) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); } else { glDisable(GL_BLEND); glDepthMask(GL_TRUE); }
+    glColor4f(0, 0, 0, a);
+    glEnableClientState(GL_VERTEX_ARRAY);                                      /* bt_flush() leaves it disabled */
+    glVertexPointer(3, GL_FLOAT, 0, g_ol); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)g_ol_n * 3);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glColor4f(1, 1, 1, 1); glDepthMask(GL_TRUE); glEnable(GL_TEXTURE_2D); glEnable(GL_ALPHA_TEST);
+    glEnableClientState(GL_COLOR_ARRAY); glEnableClientState(GL_TEXTURE_COORD_ARRAY); glEnable(GL_BLEND);
+    g_last_material = 0xffffffffu;
+}
+
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s)
 {
     glViewport(0, 0, w->width, w->height);
@@ -755,7 +831,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
                     float ty = 1.0f / f, tx = ty * aspect, zz = vz + R;
                     if (zz < 0 || fabsf(vx) > zz * tx + R * 1.5f || fabsf(vy) > zz * ty + R * 1.5f) continue;
                 }
-                { static double mt[512]; static int mn; double b0 = win_time(); draw_instance(r, inst, pass); if (mi < 512) mt[mi] += win_time() - b0; if (getenv("WOODY_PROF2") && pass == 1 && mi == r->ins->nmodels - 1 && k == m->ninstances - 1 && ++mn == 120) { for (uint32_t z = 0; z < r->ins->nmodels && z < 512; z++) if (mt[z] / 120 * 1000 > 0.3) { printf("   model %u: %.2f ms (%u nodes, %u tris, %u inst)", z, mt[z] / 120 * 1000, r->ins->models[z].nnodes, r->ins->models[z].ntris, r->ins->models[z].ninstances); puts(""); } } }
+                { static double mt[512]; static int mn; double b0 = win_time(); draw_instance(r, inst, pass); if (pass == 0) draw_outline(r, inst); if (mi < 512) mt[mi] += win_time() - b0; if (getenv("WOODY_PROF2") && pass == 1 && mi == r->ins->nmodels - 1 && k == m->ninstances - 1 && ++mn == 120) { for (uint32_t z = 0; z < r->ins->nmodels && z < 512; z++) if (mt[z] / 120 * 1000 > 0.3) { printf("   model %u: %.2f ms (%u nodes, %u tris, %u inst)", z, mt[z] / 120 * 1000, r->ins->models[z].nnodes, r->ins->models[z].ntris, r->ins->models[z].ninstances); puts(""); } } }
             }
         }
         bt_flush(); g_last_material = 0xffffffffu;

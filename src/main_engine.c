@@ -688,7 +688,11 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         if (in) inst_msg(in, m->id, m->args, m->nargs, g_now);
         break;
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
-    case 42: case 43: case 44: case 45: case 56: case 57:
+    case 45:                                                                        /* SetFlags (0x42ddb4) is a plain store on every instance, the player included: bit
+                                                                                     * 0x20 is what gives a model its black outline (docs/MODEL_RENDER.md 11) */
+        if (in) inst_msg(in, m->id, m->args, m->nargs, g_now);
+        break;
+    case 42: case 43: case 44: case 56: case 57:
         if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
         break;
     case 40: if (in && rocket_of(in) && g_player) { Rocket *rk = rocket_of(in);      /* 0x452a50: only at rest, and only when the Perso accepts (state 0, on the ground) */

@@ -270,7 +270,7 @@ type 90 → `0x4a90ac`, basishandler, eigen vtable[3] `0x472560` (`0x403d56`).
 | 1 | `0x42b3d6` (wereld-tekenlus `0x42b380`) | instantie van soort `(+8 & 0x1f) == 1` wordt met `vtable[2](7)` i.p.v. `(5)` getekend als de detailoptie `[0x4c2c0c]` ≠ 0: extra pas (arg-bit 2) in `0x42e2b0` tegen de vlakkentabel `[0x4c4cac]+4` (64 B/entry: vlak, kleur +0x30, object +0x3c) – schaduw of spiegeling, niet verder uitgezocht |
 | 1 | `0x42efd7` | verbiedt het cachen van de bounding-sphere (`+0x88 = 1`, `+0x8c..+0x98`) voor stilstaande instanties |
 | 2 | geen lezer gevonden | – |
-| 0x20 | `0x43b423` (polygoonrenderer) | alleen als `[0x4c2c0c] == 2` en de instantie dichtbij is (afstand/300 ≤ 2.5, sterkte 5 − afstand/300): extra effectpas over de driehoeken (`0x43c391`) |
+| 0x20 | `0x43b423` (polygoonrenderer) | **de zwarte contourlijn**: alleen als `[0x4c2c0c] == 2` (detailoptie uit `Woody.cfg`, in de meegeleverde cfg 2) wordt na het model de achterkant nog eens getekend, elke vertex naar buiten geschoven langs zijn normaal met `w = afstand/300`, boven 2.5 aflopend als `5 − afstand/300` en boven 1500 eenheden helemaal weg (`0x43b4ce..0x43b4f3`). Zie MODEL_RENDER.md §11 |
 Alle drie zijn puur visueel; voor een herimplementatie volstaat opslaan. De klasse type 40 zet bit 1 zelf (`0x44d304`).
 
 `+0x88`-status: 0 = bounding-sphere opnieuw berekenen, 1 = gecachet in `+0x8c..0x94` (middelpunt) / `+0x98` (straal) (`0x42efe0`),

@@ -58,6 +58,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | wat | status | waar |
 |---|---|---|
 | Deeltjes (vonken, rook, explosies, stof bij landen) | niet geport | — |
+| Zwarte contourlijn (SetFlags-bit 0x20) geport. Het origineel blaast alleen hoek 0/1/2 van een quad op (`0x43c42d`); de port alle hoeken, en de afstandsreferentie is de instantie-translatie i.p.v. `inst+0x60` | grotendeels | MODEL_RENDER.md §7 |
 | Modelrendering: mipmaps (het origineel bouwt er 4 met een boxfilter, MIPFILTER POINT); bitreplicatie in de RGB565-decode (het origineel laat de lage bits 0); diepte-sortering van de geblende modelbatches (`0x428d00`, 256 emmers achter-naar-voor) | niet geport | MODEL_RENDER.md recept 9-10 |
 | Pickup-sprite: grootte (volle breedte?) en HUD-animatie bij oppakken | gok / niet geport | BONUS.md, HUD_TEXT.md |
 | Lucht: links/rechts-oriëntatie van de kubus | niet geverifieerd | SKY.md |

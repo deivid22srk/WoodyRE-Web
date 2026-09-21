@@ -57,6 +57,8 @@ het bestand / `insparse.py`); in de C-port (0-based array) is dat steeds één l
    Bij het omzetten van een colour-key-textuur gooit het origineel de magenta wég: de texel wordt
    `ARGB 0x00000000`, dus **zwart met alfa 0** (`0x47fc1e`). Blijft de magenta staan, dan mengt het filter die
    met de ondoorzichtige buren en krijgt elke alfarand een roze zoom.
+11. **Zwarte contourlijn** (`0x43ea30`, gevoed door de twee achterkantlijsten die `0x43b3f0` aanlegt): dit is de
+   inktlijn om de figuren in het origineel. Zie §7.
 
 ## 1. Welke nodes worden getekend; typecodes
 
@@ -173,6 +175,50 @@ In alle levels: 96 helpers mode 1, 1× mode 2.
 (`0x43dc65`–`0x43dd3f`). Dat is ARGB1555 met bit 15 als vlag, niet RGB565 (FORMAT_INS.md §2.4 is op dit punt onjuist);
 de port (`argb1555_to_rgb`) doet het al goed. 0xFFFF is dus zichtbaar wit; er bestaat geen "niet tekenen"-waarde.
 
+## 7. De zwarte contourlijn (`0x43ea30`)
+
+Dit is de inktlijn om Woody en de andere figuren. Het is **geen lijnprimitief en geen crease-lijst**, maar de
+achterkant van het model nog een keer, opgeblazen: een klassieke back-face hull.
+
+**Poort (de twee enige aanroepers, `0x43c5ac` en `0x43c5d1`, aan het eind van `0x43b3f0`)** over de twee lijsten
+die de renderer tijdens het gewone tekenen heeft aangelegd: achterwaartse driehoeken (`0x43c289`) en
+achterwaartse node-polygonen (`0x43c0c7`).
+
+**Voorwaarden** (alle drie in de proloog van `0x43b3f0`):
+
+1. `inst+0xf0 & 0x20` — SetFlags-bit 0x20, bericht 45 (`0x43b423`). Het levelscript zet die per instantie:
+   2 tot 51 per level (W1A 9, K2A 29, W3D 51; Blackbox en Credits geen). Instantie 0 (de speler) zit erbij in
+   House, W1A, W3C, W3D en WWS; in W2B/W3A is het `…0001`, W2D `…0003`, W1B `…0008`.
+2. `[0x4c2c0c] == 2` (`0x43b43a`) — de detailoptie uit `Woody.cfg` (bestandsoffset 0x40), in de meegeleverde cfg 2.
+3. De breedte moet positief zijn (hieronder).
+
+**Breedte** (`0x43b447..0x43b4fe`), met `d` = afstand van de camera tot `inst+0x60` (het geanimeerde middelpunt):
+
+| d | w (wereldeenheden) |
+|---|---|
+| 0 … 750 | `d / 300` (0 → 2.5) |
+| 750 … 1500 | `5 − d/300` (2.5 → 0) |
+| > 1500 | geen contour |
+
+Constanten: `[0x4aa3e4] = 1/300`, `[0x4aa3e0] = 2.5`, `[0x4a9884] = 5.0`. Omdat `w ∝ d` is de lijn tot 750
+eenheden **even dik in beeldpunten** (met de projectie van de port ongeveer `hoogte/540` px).
+
+**Geometrie** (`0x43c49a..0x43c56a`): per vertex van een achterwaartse primitief
+`p' = M_node · ((p − pivot) + w · n)` met `n` de **genormaliseerde** vertexnormaal (de loader normaliseert bij het
+inlezen, `0x427c01`; de port doet dat niet en moet het zelf doen). Let op: de polygoonlus markeert alleen index
+0, 1 en 2 (`0x43c42d`), dus in het origineel blijft de vierde hoek van een quad op het oppervlak liggen tenzij een
+buurprimitief hem ook markeert. De port schuift alle hoeken op.
+
+**Kleur en diepte** (`0x43ecd3..0x43ed17`, `0x43edf0`): vlak **zwart**, alfa = `2 × (1 − inst+0x6c)` begrensd op
+255 — met z-write aan en zonder blending op de opake lijst is dat gewoon zwart; alleen de vervaag-lijst
+(`renderer+0x1c4`, als `(1−fade)·255 < 252`) mengt echt. De diepte is `1 − 12·rhw`, **exact dezelfde als het
+model** (geen bias, in tegenstelling tot de schaduw die er `3/65536` af haalt). Omdat batches vooraan gelinkt
+worden, komt de contour vóór het model in de flush: buiten de silhouetrand blijft de hull staan, en waar hij door
+een holle plooi heen steekt wint hij de dieptetest — dáár komen de lijnen om een snuit of een vinger vandaan.
+
+**Wat wel en niet meedoet**: alle achterwaartse skinned driehoeken; node-polygonen alleen als ze niet
+dubbelzijdig zijn (vlag 0x2) en geen blendvlaggen hebben (`flags & 0x60`, `0x43c0c2`). Typecode-2-nodes en de
+ooglid-laag (typecode 5..8, `0x43bf65`) doen niet mee.
 ## Onzeker
 - Tekenvolgorde van de twee ooglagen: `0x43d790` tekent niet direct maar vult batches per (textuur, modus)
   (`renderer+0x1b8`, lijsten `+0x1c0`); een afgesloten batch wordt vooraan gelinkt, zodat de later afgesloten
@@ -185,5 +231,4 @@ de port (`argb1555_to_rgb`) doet het al goed. 0xFFFF is dus zichtbaar wit; er be
 - Wrap/clamp-state van de textuur is niet uit de D3D-calls afgelezen; de data (UV's in [−1,0]) vereist herhalen.
 - Hoe wereldpolygonen (`.gel`) hun frame kiezen is hier niet onderzocht (`0x47f290` wordt alleen voor instances
   aangeroepen).
-- Achterwaartse polygonen zonder bits 0x60 gaan naar een aparte lijst (`0x43c0c7`) voor `0x43ea30` wanneer
-  `inst+0xf0 & 0x20` en `[0x4c2c0c] == 2` (vermoedelijk contour/schaduw); niet uitgezocht.
+- Waar `[0x4c2c0c]` geschreven wordt is niet gevonden: het blok komt als geheel uit `Woody.cfg`.
