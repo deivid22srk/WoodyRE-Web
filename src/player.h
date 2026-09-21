@@ -87,6 +87,8 @@ int  volume_contains(const Instance *inst, uint32_t node, Vec3 p);   /* 0x4300c0
 void player_free(Player *p);
 /* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
+/* landing ring (docs/PERSO_JUMP.md 5): the floor point and its normal under an airborne Woody, 0 = draw nothing */
+int  player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal);
 int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34..38: message 10; returns 1 when the instance must disappear */
 void player_script_hold(Player *p, float t);       /* message 1040: scripted action, control taken away for t s */
 void player_place(Player *p, Vec3 pos, float yaw);     /* Perso reset + SetPos + SetFacing (end of a cinematic, hub door) */

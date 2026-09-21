@@ -1364,6 +1364,17 @@ int main(int argc, char **argv)
                     if (ii->type == 34 && ii->node_world) { p[0] = ii->node_world[0].m[12]; p[1] = ii->node_world[0].m[13]; p[2] = ii->node_world[0].m[14]; }
                     hud_world_sprite(n, p, size);
                 }
+                if (L.have_player && !fly && !cin_running() && g_level >= 1 && g_level <= 24) {
+                    /* landing ring (docs/PERSO_JUMP.md 5): while Woody hangs in the air the floor under him carries a
+                     * bright ring. WOODY_RING overrides its radius, WOODY_RING=0 switches it off. */
+                    static const float white[3] = { 1, 1, 1 };
+                    const char *rv = getenv("WOODY_RING"); float rr = rv ? (float)atof(rv) : 69.0f;   /* default = the Perso collision radius P+0x04 */
+                    Vec3 rp, rn;
+                    if (rr > 0 && player_landing_ring(&L.player, &rp, &rn)) {
+                        float rc[3] = { rp.x + rn.x * 3.0f, rp.y + rn.y * 3.0f, rp.z + rn.z * 3.0f };   /* 3 units clear of the floor, or it z-fights with it */
+                        hud_world_ring(rc, &rn.x, rr, rr * 0.12f, white, 0.7f);
+                    }
+                }
                 env_draw();
                 for (int li = 0; li < g_nlasers; li++) {                            /* Lazer_Draw 0x46e530: core (1,.7,.7) width 6 + glow (1,.4,.4) width 30 pulsing 0.5..1, ends fade over 70 */
                     Laser *z = &g_lasers[li]; if (!z->on || !z->inst->visible) continue;

@@ -52,5 +52,7 @@ int  hud_step_image(void);                                      /* bank 0 image 
 void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw, const float *rgb_a, const float *rgb_b);
 /* additive camera-facing line quad (line primitive 0x471a10, bank 0 image 1): half width hw, colour*alpha at both ends */
 void hud_world_beam(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b);
+/* additive ring of half width hw around c, lying in the plane with normal n: the landing marker under Woody */
+void hud_world_ring(const float *c, const float *n, float radius, float hw, const float *rgb, float alpha);
 
 #endif
