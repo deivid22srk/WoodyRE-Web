@@ -44,6 +44,15 @@ typedef struct { float x, y, z; uint32_t colour; } GelVert;
 
 typedef struct { int32_t axis, sector; float d; int32_t le, gt; } KdNode;   /* 0x40ab10: p[axis] + d <= 0 -> le, otherwise gt; child < 0 = leaf ~child; sector >= 0 marks a sector root */
 
+/* Sections 5 and 7 share one record (0x4c bytes, vtable 0x4a94f4): the leaves of the kd-tree and, one level up,
+ * the sectors. Both carry the polygons that cross them, which is how the original answers every geometry question
+ * without looking at the whole level: the floor under a point (0x40a0c0), the collision push-out (0x407000) and
+ * which part of the world to draw (0x42a980) all start from the cell or sector the point falls in. */
+typedef struct { uint32_t npolys; const uint32_t *polys; float bbox[6]; } GelCell;   /* bbox order xmin xmax ymin ymax zmin zmax (0x406e50) */
+typedef struct { uint32_t first, end; } GelGroup;                                    /* section 3: the polygons [first, end) of one zone */
+typedef struct { uint32_t n; const uint32_t *polys; } GelPolySet;                    /* result of a query below; valid until the next one */
+struct GelQuery;
+
 typedef struct {
     uint8_t *data; size_t size;
     uint32_t npolys; GelPoly *polys;
@@ -51,10 +60,24 @@ typedef struct {
     uint32_t ncells, nsectors;                 /* kd leaf cells and sectors; the sector a point is in decides its lights (docs/LIGHTING.md 3) */
     uint32_t nkd; KdNode *kd;                  /* the main kd-tree (0x408180) */
     float bbox[6];
+    uint32_t ngroups; GelGroup *groups;        /* section 3, addressed by the .vis pairs */
+    GelCell *cells;                            /* ncells kd leaves; a .col record belongs to each of them */
+    GelCell *sectors;                          /* nsectors sectors; .vis and the .lit trailer are indexed by these */
+    uint32_t nloose; uint32_t *loose;          /* polygons that no cell or sector lists: never cull these away */
+    struct GelQuery *q;                        /* scratch of the queries below (level.c) */
 } GelFile;
 
+/* ---- .vis: the potentially visible set of a sector (docs/FORMAT_TEX_COL_VIS_LIT.md 3) ------------- */
+typedef struct { uint32_t id, npairs; const uint32_t *pairs; } VisList;   /* npairs x (sector, flag); flag = the group of section 3 */
+typedef struct { uint32_t nlists, first; } VisSector;                     /* lists [first, first+nlists) of VisFile.pool */
+typedef struct {
+    uint8_t *data; size_t size;
+    uint32_t nsectors; VisSector *sectors;
+    VisList *pool;
+} VisFile;
+
 /* ---- .lit: precomputed light visibility (docs/LIGHTING.md) ---------------------- */
-typedef struct { uint32_t n; float plane[4]; int32_t *indices; } LitPoly;   /* index < 0: extra vertex -i-1 */
+typedef struct { uint32_t n, face; float plane[4]; int32_t *indices; } LitPoly;   /* index < 0: extra vertex -i-1; face = the world polygon this fragment lies on (P+0x08) */
 typedef struct {
     Vec3 pos; float colour[3]; float range;   /* colour 0..255 */
     uint32_t na, *a;                           /* faces the light sees completely */
@@ -90,6 +113,7 @@ typedef struct {
     TrackRef *pos_refs, *rot_refs, *event_refs;/* per animation (or NULL) */
     int32_t first_child, next_sibling, parent; /* 0-based node indices, -1 = none/root */
     InsPoly *polys;
+    float box[6]; int box_state;               /* pivot-relative aabb of the node's own points, built on first use (0 = not yet, -1 = the points are not all this node's) */
     /* light / helper / marker payload */
     float light_intensity; uint32_t light_colour; float helper_a, helper_b; uint32_t helper_mode; float marker_value;
 } InsNode;
@@ -120,6 +144,7 @@ typedef struct Instance {
     int tint_red;                               /* render colour hook vtbl[26]: vertex colours times (1,0,0) (the rocket's warning blink 0x4537d0) */
     Vec3 ldir; float lcol[3]; int l_init, light, l_seen;   /* model lighting: smoothed light vector, light colour, chosen light, seen by it (0x43b912, 0x42e3e4) */
     int tex_mode; float tex_t0, tex_fac;                   /* +0xd8 bits 0-2, +0xdc, +0xe0: texture frame override, messages 16 / 18 / 19 (docs/INSTANCE.md 2) */
+    int drawn;                                             /* set by the renderer each frame: this instance survived the visibility pass */
 } Instance;
 
 typedef struct Model {
@@ -132,7 +157,8 @@ typedef struct Model {
     uint32_t ninstances; Instance *instances;
     uint32_t nvolume_nodes, *volume_nodes; uint32_t nmesh_nodes, *mesh_nodes;
     uint32_t ncollision_ids;
-    int32_t *owner; float cull_r;                             /* per point: owning node (built lazily by the renderer) */
+    int32_t *owner; float cull_r;                             /* per point: owning node (built lazily, ins_point_owner) */
+    uint32_t ncoll, *coll; int coll_ok;                       /* the press (kind 1) and hull (kind 4) nodes, built lazily */
 } Model;
 
 typedef struct { Vec3 position; uint32_t id, index; Trajectory traj; } Camera;
@@ -151,10 +177,18 @@ int  tex_load(TexFile *t, const char *path);   /* 0 on success */
 int  gel_load(GelFile *g, const char *path);
 int  ins_load(InsFile *f, const char *path);
 int  lit_load(LitFile *l, const char *path);
+int  vis_load(VisFile *v, const char *path, uint32_t nsectors);   /* nsectors comes from the .gel; -1 when the file is missing or does not match */
 int  lit_point_lit(const LitLight *l, const GelFile *g, Vec3 p);   /* BSP point query 0x40b540 + leaf plane test */
 int32_t lit_bsp_face(const LitLight *l, const GelFile *g, Vec3 p); /* 0x40b540 itself: the leaf face, -1 = none */
 int32_t gel_sector(const GelFile *g, Vec3 p);                      /* 0x4081c0: the kd sector a point is in, -1 = none */
-void tex_free(TexFile *t); void gel_free(GelFile *g); void ins_free(InsFile *f); void lit_free(LitFile *l);
+int32_t gel_cell(const GelFile *g, Vec3 p);                        /* 0x408180: the kd leaf cell a point is in, -1 = none */
+/* Every polygon that crosses a kd leaf meeting the box / the segment, each one once, plus the loose polygons.
+ * The set lives in the level's own scratch buffer and is replaced by the next query on the same level. */
+GelPolySet gel_polys_in_box(const GelFile *g, const float box[6]);   /* box: xmin xmax ymin ymax zmin zmax */
+GelPolySet gel_polys_on_seg(const GelFile *g, Vec3 a, Vec3 b);
+/* Sectors whose kd subtree meets the box (0x4081c0 widened to a box). Returns how many were written to out. */
+uint32_t gel_sectors_in_box(const GelFile *g, const float box[6], int32_t *out, uint32_t max);
+void tex_free(TexFile *t); void gel_free(GelFile *g); void ins_free(InsFile *f); void lit_free(LitFile *l); void vis_free(VisFile *v);
 
 /* Animation: evaluate the node hierarchy of `inst` for animation `anim` at `t` seconds
  * (wraps around); writes inst->node_world[] (includes the instance placement). */
@@ -170,6 +204,11 @@ int  ins_root_at(const Instance *inst, int anim, float phase, int base, Vec3 *po
 Vec3 ins_point_world(const Instance *inst, uint32_t point_index);
 /* Which node owns point index i (0-based node index). */
 int  ins_point_owner(const Model *m, uint32_t point_index);
+/* The nodes a collision query has to look at: press nodes (kind 1) and collision hulls (kind 4). */
+const uint32_t *ins_collision_nodes(const Model *m, uint32_t *count);
+/* World aabb of one node's geometry under the instance's current pose, to reject it without touching its polygons.
+ * 0 when the node has no usable box (no points of its own), and the caller has to take it as it comes. */
+int  ins_node_world_box(const Instance *inst, uint32_t node, float out[6]);
 
 /* math helpers */
 void mat4_identity(Mat4 *m);

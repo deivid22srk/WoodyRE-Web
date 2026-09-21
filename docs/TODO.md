@@ -18,7 +18,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Checkpoints: respawn-positie (1030) | controleren | GAMEFLOW.md |
 | Salto die wegvalt bij springen in de lucht (melding gebruiker) | niet te reproduceren; welke toets/timing? | — |
 | Obstakelsensor van de Mover | niet geport | PERSO_MOVE.md |
-| Geometrie-queries zijn brute force, geen kd-tree | werkt, traag bij grote levels | — |
+| Geometrie-queries lopen nu via de kd-boom van `.gel` (vloer, push-out, zichtlijnen); instantie-hulls worden per knoop met een wereld-bbox afgewezen | opgelost (issue #9) | FORMAT_GEL.md 5 |
 
 ## Camera
 
@@ -67,8 +67,9 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Geblende modelvlakken (neonreclame, het kruis/de pijl naast een deur, lichtbalken, lampgloed) werden door de belichting gehaald en waren in de schaduw zwart; het origineel tekent ze onbelicht op `1.0 × textuur` | opgelost (issue #5) | LIGHTING.md recept 5 |
 | Lensflare `0x474a90` van licht-objecten: **niet porten**, de registratietabel wordt alleen door bericht 1510 gevuld en dat komt in geen enkel level voor | n.v.t. | LIGHTING.md §1.1 |
 | Lucht: links/rechts-oriëntatie van de kubus | niet geverifieerd | SKY.md |
-| `.vis`-culling (nu frustum-cull per instantie) | niet geport | FORMAT_TEX_COL_VIS_LIT.md |
+| `.vis`-culling: sector van de camera -> `.vis`-lijst -> frustum op de sectorboxen; alleen de vlakken van die sectoren gaan naar de kaart, instanties erbuiten krijgen geen licht, schaduw of tekenbeurt | opgelost (issue #9) | FORMAT_TEX_COL_VIS_LIT.md 3 |
 | Vsync / fps-begrenzing | niet aanwezig | — |
+| `.col` (objecten per bladcel) wordt niet geladen; de port beslist per instantie met `gel_sectors_in_box` op zijn bolstraal welke sectoren hij raakt | bewuste afwijking | FORMAT_TEX_COL_VIS_LIT.md 2 |
 
 ## 2D, menu's, spelverloop
 
