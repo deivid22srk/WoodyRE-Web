@@ -11,7 +11,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Klimmen: geen botsing met de wereld (zijwaarts door muren), geen vonken (`0x479c80`) | analyse klaar | OBJECTS.md §1.3 |
 | Bukken (actie 5), rondkijken (actie 7) | niet geanalyseerd | PERSO_MOVE.md |
 | Idle-variaties 0x59/0x5a | niet geport | PERSO_MOVE.md §4.3 |
-| Gescripte Perso-acties (bericht 1040): 17/18 (deur in/uit, met fade), teleport (bericht 26) en beide camera-acties (cut bij de teleport, `0x44e5a0` aan het eind van 18) geport; overige acties (10..16, 19: wortelbeweging) alleen stilstaan; bericht 30 (LockMove) niet | grotendeels | PERSO_DEATH.md §1-2.1, CINEMATIC.md §6 |
+| Gescripte Perso-acties (bericht 1040/1140): 17/18 (deur in/uit, met fade), teleport (bericht 26), beide camera-acties en nu ook de **wortelbeweging** (`0x44e290`) van alle overige acties (10..16, 19, 74..78) geport; bericht 30 (LockMove) niet | grotendeels | PERSO_DEATH.md §1-2.1, CINEMATIC.md §6, OBJECTS.md §1.5 |
 | Doodsanimaties per soort en hit-animatie geport. Niet: tekstballon (soort 1, `0x478980`), skelet-flits (soort 2/9, `0x477e40`), waterplons (soort 7, `0x478660`), gebukte varianten, race-variant `0x464a00`, wit knipperen bij de onkwetsbaarheidsbonus (`0x44cf50`) | deels | PERSO_DEATH.md §3-6 |
 | Perso-toestand 8 (raket berijden, type 20): geport. Niet: afstap-anim (in het origineel ook nergens aangevraagd), type 21 (meerijden op de kanonbom) | grotendeels | ROCKET.md §6 |
 | Perso-toestand 6 (bom dragen) | op hoofdlijnen | BONUS.md §7 |
@@ -75,7 +75,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | wat | status | waar |
 |---|---|---|
 | Titel: Opties doet niets, Stoppen slaat de bevestiging over, Laden gaat direct naar de hub, attract-timer | niet geport | TITLE.md |
-| Pauzemenu, resultatenscherm, baas-levensbalk | niet geport | HUD_TEXT.md, GAMEFLOW.md |
+| Resultatenscherm na een level (paneel, juichen, score, "opslaan?"): geport volgens GAMEFLOW §5.2. Niet: de echte layout van het paneel (`0x454963..0x455d97`), de slotkeuze-pagina's en de pauze-/overlayvlaggen van pagina 0x1e | grotendeels | GAMEFLOW.md §5.1-5.2, HUD_TEXT.md §6 |
+| Pauzemenu, baas-levensbalk | niet geport | HUD_TEXT.md, GAMEFLOW.md |
 | HNM-logo's en -films | niet geport | — |
 | Toetsen uit `Woody.cfg`, joystick | niet geport | — |
 | Savegame: eigen `woodyre.sav`, niet het originele formaat | bewust | GAMEFLOW.md |

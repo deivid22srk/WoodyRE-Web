@@ -33,6 +33,9 @@ rotatie van -90° om x). Kijkend langs +z ligt +x dus links. Vertexkleuren zijn 
 `src/main_engine.c` (hoofdlus: script-VM tikt elk frame in 1/100 s, berichten 1/4/6/1200 sturen animatie/zichtbaarheid/type).
 Trackrotaties worden geconjugeerd toegepast (zie docs/FORMAT_INS.md, bevestigd met `tools/wquat.py` op het origineel);
 textuurgroepen met vlag-bit 1 worden additief geblend.
+Het **resultatenscherm** na een level draait ook: Woody komt bij de hub-deur naar binnen zweven (gescripte actie 0x4a
+met wortelbeweging en eigen cameratrack), het paneel met de scores komt op, hij juicht en daarna volgt de vraag
+"Do you want to save?" (docs/GAMEFLOW.md §5.1-5.2).
 `src/player.c` is een VOORLOPIGE spelerbesturing (nog niet de gedecompileerde Perso-klasse): camera-relatief lopen, zwaartekracht,
 vloer/muur-botsing op de `.gel`-polygonen en op de hull-nodes van instanties, volgcamera, en triggervolumes (convexe volume-nodes)
 die `eko_vol_perso_enter/in/leave` naar de script-VM sturen; `--walk T` loopt T seconden vooruit voor tests. W1A komt nu overeen met een screenshot van het origineel (spiegeling, kleuren, oriëntatie van de zwevende schotels, gloei-effecten).
@@ -41,6 +44,7 @@ python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c s
 ./out/woody.exe extract/Data                     # zonder level: het titelscherm (House, level 0); Enter start, daarna de hub
 ./out/woody.exe extract/Data W1A                 # pijltjes/WASD lopen (t.o.v. camera), spatie springen, F5 vrije camera (dan WASD + rechtermuisknop), [ ] animatie, Tab instantie, F1-F3 toggles
 ./out/woody.exe extract/Data W1A --shot out/s.ppm 3   # screenshot na 3 s en stoppen
+./out/woody.exe extract/Data WWS --prev W1A --stats 12 12 25 20 245   # resultatenscherm: terug uit W1A met die statistieken
 ./out/woody.exe extract/Data W1A --cam 537 -1800 -2450 0 -10   # camera: x y z yaw pitch (graden)
 python -m ziglang cc -std=c99 -O2 -o out/leveltest.exe src/level.c src/leveltest.c && ./out/leveltest.exe extract/Data   # parsertest 28 levels
 ```

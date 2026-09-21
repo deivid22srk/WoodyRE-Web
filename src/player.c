@@ -431,10 +431,14 @@ static const LogAnim *log_anim(int n)
         { 0x18, {{17,-1,-1,-1},3,1} }, { 0x19, {{18,-1,-1,-1},3,1} }, { 0x1f, {{20,0,0,0},3,1} }, { 0x20, {{22,0,0,0},3,1} },
         { 0x25, {{29,30,30,30},3,1} }, { 0x26, {{28,30,30,30},3,1} }, { 0x29, {{31,-1,-1,-1},3,1} }, { 0x2a, {{27,-1,-1,-1},3,1} },
         { 0x3b, {{84,-1,-1,-1},3,1} }, { 0x3c, {{80,-1,-1,-1},3,1} }, { 0x3d, {{81,82,82,82},3,1} }, { 0x3e, {{82,82,82,82},3,1} },   /* rocket: mount, sit, ignition, flight */
-        { 0x2b, {{37,-1,-1,-1},3,1} }, { 0x2e, {{35,-1,-1,-1},3,1} }, { 0x2f, {{48,33,33,33},3,1} }, { 0x30, {{85,-1,-1,-1},3,1} } };
+        { 0x2b, {{37,-1,-1,-1},3,1} }, { 0x2e, {{35,-1,-1,-1},3,1} }, { 0x2f, {{48,33,33,33},3,1} }, { 0x30, {{85,-1,-1,-1},3,1} },
+        /* results screen (docs/CINEMATIC.md 6): one-shot records for the .ins animations 74..78, all speed 3 */
+        { 0x1a, {{74,-1,-1,-1},3,1} }, { 0x1b, {{75,-1,-1,-1},3,1} }, { 0x1c, {{78,-1,-1,-1},3,1} }, { 0x1d, {{76,-1,-1,-1},3,1} }, { 0x1e, {{77,-1,-1,-1},3,1} } };
     for (unsigned i = 0; i < sizeof x / sizeof x[0]; i++) if (x[i].n == n) return &x[i].a;
     return (n >= 0 && n < 0x18) ? &t[n] : &t[0];
 }
+/* 0x463e30: a scripted action names a raw .ins animation; the logical record is the first one that starts with it */
+static int log_from_raw(int act) { for (int n = 0; n < 0x80; n++) if (log_anim(n)->sub[0] == act) return n; return -1; }
 static float anim_len(const Player *p, int n, int k)                       /* 0x436b90 AnimLen(n, k) */
 {
     const LogAnim *a = log_anim(n); const Model *m = p->inst->model; int s = a->sub[k];
@@ -804,6 +808,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
 {
     if (dt <= 0) return;
     p->vy_corr = 0;
+    p->play_time += dt;                                                   /* 0x453ca0: the accumulator Perso+0x710 runs in every state, it is the level time on the results screen */
     if (p->move_lock > 0) p->move_lock -= dt;
     if (p->invuln_respawn > 0) p->invuln_respawn -= dt;
     if (p->invuln_hit > 0) p->invuln_hit -= dt;
@@ -818,14 +823,30 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->regrab > 0) p->regrab -= dt;
     if (p->hit_anim_t > 0) p->hit_anim_t -= dt;
     if (p->dead_kind) p->dead_T += dt;
-    if (!p->dead_kind && p->script_act) {                                  /* state 5, 0x44db50: the Perso stands still, the walk is in the root track of anim 17 / 18 */
-        anim_request(p, p->script_act == 17 ? 0x18 : 0x19, 1.0f);
+    if (!p->dead_kind && p->script_act) {                                  /* state 5, 0x44db50: the Perso stands still, the movement is in the root track of the animation */
+        int door = p->script_act == 17 || p->script_act == 18;
+        anim_request(p, p->script_log, 1.0f);
         if (p->script_act == 17 && !p->script_faded && p->script_t < 0.6f) { p->script_faded = 1; p->fade_req = 1; }
-        if ((p->script_t -= dt) <= 0) {
+        p->script_t -= dt;
+        if (!door) {                                                       /* 0x44e290 (docs/OBJECTS.md 1.5): pos stays put, the root track of the action carries the model */
+            float rest = p->script_t > 0 ? p->script_t : 0, f = p->script_total > 0 ? (p->script_total - rest) / p->script_total : 1.0f;
+            Vec3 q, fw;
+            if (ins_root_at(p->inst, p->script_act, f, 1, &q, &fw)) {
+                p->use_root = 1;
+                p->root_pos = (Vec3){ p->pos.x + (q.x - p->pos.x) * f, p->pos.y + (q.y - p->pos.y) * f, p->pos.z + (q.z - p->pos.z) * f };
+            }
+        }
+        if (p->script_t <= 0) {
             if (p->script_act == 18) {                                     /* he came out backwards: facing flips, ground snap, idle, follow camera */
                 p->yaw += 3.14159265f; int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
                 if (found) { p->pos.y = gy; p->floor_y = gy; } p->lanim = -1; anim_request(p, 0, 1.0f);
                 p->cam_end_req = 1;                                        /* 0x44e5a0: follow camera behind the NEW facing, 0.5 s travelling */
+            } else if (!door) {                                            /* last frame of 0x44e290: he ends where the root track left him, facing -E.row2 */
+                Vec3 q, fw;
+                if (ins_root_at(p->inst, p->script_act, 1.0f, 1, &q, &fw)) { p->pos = q; if (fw.x * fw.x + fw.z * fw.z > 1e-6f) p->yaw = atan2f(fw.x, fw.z); }
+                int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
+                if (found) { p->pos.y = gy; p->floor_y = gy; }             /* SnapToGround 0x462990 */
+                p->use_root = 0; p->lanim = -1; anim_request(p, 0, 1.0f); p->cam_end_req = 1;
             } else lock_move(p, 0.3f);                                     /* 17: the pose is held until the teleport (message 26) resets the controller */
             p->script_act = 0;
         }
@@ -1088,12 +1109,13 @@ int player_mount(Player *p, Instance *obj)                              /* 0x465
 }
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
 {
-    if (p->dead_kind) return;
-    if (act != 17 && act != 18) { player_script_hold(p, 2.0f); return; }
+    if (p->dead_kind) return;                                       /* 0x44dda0 refuses state 2 (dead) */
+    int lg = log_from_raw(act);                                     /* the action number is the raw .ins animation (docs/CINEMATIC.md 6) */
+    if (lg < 0) { printf("  scripted action %d: no logical record, standing still", act), puts(""); player_script_hold(p, 2.0f); return; }
     p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
-    p->script_act = act; p->lanim = -1; anim_request(p, act == 17 ? 0x18 : 0x19, 1.0f); p->script_t = anim_len(p, act == 17 ? 0x18 : 0x19, 0); p->script_faded = 0;
+    p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = anim_len(p, lg, 0); p->script_faded = 0;
     if (act == 18) p->fade_req = 2;   /* fade in 0.5 s on the first frame (0x44dc2b). The camera is NOT cut here: the tail of 0x44dda0
                                        * puts it on the animation's own camera track (message 1040 in main_engine.c) and a cut back to the
                                        * follow camera would undo that one frame later. Coming out of the door ends with 0x44e5a0, a 0.5 s
