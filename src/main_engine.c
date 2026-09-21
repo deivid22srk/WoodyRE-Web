@@ -67,6 +67,7 @@ static const float k_sv_defaults[8] = { 1000, 300, 340, 500, 0, 400, 700, 200 };
 static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
 static void cam_set_mode(int mode)                               /* SetMode 0x41f410 + 0x41eaa0 */
 {
+    if (getenv("WOODY_CAMLOG") && mode != g_cam.mode) printf("  CAM mode %d -> %d (%s)\n", g_cam.mode, mode, g_cam.cut ? "cut" : "travelling");
     if (!g_cam.cut) {
         g_cam.look_from = g_cam.active ? g_cam.look_cur : g_cam.look_off; g_cam.from_pos = g_cam.pos;
         g_cam.active = 1; if (g_cam.dur <= 0) g_cam.dur = 2.0f; g_cam.elapsed = 0; g_cam.t = 0;
@@ -1054,6 +1055,13 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             if (to && (mode == 1 || mode == 2)) {
                 Vec3 p0, dir = { 0, 0, 0 }; int have = mode == 2 && (inst_vector(to, 5, &p0, &dir) || inst_vector(to, 0, &p0, &dir));
                 plane_release(); eko_actor_leave_all(vm, g_player->inst->id); player_teleport(g_player, to->position, have, dir);
+                /* 0x458f90 sits outside the state-5 test and cuts HERE, in script order: 0x41f9f0(2) + SetMode(0, 0). It has to happen
+                 * inside the tick and not a frame later, because the rest of the tick usually puts the camera somewhere else and that has
+                 * to win: an area gate in a hub sends 580 + 520 straight behind it (the fixed camera that watches the gate open,
+                 * docs/CAMERA_SCRIPT.md 1.3, object 258 in WWS) and a door sends 1040 / action 18 (the camera track of the animation).
+                 * Only the mode switch happens now: the follow camera seats itself (cam_init = 0) in the next camera update, which runs
+                 * after this tick, so it still uses the position and facing the door action gives him. */
+                g_cam.cut = 1; cam_set_mode(1);
                 printf("  TELEPORT to inst %u (%.0f %.0f %.0f)%s", to->index, to->position.x, to->position.y, to->position.z, g_player->script_act ? " (refused: scripted action running, only the camera cuts)" : ""), puts("");
             }
         }
@@ -1340,8 +1348,6 @@ int main(int argc, char **argv)
             rockets_update(dt, &L.player, L.have_player && !fly);
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             if (L.player.fade_req) { fade_start(0.5f, L.player.fade_req == 1); L.player.fade_req = 0; }           /* door actions 17 / 18 */
-            if (L.player.cam_cut_req) { L.player.cam_cut_req = 0; if (!g_cam.plane_on) { g_cam.cut = 1; cam_set_mode(1); } }   /* teleport, message 26 -> 0x458f90: hard cut, cam_update below puts the follow camera behind him;
-                                                                                                                  * not when the script has meanwhile switched the side view back on (message 1088), that camera places itself */
             if (L.player.cam_end_req) { L.player.cam_end_req = 0;                                                    /* end of door action 18: 0x44e5a0 = 0x41f9d0(0.5), 0x41f9f0(1), SetMode(0, 0) */
                 /* but only when the side view is off: 0x44dcf1 skips it while Perso+0x4ec is set, and the script turns
                  * that on again (message 1088) in the same frame as the end of the action for a door into a side section */

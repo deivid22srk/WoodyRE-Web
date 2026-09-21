@@ -143,12 +143,20 @@ uitkomen: het script zet dat stuk (bericht 1088) in hetzelfde frame weer aan, en
 (`out/w1a_code.txt` 2297..2313), zonder DELAY ertussen. Bericht 26 draagt in de deurscripts modus 1: alleen een
 positie, **geen richting**; en `0x44a650` verplaatst niets zolang toestand 5 nog loopt (de `DELAY 150` van het script
 is even lang als animatie 17, dus dat gebeurt geregeld). Pas actie 18 legt vast waar hij staat en welke kant hij op
-kijkt (`pos = P0` van de deurvector, `0x44dec4`). Zet je de camera zoals het origineel **tijdens** bericht 26 neer, dan
+kijkt (`pos = P0` van de deurvector, `0x44dec4`). Zet je de volgcamera zoals `0x4247f0` **tijdens** bericht 26 neer, dan
 staat hij dus achter de kijkrichting van de *vorige* deur — bij de W1A-deur 336 → 334 scheelt dat 135° en kijkt de
-speler anderhalve seconde lang tegen een muur aan. De port vraagt daarom alleen een cut aan (`cam_cut_req`, ook vanuit
-actie 18 zelf) en plaatst de camera in de camera-update **na** de scripttick, dus met de positie en kijkrichting
-waarmee hij de deur uit komt. Het scherm is op dat moment zwart (fade-out klaar aan het eind van 17, fade-in 0,5 s in 18),
-dus er is niets van te zien; het verschil met het origineel is één frame aan het begin van actie 18.
+speler anderhalve seconde lang tegen een muur aan. De port doet daarom de **modewissel** wel op zijn plaats in de
+berichtenstroom (cut + `SetMode(0, 0)` in de handler van bericht 26) maar laat de volgcamera zichzelf pas neerzetten in
+de camera-update **na** de scripttick: `SetMode(0, 0)` wist alleen `cam_init`, en `player_camera` zet hem dan neer op de
+positie en kijkrichting die actie 18 hem geeft. Het scherm is op dat moment zwart (fade-out klaar aan het eind van 17,
+fade-in 0,5 s in 18), dus er is niets van te zien; het verschil met het origineel is één frame aan het begin van actie 18.
+
+**De modewissel zelf uitstellen mag niet.** Alles wat de rest van diezelfde tick met de camera doet moet winnen, en dat
+is precies wat er ná bericht 26 komt: `1040 [deur, 18]` zet mode 0x80 op de cameratrack van de animatie
+(CAMERA_SCRIPT §4.3) en een gebiedspoort in een hub stuurt `26 [0, marker, 2]; 580 [cam, 2]; 520 [cam, 0, doel]` — de
+vaste camera die de poort laat opengaan (CAMERA_SCRIPT §1.3, WWS-object 258). Een cut die een frame later alsnog
+`SetMode(0, 0)` doet, haalt allebei onderuit: het poortfilmpje sloeg over (de speler kreeg meteen weer de volgcamera en
+de besturing terug) en de deurcamera stond er maar één frame.
 (Niet dynamisch geverifieerd: of het origineel op die 135° hetzelfde beeld geeft — behind-mode staat in toestand 5 uit
 (`CAMERA.md` §3, `p+0x74`), dus de camera hercentreert daar ook niet vanzelf.)
 

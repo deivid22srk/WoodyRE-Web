@@ -96,7 +96,10 @@ SEND 510 [316, 140, 0]   ; cam 316 -> Woody + 140             SEND 520 [285, 0, 
 SEND 570 [316, t]; SEND 580 [316, 1]; SEND 500 [316]          SEND 580 [285, 2]; SEND 500 [285]
 ```
 Hubs (WWS/KWS/SWS): dat `580 cam 2; 520 cam …` (13× in WWS) hoort bij de **gebiedspoort-filmpjes** (object 258:
-`26 [0, 260, 2]; 580 [259, 2]; 520 [259, 0, 11]`), niet bij de leveldeuren. Een leveldeur stuurt **geen enkel
+`26 [0, 260, 2]; 580 [259, 2]; 520 [259, 0, 11]`), niet bij de leveldeuren. Let op de volgorde: bericht 26 gaat
+vooraf aan 580/520, en de teleport doet zelf een harde cut naar de volgcamera (`0x458f90`, PERSO_DEATH §2.1). Die cut
+moet dus op zijn plaats in de berichtenstroom gebeuren — stelt de port hem uit tot het volgende frame, dan wist hij de
+poortcamera die het script er direct achteraan zet en is het filmpje weg voordat het één frame getekend is. Een leveldeur stuurt **geen enkel
 camerabericht**: `1081 [level]; 1040 [deur, 17]; 1602 …; 3 [marker, …]`. De camera komt daar uit de animatie zelf
 (mode 0x80, §4.3). Een deurenpaar binnen de hub idem: `1040 [302, 17]` … `DELAY 150` … `1040 [303, 18]`.
 Rail: `580 cam 1|2; 540 cam d` … `500 cam`.
