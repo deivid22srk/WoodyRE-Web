@@ -341,25 +341,27 @@ De engine roept dit effect aan op elke plek waar de snavel neerkomt:
 
 De **inhoud** van `0x479c80` is nooit gedisassembleerd (PERSO_JUMP.md §5 noemt hem bij de open vragen), alleen zijn aanroepen.
 Vast staat dat hij een punt en optioneel een oppervlaktenormaal krijgt — dezelfde vorm als het voetstap-effect
-`0x47cba0(pos, normaal, richting, links/rechts, grondsoort)` (PERSO_MOVE.md §4.3) — dus het effect richt zich naar het vlak
-dat het markeert, en het zit in dezelfde effectenmodule als de pickup-deeltjes (BONUS.md §2.4).
+`0x47cba0(pos, normaal, richting, links/rechts, grondsoort)` (FOOTSTEPS.md, PERSO_MOVE.md §4.3) — dus het effect richt zich
+naar het vlak dat het markeert, en het zit in dezelfde effectenmodule als de pickup-deeltjes (BONUS.md §2.4).
 
-**Wat de port tekent** (`game_peck_fx`, `src/main_engine.c`) is daarom een **reconstructie**, gebouwd op het enige inslageffect
-dat wél ontleed is: de lasertreffer `0x46efb9` (§2.1) = sprite **bank 0 beeld 5** op het trefpunt plus **vonken 50/s**.
+**Wat de port tekent** (`game_peck_fx`, `src/main_engine.c`) is daarom een **reconstructie**, op dezelfde twee primitieven als
+de voetstappen, plus het enige inslageffect dat wél ontleed is: de lasertreffer `0x46efb9` (§2.1) = een sprite op het trefpunt
+plus **vonken 50/s**.
 
 | | port |
 |---|---|
-| afdruk | één record in de effectenpool (`FxRec` kind 3), 0.5 s; beeld 5, additief, halve diagonaal 45 → 30, alfa 1 → 0, willekeurige rotatie |
-| oriëntatie | mét normaal ligt de quad in het geraakte vlak, 2 eenheden ervóór (`hud_world_decal`); zonder normaal de gewone camera-gerichte sprite |
-| vonken | de eerste 0.2 s 50/s = het standaarddeeltje `0x4791f0` (beeld 4, 0.2 s) in een bol van ±25 om het punt, 10 eenheden vóór het vlak en nooit erachter |
+| afdruk | één record in de markeringspool van FOOTSTEPS.md (`Mark`, 48 stuks, de oudste wijkt): `hud_world_decal` legt de quad ín het geraakte vlak (halve diagonaal 22, sterkte 0.45, 2 s, staat 1 s en vervaagt daarna), rechtop in de wand omdat Woody omhoog klimt, om en om gespiegeld zodat een rij pikgaten er niet gestempeld uitziet |
+| vonken | een uitbarsting van 10 × het standaarddeeltje `0x4791f0` (beeld 4, 0.2 s) in een bol van ±25 om het punt, 10 eenheden vóór het vlak en nooit erachter — evenveel als de 50/s van de lasertreffer over de 0.3 s van één pik |
+| zonder normaal | geen vlak om te markeren (de aanvalsstraal geeft er geen mee): alleen de vonken |
 
-Bij het klimmen levert dat een spoor van afdrukken op de wand op: pik elke 0.3 s, afdruk 0.5 s, dus hooguit twee tegelijk.
+Bij het klimmen levert dat een spoor van pikgaten op de wand op: pik elke 0.3 s, 250 eenh/s omhoog, dus om de ~75 eenheden een
+afdruk die 2 s blijft. `WOODY_FXLOG=1` logt elke pik; `WOODY_STEPIMG=<n>` kiest een ander bank-0-beeld voor de afdruk (zie FOOTSTEPS.md §4).
 De gloeiende "pik hier"-vlakken van de klimwand zelf zijn iets anders: dat zijn modelvlakken met textuurgroepvlag bit 1
 (§1.3), die sinds LIGHTING.md recept 5 (issue #5) onbelicht additief getekend worden.
 
 **Onzeker / met Frida op `0x479c80` te controleren**: aantal, kleur, grootte en levensduur van de deeltjes; of de afdruk in het
 origineel blijft liggen (een echte decal op de geometrie) in plaats van uit te doven; en waarin soort 0 en 1 van elkaar verschillen.
-`0x47cba0` (voetstappen, issue #10) en `0x476140` (stof bij landen) horen bij dezelfde familie en zijn evenmin gelezen.
+`0x47cba0` (voetstappen) en `0x476140` (stof bij landen) horen bij dezelfde familie en zijn evenmin gelezen (FOOTSTEPS.md).
 
 ## 2. Klassen
 
