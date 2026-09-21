@@ -269,7 +269,7 @@ static void set_blend(int blended)
     else { glDisable(GL_BLEND); glDepthMask(GL_TRUE); }
 }
 static uint32_t g_last_material = 0xffffffffu, g_last_frame;
-static float g_mat_scale = 1.0f;                     /* colour scale of the current material (blend intensity) */
+static int g_mat_blended;                            /* [0x5ac8d8]: the material now bound has group flag bit 1 */
 
 /* ---------------------------------------------------------------- instances */
 /* ---- model vertex batching: the model code below is written like immediate mode (begin / colour / texcoord / vertex),
@@ -325,14 +325,14 @@ static void set_material(const Renderer *r, uint32_t material, const Material **
 {
     /* GL state = (texture or none, blend mode). Every polygon has its own material record (a planar projection), so the
      * batch is keyed on the state, not on the material index: g_last_material holds texture id + 1 (0 = untextured) | blend << 31 */
-    *mat_out = NULL; g_mat_scale = 1.0f;
+    *mat_out = NULL; g_mat_blended = 0;
     uint32_t tex = 0; int bl = 0; float col[3] = { 1, 0, 1 };
     if (material & 0x8000) argb1555_to_rgb(material, col);
     else if (material < r->tex->nmaterials) {
         const Material *m = &r->tex->materials[material]; *mat_out = m; const TexGroup *g = &r->tex->groups[m->group];
-        bl = (g->flags & 2) != 0; if (bl) g_mat_scale = ((g->flags >> 16) & 0xff) / 255.0f;
+        bl = g_mat_blended = (g->flags & 2) != 0;        /* byte 2 of the flags looks like an intensity, but nothing in the engine reads tex+0x46 */
         if (!frame && inst && inst->tex_mode) frame = tex_frame(inst, g);
-        tex = g->gl_frames[frame < g->frame_count ? frame : 0]; col[0] = col[1] = col[2] = g_mat_scale;
+        tex = g->gl_frames[frame < g->frame_count ? frame : 0];
     }
     uint32_t key = (tex + 1) | (uint32_t)bl << 31;
     if (key != g_last_material) {
@@ -406,15 +406,21 @@ static void instance_light(const Renderer *r, Instance *inst, float dt)
     }
     if (inst->light >= 0) for (int q = 0; q < 3; q++) inst->lcol[q] = lf->lights[inst->light].colour[q];
 }
-/* vertex colour: vcol * 0.3 + max(0, N.Ldir) * C, drawn MODULATE2X */
+/* vertex colour: vcol * 0.3 + max(0, N.Ldir) * C, drawn MODULATE2X.
+ * Except on a blended face: 0x43d91d tests the flag 0x43d7cf raises for polygon flags 0x20/0x40 (group flag bit 1,
+ * copied into the polygon at load by 0x428020) and jumps straight past the lit RGB at v+0x24..0x2c. It writes
+ * 0x00iiiiii with i = (int)(alpha * 0.5) (0x43d9a4) and alpha = (1 - inst->fade) * 255 (0x43b504), so i = 128 for an
+ * instance that is not fading, and under MODULATE2X that is plain 1.0 x texture. A neon sign is therefore never dimmed
+ * by the world light or by the angle its own plate makes with it - which is what "glowing" means here. */
 static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat4 *M, const InsPoint *pt, const float base[3])
 {
-    if (!r->lit || !r->show_light) { bt_color(base[0] * pt->colour.x / 128.0f * g_mat_scale, base[1] * pt->colour.y / 128.0f * g_mat_scale, base[2] * pt->colour.z / 128.0f * g_mat_scale); return; }
+    if (g_mat_blended) { float a = 1.0f - inst->fade; bt_color(base[0] * a, base[1] * a, base[2] * a); return; }
+    if (!r->lit || !r->show_light) { bt_color(base[0] * pt->colour.x / 128.0f, base[1] * pt->colour.y / 128.0f, base[2] * pt->colour.z / 128.0f); return; }
     const float *a = M->m; Vec3 n = pt->normal;
     Vec3 w = { a[0] * n.x + a[4] * n.y + a[8] * n.z, a[1] * n.x + a[5] * n.y + a[9] * n.z, a[2] * n.x + a[6] * n.y + a[10] * n.z };
     float l = sqrtf(w.x * w.x + w.y * w.y + w.z * w.z), ndl = l > 1e-6f ? (w.x * inst->ldir.x + w.y * inst->ldir.y + w.z * inst->ldir.z) / l : 0; if (ndl < 0) ndl = 0;
     float vc[3] = { pt->colour.x, pt->colour.y, pt->colour.z }, c[3];
-    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q] * g_mat_scale; if (q && inst->tint_red) c[q] = 0; }
+    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q]; if (q && inst->tint_red) c[q] = 0; }
     bt_color(c[0], c[1], c[2]);
 }
 
