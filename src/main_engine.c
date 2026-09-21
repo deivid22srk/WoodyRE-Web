@@ -260,16 +260,19 @@ static uint32_t g_intro_var; static int g_have_intro;            /* message 1160
 
 /* ---- sound (docs/SOUND.md): script messages 1600..1657 (0x467fa0) -> the mixer in audio.c.
  * vol 0..100; pitch args are x0.01 (f > 0 = frequency factor), "dur" args are x-0.01 (wanted duration); dmin args are x0.01 m. */
-/* vector marker of an instance (0x42f6b0): the first 2-point node with typecode `tc`; P0 = start, dir = P1 - P0 (not normalised) */
-static int inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir)
+/* vector marker of an instance (0x42f6b0): the `n`th 2-point node with typecode `tc`; P0 = start, dir = P1 - P0 (not
+ * normalised). 0 when the instance has no such marker, which is how the callers that walk them count how many it has. */
+static int inst_vector_at(const Instance *in, uint32_t tc, uint32_t n, Vec3 *p0, Vec3 *dir)
 {
-    const Model *mo = in->model;
+    const Model *mo = in->model; uint32_t seen = 0;
     for (uint32_t i = 0; i < mo->nnodes; i++) if (mo->nodes[i].kind != 0 && mo->nodes[i].type_code == tc && mo->nodes[i].npoints >= 2 && (mo->nodes[i].kind == 0x20 || tc == 5)) {
+        if (seen++ != n) continue;
         Vec3 a = ins_point_world(in, mo->nodes[i].point_base), b = ins_point_world(in, mo->nodes[i].point_base + 1);
         *p0 = a; dir->x = b.x - a.x; dir->y = b.y - a.y; dir->z = b.z - a.z; return 1;
     }
     return 0;
 }
+static int inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir) { return inst_vector_at(in, tc, 0, p0, dir); }
 /* ---- results screen (docs/GAMEFLOW.md 5.1 and 10.1): the hub script ends a level with 1140 [door, var], the engine
  * puts the Perso on the door vector with scripted action 0x4a (he comes down at the door with his parasol, animation
  * 74 with its own camera track) and runs the state machine perso+0x724 while menu page 0x1e is up:
@@ -436,34 +439,147 @@ static int laser_hits_player(Vec3 a, Vec3 b, const Player *p)
     return best <= R * R;
 }
 static uint32_t msvc_rand(void *user);
-/* ---- launcher type 42 + projectiles (docs/PROJECTILES.md). Only template kind 1 / visual 2 (the energy bolt every level
- * script uses): straight line at 1000 u/s, radius 5, 1 heart, removed on any hit or after `life` seconds. Homing, bounces,
- * gravity, the bomb thrower (kind 0) and the missile / fireball visuals are not ported. */
-typedef struct { Instance *inst, *target; int active, count, aim, kind; float T, t0, last, life; } Launcher;
-typedef struct { int active; const Instance *owner; Vec3 pos, dir, dir0, origin; float age, life, dying, speed, damage, steer; Enemy *enemy; } Shot;
-typedef struct { Vec3 pos; float t; } Flash;
+static Quat quat_from_axes(Vec3 X, Vec3 Y, Vec3 Z);
+
+/* ---- exhaust smoke and explosion flashes -------------------------------------------------------------------------
+ * Shared by the missiles (visual 0/1, docs/PROJECTILES.md 5.3-5.4) and the rideable rocket (class 20, docs/ROCKET.md 5.1):
+ * both hang on the one exhaust list of 0x475440 and both end in flash records 0x4762e0, one per explosion radius. */
+typedef struct { Vec3 pos; float t, rot; } Puff;              /* 0x475380: one smoke cloud, 0.2 s, image 14 */
+typedef struct { Vec3 pos; float t, R; } Blast;               /* 0x4762e0: the nine flat quads of one flash, 0.3 s, image 12 */
+static Puff g_puffs[96]; static int g_puff_next; static Blast g_blasts[16];
+static void puff_add(Vec3 p) { Puff *q = &g_puffs[g_puff_next++ % 96]; q->pos = p; q->t = 1e-4f; q->rot = (float)msvc_rand(NULL) / 32767.0f; }
+static void blast_add(Vec3 p, float R) { for (int i = 0; i < 16; i++) if (g_blasts[i].t <= 0) { g_blasts[i] = (Blast){ p, 1e-4f, R }; return; } }
+/* 200 clouds a second, spread over the way the nozzle covered since the previous frame */
+static void exhaust_smoke(Vec3 from, Vec3 to, float *acc, float dt)
+{
+    if (dt <= 0) return;
+    *acc += dt * 200.0f; int n = (int)*acc; *acc -= n; if (n > 24) n = 24;
+    for (int k = 0; k < n; k++) { float u = (k + 0.5f) / n;
+        puff_add((Vec3){ from.x + (to.x - from.x) * u, from.y + (to.y - from.y) * u, from.z + (to.z - from.z) * u }); }
+}
+static void fx_smoke_draw(float dt)
+{
+    static const float white[3] = { 1, 1, 1 };
+    static const float k_blast_n[9][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0.7f, 0, 0.7f }, { -0.7f, 0, 0.7f },
+                                           { 0.7f, 0.7f, 0 }, { -0.7f, 0.7f, 0 }, { 0, 0.7f, 0.7f }, { 0, -0.7f, 0.7f } };   /* 0x4762e0 */
+    for (int i = 0; i < 96; i++) if (g_puffs[i].t > 0) { Puff *p = &g_puffs[i]; float u = p->t / 0.2f;
+        hud_world_fx(14, &p->pos.x, 15.0f * (1 + u), p->rot, white, 0.3f * (1 - u)); if ((p->t += dt) >= 0.2f) p->t = 0; }
+    for (int i = 0; i < 16; i++) if (g_blasts[i].t > 0) { Blast *b = &g_blasts[i]; float u = b->t / 0.3f;
+        float size = b->R * (0.3f + 0.7f * sinf(u * 1.5707963f)), a = 0.3f * cosf(u * 1.5707963f);
+        for (int q = 0; q < 9; q++) hud_world_fx_plane(12, &b->pos.x, k_blast_n[q], size, white, a);
+        if ((b->t += dt) >= 0.3f) b->t = 0; }
+}
+
+/* ---- missile models, type 41 (docs/PROJECTILES.md 5.4) -------------------------------------------------------------
+ * The type-41 instances of a level are a pool of missile models. They wait hidden (0x472530); a projectile with visual
+ * 0/1 takes one (0x4722f0), it then follows that projectile with its +Z axis along the flight direction (0x46d320) and
+ * its typecode-9 markers trailing flame, glow and smoke (0x475440), and at the end of the flight it goes back to the
+ * pool (0x472370). An empty pool means no model and nothing else: the trail, the head and the explosion do not care.
+ * Port deviation: the original swaps the taken entry to the front of the pool; here a flag keeps the records in place,
+ * because the projectile holds a pointer to one. */
+#define MISSILE_MARKS 4                                       /* typecode-9 nozzles per model that the port follows */
+typedef struct { Instance *inst; int taken, nmark; float f1, f2, f3, acc; Vec3 prev[MISSILE_MARKS]; int has_prev[MISSILE_MARKS]; } Missile;   /* the exhaust object at inst+0x100 (0x4723f0) */
+static Missile g_missiles[50]; static int g_nmissiles;
+static Missile *missile_of(const Instance *in) { for (int i = 0; i < g_nmissiles; i++) if (g_missiles[i].inst == in) return &g_missiles[i]; return NULL; }
+static void missile_add(Instance *in)                                              /* SetTypeInstance 41, 0x403b5d */
+{
+    if (missile_of(in) || g_nmissiles >= 50) return;                               /* 0x5e8344[]: 50 at most, the original stops with an error */
+    Missile *mi = &g_missiles[g_nmissiles++]; memset(mi, 0, sizeof *mi); mi->inst = in;
+    Vec3 m, d; while (mi->nmark < MISSILE_MARKS && inst_vector_at(in, 9, (uint32_t)mi->nmark, &m, &d)) mi->nmark++;   /* 0x4723f0 counts them the same way */
+    in->visible = 0;                                                               /* 0x472530: hidden until a projectile takes it */
+}
+static void missile_place(Missile *mi, Vec3 pos, Vec3 dir)                         /* 0x4724e0 with the frame of 0x46d320: rows = model axes in world space */
+{
+    Instance *in = mi->inst; Vec3 X = { 1, 0, 0 }, Y = { 0, 1, 0 }, Z = { 0, 0, 1 };   /* a direction of length 0 leaves the model unturned */
+    if (fabsf(dir.x) < 0.001f && fabsf(dir.z) < 0.001f) {                          /* straight up or down (0x46d375) */
+        Vec3 v = { 0, dir.z, -dir.y }; float l = sqrtf(v.y * v.y + v.z * v.z);
+        if (l > 1e-6f) { v.y /= l; v.z /= l; Z = dir; Y = v;
+                         X = (Vec3){ v.y * dir.z - v.z * dir.y, v.z * dir.x - v.x * dir.z, v.x * dir.y - v.y * dir.x }; }
+    } else {                                                                       /* 0x46d417 */
+        Vec3 a = { dir.z, 0, -dir.x }; float l = sqrtf(a.x * a.x + a.z * a.z);
+        if (l > 1e-6f) { a.x /= l; a.z /= l; Z = dir; X = a;
+                         Y = (Vec3){ dir.y * a.z - dir.z * a.y, dir.z * a.x - dir.x * a.z, dir.x * a.y - dir.y * a.x }; }
+    }
+    in->position = pos; in->quat = quat_from_axes(X, Y, Z);
+    mat4_from_trs(&in->world, in->position, in->quat, in->scale);
+}
+static Missile *missile_take(Vec3 pos, Vec3 dir)                                   /* 0x4722f0 */
+{
+    for (int i = 0; i < g_nmissiles; i++) {
+        Missile *mi = &g_missiles[i]; if (mi->taken) continue;
+        mi->taken = 1; mi->f1 = mi->f2 = mi->f3 = mi->acc = 0;
+        for (int k = 0; k < MISSILE_MARKS; k++) mi->has_prev[k] = 0;               /* +0x2c[i] = 0: the trail starts here */
+        mi->inst->visible = 1; mi->inst->noncollide = 1;                           /* 0x4077f0 puts it back in the cells; a missile model has no hull nodes, so nothing can walk into it */
+        missile_place(mi, pos, dir);
+        if (getenv("WOODY_FXLOG")) printf("missile %u (model %d, %d nozzle%s) takes off at %.0f %.0f %.0f", mi->inst->index, (int)(mi->inst->model - g_ins.models), mi->nmark, mi->nmark == 1 ? "" : "s", pos.x, pos.y, pos.z), puts("");
+        return mi;
+    }
+    if (getenv("WOODY_FXLOG")) printf("missile pool (%d) empty: this shot flies without a model", g_nmissiles), puts("");
+    return NULL;                                                                   /* the rest of the visual runs anyway */
+}
+static void missile_release(Missile *mi) { if (mi && mi->taken) { mi->taken = 0; mi->inst->visible = 0; } }   /* 0x472370 -> 0x407850 */
+/* exhaust 0x475440 per nozzle, size table 0x4abcc8 index 3: flame 45, glows 40 / 35 (the rocket is index 6). The flame
+ * is a billboard here, not three crossed quads. State 2 (on) from the moment the projectile takes the model, so there
+ * is no start-up ramp; the smoke comes out over the way the nozzle covered, or the trail would be a string of dots. */
+static void missile_exhaust(Missile *mi, float dt)
+{
+    static const float white[3] = { 1, 1, 1 };
+    mi->f1 += dt * 0.05f; mi->f2 += dt * 0.15f; mi->f3 += dt * 3.0f;
+    for (int k = 0; k < mi->nmark; k++) {
+        Vec3 m, d; if (!inst_vector_at(mi->inst, 9, (uint32_t)k, &m, &d)) break;
+        float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l > 1e-4f) { d.x /= l; d.y /= l; d.z /= l; }
+        float fl = 45.0f + (float)msvc_rand(NULL) / 32767.0f * 10.0f - 5.0f, fp[3] = { m.x + d.x * fl * 0.4f, m.y + d.y * fl * 0.4f, m.z + d.z * fl * 0.4f };
+        hud_world_fx(32, &m.x, 40.0f, 1.0f - mi->f1, white, 1.0f - 0.2f * sinf(3.14159265f * mi->f1));
+        hud_world_fx(32, &m.x, 35.0f, 1.0f - mi->f2, white, 1.0f - 0.2f * sinf(3.14159265f * mi->f2));
+        hud_world_fx(31, fp, fl, mi->f3, white, 0.8f);
+        if (mi->has_prev[k]) exhaust_smoke(mi->prev[k], m, &mi->acc, dt);
+        mi->prev[k] = m; mi->has_prev[k] = 1;
+    }
+}
+
+/* ---- launcher type 42 + projectiles (docs/PROJECTILES.md). Only template kind 1: straight line at 1000 u/s, radius 5,
+ * 1 heart, removed on any hit or after `life` seconds. Visual 2 (the energy bolt every level script uses) and visual
+ * 0/1 (the missile of the shooting enemies, section 5.3) are ported; homing, bounces, gravity, the bomb thrower
+ * (kind 0) and the fireball of visual 3 (which is drawn as the bolt) are not. */
+typedef struct { Instance *inst, *target; int active, count, aim, kind, visual; float T, t0, last, life; } Launcher;
+typedef struct { int active, visual; const Instance *owner; Vec3 pos, dir, dir0, origin; float age, life, dying, speed, damage, steer; Enemy *enemy; Missile *missile; } Shot;
+typedef struct { Vec3 pos; float t; int kind; } Flash;                             /* kind 0 = the flash of visual 2 (0x46f180), 1 = the muzzle flash of the missile (0x46fa40) */
 static Launcher g_launchers[32]; static int g_nlaunchers;
 static Shot g_shots[200]; static Flash g_flashes[64];
 static Launcher *launcher_of(const Instance *in) { for (int i = 0; i < g_nlaunchers; i++) if (g_launchers[i].inst == in) return &g_launchers[i]; return NULL; }
-static void flash_add(Vec3 p) { for (int i = 0; i < 64; i++) if (g_flashes[i].t <= 0) { g_flashes[i].pos = p; g_flashes[i].t = 1e-4f; return; } }
+static void flash_add(Vec3 p, int kind) { for (int i = 0; i < 64; i++) if (g_flashes[i].t <= 0) { g_flashes[i].pos = p; g_flashes[i].t = 1e-4f; g_flashes[i].kind = kind; return; } }
+static int shot_is_missile(const Shot *s) { return s->visual == 0 || s->visual == 1; }
+/* how long the trail keeps shrinking after the projectile is gone: seconds per segment / (3 * that per second),
+ * 0.04 / 0.3 for the bolt (0x46f8a0) and 0.025 / 0.15 for the missile (0x46fb30) */
+static float shot_fade_len(const Shot *s) { return shot_is_missile(s) ? 0.16667f : 0.13333f; }
+/* 0x449130: the sound and the visual of a new projectile. Visual 0/1 take a missile model from the pool and open with
+ * their own muzzle flash, 2 and 3 open with the flash of the bolt, and from 4 on a projectile is silent and invisible
+ * (the thrown bomb of template 0). SoundFx 17/18/19/20 by visual (SOUND.md 5), 3D on the owner. */
+static void shot_begin(Shot *s, const Instance *owner, int sound_fx)
+{
+    if (s->visual >= 4) return;                                                    /* jump table 0x4492b8 has four entries */
+    if (owner) audio_fx(sound_fx, owner, &owner->position.x);
+    if (shot_is_missile(s)) { s->missile = missile_take(s->pos, s->dir); flash_add(s->pos, 1); } else flash_add(s->pos, 0);
+}
+static int shot_sound(int visual) { return visual == 0 ? 17 : visual == 1 ? 18 : visual == 2 ? 19 : 20; }
 static void launcher_fire(Launcher *l)                                             /* 0x452560 -> 0x4490a0 / 0x449130 */
 {
     Vec3 p0, d; if (l->kind == 0 || !inst_vector(l->inst, 0, &p0, &d)) return;
     if (l->aim && l->target) { d.x = l->target->position.x - p0.x; d.y = l->target->position.y + 125.0f - p0.y; d.z = l->target->position.z - p0.z; }
     float len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (len < 1e-4f) return;
     for (int i = 0; i < 200; i++) if (!g_shots[i].active) {
-        Shot *s = &g_shots[i]; memset(s, 0, sizeof *s); s->active = 1; s->owner = l->inst; s->pos = s->origin = p0; s->dir = s->dir0 = (Vec3){ d.x / len, d.y / len, d.z / len }; s->life = l->life; s->speed = 1000.0f; s->damage = 1.0f;
-        audio_fx(19, l->inst, &l->inst->position.x); flash_add(p0); return;
+        Shot *s = &g_shots[i]; memset(s, 0, sizeof *s); s->active = 1; s->owner = l->inst; s->pos = s->origin = p0; s->dir = s->dir0 = (Vec3){ d.x / len, d.y / len, d.z / len }; s->life = l->life; s->speed = 1000.0f; s->damage = 1.0f; s->visual = l->visual;
+        shot_begin(s, l->inst, shot_sound(s->visual)); return;
     }
 }
-/* projectile of a shooting enemy (0x418820): template 1 with the enemy's speed / damage / xz steering; drawn as the visual-2 bolt
- * until the missile (visual 0/1) and fireball (visual 3) are ported */
-void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, int sound_fx)
+/* projectile of a shooting enemy (0x418820): template 1 with the enemy's speed / damage / xz steering and its own
+ * visual (P+0x74): 0/1 = the missile, 3 = the fireball, which is not ported and is drawn as the visual-2 bolt */
+void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, int visual, int sound_fx)
 {
     for (int i = 0; i < 200; i++) if (!g_shots[i].active) {
         Shot *s = &g_shots[i]; memset(s, 0, sizeof *s); s->active = 1; s->owner = owner->inst; s->enemy = owner; s->pos = s->origin = pos; s->dir = s->dir0 = dir;
-        s->life = 15.0f; s->speed = speed; s->damage = damage; s->steer = steer;
-        audio_fx(sound_fx, owner->inst, &owner->inst->position.x); flash_add(pos); return;
+        s->life = 15.0f; s->speed = speed; s->damage = damage; s->steer = steer; s->visual = visual;
+        shot_begin(s, owner->inst, sound_fx); return;
     }
 }
 static void launchers_update(float now, float dt, Player *pl, const GelFile *gel, int player_ok)
@@ -488,7 +604,13 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
             if (x * x + z * z <= 74.0f * 74.0f && y >= -5.0f && y <= 198.0f) { if (player_hit(pl, s->damage, s->dir)) { player_kill(pl, 3); enemy_player_killed(s->enemy); } b = (Vec3){ a.x + d.x * t, a.y + d.y * t, a.z + d.z * t }; end = 1; }
         }
         if (!end) { float f = gel_ray_frac(gel, a, b); if (f <= 1.0f) { b = (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }; end = 1; } }
-        s->pos = b; if (end) { flash_add(b); s->dying = 0.133f; if (getenv("WOODY_FXLOG")) printf("shot %d ends at %.0f %.0f %.0f age %.2f from %.0f %.0f %.0f", i, b.x, b.y, b.z, s->age, s->origin.x, s->origin.y, s->origin.z), puts(""); }
+        s->pos = b;
+        if (!end) { if (s->missile) missile_place(s->missile, s->pos, s->dir); continue; }                 /* 0x4723d0 -> 0x4724e0: the model rides along */
+        /* 0x46fbca: a missile explodes (0x477060 kind 2, radius 400, no damage of its own) and hands its model back;
+         * the bolt only leaves the flash of 0x46f36d. Either way the trail goes on shrinking for a moment. */
+        if (shot_is_missile(s)) { blast_add(b, 400.0f); missile_release(s->missile); s->missile = NULL; } else flash_add(b, 0);
+        s->dying = shot_fade_len(s);
+        if (getenv("WOODY_FXLOG")) printf("shot %d (visual %d) ends at %.0f %.0f %.0f age %.2f from %.0f %.0f %.0f", i, s->visual, b.x, b.y, b.z, s->age, s->origin.x, s->origin.y, s->origin.z), puts("");
     }
     for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) { g_flashes[i].t += dt; if (g_flashes[i].t >= 0.4f) g_flashes[i].t = 0; }
 }
@@ -749,26 +871,42 @@ static void steps_draw(float dt)
     }
 }
 
-static void launchers_draw(const float *eye)
+/* the visuals of a projectile: the bolt of visual 2 (0x46f8a0) and the missile of visual 0/1 (0x4700e0). Both are a
+ * head sprite with a ribbon behind it, and the missile has the model and its exhaust on top of that (0x46fb30).
+ * The original samples the ribbon from the path the projectile really flew; the port lays it out straight behind the
+ * current direction, so a homing shot (only the type-7 enemy steers) drags its ribbon around with it. */
+static void launchers_draw(const float *eye, float dt)
 {
     static const float white[3] = { 1, 1, 1 };
-    for (int i = 0; i < 200; i++) {                                                /* visual 2, 0x46f8a0 */
-        const Shot *s = &g_shots[i]; if (!s->active) continue;
-        float t = fmodf(s->age, 2.0f), k = s->dying > 0 ? s->dying / 0.133f : 1.0f;
+    for (int i = 0; i < 200; i++) {
+        Shot *s = &g_shots[i]; if (!s->active || s->visual >= 4) continue;
+        int mis = shot_is_missile(s), nseg = mis ? 20 : 10;                         /* 500 in 20 resp. 400 in 10 (0x4a9998 / 0x4a964c) */
+        float span = mis ? 500.0f : 400.0f, hw = mis ? 7.0f : 30.0f;
+        float t = fmodf(s->age, 2.0f), k = s->dying > 0 ? s->dying / shot_fade_len(s) : 1.0f;
         float trav = sqrtf((s->pos.x - s->origin.x) * (s->pos.x - s->origin.x) + (s->pos.y - s->origin.y) * (s->pos.y - s->origin.y) + (s->pos.z - s->origin.z) * (s->pos.z - s->origin.z));
-        float seg = (trav < 400.0f ? trav : 400.0f) * k / 10.0f;                   /* ribbon: 10 segments of 40 behind the head, growing from the muzzle */
-        for (int j = 0; j < 10 && seg > 0.01f; j++) {
-            float u0 = j / 10.0f, u1 = (j + 1) / 10.0f, c0 = cosf(u0 * 1.5707963f), c1 = cosf(u1 * 1.5707963f);
-            float ca[3] = { 0.25f * (1 - u0) * c0, 0.4f * (1 - u0) * c0, 0.45f * c0 }, cb[3] = { 0.25f * (1 - u1) * c1, 0.4f * (1 - u1) * c1, 0.45f * c1 };
+        float seg = (trav < span ? trav : span) * k / nseg;                         /* the ribbon grows from the muzzle and shrinks once the projectile is gone */
+        for (int j = 0; j < nseg && seg > 0.01f; j++) {
+            float u0 = (float)j / nseg, u1 = (float)(j + 1) / nseg, c0 = cosf(u0 * 1.5707963f), c1 = cosf(u1 * 1.5707963f);
+            float ca[3], cb[3];
+            if (mis) { for (int q = 0; q < 3; q++) { ca[q] = (1 - u0) * c0; cb[q] = (1 - u1) * c1; } }   /* rgb = 1 - u, alpha = cos(u*pi/2) */
+            else { ca[0] = 0.25f * (1 - u0) * c0; ca[1] = 0.4f * (1 - u0) * c0; ca[2] = 0.45f * c0; cb[0] = 0.25f * (1 - u1) * c1; cb[1] = 0.4f * (1 - u1) * c1; cb[2] = 0.45f * c1; }
             Vec3 a = { s->pos.x - s->dir.x * seg * j, s->pos.y - s->dir.y * seg * j, s->pos.z - s->dir.z * seg * j }, b = { a.x - s->dir.x * seg, a.y - s->dir.y * seg, a.z - s->dir.z * seg };
-            hud_world_ribbon(&a.x, &b.x, eye, 30.0f, ca, cb);
+            hud_world_ribbon(&a.x, &b.x, eye, hw, ca, cb);
         }
         if (s->dying > 0) continue;
-        hud_world_fx(6, &s->pos.x, 50.0f, t * 255.5f / 512.0f, white, 1.0f);
-        hud_world_fx(6, &s->pos.x, 80.0f, (1.0f - t * 0.5f) * 511.0f / 512.0f, white, 0.5f);
+        if (mis) {                                                                  /* head 0x46fbfa: on the nose, 55 in front of the projectile point */
+            static const float flame[3] = { 1.0f, 0.58f, 0 };
+            float hp[3] = { s->pos.x + s->dir.x * 55.0f, s->pos.y + s->dir.y * 55.0f, s->pos.z + s->dir.z * 55.0f };
+            hud_world_fx(4, hp, 40.0f, t * 255.5f / 512.0f, flame, 1.0f - (t - floorf(t)));
+            if (s->missile) missile_exhaust(s->missile, dt);
+        } else {
+            hud_world_fx(6, &s->pos.x, 50.0f, t * 255.5f / 512.0f, white, 1.0f);
+            hud_world_fx(6, &s->pos.x, 80.0f, (1.0f - t * 0.5f) * 511.0f / 512.0f, white, 0.5f);
+        }
     }
-    for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) {                         /* muzzle / end flash, 0.4 s */
+    for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) {                          /* muzzle / end flash, 0.4 s */
         float t = g_flashes[i].t, u = t / 0.4f, size = 200.0f * cosf(u * 1.5707963f);
+        if (g_flashes[i].kind) { hud_world_fx(32, &g_flashes[i].pos.x, size, (1.0f - t * 0.5f), white, 0.5f - 0.5f * u); continue; }   /* 0x46fa40: one image-32 flash at the muzzle */
         hud_world_fx(6, &g_flashes[i].pos.x, size, t * 256.0f / 512.0f, white, 1.0f - u);
         hud_world_fx(4, &g_flashes[i].pos.x, size, (1.0f - t * 0.5f) * 512.0f / 512.0f, white, 0.5f - 0.5f * u);
     }
@@ -778,9 +916,7 @@ static void launchers_draw(const float *eye)
  * seconds (blast 600: Kill(6) for a rider who stayed on); the last second it blinks red. 0.5 s later it is back at its start and fades
  * in over 1 s. Class 21 (the bomb cannon of W2x) waits for the bomb system. */
 typedef struct { Instance *inst; int state, exhaust, has_prev; float t, speed, fly_time, vmax, ex_t, f1, f2, f3, puff_acc; Vec3 start_pos, prev_mk; Quat start_q, q0, q1; } Rocket;
-typedef struct { Vec3 pos; float t, rot; } Puff;
-typedef struct { Vec3 pos; float t, R; } Blast;
-static Rocket g_rockets[8]; static int g_nrockets; static Puff g_puffs[96]; static int g_puff_next; static Blast g_blasts[8];
+static Rocket g_rockets[8]; static int g_nrockets;
 static Rocket *rocket_of(const Instance *in) { for (int i = 0; i < g_nrockets; i++) if (g_rockets[i].inst == in) return &g_rockets[i]; return NULL; }
 static void rocket_place(Rocket *r) { Instance *in = r->inst; mat4_from_trs(&in->world, in->position, in->quat, in->scale); ins_pose(in, in->anim, in->anim_time); }
 static void rocket_reset(Rocket *r)                                                /* vtbl[17] 0x452ae0 */
@@ -829,7 +965,7 @@ static void rockets_update(float dt, Player *pl, int have_player)               
         case 5: rocket_fly(r, dt); r->t += dt; if (r->t >= r->fly_time - 1.0f) { r->state = 6; r->t = 0; } break;
         case 6: rocket_fly(r, dt); r->t += dt; in->tint_red = !((int)(r->t * 20.0f) & 1);   /* 0x4537d0: 10 Hz red / normal */
             if (r->t >= 1.0f) { audio_fx_stop(11, in, 1); audio_fx(6, in, &in->position.x); r->t = 0; r->state = 7;
-                for (int b = 0; b < 2; b++) for (int q = 0; q < 8; q++) if (g_blasts[q].t <= 0) { g_blasts[q] = (Blast){ in->position, 1e-4f, b ? 400.0f : 1400.0f }; break; } } break;
+                blast_add(in->position, 1400.0f); blast_add(in->position, 400.0f); } break;                    /* explosion kind 1: two flash records */
         case 7:                                                                    /* blast 600 on the registered actors: here the player (0x44d040) */
             if (have_player && !pl->dead_kind) { Vec3 d = { pl->inst->position.x - in->position.x, pl->inst->position.y - in->position.y, pl->inst->position.z - in->position.z };
                 if (d.x * d.x + d.y * d.y + d.z * d.z < 600.0f * 600.0f && !getenv("WOODY_GOD")) { float l = sqrtf(d.x * d.x + d.z * d.z); Vec3 away = l > 1e-3f ? (Vec3){ d.x / l, 0, d.z / l } : (Vec3){ 0, 0, 1 };
@@ -844,8 +980,9 @@ static void rockets_update(float dt, Player *pl, int have_player)               
     if (have_player && pl->ride) { Rocket *r = rocket_of(pl->ride); Vec3 d;
         if (r) { pl->ride_state = r->state; pl->ride_q = r->inst->quat; if (!inst_vector(r->inst, 0, &pl->ride_seat, &d)) pl->ride_seat = r->inst->position; } }
 }
-/* exhaust 0x475440 on the typecode-9 marker (table 0x4abcc8 index 6: flame 100, glows 70 / 60; start-up sputters), smoke puffs image 14,
- * and the two flat flashes of explosion kind 1 (0x4762e0, R 1400 and 400). The flame is a billboard here, not three crossed quads */
+/* exhaust 0x475440 on the typecode-9 marker (table 0x4abcc8 index 6: flame 100, glows 70 / 60; start-up sputters) and its
+ * smoke; the two flashes of explosion kind 1 (R 1400 and 400) are records like any other, see fx_smoke_draw.
+ * The flame is a billboard here, not three crossed quads */
 static void rockets_draw(float dt)
 {
     static const float white[3] = { 1, 1, 1 };
@@ -860,17 +997,10 @@ static void rockets_draw(float dt)
             hud_world_fx(32, &m.x, 70.0f * s, 1.0f - r->f1, white, 1.0f - 0.2f * sinf(3.14159265f * r->f1));
             hud_world_fx(32, &m.x, 60.0f * s, 1.0f - r->f2, white, 1.0f - 0.2f * sinf(3.14159265f * r->f2));
             hud_world_fx(31, fp, fl, r->f3, white, 0.8f);
-            if (r->has_prev && dt > 0) {                                           /* 200 puffs a second spread over the distance covered */
-                r->puff_acc += dt * 200.0f; int n = (int)r->puff_acc; r->puff_acc -= n; if (n > 24) n = 24;
-                for (int k = 0; k < n; k++) { float u = (k + 0.5f) / n; Puff *p = &g_puffs[g_puff_next++ % 96];
-                    p->pos = (Vec3){ r->prev_mk.x + (m.x - r->prev_mk.x) * u, r->prev_mk.y + (m.y - r->prev_mk.y) * u, r->prev_mk.z + (m.z - r->prev_mk.z) * u }; p->t = 1e-4f; p->rot = (float)msvc_rand(NULL) / 32767.0f; }
-            }
+            if (r->has_prev) exhaust_smoke(r->prev_mk, m, &r->puff_acc, dt);       /* 200 puffs a second spread over the distance covered */
         }
         r->prev_mk = m; r->has_prev = 1;
     }
-    for (int i = 0; i < 96; i++) if (g_puffs[i].t > 0) { Puff *p = &g_puffs[i]; float u = p->t / 0.2f; hud_world_fx(14, &p->pos.x, 15.0f * (1 + u), p->rot, white, 0.3f * (1 - u)); if ((p->t += dt) >= 0.2f) p->t = 0; }
-    for (int i = 0; i < 8; i++) if (g_blasts[i].t > 0) { Blast *b = &g_blasts[i]; float u = b->t / 0.3f;
-        hud_world_fx(12, &b->pos.x, b->R * (0.3f + 0.7f * sinf(u * 1.5707963f)), 0, white, 0.3f * cosf(u * 1.5707963f) * 3.0f); if ((b->t += dt) >= 0.3f) b->t = 0; }
 }
 /* ---- environment instances, class 90 (0x472560), and their butterflies (0x47e050 / 0x47d440) -----------------------
  * The instance itself is never drawn - its model is a bare volume node. Message 1501 sets the mode (0x46cd07), 1504 the
@@ -1051,7 +1181,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) in->visible = 0; if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; that page is not ported, so keep them out of sight */   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; that page is not ported, so keep them out of sight */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1501: case 1504: {                                                         /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
         EnvInst *E = in ? env_of(in) : NULL;
         if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
@@ -1172,8 +1302,9 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1152: g_black_frame = 1; break;
     case 1000: case 1001: case 1002: case 1003: case 1004: if (in) {                                         /* launcher, 0x444870 (docs/PROJECTILES.md) */
         Launcher *l = launcher_of(in); if (!l) break; int a1 = m->nargs > 1 ? (int)m->args[1] : 0, a2 = m->nargs > 2 ? (int)m->args[2] : 0, a3 = m->nargs > 3 ? (int)m->args[3] : 0;
-        if (m->id == 1001) { l->kind = a1; l->life = 15.0f; l->aim = 0; l->active = 0; }
-        else if (m->id == 1002) { if (a1 == 2) l->life = a2 * 0.01f; else if (a1 == 19) l->aim = a2 != 0; }
+        if (m->id == 1001) { l->kind = a1; l->life = 15.0f; l->aim = 0; l->active = 0; l->visual = a1 == 0 ? 4 : 2; }   /* template 0 is the thrown bomb: no visual of its own */
+        else if (m->id == 1002) { if (a1 == 2) l->life = a2 * 0.01f; else if (a1 == 19) l->aim = a2 != 0;
+            else if (a1 == 18 && a2 >= 0 && a2 <= 3) { static const int vis[4] = { 2, 3, 4, 0 }; l->visual = vis[a2]; } }   /* table 0x45254c */
         else if (m->id == 1004) l->active = 0;
         else {
             int tgt = m->id == 1000 ? a1 : a1, cnt = m->id == 1000 ? 1 : a2; float T = m->id == 1000 ? 1.0f : a3 * 0.01f; if (T < 0.2f) T = 0.2f;
@@ -1207,7 +1338,7 @@ typedef struct {
 static void *read_all(const char *path, size_t *sz);
 static void level_free(Level *L)
 {
-    g_nlasers = 0; g_nlaunchers = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
+    g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); memset(g_pecks, 0, sizeof g_pecks); g_peck_next = 0; memset(g_chips, 0, sizeof g_chips); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
@@ -1503,7 +1634,7 @@ int main(int argc, char **argv)
                         }
                     }
                 }
-                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); peck_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
+                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); peck_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */

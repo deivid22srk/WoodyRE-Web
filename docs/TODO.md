@@ -36,10 +36,10 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 
 | type | wat | status | waar |
 |---|---|---|---|
-| 42 | lanceerder: alleen sjabloon 1 / visual 2 (energiebol, rechte lijn) geport; niet: doelzoekend, stuiteren, zwaartekracht, bommenwerper (soort 0), schiet-animatie (param 7/8), straal tegen instanties, lintkleur mogelijk te donker | deels | PROJECTILES.md |
-| 41 | missile-visual (`0x4700e0`: model uit de pool, lint, uitlaat, explosie) en vuurbal (`0x470af0`); alleen gebruikt door vijanden / type 20-21. Instanties worden wel verborgen | analyse klaar | PROJECTILES.md |
-| 7 / 8 / 9 | schutters: geport. Niet: missile-/vuurbal-visual van hun projectiel (nu de energiebol), obstakelsensor, dwaal-gewichten (bericht 11/19..27), bericht 11/4 reset en 11/5-6, bericht 6 (aan/uit) | grotendeels | ENEMY.md §8 |
-| 13 | spook: geport (half doorzichtig, zweeft op spelerhoogte, schiet om en om, duikt). Niet: vuurbal-visual, patrouille-animaties | grotendeels | ENEMY2.md §3 |
+| 42 | lanceerder: alleen sjabloon 1 geport (rechte lijn), visual uit bericht 1002 param 18; niet: doelzoekend, stuiteren, zwaartekracht, bommenwerper (soort 0), schiet-animatie (param 7/8), straal tegen instanties, lintkleur mogelijk te donker | deels | PROJECTILES.md |
+| 41 | missile-visual geport (`0x4700e0`: model uit de type-41-pool met `0x46d320`-oriëntatie, lint 20×25, kop, mondingsflits, uitlaat met rook, explosie soort 2). Niet: vuurbal (`0x470af0`), lint langs het werkelijk gevlogen pad, de drie gekruiste vlamquads | grotendeels | PROJECTILES.md §5.3-5.4, §7.1 |
+| 7 / 8 / 9 | schutters: geport, inclusief het missile-projectiel van type 7/8. Niet: vuurbal-visual van type 9 (nu de energiebol), obstakelsensor, dwaal-gewichten (bericht 11/19..27), bericht 11/4 reset en 11/5-6, bericht 6 (aan/uit) | grotendeels | ENEMY.md §8 |
+| 13 | spook: geport (half doorzichtig, zweeft op spelerhoogte, schiet om en om, duikt). Niet: vuurbal-visual (nu de energiebol), patrouille-animaties | grotendeels | ENEMY2.md §3 |
 | 12 | stilstaande bommengooier (eindbaas W2B, 1×): **geblokkeerd op het bommensysteem (type 40)**; zonder hem is W2B niet uit te spelen | analyse klaar | ENEMY2.md §4 |
 | 10 / 11 | vliegende schutter / bommenwerper te voet: in geen enkel level gebruikt | op hoofdlijnen | ENEMY2.md §5-6 |
 | 14 / 15 / 16 | bazen (ctors `0x40eb50`, `0x40d850`, `0x40c730`): W1B, W2D, W3D, WWS | niet geanalyseerd | ENEMY2.md §1 |
@@ -47,7 +47,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | 40 | bom (pool 16, oppakken, explosie r 400) | analyse op hoofdlijnen | BONUS.md §7, OBJECTS.md §3 |
 | 120 / 121 | kist die door een bom opengaat (msgmask 0x20) | analyse op hoofdlijnen | OBJECTS.md §3 |
 | 17 | breekbaar object voor bommen | analyse op hoofdlijnen | OBJECTS.md §3 |
-| 20 | berijdbare raket: geport (opstappen, draaien, ontsteking, rechte vlucht, rood knipperen, explosie r 600 = Kill(6), respawn met fade-in, geluiden 15/16/10/11/6). Vereenvoudigd: vlam als billboard i.p.v. drie gekruiste quads, explosie alleen de twee flitsen (deeltjes `0x4767f0`/`0x4764f0` niet gedecompileerd), geen camerabotsing tijdens de rit (port-keuze), startoriëntatie niet tegen het origineel geverifieerd | grotendeels | ROCKET.md |
+| 20 | berijdbare raket: geport (opstappen, draaien, ontsteking, rechte vlucht, rood knipperen, explosie r 600 = Kill(6), respawn met fade-in, geluiden 15/16/10/11/6). Vereenvoudigd: vlam als billboard i.p.v. drie gekruiste quads, explosie alleen de twee flitsen — die wel als de negen vlakke quads van `0x4762e0` (deeltjes `0x4767f0`/`0x4764f0` niet gedecompileerd), geen camerabotsing tijdens de rit (port-keuze), startoriëntatie niet tegen het origineel geverifieerd | grotendeels | ROCKET.md |
 | 21 | bomkanon (W2A/W2B/W2D): Woody rijdt mee op een afgeschoten bom; **geblokkeerd op het bommensysteem (type 40)** | analyse klaar | ROCKET.md §7 |
 | 90 | omgevingsvolume: modus 0 (1501/1504) geport - de vlinders van het titelscherm, met hun dwaalgedrag, landen en vleugelslag. Niet: modus 1 (`0x47e160`, langs de grondnormaal) en 2. Alleen House gebruikt klasse 90 | grotendeels | TITLE.md §3.1, OBJECTS.md §2.4 |
 | 60 | eigen handler (1503/1506) | niet geanalyseerd | OBJECTS.md §3 |

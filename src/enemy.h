@@ -6,8 +6,9 @@
 
 struct Player;
 
-/* parameter block P (0x41d510); message 11 writes into it */
-typedef struct { float radius, height, walk, run, dash, see, dy, turn, turn_fast, leash, hp, cool, bite, shot_dmg, reload, melee, dodge, steer, active_d; int shot_fx; } EnemyParams;
+/* parameter block P (0x41d510); message 11 writes into it. shot_visual = P+0x74 (0/1 missile, 2 bolt, 3 fireball),
+ * shot_fx = the SoundFx that 0x449130 plays for that visual */
+typedef struct { float radius, height, walk, run, dash, see, dy, turn, turn_fast, leash, hp, cool, bite, shot_dmg, reload, melee, dodge, steer, active_d; int shot_visual, shot_fx; } EnemyParams;
 
 typedef struct Enemy {
     EnemyParams P; float reload; Vec3 warn, dodge_dir; int throw_hold;   /* shooters */
@@ -34,7 +35,7 @@ void enemy_warn_dive(Enemy *e, Vec3 d);                                       /*
 void game_enemy_stars(Enemy *e);                                              /* vtbl[57] 0x41b000 -> 0x477610: five stars circle over the dying enemy (in main_engine.c) */
 void enemy_player_killed(Enemy *e);                                           /* vtbl[41] 0x417fd0: its projectile killed the player */
 /* implemented by the engine: projectile 0x4490a0 from an enemy (template 1 with the P overrides) */
-void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, int sound_fx);
+void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, int visual, int sound_fx);
 float enemy_radius(const Enemy *e); float enemy_height(const Enemy *e);
 
 #endif
