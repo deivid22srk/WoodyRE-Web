@@ -48,6 +48,14 @@ void hud_world_fx(int image, const float *pos, float size, float turns, const fl
  * `size` is the half diagonal, as for every sprite. It darkens what is under it by `rgb * strength`, see hud.c. */
 void hud_world_decal(int image, const float *pos, const float *normal, const float *dir, float size, int mirror, const float *rgb, float strength);
 int  hud_step_image(void);                                      /* bank 0 image used for the footstep mark (WOODY_STEPIMG) */
+/* the hole a peck leaves in the wood (docs/OBJECTS.md 1.6): a ragged cup lying in the pecked face (normal n, its
+ * +v along `dir`) that darkens what is under it like the footstep mark, with a faint rim of split wood around it.
+ * `size` is the outer radius. `seed` fixes the outline of this one hole, so it does not shimmer from frame to
+ * frame and a column of them is not stamped out of the same shape. */
+void hud_world_gouge(const float *pos, const float *n, const float *dir, float size, unsigned seed, const float *rgb, float strength, float rim);
+/* one chip of wood the beak knocks loose: a solid, untextured sliver, not a sprite. `u` and `v` are its two half
+ * axes and carry both its size and its tumble; there is no GL light in this pass, so it shades itself. */
+void hud_world_chip(const float *c, const float *u, const float *v, const float *rgb, float alpha);
 /* additive ribbon segment with a colour per end (bank 0 image 0) */
 void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw, const float *rgb_a, const float *rgb_b);
 /* additive camera-facing line quad (line primitive 0x471a10, bank 0 image 1): half width hw, colour*alpha at both ends */

@@ -587,7 +587,7 @@ static void fx_update(float dt)
  * kind 2; a lasting print on dust, sand or snow, kind 3), plus a puff of the smoke image for kind 3 and three
  * puffs on landing. The step SOUND is not from here: it comes from the type 4 events of the animation (docs/SOUND.md 3). */
 typedef struct { Vec3 pos, n, dir; float t, life, size, strength; int mirror; } Mark;
-typedef struct { Vec3 pos, vel; float t, life, size0, size1, rot; } Dust;
+typedef struct { Vec3 pos, vel; float t, life, size0, size1, rot, rgb[3]; } Dust;
 static Mark g_marks[48]; static Dust g_dust[64];
 static Mark *mark_new(void)
 {
@@ -595,11 +595,14 @@ static Mark *mark_new(void)
     for (int i = 0; i < 48; i++) { if (g_marks[i].life <= 0) return &g_marks[i]; if (g_marks[i].t > oldest) { oldest = g_marks[i].t; pick = &g_marks[i]; } }
     return pick;                                                             /* full: the oldest print makes room */
 }
-static void dust_new(Vec3 pos, Vec3 vel, float life, float size0, float size1)
+static const float k_dust_rgb[3] = { 1.0f, 0.95f, 0.85f };                   /* ground dust */
+static const float k_sawdust_rgb[3] = { 0.85f, 0.68f, 0.44f };               /* what a beak raises out of wood */
+static void dust_new(Vec3 pos, Vec3 vel, float life, float size0, float size1, const float *rgb)
 {
     for (int i = 0; i < 64; i++) if (g_dust[i].life <= 0) {
         g_dust[i].pos = pos; g_dust[i].vel = vel; g_dust[i].t = 0; g_dust[i].life = life;
-        g_dust[i].size0 = size0; g_dust[i].size1 = size1; g_dust[i].rot = fx_rnd(); return;
+        g_dust[i].size0 = size0; g_dust[i].size1 = size1; g_dust[i].rot = fx_rnd();
+        g_dust[i].rgb[0] = rgb[0]; g_dust[i].rgb[1] = rgb[1]; g_dust[i].rgb[2] = rgb[2]; return;
     }
 }
 static Vec3 vunit(Vec3 v) { float l = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); if (l < 1e-6f) return (Vec3){ 0, 1, 0 }; v.x /= l; v.y /= l; v.z /= l; return v; }
@@ -614,7 +617,7 @@ void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind)      /* 
     m->life = kind == 3 ? 4.0f : 0.6f; m->size = kind == 3 ? 36.0f : 30.0f; m->strength = kind == 3 ? 0.6f : 0.22f;
     if (kind == 3) {                                                         /* dust ground: the foot kicks a little of it up behind itself */
         Vec3 v = { -d.x * 30.0f + n.x * 40.0f, -d.y * 30.0f + n.y * 40.0f, -d.z * 30.0f + n.z * 40.0f };
-        dust_new((Vec3){ fp.x + n.x * 10.0f, fp.y + n.y * 10.0f, fp.z + n.z * 10.0f }, v, 0.45f, 14.0f, 34.0f);
+        dust_new((Vec3){ fp.x + n.x * 10.0f, fp.y + n.y * 10.0f, fp.z + n.z * 10.0f }, v, 0.45f, 14.0f, 34.0f, k_dust_rgb);
     }
     if (getenv("WOODY_FXLOG")) printf("footstep %s kind %d at %.0f %.0f %.0f", foot ? "right" : "left", kind, fp.x, fp.y, fp.z), puts("");
 }
@@ -627,43 +630,106 @@ void game_land_dust(Vec3 pos, Vec3 normal)                                   /* 
         float t = (i + fx_rnd() * 0.5f) * 2.0944f;                           /* three directions spread around the landing point */
         Vec3 o = { a.x * cosf(t) + b.x * sinf(t), a.y * cosf(t) + b.y * sinf(t), a.z * cosf(t) + b.z * sinf(t) };
         Vec3 v = { o.x * 150.0f + n.x * 60.0f, o.y * 150.0f + n.y * 60.0f, o.z * 150.0f + n.z * 60.0f };
-        dust_new(pos, v, 0.5f, 18.0f, 52.0f);
+        dust_new(pos, v, 0.5f, 18.0f, 52.0f, k_dust_rgb);
     }
     if (getenv("WOODY_FXLOG")) printf("landing dust at %.0f %.0f %.0f", pos.x, pos.y, pos.z), puts("");
 }
 /* ---- the beak impact 0x479c80(kind, point, normal) ------------------------------------------------------------
- * The original marks every place the beak lands: the attack probe calls it on any hit (kind 1, no normal,
- * docs/PERSO_JUMP.md 2.4) and the climb loop every 0.3 s on the wall he hangs in (kind 0, with the wall normal,
- * docs/OBJECTS.md 1.3/1.6). Like 0x47cba0 above it is known by its call sites only - not decompiled - so what is
- * drawn is a reconstruction on the same two primitives: a mark that lies in the pecked face, mirrored every other
- * peck so a column of them is not stamped out, and a burst of the standard particle 0x4791f0 for the sparks
- * (the laser hit 0x46efb9, the one impact the docs do describe, throws those at 50 a second). Without a normal
- * there is no face to mark and only the sparks are left. */
-#define PECK_MARK_LIFE 2.0f                                                  /* a peck every 0.3 s climbing at 250 u/s: a trail of marks up the wall */
-#define PECK_MARK_SIZE 22.0f                                                 /* half diagonal: a beak, not a foot */
-#define PECK_SPARKS    10                                                    /* = the 50 a second of the laser hit over the 0.2 s of a peck */
+ * The original marks every place the beak lands: the attack probe calls it on any hit (kind 1, docs/PERSO_JUMP.md
+ * 2.4) and the climb loop every 0.3 s on the wall he hangs in (kind 0, with the wall normal, docs/OBJECTS.md
+ * 1.3/1.6). Like 0x47cba0 above, the function is known by its call sites only - not decompiled - but what has to
+ * come out of it is not in doubt: a beak going into wood takes a bite out of it. So a peck cuts a HOLE in the face
+ * it hit and throws the wood it knocked loose out of the wall as CHIPS that tumble and fall:
+ *   - the hole is `hud_world_gouge` in the plane of that face, in its own pool, so walking does not push the holes
+ *     out of the footstep pool and a wall keeps the whole trail he climbed;
+ *   - the chips are `hud_world_chip`, solid slivers, not sprites, on the engine's own fall (vel.y -= dt*g*200 with
+ *     the -800 floor and the air damping of the projectile templates, docs/PROJECTILES.md 1.1);
+ *   - plus one small puff of sawdust out of the hole.
+ * What was here before was the laser hit 0x46efb9 - an additive glow plus sparks at 50 a second. That is what an
+ * energy bolt does to a wall, not what a woodpecker does to a plank. */
+#define PECK_MARKS      64                                                   /* a peck every 0.3 s: one climbed wall is about 20 holes */
+#define PECK_MARK_LIFE  20.0f                                                /* the hole stays put: he climbs in seconds and gets to look back at his trail */
+#define PECK_MARK_FADE  4.0f                                                 /* and only closes over in its last seconds */
+#define PECK_MARK_SIZE  26.0f                                                /* outer radius, against his own collision radius of 69 (P+0x04): a beak, not a foot */
+#define PECK_CHIPS      10
+#define CHIP_G          5.0f                                                 /* gravity in the engine's own units (0x44945f): vel.y -= dt * g * 200, floor -800. The thrown bomb uses 15, a chip of wood is light */
+#define CHIP_DAMP       0.97f                                                /* damping per 1/60 s (T+0x28), heavier than a projectile's 0.99: wood flutters down instead of dropping like a stone */
+typedef struct { Vec3 pos, n, dir; float t, life; unsigned seed; } Peck;
+typedef struct { Vec3 pos, vel, ax, ay, rax; float t, life, spin, len, wid, rgb[3]; } Chip;
+static Peck g_pecks[PECK_MARKS]; static int g_peck_next;
+static Chip g_chips[128];
+static Vec3 vrot(Vec3 v, Vec3 k, float a)                                    /* Rodrigues: a chip tumbles around its own axis */
+{
+    float c = cosf(a), s = sinf(a), d = (1.0f - c) * (k.x * v.x + k.y * v.y + k.z * v.z);
+    return (Vec3){ v.x * c + (k.y * v.z - k.z * v.y) * s + k.x * d,
+                   v.y * c + (k.z * v.x - k.x * v.z) * s + k.y * d,
+                   v.z * c + (k.x * v.y - k.y * v.x) * s + k.z * d };
+}
+static void chip_new(Vec3 pos, Vec3 vel, float len, float wid, const float *rgb)
+{
+    for (int i = 0; i < 128; i++) if (g_chips[i].life <= 0) {
+        Chip *c = &g_chips[i];
+        c->pos = pos; c->vel = vel; c->t = 0; c->life = 0.9f + fx_rnd() * 0.6f;
+        c->ay = vunit(vel);                                                  /* it leaves the wall long side first, then tumbles */
+        Vec3 a = fabsf(c->ay.y) < 0.9f ? (Vec3){ 0, 1, 0 } : (Vec3){ 1, 0, 0 };
+        c->ax = vunit((Vec3){ c->ay.y * a.z - c->ay.z * a.y, c->ay.z * a.x - c->ay.x * a.z, c->ay.x * a.y - c->ay.y * a.x });
+        c->rax = vunit((Vec3){ fx_rnd() - 0.5f, fx_rnd() - 0.5f, fx_rnd() - 0.5f });
+        c->spin = 6.0f + fx_rnd() * 12.0f; c->len = len; c->wid = wid;
+        c->rgb[0] = rgb[0]; c->rgb[1] = rgb[1]; c->rgb[2] = rgb[2];
+        return;
+    }
+}
 void game_peck_fx(int kind, Vec3 pos, const Vec3 *n)                         /* 0x479c80 */
 {
-    static int side;
-    Vec3 nn = n ? vunit(*n) : (Vec3){ 0, 0, 0 };
-    if (n) {
-        Mark *m = mark_new();
-        m->pos = pos; m->n = nn; m->t = 0; m->mirror = (side = !side);
-        m->dir = fabsf(nn.y) < 0.9f ? (Vec3){ 0, 1, 0 } : (Vec3){ 1, 0, 0 };   /* he climbs upwards, so the mark stands up in the wall */
-        m->life = PECK_MARK_LIFE; m->size = PECK_MARK_SIZE; m->strength = 0.45f;
+    static const float wood[3] = { 0.72f, 0.52f, 0.30f };                    /* fresh wood; every chip takes its own shade of it */
+    Vec3 nn = n ? vunit(*n) : (Vec3){ 0, 1, 0 };
+    if (n) {                                                                 /* there is a face to bite into, so the hole goes in it */
+        Peck *m = &g_pecks[g_peck_next]; g_peck_next = (g_peck_next + 1) % PECK_MARKS;   /* the oldest hole gives way */
+        m->pos = pos; m->n = nn; m->t = 0; m->life = PECK_MARK_LIFE; m->seed = (unsigned)rand();
+        m->dir = fabsf(nn.y) < 0.9f ? (Vec3){ 0, 1, 0 } : (Vec3){ 1, 0, 0 };   /* he climbs upwards, so the hole stands up in the wall */
     }
-    for (int i = 0; i < PECK_SPARKS; i++) {
-        Vec3 o = { (fx_rnd() - 0.5f) * 50.0f, (fx_rnd() - 0.5f) * 50.0f, (fx_rnd() - 0.5f) * 50.0f };
-        float d = o.x * nn.x + o.y * nn.y + o.z * nn.z;                      /* a spark never sits behind the face it came out of */
-        if (d < 0) { o.x -= d * nn.x; o.y -= d * nn.y; o.z -= d * nn.z; }
-        Vec3 p = { pos.x + o.x + nn.x * 10.0f, pos.y + o.y + nn.y * 10.0f, pos.z + o.z + nn.z * 10.0f };
-        if (!fx_new(0.2f, p, 2)) break;
+    Vec3 t0 = vunit(fabsf(nn.y) < 0.9f ? (Vec3){ nn.z, 0, -nn.x } : (Vec3){ 1, 0, 0 });   /* two axes in the pecked face */
+    Vec3 t1 = { nn.y * t0.z - nn.z * t0.y, nn.z * t0.x - nn.x * t0.z, nn.x * t0.y - nn.y * t0.x };
+    for (int i = 0; i < PECK_CHIPS; i++) {                                   /* the wood he knocked out: away from the face, spread around the hole */
+        float a = fx_rnd() * 6.2831853f, sp = 40.0f + fx_rnd() * 150.0f, out = 130.0f + fx_rnd() * 190.0f, ca = cosf(a), sa = sinf(a);
+        Vec3 v = { nn.x * out + (t0.x * ca + t1.x * sa) * sp, nn.y * out + (t0.y * ca + t1.y * sa) * sp, nn.z * out + (t0.z * ca + t1.z * sa) * sp };
+        v.y += 70.0f + fx_rnd() * 150.0f;                                    /* they hop up first, so the fall is what you see */
+        float k = 0.8f + fx_rnd() * 0.45f, rgb[3] = { wood[0] * k, wood[1] * k, wood[2] * k };
+        Vec3 p = { pos.x + nn.x * 6.0f + (t0.x * ca + t1.x * sa) * 7.0f, pos.y + nn.y * 6.0f + (t0.y * ca + t1.y * sa) * 7.0f, pos.z + nn.z * 6.0f + (t0.z * ca + t1.z * sa) * 7.0f };
+        chip_new(p, v, 16.0f + fx_rnd() * 12.0f, 5.0f + fx_rnd() * 4.0f, rgb);   /* half axes: a chip is 32 to 56 long against Woody's 193, and has to read at the game's 84 degree fov */
     }
-    if (getenv("WOODY_FXLOG")) printf("peck kind %d at %.0f %.0f %.0f%s", kind, pos.x, pos.y, pos.z, n ? " (marked)" : ""), puts("");
+    dust_new((Vec3){ pos.x + nn.x * 8.0f, pos.y + nn.y * 8.0f, pos.z + nn.z * 8.0f },
+             (Vec3){ nn.x * 40.0f, nn.y * 40.0f + 25.0f, nn.z * 40.0f }, 0.3f, 7.0f, 26.0f, k_sawdust_rgb);
+    if (getenv("WOODY_FXLOG")) printf("peck kind %d at %.0f %.0f %.0f%s", kind, pos.x, pos.y, pos.z, n ? " (hole)" : ""), puts("");
+}
+/* the holes stay where they were pecked and the chips fall out of them; both are ticked from the same pass as the
+ * footsteps, so a paused game (dt = 0) keeps drawing them without moving them. */
+static void peck_draw(float dt)
+{
+    static const float hole[3] = { 0.75f, 0.78f, 0.82f };                    /* what it takes OUT of the wall: dst * (1 - rgb*strength), so a shade less blue stays warm */
+    for (int i = 0; i < PECK_MARKS; i++) {
+        Peck *m = &g_pecks[i]; if (m->life <= 0) continue;
+        float left = m->life - m->t; if (left <= 0) { m->life = 0; continue; }
+        float k = left < PECK_MARK_FADE ? left / PECK_MARK_FADE : 1.0f;
+        hud_world_gouge(&m->pos.x, &m->n.x, &m->dir.x, PECK_MARK_SIZE, m->seed, hole, 0.72f * k, 0.13f * k);
+        m->t += dt;
+    }
+    for (int i = 0; i < 128; i++) {
+        Chip *c = &g_chips[i]; if (c->life <= 0) continue;
+        float u = c->t / c->life; if (u >= 1.0f) { c->life = 0; continue; }
+        float U[3] = { c->ax.x * c->wid, c->ax.y * c->wid, c->ax.z * c->wid };
+        float V[3] = { c->ay.x * c->len, c->ay.y * c->len, c->ay.z * c->len };
+        hud_world_chip(&c->pos.x, U, V, c->rgb, u < 0.7f ? 1.0f : (1.0f - u) / 0.3f);
+        c->vel.y -= dt * CHIP_G * 200.0f; if (c->vel.y < -800.0f) c->vel.y = -800.0f;
+        float d = powf(CHIP_DAMP, dt * 60.0f); c->vel.x *= d; c->vel.y *= d; c->vel.z *= d;
+        c->pos.x += c->vel.x * dt; c->pos.y += c->vel.y * dt; c->pos.z += c->vel.z * dt;
+        float a = c->spin * dt; c->ax = vrot(c->ax, c->rax, a); c->ay = vrot(c->ay, c->rax, a);
+        c->t += dt;
+    }
 }
 static void steps_draw(float dt)
 {
-    static const float mark_rgb[3] = { 0.55f, 0.45f, 0.35f }, dust_rgb[3] = { 1.0f, 0.95f, 0.85f };
+    static const float mark_rgb[3] = { 0.55f, 0.45f, 0.35f };
     for (int i = 0; i < 48; i++) {
         Mark *m = &g_marks[i]; if (m->life <= 0) continue;
         float u = m->t / m->life; if (u >= 1.0f) { m->life = 0; continue; }
@@ -674,7 +740,7 @@ static void steps_draw(float dt)
     for (int i = 0; i < 64; i++) {
         Dust *d = &g_dust[i]; if (d->life <= 0) continue;
         float u = d->t / d->life; if (u >= 1.0f) { d->life = 0; continue; }
-        hud_world_fx(14, &d->pos.x, d->size0 + (d->size1 - d->size0) * u, d->rot, dust_rgb, 0.3f * (1.0f - u));
+        hud_world_fx(14, &d->pos.x, d->size0 + (d->size1 - d->size0) * u, d->rot, d->rgb, 0.3f * (1.0f - u));
         d->pos.x += d->vel.x * dt; d->pos.y += d->vel.y * dt; d->pos.z += d->vel.z * dt;
         float slow = 1.0f - 2.5f * dt; if (slow < 0) slow = 0;               /* the puff runs out of speed as it fades */
         d->vel.x *= slow; d->vel.y *= slow; d->vel.z *= slow;
@@ -1135,7 +1201,7 @@ static void level_free(Level *L)
 {
     g_nlasers = 0; g_nlaunchers = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
-    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); memset(g_pecks, 0, sizeof g_pecks); g_peck_next = 0; memset(g_chips, 0, sizeof g_chips); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -1431,7 +1497,7 @@ int main(int argc, char **argv)
                         }
                     }
                 }
-                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
+                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); peck_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */

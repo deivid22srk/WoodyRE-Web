@@ -823,6 +823,20 @@ void hud_world_fx(int image, const float *pos, float size, float turns, const fl
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }
+/* the plane a mark lies in: N = the surface normal, +v = `dir` flattened into that plane, u = v x N, mirrored in u
+ * for the other foot (sprite flag 0x40). 0 = the direction is along the normal and there is no plane to speak of. */
+static int decal_basis(const float *normal, const float *dir, int mirror, float *N, float *u, float *v)
+{
+    float l = (float)sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+    if (l < 1e-6f) { N[0] = 0; N[1] = 1; N[2] = 0; } else { N[0] = normal[0] / l; N[1] = normal[1] / l; N[2] = normal[2] / l; }
+    float d = dir[0] * N[0] + dir[1] * N[1] + dir[2] * N[2];
+    v[0] = dir[0] - N[0] * d; v[1] = dir[1] - N[1] * d; v[2] = dir[2] - N[2] * d;
+    l = (float)sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); if (l < 1e-6f) return 0;
+    v[0] /= l; v[1] /= l; v[2] /= l;
+    u[0] = v[1] * N[2] - v[2] * N[1]; u[1] = v[2] * N[0] - v[0] * N[2]; u[2] = v[0] * N[1] - v[1] * N[0];
+    if (mirror) { u[0] = -u[0]; u[1] = -u[1]; u[2] = -u[2]; }
+    return 1;
+}
 /* ---- ground mark of a footstep (docs/FOOTSTEPS.md): a sprite that lies in a plane instead of facing the camera
  * (0x4717d7 builds the quad on the normal S+0x230..0x238 when flag bit 0 is off), turned so that +v runs along the
  * walking direction (flag bit 2 = rotation) and mirrored in u for the other foot (flag bit 0x40, value 2 = mirrored).
@@ -832,14 +846,7 @@ void hud_world_fx(int image, const float *pos, float size, float turns, const fl
 void hud_world_decal(int image, const float *pos, const float *normal, const float *dir, float size, int mirror, const float *rgb, float strength)
 {
     int n = fx_slot(image); if (!H.ok || n < 0 || !H.fx[n] || strength <= 0 || size <= 0) return;
-    float N[3] = { normal[0], normal[1], normal[2] }, l = (float)sqrt(N[0] * N[0] + N[1] * N[1] + N[2] * N[2]);
-    if (l < 1e-6f) { N[0] = 0; N[1] = 1; N[2] = 0; } else { N[0] /= l; N[1] /= l; N[2] /= l; }
-    float d = dir[0] * N[0] + dir[1] * N[1] + dir[2] * N[2];
-    float v[3] = { dir[0] - N[0] * d, dir[1] - N[1] * d, dir[2] - N[2] * d };
-    l = (float)sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); if (l < 1e-6f) return;
-    v[0] /= l; v[1] /= l; v[2] /= l;
-    float u[3] = { v[1] * N[2] - v[2] * N[1], v[2] * N[0] - v[0] * N[2], v[0] * N[1] - v[1] * N[0] };
-    if (mirror) { u[0] = -u[0]; u[1] = -u[1]; u[2] = -u[2]; }
+    float N[3], u[3], v[3]; if (!decal_basis(normal, dir, mirror, N, u, v)) return;
     float h = size * 0.70710678f, c[3] = { pos[0] + N[0] * 3.0f, pos[1] + N[1] * 3.0f, pos[2] + N[2] * 3.0f };   /* lifted off the floor: coplanar it z-fights */
     glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[n]);
     glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR); glColor3f(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
@@ -850,6 +857,82 @@ void hud_world_decal(int image, const float *pos, const float *normal, const flo
     glTexCoord2f(1, 0); glVertex3f(c[0] + u[0] * h + v[0] * h, c[1] + u[1] * h + v[1] * h, c[2] + u[2] * h + v[2] * h);
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
+}
+/* ---- what a peck leaves behind (docs/OBJECTS.md 1.6) ----------------------------------------------------------
+ * A beak does not scorch wood, it takes a bite out of it, so neither of these two is an effect sprite: the hole is
+ * a ragged cup drawn straight into the pecked face and the chips are solid slivers. Both are built here instead of
+ * from a bank 0 image because no image in the bank is a hole or a splinter, and multiplying a soft white cloud over
+ * the wall (what the footstep mark does with image 14) only ever gives a smudge, never a hole. */
+#define GOUGE_SEGS 11
+static float gouge_rnd(unsigned seed, int i)      /* stable per hole and per corner: a hole that re-rolls every frame boils */
+{
+    unsigned h = seed * 1664525u + (unsigned)i * 1013904223u + 0x9e3779b9u;
+    h ^= h >> 15; h *= 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
+    return (float)(h & 0xffffu) / 65535.0f;
+}
+void hud_world_gouge(const float *pos, const float *n, const float *dir, float size, unsigned seed, const float *rgb, float strength, float rim)
+{
+    if (!H.ok || size <= 0 || strength <= 0) return;
+    float N[3], u[3], v[3]; if (!decal_basis(n, dir, 0, N, u, v)) return;
+    float c[3] = { pos[0] + N[0] * 3.0f, pos[1] + N[1] * 3.0f, pos[2] + N[2] * 3.0f };   /* off the face, like the footstep mark: coplanar it z-fights */
+    float d[GOUGE_SEGS][3], r[GOUGE_SEGS];
+    for (int i = 0; i < GOUGE_SEGS; i++) {
+        float a = 6.2831853f * (float)i / (float)GOUGE_SEGS, ca = (float)cos(a), sa = (float)sin(a);
+        for (int k = 0; k < 3; k++) d[i][k] = u[k] * ca + v[k] * sa;
+        r[i] = size * (0.6f + 0.4f * gouge_rnd(seed, i));                                /* ragged: a peck is not a circle */
+    }
+    glDisable(GL_ALPHA_TEST); glDisable(GL_TEXTURE_2D);
+    glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR);                                        /* dst * (1 - rgb*strength), as the footstep mark darkens */
+    glBegin(GL_TRIANGLE_FAN);                                                            /* the cup: dark to the inner edge */
+    glColor3f(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength); glVertex3f(c[0], c[1], c[2]);
+    for (int i = 0; i <= GOUGE_SEGS; i++) { int j = i % GOUGE_SEGS; float k = r[j] * 0.55f;
+        glVertex3f(c[0] + d[j][0] * k, c[1] + d[j][1] * k, c[2] + d[j][2] * k); }
+    glEnd();
+    glBegin(GL_TRIANGLE_STRIP);                                                          /* and out to the rim, where it stops darkening */
+    for (int i = 0; i <= GOUGE_SEGS; i++) { int j = i % GOUGE_SEGS;
+        glColor3f(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
+        glVertex3f(c[0] + d[j][0] * r[j] * 0.55f, c[1] + d[j][1] * r[j] * 0.55f, c[2] + d[j][2] * r[j] * 0.55f);
+        glColor3f(0, 0, 0);
+        glVertex3f(c[0] + d[j][0] * r[j], c[1] + d[j][1] * r[j], c[2] + d[j][2] * r[j]);
+    }
+    glEnd();
+    if (rim > 0) {                                                                       /* the lip: the wood that split away is paler than the face */
+        static const float pale[3] = { 1.0f, 0.88f, 0.66f };
+        glBlendFunc(GL_ONE, GL_ONE);
+        for (int band = 0; band < 2; band++) {                                           /* 0.7r -> r -> 1.25r, brightest on the rim itself */
+            glBegin(GL_TRIANGLE_STRIP);
+            for (int i = 0; i <= GOUGE_SEGS; i++) { int j = i % GOUGE_SEGS;
+                for (int e = 0; e < 2; e++) {
+                    float k = band == 0 ? (e ? 1.0f : 0.7f) : (e ? 1.25f : 1.0f), w = (e == 0) == (band != 0) ? rim : 0.0f;
+                    glColor3f(pale[0] * w, pale[1] * w, pale[2] * w);
+                    glVertex3f(c[0] + d[j][0] * r[j] * k, c[1] + d[j][1] * r[j] * k, c[2] + d[j][2] * r[j] * k);
+                }
+            }
+            glEnd();
+        }
+    }
+    glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
+}
+/* one chip: a dart, long along v and narrow along u, pointed at the leading end and broken off square at the other.
+ * Lighting is off in this pass (hud_world_sprites_begin), so the chip shades itself on a fixed key direction -
+ * without that a tumbling chip is a flat silhouette that blinks as it turns edge on. */
+void hud_world_chip(const float *c, const float *u, const float *v, const float *rgb, float alpha)
+{
+    if (!H.ok || alpha <= 0) return;
+    static const float key[3] = { 0.35f, 0.87f, 0.34f };
+    float nx = u[1] * v[2] - u[2] * v[1], ny = u[2] * v[0] - u[0] * v[2], nz = u[0] * v[1] - u[1] * v[0];
+    float l = (float)sqrt(nx * nx + ny * ny + nz * nz);
+    float dp = l > 1e-6f ? (nx * key[0] + ny * key[1] + nz * key[2]) / l : 0.0f;
+    float sh = 0.45f + 0.55f * (float)fabs(dp);
+    glDisable(GL_ALPHA_TEST); glDisable(GL_TEXTURE_2D); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(rgb[0] * sh, rgb[1] * sh, rgb[2] * sh, alpha);
+    glBegin(GL_QUADS);
+    glVertex3f(c[0] + v[0], c[1] + v[1], c[2] + v[2]);
+    glVertex3f(c[0] + u[0] - v[0] * 0.35f, c[1] + u[1] - v[1] * 0.35f, c[2] + u[2] - v[2] * 0.35f);
+    glVertex3f(c[0] - v[0] * 0.9f, c[1] - v[1] * 0.9f, c[2] - v[2] * 0.9f);
+    glVertex3f(c[0] - u[0] - v[0] * 0.35f, c[1] - u[1] - v[1] * 0.35f, c[2] - u[2] - v[2] * 0.35f);
+    glEnd();
+    glColor4f(1, 1, 1, 1); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
 }
 void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw, const float *rgb_a, const float *rgb_b)
 {

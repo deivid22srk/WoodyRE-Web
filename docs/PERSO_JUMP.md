@@ -520,5 +520,6 @@ of het origineel hem op de grondnormaal legt of horizontaal, en of andere actore
   is niet gedecompileerd.
 * `vtbl[37]` (+0x94) en `vtbl[39]` (+0x9c) van de vijandklassen (wat doet een treffer per vijandtype, welke
   scriptevents volgen) zijn niet gevolgd.
-* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (harde landing) en `0x479c80` (vonk) zijn niet gelezen. De port tekent op de
-  aanroepplekken van `0x479c80` wel een inslag (afdruk + vonken), maar die vorm is een reconstructie — zie OBJECTS.md §1.6.
+* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (harde landing) en `0x479c80` (pikinslag) zijn niet gelezen. De port tekent op de
+  aanroepplekken van `0x479c80` wel een inslag (een pikgat in het geraakte vlak plus houtsnippers die eruit vallen), maar die
+  vorm is een reconstructie — zie OBJECTS.md §1.6.
