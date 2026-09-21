@@ -320,7 +320,7 @@ static void jumper_update(Jumper *j, int jump_held, int on_ground, float height_
 }
 
 /* ---- volumes ------------------------------------------------------------------ */
-static int volume_contains(const Instance *inst, uint32_t node, Vec3 p)
+int volume_contains(const Instance *inst, uint32_t node, Vec3 p)
 {
     const Model *m = inst->model; const InsNode *n = &m->nodes[node];
     if (!n->polys || n->npolys < 4) return 0;

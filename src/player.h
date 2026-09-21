@@ -78,6 +78,7 @@ void player_bind(Player *p, Instance *inst);           /* SetTypeInstance 1/2/3/
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_camera_reset(Player *p);                   /* SetMode(0, 0) / message 500: put the camera behind the player now */
+int  volume_contains(const Instance *inst, uint32_t node, Vec3 p);   /* 0x4300c0: is the point inside this volume node of the instance? */
 void player_free(Player *p);
 /* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);

@@ -128,6 +128,61 @@ gepauzeerd, `0x404ef1`); alleen tijdens de intro-cinematic neemt anim 72 het ove
   `0x44d7e7`/`0x44d960` zijn het schade-/respawnpad).
 - De HUD is verborgen (`0x404ebb`: `0x448450(hud, 2)` voor alle pagina's behalve 0x18/0x19).
 
+## 3.1 Wat er rond het boomhuis vliegt: **vlinders**, geen vogels
+
+Drie "omgevingsinstanties" (klasse **90**, ctor-plek `0x403d51`, vtable `0x4a90ac`) staan om het boomhuis:
+slots **60, 61, 62** (House.ins model 2 — één volumenode, `nmesh_nodes = 0`, dus de instantie zelf wordt nooit
+getekend). Hun script (`out/house_code.txt`, alleen init) stuurt:
+
+```
+1200 [slot, 90]   1501 [slot, 0]   1504 [slot, 3 / 2 / 3]
+```
+
+`1501` (`0x46cd07`) = modus, `1504` (`0x46cdcc`) = aantal. De think-functie `0x472560`, modus 0 (`0x4727d3`),
+roept eenmalig `0x47e050` aan voor elk van de 3 + 2 + 3 en latcht daarna af. `0x47e050` maakt een record van
+0x50 bytes in de effectenpool `[0x5e823c]+0xdb8` (max 2000):
+
+| veld | waarde |
+|---|---|
+| `+0x00` | `rand()·10` — vleugelslagfase in seconden, elke frame met dt opgehoogd (`0x47d457`) |
+| `+0x04` | `1e6` — leeft praktisch eeuwig |
+| `+0x0c..0x14` | willekeurig punt in de wereld-AABB van de volumenode |
+| `+0x18..0x20` | willekeurige eenheidsrichting |
+| `+0x28` | `0x10035 − (int)(rand()·−3.99)` = bank 0, **afbeelding 53..56** van `Common/<figuur>.rck` = vier vlinders (64×64, colour-key). Eenmalig gekozen |
+| `+0x2c` | toestand 0 |
+| `+0x4c` | `0x47d440`, de updater |
+
+**Updater `0x47d440`** (klok = de globale frame-dt, niet de instantieklok):
+elke **0,3 s** (`0x4aab98`) een nieuwe richting — `dir.x += rand()·teken(dir.x)·3.5`, idem `dir.z`,
+`dir.y += rand()·k·3.5` met `k = −0.8` in toestand 1 en anders willekeurig `+0.7` of `−0.5` (`0x4abd90` = 3.5) —
+daarna normaliseren; `pos += dt·dir·100` (`0x4a9010`). `0x4300c0` test het punt tegen de volumenodes van de
+eigenaar: buiten ⇒ `dir = normalize(instantiepositie − pos)`. Toestandsmachine `+0x2c`: 0 → 1 met kans ≈ 0,001 per
+frame (`0x4a94c4`, beginnen te dalen), 1 → 2 zodra de onderkant van het volume is bereikt (`inst+0x10c`,
+`0x472911`; geland, `dir.y = 0`), 2 → 0 met kans ≈ 0,008 per frame (`0x4abd94`).
+
+**Tekenen**: camera-gerichte quad van **30** eenheden (`[esi+0x264]`), modus `0x28` — **alfablend met colour-key,
+precies dezelfde tekenstatus als de bonus-sprites**, niet additief; diffuus = neutraal (0.5, 0.5, 0.5, 1.0). De
+breedte wordt geschaald met een cosinustabel van 512 ingangen (`[0x5e823c]`, gebouwd in `0x40248f`), index
+`2·1000·fase` ⇒ **3,90625 Hz**, en het resultaat wordt **met teken** gebruikt: de quad gaat door nul en klapt om —
+dat is de vleugelslag. Het origineel tekent er nog een tweede, gespiegelde quad bij (`0x47da84` én `0x47dc6b`, met
+de basis genegeerd door `[0x4a9500] = −1`).
+
+## 3.2 De bevroren stipjes in de lucht zijn een port-artefact
+
+House.ins zet de tien figuurtjes van de wereldkeuze-carrousel (slots **105–114**, klasse **110**) op
+x −10753..−10008, y 3816..4213, z 3985..5073 — 10 à 13 km van het boomhuis, maar er is geen far-plane
+(`0x47b372` klipt alleen de vier zijvlakken) en geen mist, dus een port die ze op hun bestandspositie laat staan
+tekent ze als een handvol stipjes in de lucht. Ze zijn plat gekleurd (model 14 gebruikt alleen ARGB1555 `0xFC00`
+rood en `0xFFE0` geel) en bewegen niet, want alleen menupagina 3 (`0x45edc1` → `0x451890`) geeft ze een
+carrouselhoek.
+
+Het origineel tekent daar **niets**: vtable[3] van klasse 110 (`0x451a30` → `0x489650` → `0x489210`), die
+`0x42b400` elke frame voor elke instantie aanroept **vóór** de tekenlus, overschrijft `inst+0x0c..0x14` met
+`M·(offset + basis) + T` uit `[0x5e86ac]+0x154..0x18c`; de offset `+0x104..0x10c` is nul tot pagina 3 draait, dus
+het lokale punt is `(0, 0, 300)`. De bestandspositie is dode data. Wat die matrix tijdens de titel bevat is niet
+vastgesteld — **onzeker** of het origineel ze dan ergens anders tekent of niet. De port heeft de wereldkeuze-pagina
+niet en zet ze daarom gewoon onzichtbaar.
+
 ## 4. New game, attract-timer, terugkeer
 
 ### 4.1 Pagina 1 → "New game"

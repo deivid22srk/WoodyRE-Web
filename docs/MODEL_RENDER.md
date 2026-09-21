@@ -42,6 +42,21 @@ het bestand / `insparse.py`); in de C-port (0-based array) is dat steeds één l
    elk `× 8/255 ×` de belichte vertexkleur (0..255). `0xFFFF` = wit (0.973) — Woody's handschoenen. De vele
    0xFFFF-polygonen in kind-4/kind-2-nodes worden niet getekend omdat de renderer alleen de mesh-lijst (kind 0) afloopt.
 8. Texturen moeten **herhalen** (wrap): de UV's van Woody's ogen liggen in [−1, 0].
+9. **Backface-culling doet de engine zelf, per polygoon; het apparaat staat op `D3DCULL_NONE`** (`0x47ec8b`),
+   want polygoonvlag `0x2` markeert een dubbelzijdige polygoon die wél getekend moet worden. Node-polygonen
+   (`0x43bf65`): breng de camera naar de lokale ruimte van de node en sla de polygoon over als
+   `n·cam_lokaal + d ≤ 0` met het vlak dat de loader uit de rustpose bouwt (`0x4280c2`; de winding in het bestand
+   wijst naar binnen, dus richt de normaal op de som van de opgeslagen vertexnormalen). Skinned driehoeken
+   (`0x43c1a4`), elke frame in wereldruimte: `n = (A−B) × (A−C)`, tekenen als `n·(camera − A) > 0`.
+   Zonder dit worden ook de achterkanten getekend; die krijgen `ndl = 0` en dus alleen de ambient-term
+   (0.6 × vertexkleur), en precies op de silhouetrand — waar voor- en achterkant dezelfde diepte hebben —
+   kan de donkere winnen: een donker randje om elk figuur.
+10. **Alfatest**: `ALPHAREF = 0x7f`, `ALPHAFUNC = GREATEREQUAL` (`0x47ec50`, `0x47ec5c`), aan/uit per **textuur**
+   (de colour-key-vlag van de `.tex`-groep, `tex+0x44 & 1`), niet per pas (`0x429a6b`). Filter: MAG/MIN LINEAR,
+   MIP POINT (`0x47ed42`–`0x47ed62`), adressering WRAP behalve voor de lichtvlekken (CLAMP, `0x429597`).
+   Bij het omzetten van een colour-key-textuur gooit het origineel de magenta wég: de texel wordt
+   `ARGB 0x00000000`, dus **zwart met alfa 0** (`0x47fc1e`). Blijft de magenta staan, dan mengt het filter die
+   met de ondoorzichtige buren en krijgt elke alfarand een roze zoom.
 
 ## 1. Welke nodes worden getekend; typecodes
 

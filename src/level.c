@@ -306,8 +306,12 @@ void rgb565_to_rgba(const uint16_t *src, uint8_t *dst, uint32_t n, int colour_ke
         uint16_t v = src[i];
         uint8_t r = (uint8_t)(((v >> 11) & 31) << 3), g = (uint8_t)(((v >> 5) & 63) << 2), b = (uint8_t)((v & 31) << 3);
         r |= r >> 5; g |= g >> 6; b |= b >> 5;
+        int key = colour_key && (r & 0xF0) == 0xF0 && (b & 0xF0) == 0xF0 && (g & 0xF0) == 0;
+        if (key) r = g = b = 0;                    /* 0x47fc1e: the magenta is thrown away, the texel becomes ARGB 0x00000000.
+                                                    * Leaving the magenta in place gave every alpha edge a pink fringe once
+                                                    * the filter mixed it with its opaque neighbours. */
         dst[4 * i] = r; dst[4 * i + 1] = g; dst[4 * i + 2] = b;
-        dst[4 * i + 3] = (colour_key && (r & 0xF0) == 0xF0 && (b & 0xF0) == 0xF0 && (g & 0xF0) == 0) ? 0 : 255;
+        dst[4 * i + 3] = key ? 0 : 255;
     }
 }
 void argb1555_to_rgb(uint32_t v, float rgb[3])

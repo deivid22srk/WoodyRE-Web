@@ -499,6 +499,87 @@ static void rockets_draw(float dt)
     for (int i = 0; i < 8; i++) if (g_blasts[i].t > 0) { Blast *b = &g_blasts[i]; float u = b->t / 0.3f;
         hud_world_fx(12, &b->pos.x, b->R * (0.3f + 0.7f * sinf(u * 1.5707963f)), 0, white, 0.3f * cosf(u * 1.5707963f) * 3.0f); if ((b->t += dt) >= 0.3f) b->t = 0; }
 }
+/* ---- environment instances, class 90 (0x472560), and their butterflies (0x47e050 / 0x47d440) -----------------------
+ * The instance itself is never drawn - its model is a bare volume node. Message 1501 sets the mode (0x46cd07), 1504 the
+ * number of butterflies (0x46cdcc), and the think function spawns them once at random points in the instance's volume
+ * and then latches off. Each butterfly is a camera-facing sprite from bank 0 image 53..56 of Common/<character>.rck
+ * that wanders inside that volume for ever. House slots 60/61/62 put 3 + 2 + 3 of them around the treehouse: they are
+ * what flies over the title screen. Only mode 0 is ported; House is the only level that uses these at all. */
+typedef struct { Instance *inst; int mode, count, spawned; } EnvInst;
+typedef struct { Instance *owner; Vec3 pos, dir; float phase, wander, floor_y; int img, state; } Fly;
+static EnvInst g_env[8]; static int g_nenv;
+static Fly g_flies[64]; static int g_nflies;
+
+static float frand01(void) { return (float)msvc_rand(NULL) / 32767.0f; }
+static EnvInst *env_of(const Instance *in) { for (int i = 0; i < g_nenv; i++) if (g_env[i].inst == in) return &g_env[i]; return NULL; }
+
+/* world AABB of the instance's first volume node, and whether a point is inside the volume itself (0x4300c0) */
+static int env_volume(const Instance *in, float lo[3], float hi[3], uint32_t *node_out)
+{
+    const Model *m = in->model; if (!m->nvolume_nodes || !in->node_world) return 0;
+    uint32_t ni = m->volume_nodes[0] - 1; if (ni >= m->nnodes) return 0;          /* the node lists in the file are 1-based */
+    const InsNode *n = &m->nodes[ni]; if (!n->npoints) return 0;
+    lo[0] = lo[1] = lo[2] = 1e30f; hi[0] = hi[1] = hi[2] = -1e30f;
+    for (uint32_t k = 0; k < n->npoints; k++) {
+        Vec3 w = ins_point_world(in, n->point_base + k); float v[3] = { w.x, w.y, w.z };
+        for (int q = 0; q < 3; q++) { if (v[q] < lo[q]) lo[q] = v[q]; if (v[q] > hi[q]) hi[q] = v[q]; }
+    }
+    *node_out = ni; return 1;
+}
+
+static void env_update(float dt)
+{
+    for (int e = 0; e < g_nenv; e++) {                                            /* 0x4727d3: spawn `count` butterflies once */
+        EnvInst *E = &g_env[e]; float lo[3], hi[3]; uint32_t node;
+        if (E->mode != 0 || E->spawned >= E->count || !env_volume(E->inst, lo, hi, &node)) continue;
+        while (E->spawned < E->count && g_nflies < 64) {
+            Fly *f = &g_flies[g_nflies++]; memset(f, 0, sizeof *f);
+            f->owner = E->inst; f->floor_y = lo[1];                               /* inst+0x10c, 0x472911 */
+            f->pos = (Vec3){ lo[0] + (hi[0] - lo[0]) * frand01(), lo[1] + (hi[1] - lo[1]) * frand01(), lo[2] + (hi[2] - lo[2]) * frand01() };
+            float dx = frand01() * 2 - 1, dy = frand01() * 2 - 1, dz = frand01() * 2 - 1, l = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (l < 1e-3f) { dx = 1; dy = 0; dz = 0; l = 1; }
+            f->dir = (Vec3){ dx / l, dy / l, dz / l };
+            f->phase = frand01() * 10.0f;                                         /* rec+0x00: the wing-flap phase */
+            f->img = (int)(frand01() * 3.99f); if (f->img > 3) f->img = 3;        /* rec+0x28 = 0x10035..0x10038 */
+            E->spawned++;
+        }
+    }
+    for (int i = 0; i < g_nflies; i++) {
+        Fly *f = &g_flies[i]; Instance *in = f->owner;
+        f->phase += dt;
+        if ((f->wander -= dt) <= 0) {                                             /* 0x4aab98: a new direction every 0.3 s */
+            f->wander = 0.3f;
+            float k = f->state == 1 ? -0.8f : (frand01() < 0.5f ? 0.7f : -0.5f);  /* state 1 = coming down to land */
+            f->dir.x += frand01() * (f->dir.x < 0 ? -3.5f : 3.5f);                /* 0x4abd90 = 3.5, along the sign it already has */
+            f->dir.z += frand01() * (f->dir.z < 0 ? -3.5f : 3.5f);
+            f->dir.y += frand01() * k * 3.5f;
+            float l = sqrtf(f->dir.x * f->dir.x + f->dir.y * f->dir.y + f->dir.z * f->dir.z);
+            if (l > 1e-6f) { f->dir.x /= l; f->dir.y /= l; f->dir.z /= l; }
+        }
+        f->pos.x += f->dir.x * 100.0f * dt; f->pos.y += f->dir.y * 100.0f * dt; f->pos.z += f->dir.z * 100.0f * dt;   /* 0x4a9010 = 100 u/s */
+        float lo[3], hi[3]; uint32_t node;
+        if (env_volume(in, lo, hi, &node) && !volume_contains(in, node, f->pos)) {          /* outside: head back to the instance */
+            Vec3 d = { in->position.x - f->pos.x, in->position.y - f->pos.y, in->position.z - f->pos.z };
+            float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+            if (l > 1e-3f) f->dir = (Vec3){ d.x / l, d.y / l, d.z / l };
+            f->floor_y = lo[1];
+        }
+        float p = dt * 60.0f;                                                     /* the original rolls these per frame */
+        if (f->state == 0) { if (frand01() < 0.001f * p) f->state = 1; }          /* 0x4a94c4 */
+        else if (f->state == 1) { if (f->pos.y <= f->floor_y) { f->pos.y = f->floor_y; f->dir.y = 0; f->state = 2; } }
+        else if (frand01() < 0.008f * p) f->state = 0;                            /* 0x4abd94: take off again */
+    }
+}
+
+static void env_draw(void)
+{
+    for (int i = 0; i < g_nflies; i++) {
+        Fly *f = &g_flies[i];
+        float wing = -sinf(2 * 3.14159265f * 3.90625f * f->phase);                /* 0x47d9aa: index 2 * 1000 steps/s through a 512-entry cosine table = 3.90625 Hz, signed */
+        hud_world_env_sprite(f->img, &f->pos.x, 30.0f, wing);                     /* [esi+0x264] = 30 units; the original draws a second, mirrored quad for the far wing, which the port leaves out */
+    }
+}
+
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
@@ -577,7 +658,11 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) in->visible = 0;   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) in->visible = 0; if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; that page is not ported, so keep them out of sight */   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1501: case 1504: {                                                         /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
+        EnvInst *E = in ? env_of(in) : NULL;
+        if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
+        break; }
     case 16: case 18: case 19:                                                      /* texture frame override (docs/INSTANCE.md 2): the level-select doors turn their red
                                                                                      * cross into a green tick with it; 0x42db50 has no scripted test */
         if (in) inst_msg(in, m->id, m->args, m->nargs, g_now);
@@ -916,6 +1001,8 @@ int main(int argc, char **argv)
                 anim_sounds(ii);
             }
         }
+        if (!paused) env_update(dt);
+        if (getenv("WOODY_FLYLOG") && (int)(g_now*2) != (int)((g_now-dt)*2)) printf("  FLY env %d flies %d first %.0f %.0f %.0f state %d", g_nenv, g_nflies, g_nflies?g_flies[0].pos.x:0.0f, g_nflies?g_flies[0].pos.y:0.0f, g_nflies?g_flies[0].pos.z:0.0f, g_nflies?g_flies[0].state:-1), puts("");
         if (!paused) launchers_update((float)g_now, dt, &L.player, &L.gel, L.have_player && !fly && !L.player.dead_kind && !cin_running());
         double pt2 = win_time();
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
@@ -933,6 +1020,7 @@ int main(int argc, char **argv)
                     if (ii->type == 34 && ii->node_world) { p[0] = ii->node_world[0].m[12]; p[1] = ii->node_world[0].m[13]; p[2] = ii->node_world[0].m[14]; }
                     hud_world_sprite(n, p, size);
                 }
+                env_draw();
                 for (int li = 0; li < g_nlasers; li++) {                            /* Lazer_Draw 0x46e530: core (1,.7,.7) width 6 + glow (1,.4,.4) width 30 pulsing 0.5..1, ends fade over 70 */
                     Laser *z = &g_lasers[li]; if (!z->on || !z->inst->visible) continue;
                     if (!paused) z->phase += dt * 127.75f;

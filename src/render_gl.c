@@ -549,11 +549,37 @@ static void event_frames(const Instance *inst, uint32_t out[4])
 }
 
 /* one mesh node layer. helper >= 0: UVs come from the helper child node (0x43b74d-0x43b908), the moving pupil */
+/* ---- back-face culling (0x43bf65 for node polygons, 0x43c1a4 for the skinned triangles). The original culls per
+ * polygon on the CPU - the device is left on D3DCULL_NONE - because polygon flag 0x2 marks a double-sided polygon that
+ * must survive. Drawing the back faces too is not just wasted fill: a back face has its normals pointing away, so
+ * lit_vertex_colour() gives it ndl = 0 and only the 0.6 * vcol ambient term, and wherever front and back tie in depth
+ * (exactly along a silhouette) the dark one can win - a dark rim around every character. */
+static Vec3 g_cam_pos;
+static const float *poly_plane(Model *m, const InsNode *n, InsPoly *p)
+{
+    if (!p->plane_ok) {
+        const InsPoint *a = &m->points[p->indices[0]], *b = &m->points[p->indices[1]], *c = &m->points[p->indices[2]];
+        float ux = b->pos.x - a->pos.x, uy = b->pos.y - a->pos.y, uz = b->pos.z - a->pos.z;
+        float vx = c->pos.x - a->pos.x, vy = c->pos.y - a->pos.y, vz = c->pos.z - a->pos.z;
+        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        float sx = 0, sy = 0, sz = 0;                                          /* the file winding points inward; the stored
+                                                                                * vertex normals say which way is out */
+        for (uint32_t i = 0; i < p->nverts; i++) { const InsPoint *q = &m->points[p->indices[i]]; sx += q->normal.x; sy += q->normal.y; sz += q->normal.z; }
+        if (nx * sx + ny * sy + nz * sz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+        float l = sqrtf(nx * nx + ny * ny + nz * nz); if (l > 1e-12f) { nx /= l; ny /= l; nz /= l; }
+        float ax = a->pos.x - n->pivot.x, ay = a->pos.y - n->pivot.y, az = a->pos.z - n->pivot.z;
+        p->plane[0] = nx; p->plane[1] = ny; p->plane[2] = nz; p->plane[3] = -(nx * ax + ny * ay + nz * az);
+        p->plane_ok = 1;
+    }
+    return p->plane;
+}
 static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int pass, uint32_t frame, int helper)
 {
     Model *m = inst->model; InsNode *n = &m->nodes[ni]; const Material *mat;
+    Vec3 cl; int have_cl = affine_inv_apply(&inst->node_world[ni], g_cam_pos, &cl);    /* the camera in this node's space */
     for (uint32_t k = 0; k < n->npolys; k++) {
         InsPoly *p = &n->polys[k]; if (p->nverts < 3 || mat_blended(r, p->material) != pass) continue;
+        if (have_cl && !(p->flags & 2)) { const float *pl = poly_plane(m, n, p); if (pl[0] * cl.x + pl[1] * cl.y + pl[2] * cl.z + pl[3] <= 0) continue; }
         set_material(r, p->material, &mat, frame, inst);
         bt_begin(1);
         for (uint32_t c = 0; c < p->nverts; c++) {
@@ -597,12 +623,22 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
             InsTri *tr = &m->tris[t]; if (mat_blended(r, tr->material) != pass) continue;
             if (tr->material != last) { bt_end(); set_material(r, tr->material, &mat, 0, inst); last = tr->material; base[0] = base[1] = base[2] = 1; if (tr->material & 0x8000) argb1555_to_rgb(tr->material, base); bt_begin(0); }
             uint32_t idx[3] = { tr->i0, tr->i1, tr->i2 };
+            Vec3 wp[3]; const Mat4 *MM[3];
             for (int c = 0; c < 3; c++) {
-                int o = own[idx[c]]; InsPoint *pt = &m->points[idx[c]]; Vec3 lp = pt->pos; if (o >= 0) { lp.x -= m->nodes[o].pivot.x; lp.y -= m->nodes[o].pivot.y; lp.z -= m->nodes[o].pivot.z; }
-                const Mat4 *M = o >= 0 ? &inst->node_world[o] : &inst->world; Vec3 wp = mat4_apply(M, lp);
-                if (mat || (tr->material & 0x8000)) lit_vertex_colour(r, inst, M, pt, base);
+                int o = own[idx[c]]; Vec3 lp = m->points[idx[c]].pos; if (o >= 0) { lp.x -= m->nodes[o].pivot.x; lp.y -= m->nodes[o].pivot.y; lp.z -= m->nodes[o].pivot.z; }
+                MM[c] = o >= 0 ? &inst->node_world[o] : &inst->world; wp[c] = mat4_apply(MM[c], lp);
+            }
+            {   /* 0x43c1a4: n = (A - B) x (A - C) in world space, front-facing iff n . (camera - A) > 0 */
+                float ux = wp[0].x - wp[1].x, uy = wp[0].y - wp[1].y, uz = wp[0].z - wp[1].z;
+                float vx = wp[0].x - wp[2].x, vy = wp[0].y - wp[2].y, vz = wp[0].z - wp[2].z;
+                float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+                if (nx * (g_cam_pos.x - wp[0].x) + ny * (g_cam_pos.y - wp[0].y) + nz * (g_cam_pos.z - wp[0].z) <= 0) continue;
+            }
+            for (int c = 0; c < 3; c++) {
+                InsPoint *pt = &m->points[idx[c]];
+                if (mat || (tr->material & 0x8000)) lit_vertex_colour(r, inst, MM[c], pt, base);
                 if (mat) bt_texcoord(mat->m[6 - 3 * c], mat->m[7 - 3 * c]);   /* explicit UVs: the material holds three UV pairs, file vertex j = (m[3j], m[3j+1]) and i0 is the third file vertex (0x43e39a) */
-                bt_vertex(wp.x, wp.y, wp.z);
+                bt_vertex(wp[c].x, wp[c].y, wp[c].z);
             }
         }
         bt_end();
@@ -612,7 +648,7 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s)
 {
     glViewport(0, 0, w->width, w->height);
-    g_tex_now = time_s;
+    g_tex_now = time_s; g_cam_pos = cam->pos;
     for (uint32_t g = 0; g < r->tex->ngroups; g++) {                 /* texture animation: frame_count frames over anim_duration seconds */
         TexGroup *tg = &r->tex->groups[g];
         if (tg->frame_count > 1 && tg->anim_duration > 0 && ((tg->flags >> 8) & 0xff) != 2) tg->gl_tex = tg->gl_frames[(uint32_t)(time_s / tg->anim_duration * tg->frame_count) % tg->frame_count];
@@ -625,7 +661,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             Instance *inst = &m->instances[k]; if (!inst->visible || inst->fade > 0.98f) continue;
             ins_pose(inst, inst->anim, inst->anim_time); if (r->lit) instance_light(r, inst, dt); } }
     }
-    glEnable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GREATER, 0.5f);
+    glEnable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GEQUAL, 127.0f / 255.0f);   /* 0x47ec50/0x47ec5c: ALPHAREF 0x7f, GREATEREQUAL. The device stays on CULL_NONE; the culling is per polygon on the CPU */
     glPolygonMode(GL_FRONT_AND_BACK, r->wireframe ? GL_LINE : GL_FILL);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     double q1 = win_time(); T[0] += q1 - q0;

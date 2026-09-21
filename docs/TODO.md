@@ -46,17 +46,19 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | 17 | breekbaar object voor bommen | analyse op hoofdlijnen | OBJECTS.md §3 |
 | 20 | berijdbare raket: geport (opstappen, draaien, ontsteking, rechte vlucht, rood knipperen, explosie r 600 = Kill(6), respawn met fade-in, geluiden 15/16/10/11/6). Vereenvoudigd: vlam als billboard i.p.v. drie gekruiste quads, explosie alleen de twee flitsen (deeltjes `0x4767f0`/`0x4764f0` niet gedecompileerd), geen camerabotsing tijdens de rit (port-keuze), startoriëntatie niet tegen het origineel geverifieerd | grotendeels | ROCKET.md |
 | 21 | bomkanon (W2A/W2B/W2D): Woody rijdt mee op een afgeschoten bom; **geblokkeerd op het bommensysteem (type 40)** | analyse klaar | ROCKET.md §7 |
-| 90 | omgevingsdeeltjes-volume (1501/1502) | analyse op hoofdlijnen | OBJECTS.md §2.4 |
+| 90 | omgevingsvolume: modus 0 (1501/1504) geport - de vlinders van het titelscherm, met hun dwaalgedrag, landen en vleugelslag. Niet: modus 1 (`0x47e160`, langs de grondnormaal) en 2, en de tweede gespiegelde quad per vlinder. Alleen House gebruikt klasse 90 | grotendeels | TITLE.md §3.1, OBJECTS.md §2.4 |
 | 60 | eigen handler (1503/1506) | niet geanalyseerd | OBJECTS.md §3 |
 | 50 / 51 / 52 | laser: reizende puls, bliksemboog, inslag-sprite, straal tegen instanties | kern geport | OBJECTS.md §2.1 |
 | berichten 16/18/19 (textuurframe-override) geport; 15/17 (UV-scroll-override) niet | textuurframe-/UV-override per instantie | grotendeels | INSTANCE.md §2 |
 | 1201 / 1202 | typewoord-bit 0x400 (aanvalbaar doel) | analyse klaar | OBJECTS.md §3 |
+| 110 | figuurtjes van de wereldkeuze-carrousel: de port verbergt ze (zie TITLE.md §3.2). Niet geport: de pagina zelf, de carrouselhoek (`0x451890`) en de transform per frame (`0x489210`) | verborgen | TITLE.md §3.2 |
 
 ## Effecten
 
 | wat | status | waar |
 |---|---|---|
 | Deeltjes (vonken, rook, explosies, stof bij landen) | niet geport | — |
+| Modelrendering: mipmaps (het origineel bouwt er 4 met een boxfilter, MIPFILTER POINT); bitreplicatie in de RGB565-decode (het origineel laat de lage bits 0); diepte-sortering van de geblende modelbatches (`0x428d00`, 256 emmers achter-naar-voor) | niet geport | MODEL_RENDER.md recept 9-10 |
 | Pickup-sprite: grootte (volle breedte?) en HUD-animatie bij oppakken | gok / niet geport | BONUS.md, HUD_TEXT.md |
 | Lucht: links/rechts-oriëntatie van de kubus | niet geverifieerd | SKY.md |
 | `.vis`-culling (nu frustum-cull per instantie) | niet geport | FORMAT_TEX_COL_VIS_LIT.md |

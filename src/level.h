@@ -76,8 +76,9 @@ typedef struct { uint32_t off, cnt; } TrackRef;
 
 typedef struct {
     uint32_t material;                         /* bit 15 set: ARGB1555 flat colour; else index in TexFile.materials */
-    uint32_t flags, nverts;
+    uint32_t flags, nverts;                    /* flags bit 1 (0x2) = double sided, never back-face culled (0x43bf65) */
     uint32_t *indices;                         /* absolute indices into Model.points */
+    float plane[4]; int plane_ok;              /* polygon plane in pivot-relative node space, built on first use (0x4280c2) */
 } InsPoly;
 
 typedef struct {
