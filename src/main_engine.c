@@ -790,7 +790,7 @@ static void level_free(Level *L)
 {
     g_nlasers = 0; g_nlaunchers = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
-    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -1002,7 +1002,11 @@ int main(int argc, char **argv)
             }
         }
         if (!paused) env_update(dt);
-        if (getenv("WOODY_FLYLOG") && (int)(g_now*2) != (int)((g_now-dt)*2)) printf("  FLY env %d flies %d first %.0f %.0f %.0f state %d", g_nenv, g_nflies, g_nflies?g_flies[0].pos.x:0.0f, g_nflies?g_flies[0].pos.y:0.0f, g_nflies?g_flies[0].pos.z:0.0f, g_nflies?g_flies[0].state:-1), puts("");
+        if (getenv("WOODY_FLYLOG") && (int)g_now != (int)(g_now - dt)) {
+            printf("  FLY t %.0f env %d flies %d:", g_now, g_nenv, g_nflies);
+            for (int i = 0; i < g_nflies; i++) printf("  %d[%.0f %.0f %.0f s%d]", i, g_flies[i].pos.x, g_flies[i].pos.y, g_flies[i].pos.z, g_flies[i].state);
+            puts("");
+        }
         if (!paused) launchers_update((float)g_now, dt, &L.player, &L.gel, L.have_player && !fly && !L.player.dead_kind && !cin_running());
         double pt2 = win_time();
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
