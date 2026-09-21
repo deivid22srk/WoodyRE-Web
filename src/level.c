@@ -70,7 +70,22 @@ int gel_load(GelFile *g, const char *path)
     g->nverts = ru32(&r);
     g->verts = (GelVert *)calloc(g->nverts, sizeof(GelVert));
     for (uint32_t i = 0; i < g->nverts; i++) { g->verts[i].x = rf32(&r); g->verts[i].y = rf32(&r); g->verts[i].z = rf32(&r); g->verts[i].colour = ru32(&r); }
-    /* cells / kd-tree / sectors are not needed for rendering yet */
+    /* cells (0x407f33): u32 npoly, u32 poly[], float bbox[6], i32 link[6], u32 nnodes, node[nnodes]. The port does not
+     * use the cells themselves, but they have to be walked to reach the kd-tree behind them: the sector a point is in
+     * is what selects the lights of an instance (docs/LIGHTING.md 3). */
+    g->ncells = ru32(&r);
+    for (uint32_t i = 0; i < g->ncells && !r.err; i++) {
+        uint32_t n = ru32(&r); r.pos += 4 * (size_t)n + 24 + 24;
+        uint32_t m = ru32(&r); r.pos += 16 * (size_t)m;
+        if (r.pos > r.size) r.err = 1;
+    }
+    g->nkd = ru32(&r);
+    g->kd = (KdNode *)calloc(g->nkd ? g->nkd : 1, sizeof(KdNode));
+    for (uint32_t i = 0; i < g->nkd && !r.err; i++) {
+        int32_t t = (int32_t)ru32(&r); g->kd[i].axis = (int16_t)(t & 0xffff); g->kd[i].sector = t >> 16;
+        g->kd[i].d = rf32(&r); g->kd[i].le = (int32_t)ru32(&r); g->kd[i].gt = (int32_t)ru32(&r);
+    }
+    g->nsectors = ru32(&r);                    /* the sector records themselves are only needed for sector visibility */
     if (r.err) { fprintf(stderr, "%s: parse error\n", path); return -1; }
     float *b = g->bbox; b[0] = b[2] = b[4] = 1e30f; b[1] = b[3] = b[5] = -1e30f;
     for (uint32_t i = 0; i < g->nverts; i++) {
@@ -81,7 +96,24 @@ int gel_load(GelFile *g, const char *path)
     }
     return 0;
 }
-void gel_free(GelFile *g) { for (uint32_t i = 0; i < g->npolys; i++) free(g->polys[i].indices); free(g->polys); free(g->verts); free(g->data); memset(g, 0, sizeof *g); }
+void gel_free(GelFile *g) { for (uint32_t i = 0; i < g->npolys; i++) free(g->polys[i].indices); free(g->polys); free(g->verts); free(g->kd); free(g->data); memset(g, 0, sizeof *g); }
+
+/* 0x4081c0: which sector a point falls in - walk down from the root until a node carries a sector index */
+int32_t gel_sector(const GelFile *g, Vec3 p)
+{
+    if (!g->nkd) return -1;
+    const float v[3] = { p.x, p.y, p.z };
+    int32_t i = 0;
+    for (uint32_t guard = 0; guard < g->nkd; guard++) {
+        const KdNode *n = &g->kd[i];
+        if (n->sector != -1) return (uint32_t)n->sector < g->nsectors ? n->sector : -1;
+        if (n->axis < 0 || n->axis > 2) return -1;
+        int32_t c = v[n->axis] + n->d <= 0 ? n->le : n->gt;
+        if (c < 0 || (uint32_t)c >= g->nkd) return -1;                 /* a leaf before a sector root: outside every sector */
+        i = c;
+    }
+    return -1;
+}
 
 /* ---------------------------------------------------------------- .ins */
 static void read_trajectory(Rd *r, Trajectory *t)
@@ -224,7 +256,7 @@ void lit_free(LitFile *l)
         for (uint32_t k = 0; k < L->nc && L->c; k++) free(L->c[k].indices);
         free(L->a); free(L->b); free(L->c); free(L->bsp); free(L->planes);
     }
-    free(l->lights); free(l->extra); free(l->data); memset(l, 0, sizeof *l);
+    free(l->lights); free(l->extra); free(l->sectors); free(l->data); memset(l, 0, sizeof *l);
 }
 
 void ins_free(InsFile *f)
@@ -309,24 +341,44 @@ int lit_load(LitFile *l, const char *path)
     l->nextra = ru32(&r); l->extra = (Vec3 *)calloc(l->nextra ? l->nextra : 1, sizeof(Vec3));
     for (uint32_t i = 0; i < l->nextra && !r.err; i++) { l->extra[i] = rvec3(&r); ru32(&r); }
     if (r.err) { fprintf(stderr, "%s: truncated\n", path); l->nlights = 0; return -1; }
+    /* trailer (0x43fd90): u32 dword count, then one {u32 n, u32 light[n]} per gel SECTOR -> lightsys+0x10. It is what
+     * picks the light of an instance, so without it a character indoors is lit by the sun outside. */
+    if (r.pos + 4 <= r.size) {
+        uint32_t total = ru32(&r); size_t end = r.pos + 4 * (size_t)total;
+        if (end <= r.size) {
+            uint32_t cap = total ? total : 1; l->sectors = (LitSector *)calloc(cap, sizeof(LitSector));
+            while (r.pos + 4 <= end && l->nsectors < cap) {
+                uint32_t n = ru32(&r); if (r.pos + 4 * (size_t)n > end) break;
+                l->sectors[l->nsectors].n = n; l->sectors[l->nsectors].idx = (const uint32_t *)(l->data + r.pos);
+                r.pos += 4 * (size_t)n; l->nsectors++;
+            }
+        }
+    }
     return 0;
 }
-int lit_point_lit(const LitLight *l, const GelFile *g, Vec3 p)
+/* 0x40b540: walk the light's shadow BSP down to a leaf. -1 = no leaf face, i.e. the point is in the open part of the
+ * light's volume; otherwise the index of the face that may shadow it - the caller decides on which side the point is. */
+int32_t lit_bsp_face(const LitLight *l, const GelFile *g, Vec3 p)
 {
-    if (!l->nbsp) return 1;
+    if (!l->nbsp) return -1;
     uint32_t i = 0;
     for (int guard = 0; guard < 4096; guard++) {
-        if (i >= l->nbsp) return 1;
-        const uint32_t *nd = &l->bsp[3 * i]; if (nd[0] >= l->nplanes) return 1;
+        if (i >= l->nbsp) return -1;
+        const uint32_t *nd = &l->bsp[3 * i]; if (nd[0] >= l->nplanes) return -1;
         const float *pl = &l->planes[4 * nd[0]];
         uint32_t v = (pl[0] * p.x + pl[1] * p.y + pl[2] * p.z + pl[3]) > 0.0f ? nd[1] : nd[2];
         if ((v & 0xF) == 0) { i = v >> 4; continue; }
-        if ((v & 0xF) != 1) return 1;
-        uint32_t f = v >> 4; if (f >= g->npolys) return 1;
-        const float *fp = g->polys[f].plane;
-        return fp[0] * p.x + fp[1] * p.y + fp[2] * p.z + fp[3] > 0.0f;
+        if ((v & 0xF) != 1) return -1;
+        uint32_t f = v >> 4; return f < g->npolys ? (int32_t)f : -1;
     }
-    return 1;
+    return -1;
+}
+int lit_point_lit(const LitLight *l, const GelFile *g, Vec3 p)
+{
+    int32_t f = lit_bsp_face(l, g, p);
+    if (f < 0) return 1;                                             /* 0x43ba3d, 0x42f211: lit means no leaf face ... */
+    const float *fp = g->polys[f].plane;
+    return fp[0] * p.x + fp[1] * p.y + fp[2] * p.z + fp[3] > 0.0f;   /* ... or in front of the leaf face */
 }
 
 /* ---------------------------------------------------------------- pose evaluation (0x43a3a0) */

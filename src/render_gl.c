@@ -353,19 +353,54 @@ static const int32_t *model_owner(Model *m)
     }
     return m->owner;
 }
+/* 0x42e3e4..0x42e573: the candidate lights of an instance are the lights of its sector (the .lit trailer, lightsys+0x10,
+ * indexed by inst+0x1c). n == 0 means no light and no shadow; n == 1 is taken without any test; otherwise the first
+ * light that sees the point wins and, when none does, the one whose shadow plane the point is least far behind. Taking
+ * the first light of the whole level instead put everyone inside the House under the sun that stands over the village,
+ * 15000 units away, and its lit faces are all outdoors - so nothing there ever received a shadow. */
+static int sector_light(const Renderer *r, Vec3 p, int *have_list)
+{
+    const LitFile *lf = r->lit; const GelFile *g = r->gel;
+    int32_t sec = gel_sector(g, p);
+    *have_list = sec >= 0 && (uint32_t)sec < lf->nsectors;
+    if (!*have_list) return -1;
+    const LitSector *S = &lf->sectors[sec];
+    if (S->n == 1) return S->idx[0] < lf->nlights ? (int)S->idx[0] : -1;        /* 0x42e422: no visibility or range test */
+    int fallback = -1; float fb_d = -1e30f;
+    for (uint32_t k = 0; k < S->n; k++) {
+        uint32_t li = S->idx[k]; if (li >= lf->nlights) continue;
+        const LitLight *L = &lf->lights[li];
+        int32_t f = lit_bsp_face(L, g, p);
+        if (f < 0) {                                                            /* 0x42e4c2: in the open part of the light volume */
+            float dx = L->pos.x - p.x, dy = L->pos.y - p.y, dz = L->pos.z - p.z;
+            if (dx * dx + dy * dy + dz * dz < L->range * L->range) return (int)li;
+            continue;
+        }
+        const float *fp = g->polys[f].plane; float d = fp[0] * p.x + fp[1] * p.y + fp[2] * p.z + fp[3];
+        if (d > 0.0f) return (int)li;                                           /* 0x42e541: in front of the leaf face, no range test */
+        if (d > fb_d) { fb_d = d; fallback = (int)li; }                         /* 0x42e4a4: least far behind it */
+    }
+    return fallback;
+}
 static void instance_light(const Renderer *r, Instance *inst, float dt)
 {
     const LitFile *lf = r->lit; Vec3 p = { inst->world.m[12], inst->world.m[13] + 20.0f, inst->world.m[14] };
-    int chosen = -1, fallback = -1; float fb_d = 1e30f, cd = 0;
-    for (uint32_t l = 0; l < lf->nlights; l++) {
-        const LitLight *L = &lf->lights[l]; float dx = L->pos.x - p.x, dy = L->pos.y - p.y, dz = L->pos.z - p.z, d = sqrtf(dx * dx + dy * dy + dz * dz);
-        if (d < L->range && lit_point_lit(L, r->gel, p)) { chosen = (int)l; cd = d; break; }
-        if (d / L->range < fb_d) { fb_d = d / L->range; fallback = (int)l; }
-    }
+    int have_list = 0, chosen = sector_light(r, p, &have_list), fallback = -1; float cd = 0;
+    if (!have_list)                                                             /* no trailer in this .lit: the whole light list, as before */
+        for (uint32_t l = 0; l < lf->nlights; l++) {
+            const LitLight *L = &lf->lights[l]; float dx = L->pos.x - p.x, dy = L->pos.y - p.y, dz = L->pos.z - p.z, d = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (d < L->range && lit_point_lit(L, r->gel, p)) { chosen = (int)l; break; }
+            if (fallback < 0 || d / L->range < 1.0f) fallback = (int)l;
+        }
+    if (chosen < 0) chosen = fallback;
+    if (chosen >= 0) { const LitLight *L = &lf->lights[chosen]; float dx = L->pos.x - p.x, dy = L->pos.y - p.y, dz = L->pos.z - p.z; cd = sqrtf(dx * dx + dy * dy + dz * dz); }
+    /* the light vector only grows while the light really sees the part and it is in range (0x43b912); the choice above
+     * stands either way, and so does the shadow */
+    int seen = chosen >= 0 && cd < lf->lights[chosen].range && lit_point_lit(&lf->lights[chosen], r->gel, p);
     float keep = powf(0.85f, dt * 60.0f); if (!inst->l_init) keep = 0;          /* Ldir *= 0.85 per frame [0x4aa3d8] */
     inst->ldir.x *= keep; inst->ldir.y *= keep; inst->ldir.z *= keep;
-    inst->l_seen = chosen >= 0; inst->light = chosen >= 0 ? chosen : fallback; inst->l_init = 1;
-    if (chosen >= 0) {
+    inst->l_seen = seen; inst->light = chosen; inst->l_init = 1;
+    if (seen) {
         const LitLight *L = &lf->lights[chosen]; float k = (1.0f - keep) * (1.0f - cd / L->range) / (cd > 1e-3f ? cd : 1.0f);
         inst->ldir.x += (L->pos.x - p.x) * k; inst->ldir.y += (L->pos.y - p.y) * k; inst->ldir.z += (L->pos.z - p.z) * k;
     }
@@ -392,6 +427,7 @@ static void sh_push(Vec3 a, Vec3 b, Vec3 c)
     if (g_sh_n + 1 > g_sh_cap) { g_sh_cap = g_sh_cap * 2 + 1024; g_sh = (float *)realloc(g_sh, (size_t)g_sh_cap * 9 * sizeof(float)); }
     float *o = &g_sh[(size_t)g_sh_n * 9]; o[0] = a.x; o[1] = a.y; o[2] = a.z; o[3] = b.x; o[4] = b.y; o[5] = b.z; o[6] = c.x; o[7] = c.y; o[8] = c.z; g_sh_n++;
 }
+static int g_shlog;                                                         /* WOODY_SHLOG=1: one line per second per instance that reaches the caster test */
 static void cast_shadow(const Renderer *r, Instance *inst)
 {
     Model *m = inst->model; const LitLight *L = &r->lit->lights[inst->light]; const int32_t *own = model_owner(m);
@@ -420,6 +456,7 @@ static void cast_shadow(const Renderer *r, Instance *inst)
     float c[3] = { (lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f, (lo[2] + hi[2]) * 0.5f };
     float rad = 0.5f * sqrtf((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
     static float *proj; static uint32_t proj_cap; if (proj_cap < g_sh_n) { proj_cap = g_sh_n + 1024; proj = (float *)realloc(proj, (size_t)proj_cap * 9 * sizeof(float)); }
+    int n_plane = 0, n_scale = 0, n_reach = 0, n_drawn = 0;
     for (int list = 0; list < 2; list++) {
         const uint32_t *faces = list ? L->b : L->a; uint32_t nf = list ? L->nb : L->na;
         for (uint32_t fi = 0; fi < nf; fi++) {
@@ -427,11 +464,14 @@ static void cast_shadow(const Renderer *r, Instance *inst)
             const GelPoly *gp = &r->gel->polys[f]; const float *pl = gp->plane, *fb = &r->face_bound[4 * f]; if (gp->nverts < 3) continue;
             float dl = pl[0] * L->pos.x + pl[1] * L->pos.y + pl[2] * L->pos.z + pl[3], dc = pl[0] * c[0] + pl[1] * c[1] + pl[2] * c[2] + pl[3];
             if (dl <= 1.0f || dc >= dl || dc < -rad) continue;                 /* caster must be between the light and the plane */
+            n_plane++;
             float den = dl - dc; if (den < 1.0f) continue;
             float s = dl / den; if (s > 40.0f) continue;                      /* projection scale; huge = grazing */
+            n_scale++;
             float pc[3] = { L->pos.x + (c[0] - L->pos.x) * s, L->pos.y + (c[1] - L->pos.y) * s, L->pos.z + (c[2] - L->pos.z) * s };
             float dx = pc[0] - fb[0], dy = pc[1] - fb[1], dz = pc[2] - fb[2], reach = rad * s * 1.5f + fb[3];
             if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
+            n_reach++;
             uint32_t np = 0;
             for (uint32_t t = 0; t < g_sh_n; t++) {
                 const float *tv = &g_sh[(size_t)t * 9]; float *o = &proj[(size_t)np * 9]; int ok = 1;
@@ -449,14 +489,17 @@ static void cast_shadow(const Renderer *r, Instance *inst)
             glBegin(GL_TRIANGLE_FAN); for (uint32_t k = 0; k < gp->nverts; k++) { const GelVert *v = &r->gel->verts[gp->indices[k]]; glVertex3f(v->x, v->y, v->z); } glEnd();
             glColorMask(1, 1, 1, 1); glStencilFunc(GL_EQUAL, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP); glDisable(GL_DEPTH_TEST);
             glVertexPointer(3, GL_FLOAT, 0, proj); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
+            n_drawn++;
             glEnable(GL_DEPTH_TEST); glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 0, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
             glBegin(GL_TRIANGLE_FAN); for (uint32_t k = 0; k < gp->nverts; k++) { const GelVert *v = &r->gel->verts[gp->indices[k]]; glVertex3f(v->x, v->y, v->z); } glEnd();
             glColorMask(1, 1, 1, 1);
         }
     }
+    if (g_shlog) printf("    tris %u light %d at %.0f %.0f %.0f range %.0f faces A %u B %u -> plane %d scale %d reach %d drawn %d", g_sh_n, inst->light, L->pos.x, L->pos.y, L->pos.z, L->range, L->na, L->nb, n_plane, n_scale, n_reach, n_drawn), puts("");
 }
 static void draw_cast_shadows(const Renderer *r)
 {
+    { static int last = -1; int s = (int)g_tex_now; g_shlog = getenv("WOODY_SHLOG") && s != last; if (g_shlog) last = s; }
     glDisable(GL_TEXTURE_2D); glDisable(GL_BLEND); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glEnable(GL_STENCIL_TEST); glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -1.0f); glColor3f(LIT_AMB, LIT_AMB, LIT_AMB);
     for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) {
@@ -464,7 +507,11 @@ static void draw_cast_shadows(const Renderer *r)
         for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k];
             int caster = inst->type == 1 || inst->type == 2 || inst->type == 3 || inst->type == 18 || inst->type == 19 || (inst->setflags & 1) || (inst->type >= 4 && inst->type <= 13);   /* the player, SetFlags bit 1 (0x42b3cc); enemies are our addition */
-            if (!caster || !inst->visible || inst->fade > 0.01f || !inst->l_seen || inst->light < 0 || !inst->node_world) continue;
+            if (g_shlog && (caster || inst->type)) printf("  SH t %.1f model %u inst %u type %d setflags %x caster %d vis %d fade %.2f l_seen %d light %d nodes %d at %.0f %.0f %.0f", g_tex_now, mi, k, inst->type, inst->setflags, caster, inst->visible, inst->fade, inst->l_seen, inst->light, inst->node_world != NULL, inst->world.m[12], inst->world.m[13], inst->world.m[14]), puts("");
+            /* 0x42e2c3/0x42e377/0x42e417: no sector, fade >= 0.98 or an empty sector light list drop the shadow. Whether
+             * the light SEES the caster is never tested - a character standing in shadow still casts one, from the
+             * fallback light (0x42e524). */
+            if (!caster || !inst->visible || inst->fade > 0.98f || inst->light < 0 || !inst->node_world) continue;
             cast_shadow(r, inst);
         }
     }

@@ -158,7 +158,7 @@ Emmer `n` = lijst `tex+8+4n` (`0x42b460`). Volgorde en states in `0x4293f0`
 Alles in de instantie-tekenfunctie `0x42e2b0`/`0x42e374` (arg-bits: 2 = schaduw werpen,
 4 = model tekenen) en de modelrenderer `0x43b3f0`.
 
-**Lichtkeuze** (`0x42e3e4..0x42e573`): lichtlijst van de cel van de instantie
+**Lichtkeuze** (`0x42e3e4..0x42e573`): lichtlijst van de **sector** van de instantie
 (`lightsys+0x10[inst+0x1c]` = `{n, index…}`). `n == 0` → geen licht (bit 2 vervalt).
 `n == 1` → dat licht. `n > 1`: per licht `f = 0x40b540(S, inst+0x60)` (instantiepositie):
 
@@ -166,6 +166,14 @@ Alles in de instantie-tekenfunctie `0x42e2b0`/`0x42e374` (arg-bits: 2 = schaduw 
 - `f ≠ −1` en `vlak(f)·p > 0` (punt vóór de bladface = belicht) → dit licht, klaar (`0x42e541`);
 - anders (in schaduw): onthoud het licht met de grootste (minst negatieve) vlakafstand; dat
   wordt gekozen als geen enkel licht het punt ziet.
+
+> **Sector, geen cel.** De trailer van de `.lit` (FORMAT_TEX_COL_VIS_LIT.md §4, "lichten per
+> cel") heeft in alle 28 levels precies zoveel lijsten als de `.gel` **sectoren** heeft, niet
+> zoveel als er cellen zijn: House 33 lijsten / 33 sectoren / 2530 cellen, W1A·WWS·W3D·K1A 128
+> lijsten / 128 sectoren / 6245–7691 cellen. `world+0x20` is dus het sectoraantal en `inst+0x1c`
+> de sectorindex; de sector van een punt komt van `0x4081c0` (daal in de hoofd-kd-boom tot een
+> knoop een sectorindex draagt), niet van de bladcelquery `0x408180`. Indexeren met de cel zou
+> ver buiten de tabel lezen. Dit is gemeten, niet uit de disassembly gelezen.
 
 **Puntquery `0x40b540(S, p)`**: loop vanaf knoop 0; `vlak·p + d > 0` → `front`, anders
 `back`; kind `& 0xF`: 0 = knoop `>>4`, 1 = blad met face `>>4`, anders −1. Interpretatie
@@ -212,6 +220,21 @@ flits/highlight, niet uitgezocht).
   > 0.98 → instantie helemaal niet getekend (`0x42e374`).
 - Geen hoogte-fade of grondzoeker: de schaduw valt waar de projectie een face raakt; het
   bereik is impliciet dat van het licht.
+- Er wordt **nergens getest of het gekozen licht de werper ziet**. Bij `n == 1` wordt dat licht
+  zonder enige test genomen (`0x42e422`), bij `n > 1` is er altijd de terugvalkeuze
+  (`0x42e524`); alleen een **lege** sectorlijst haalt bit 2 weg (`0x42e56a`). Een figuur die in
+  de schaduw staat werpt dus nog steeds een schaduw, vanuit dat terugvallicht. Verder valt de
+  hele tekenfunctie af bij `inst+0x1c == -1` (geen sector, `0x42e2c3`).
+
+### Wat de port anders doet (`cast_shadow`/`draw_cast_shadows` in `src/render_gl.c`)
+
+| Origineel | Port |
+|---|---|
+| werper = omtrek (`0x43aaa0`) van de **hull-nodes** (`S+0x3c`, nodevlag 0x04; Woody 43 van 142), voorgefilterd met de omtrek van de bbox-node | alle polygonen van elke mesh-node + alle skin-driehoeken, per driehoek geprojecteerd |
+| ontvangers uit de **licht-BSP** (`0x40bb40`/`0x40bda0`), al tot convexe polygonen geclipt | lijsten A en B van het licht, geclipt met de stencilbuffer. A ∪ B is niet dezelfde verzameling: een volledig beschaduwde face staat in geen van beide |
+| enige tests: bladsoort ≠ 2, ≥ 1 vertex vóór het ontvangstvlak, camera vóór dat vlak | plus zelfbedachte grenzen (`s > 40`, een bolstraal-`reach`-test, `k` buiten 1..100). Ze zijn er omdat de port A/B afloopt in plaats van de BSP, en kunnen geldige schaduwen laten vallen |
+| `0.01 < transparantie ≤ 0.98` → doorschijnende schaduw (emmer 2, `C·k·transparantie`) | altijd de opake AMB-variant tot 0.98 |
+| werper zonder animatie herbruikt zijn polygonen (`0x42f3d0`/`0x42f460`) | elke frame opnieuw |
 
 ## 5. Detailoptie `[0x4c2c0c]`
 

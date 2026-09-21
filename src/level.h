@@ -42,10 +42,14 @@ typedef struct {
 
 typedef struct { float x, y, z; uint32_t colour; } GelVert;
 
+typedef struct { int32_t axis, sector; float d; int32_t le, gt; } KdNode;   /* 0x40ab10: p[axis] + d <= 0 -> le, otherwise gt; child < 0 = leaf ~child; sector >= 0 marks a sector root */
+
 typedef struct {
     uint8_t *data; size_t size;
     uint32_t npolys; GelPoly *polys;
     uint32_t nverts; GelVert *verts;
+    uint32_t ncells, nsectors;                 /* kd leaf cells and sectors; the sector a point is in decides its lights (docs/LIGHTING.md 3) */
+    uint32_t nkd; KdNode *kd;                  /* the main kd-tree (0x408180) */
     float bbox[6];
 } GelFile;
 
@@ -59,10 +63,12 @@ typedef struct {
     uint32_t nbsp; uint32_t *bsp;              /* {plane, front, back} */
     uint32_t nplanes; float *planes;           /* 4 floats each */
 } LitLight;
+typedef struct { uint32_t n; const uint32_t *idx; } LitSector;   /* the lights of one gel sector (trailer -> lightsys+0x10) */
 typedef struct {
     uint8_t *data; size_t size;
     uint32_t nlights; LitLight *lights;
     uint32_t nextra; Vec3 *extra;
+    uint32_t nsectors; LitSector *sectors;     /* trailer: one light list per gel sector; 0 when the .lit has no trailer */
 } LitFile;
 
 /* ---- .ins ------------------------------------------------------------------ */
@@ -145,6 +151,8 @@ int  gel_load(GelFile *g, const char *path);
 int  ins_load(InsFile *f, const char *path);
 int  lit_load(LitFile *l, const char *path);
 int  lit_point_lit(const LitLight *l, const GelFile *g, Vec3 p);   /* BSP point query 0x40b540 + leaf plane test */
+int32_t lit_bsp_face(const LitLight *l, const GelFile *g, Vec3 p); /* 0x40b540 itself: the leaf face, -1 = none */
+int32_t gel_sector(const GelFile *g, Vec3 p);                      /* 0x4081c0: the kd sector a point is in, -1 = none */
 void tex_free(TexFile *t); void gel_free(GelFile *g); void ins_free(InsFile *f); void lit_free(LitFile *l);
 
 /* Animation: evaluate the node hierarchy of `inst` for animation `anim` at `t` seconds

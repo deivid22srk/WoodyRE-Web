@@ -196,7 +196,7 @@ Loader `0x40ac30(this=lightsys (0x2c bytes), path, 0x10, 0x400)`, object in glob
 | … | 4 | u32 | `probe_count` (→ `lightsys+0x08`) |
 | … | `16·probe_count` | | **probe** (→ `lightsys+0x0c`, records van 0x30): `f32[3]` positie, `u32` kleur 0x00RRGGBB (→ `+0x28`); `+0x2c` = -1 (runtime). Gebruikt in `0x42c320`/`0x498890` (afstand tot een punt) |
 | … | 4 | u32 | *(optioneel, via `0x43fd90`)* `total` – aantal dwords van de trailer |
-| … | `4·total` | u32[] | trailer: `world+0x20` × `{u32 n, u32 light_index[n]}` – lichten per cel (→ `lightsys+0x10`). Ontbreekt de trailer, dan `lightsys+0x10 = 0` |
+| … | `4·total` | u32[] | trailer: `world+0x20` × `{u32 n, u32 light_index[n]}` – lichten per **sector** (→ `lightsys+0x10`). Ontbreekt de trailer, dan `lightsys+0x10 = 0`. Gemeten: het aantal lijsten is in alle levels exact het aantal `.gel`-sectoren (House 33, de rest 128), niet het aantal cellen (2530–7691) – zie LIGHTING.md §3 |
 
 Overige lightsys-velden (`+0x14..+0x28`) worden na het laden gealloceerd (afhankelijk van de
 argumenten 0x10/0x400 en `world+0x0c`).
