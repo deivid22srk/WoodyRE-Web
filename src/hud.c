@@ -192,12 +192,296 @@ static int number_codes(uint16_t *out, int v)                                   
     for (int i = 0; i < n; i++) out[i] = dig ? dig[b[i] - '0'] : (uint16_t)(b[i] - '0' + 1);
     out[n] = 0; return n;
 }
-static void number_centred(float cx, float cy, int v)                              /* 0x4605b0 / 0x448660 */
+static void number_sized(float cx, float cy, int v, float size)                     /* 0x4605b0 / 0x448660; the pop animations pass their own size */
 {
     uint16_t s[16]; number_codes(s, v);
-    font_size(v >= 100 ? 17.0f * 0.75f : 17.0f);
+    font_size(v >= 100 ? size * 0.75f : size);
     font_draw(cx - font_measure(s) * 0.5f, cy - font_cell() * 0.5f, s, 0xfeff0000);
     font_size(17.0f);
+}
+static void number_centred(float cx, float cy, int v) { number_sized(cx, cy, v, 17.0f); }
+
+/* ---------------------------------------------------------------- HUD animations (animator hud+0x30, docs/HUD_TEXT.md 4.6)
+ * The five pickup flights (start 0x47b230, tick 0x47b4c0) with their trail (0x47b710), the number pop
+ * (0x47c390 / 0x47c3d0), the growing plate and the sliding icon (0x47bf90 / 0x47c1a0), and the swarm of W's that
+ * pays out 25 bonuses (0x47c5b0 / 0x47c620 / 0x47c7c0). Everything is linear in time and nothing ever fades: a
+ * "pop" is a font size, a flight fades in by growing from zero. The animator draws on top of the static HUD
+ * (0x447660 runs before 0x4480d0), and the static HUD leaves out whatever an animation has taken over. */
+#define FLY_DUR   0.2f                                                /* PickupFly+0x4c, fixed in the ctor 0x47b170 */
+#define SWARM_DUR 0.4f                                                /* one trip of one W, 0x47c760 */
+
+static const float k_anchor[4][2] = { {32,82}, {66,197}, {66,282}, {600,86} };                           /* 0x5d7b50 = slot[2i+1] + 16 */
+static const float k_slot[8][2] = { {16,16}, {16,66}, {16,136}, {50,181}, {16,221}, {50,266}, {544,30}, {584,70} };   /* 0x4b3a10 */
+
+typedef struct { float x, y, size, t; int fresh, spawned; } SwarmW;
+static struct {
+    struct { int on, sprite, mode; float sx, sy, tx, ty, t, cur; } fly[6];    /* index = pickup kind 1..5 (0x448510) */
+    struct { int on, phase, nph; float t, dur, s0, ds; } pop[4];              /* index = number anchor 0..3 */
+    struct { int on, sprite; float cx, cy, w0, h0, dw, dh, t; } plate[3];     /* 1 = the $ plate, 2 = the charge plate */
+    struct { int on, sprite; float x0, y0, dx, dy, t; } slide[3];
+    struct { int on, to_life, count, popval, poprun, phase2; float counter, tx; SwarmW p[3]; } sw;
+    struct { int mode; float t, life, x, y, w0, h0, vx, vy, dw, dh, len, tau, swing; } gh[128]; int ngh;
+    int stage[3]; float hold[3];                                              /* kinds 2 and 3 run a 3-stage sequence with a 1.5 s hold */
+    int latch;                                                                /* hud+0x10: the reward waits until the W pickup flight has landed */
+    int mlives;                                                               /* hud+0x40: a life was lost (0x4622e0) */
+    int prev_ok, prev_lives, prev_bonus; float prev_health;
+} A;
+
+void hud_anim_reset(void) { memset(&A, 0, sizeof A); }
+
+static float frnd(void) { return (float)rand() / (float)RAND_MAX; }
+static float costab(int k) { return (float)cos(6.2831853 * (k & 511) / 512.0); }   /* the engine's 512-entry table at [0x5e823c] */
+
+/* a sprite into an explicit destination rect (0x480a10; 0x460480 is the same thing with a uniform scale) */
+static void sprite_rect(int n, float x, float y, float w, float h)
+{
+    if (n < 0 || n >= 16 || w <= 0 || h <= 0) return;
+    int i = k_spr[n].img; if (!H.img[i]) return;
+    float W = (float)H.img_w[i], Hh = (float)H.img_h[i];
+    quad(x, y, w, h, H.img[i], k_spr[n].x / W, k_spr[n].y / Hh, (k_spr[n].x + k_spr[n].w) / W, (k_spr[n].y + k_spr[n].h) / Hh,
+         0xfe808080, 0xfe808080, 0xfe808080, 0xfe808080);
+}
+/* a trail blob: bank 0 image 4, additive (0x47bba0 submits it with flag 4) */
+static void fx_rect(float x, float y, float w, float h)
+{
+    if (!H.fx[1] || w <= 0 || h <= 0) return;
+    glBlendFunc(GL_ONE, GL_ONE);
+    quad(x, y, w, h, H.fx[1], 0, 0, 1, 1, 0xfe808080, 0xfe808080, 0xfe808080, 0xfe808080);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
+/* ---- the number pop 0x47c390 / 0x47c3d0: an odd phase grows s0 -> s1, an even one shrinks back; red, no alpha */
+static void pop_start(int a, int nph, float s0, float s1, float dur)
+{
+    A.pop[a].on = 1; A.pop[a].phase = 1; A.pop[a].nph = nph; A.pop[a].t = 0; A.pop[a].dur = dur; A.pop[a].s0 = s0; A.pop[a].ds = s1 - s0;
+}
+static int pop_tick(int a, int value, float dt)
+{
+    float f = A.pop[a].t / A.pop[a].dur, size;                        /* the ratio from BEFORE this frame, as in 0x47c3d0 */
+    if (A.pop[a].phase <= A.pop[a].nph) {
+        A.pop[a].t += dt;
+        if (A.pop[a].t < A.pop[a].dur) size = (A.pop[a].phase & 1) ? A.pop[a].s0 + f * A.pop[a].ds : A.pop[a].s0 + A.pop[a].ds - f * A.pop[a].ds;
+        else { A.pop[a].phase++; A.pop[a].t = 0; size = (A.pop[a].phase & 1) ? A.pop[a].s0 : A.pop[a].s0 + A.pop[a].ds; }
+    } else size = A.pop[a].s0;
+    number_sized(k_anchor[a][0], k_anchor[a][1], value, size);
+    return A.pop[a].on = A.pop[a].phase <= A.pop[a].nph;
+}
+
+/* ---- the flying icon 0x47b230 / 0x47b4c0 ------------------------------------------------------------------- */
+static int fly_start(int kind, const float *screen, int sprite, int slot, int mode)
+{
+    if (!screen) return 0;                                            /* behind the camera or off screen: 0x47b230 refuses and only the pop plays */
+    A.fly[kind].on = 1; A.fly[kind].sprite = sprite; A.fly[kind].mode = mode; A.fly[kind].t = 0; A.fly[kind].cur = 0;
+    A.fly[kind].sx = screen[0]; A.fly[kind].sy = screen[1];
+    A.fly[kind].tx = k_slot[slot][0]; A.fly[kind].ty = k_slot[slot][1];
+    return 1;
+}
+static void fly_trail(int kind, float dx, float dy, float w, float h)  /* 0x47b710: ghosts along the same line at a fixed step in animation time */
+{
+    int mode = A.fly[kind].mode;
+    float step = mode ? 0.005f : 0.02f;
+    while (A.fly[kind].cur < A.fly[kind].t) {
+        float ut = A.fly[kind].cur, u = ut / FLY_DUR, r;
+        float gx = A.fly[kind].sx + dx * u, gy = A.fly[kind].sy + dy * u, gw = w * u, gh = h * u;
+        if (A.ngh < 128) {
+            int i = A.ngh++;
+            A.gh[i].mode = mode; A.gh[i].t = A.fly[kind].t - ut;        /* born already this old */
+            r = costab((int)(frnd() * 180.0f)) + 1.0f;
+            A.gh[i].w0 = r * gw * 0.25f; A.gh[i].h0 = r * gh * 0.25f;
+            if (!mode) {                                               /* 0x47b800: a blob beside the icon that shrinks away in 0.3 s */
+                r = costab((int)(frnd() * 180.0f)); A.gh[i].x = dx < 0 ? gx + r * 10.0f + gw * 0.25f : gx - gw * 0.25f - r * 10.0f;
+                r = costab((int)(frnd() * 180.0f)); A.gh[i].y = dy < 0 ? gy + r * 10.0f + gh * 0.25f : gy - gh * 0.25f - r * 10.0f;
+                A.gh[i].vx = dx / FLY_DUR * 0.2f; A.gh[i].vy = dy / FLY_DUR * 0.2f;
+                A.gh[i].life = 0.3f; A.gh[i].dw = A.gh[i].w0 / 0.3f; A.gh[i].dh = A.gh[i].h0 / 0.3f;
+            } else {                                                   /* 0x47ba10: two glows winding 3.5 turns around the flight line, crawling at a fifth of its speed */
+                float ox = A.fly[kind].sx + (dx >= 0 ? -2.0f * gw : 2.0f * gw), oy = A.fly[kind].sy + (dy >= 0 ? -2.0f * gh : 2.0f * gh);
+                float Dx = A.fly[kind].sx + dx - ox, Dy = A.fly[kind].sy + dy - oy, L = (float)sqrt(Dx * Dx + Dy * Dy);
+                if (L < 1e-3f) { A.ngh--; A.fly[kind].cur = ut + step; continue; }
+                A.gh[i].x = ox; A.gh[i].y = oy; A.gh[i].vx = Dx / L; A.gh[i].vy = Dy / L;
+                A.gh[i].len = L; A.gh[i].tau = 5.0f * ut; A.gh[i].swing = w; A.gh[i].life = 0.5f;
+            }
+        }
+        A.fly[kind].cur = ut + step;
+    }
+}
+static int fly_tick(int kind, float dt)
+{
+    int sp = A.fly[kind].sprite; float w = k_spr[sp].w, h = k_spr[sp].h;
+    float dx = A.fly[kind].tx + w * 0.5f - A.fly[kind].sx, dy = A.fly[kind].ty + h * 0.5f - A.fly[kind].sy;
+    A.fly[kind].t += dt;
+    if (A.fly[kind].t < FLY_DUR) {
+        float u = A.fly[kind].t / FLY_DUR, cw = w * u, ch = h * u;
+        fly_trail(kind, dx, dy, w, h);                                 /* 0x47b4d9: the trail is emitted before the icon moves */
+        sprite_rect(sp, A.fly[kind].sx + dx * u - cw * 0.5f, A.fly[kind].sy + dy * u - ch * 0.5f, cw, ch);
+        return 1;
+    }
+    sprite_rect(sp, A.fly[kind].tx, A.fly[kind].ty, w, h);             /* the last frame is exactly the static icon: a seamless hand-over */
+    return A.fly[kind].on = 0;
+}
+static void ghosts_draw(float dt)                                      /* 0x47bba0 (mode 0) and 0x47bca0 (mode 1); both shrink to nothing, neither fades */
+{
+    for (int i = 0; i < A.ngh; i++) {
+        float t = (A.gh[i].t += dt);
+        if (t >= A.gh[i].life || (A.gh[i].mode && A.gh[i].tau + t > 1.0f)) { A.gh[i] = A.gh[--A.ngh]; i--; continue; }   /* mode 1 reaches the HUD: the original reflects the time, which kills it the next frame anyway */
+        if (!A.gh[i].mode) {
+            float X = A.gh[i].x + t * A.gh[i].vx, Y = A.gh[i].y + t * A.gh[i].vy;
+            float W = A.gh[i].w0 - t * A.gh[i].dw, Hh = A.gh[i].h0 - t * A.gh[i].dh;
+            fx_rect(X - W * 0.5f, Y - Hh * 0.5f, W, Hh);
+        } else {
+            float f = A.gh[i].tau + t;                                 /* = S / L, the fraction of the path this strand has reached (5*FLY_DUR = 1) */
+            float S = A.gh[i].len * f, k = 1.0f - t / A.gh[i].life;
+            float off = (float)sin(6.2831853 * ((int)(1800.0f * f) & 511) / 512.0) * A.gh[i].swing * 0.5f * f;   /* 1800/512 = 3.5 turns, opening to half the icon width */
+            float cx = A.gh[i].x + A.gh[i].vx * S, cy = A.gh[i].y + A.gh[i].vy * S, nx = -A.gh[i].vy, ny = A.gh[i].vx;
+            float W = A.gh[i].w0 * k, Hh = A.gh[i].h0 * k;
+            fx_rect(cx + nx * off - W * 0.5f, cy + ny * off - Hh * 0.5f, W, Hh);
+            fx_rect(cx - nx * off - W * 0.5f, cy - ny * off - Hh * 0.5f, W, Hh);
+        }
+    }
+}
+
+/* ---- the plate and the sliding icon, both linear over 0.2 s (0x47bff0 / 0x47c1e0) -------------------------- */
+static void plate_start(int k, float cx, float cy, float w0, float h0, float w1, float h1)
+{ A.plate[k].on = 1; A.plate[k].sprite = 8; A.plate[k].cx = cx; A.plate[k].cy = cy; A.plate[k].w0 = w0; A.plate[k].h0 = h0; A.plate[k].dw = w1 - w0; A.plate[k].dh = h1 - h0; A.plate[k].t = 0; }
+static int plate_tick(int k, float dt)
+{
+    float u = A.plate[k].t / 0.2f, w, h;
+    A.plate[k].t += dt;
+    if (A.plate[k].t < 0.2f) { w = A.plate[k].w0 + u * A.plate[k].dw; h = A.plate[k].h0 + u * A.plate[k].dh; }
+    else { w = A.plate[k].w0 + A.plate[k].dw; h = A.plate[k].h0 + A.plate[k].dh; }
+    sprite_rect(A.plate[k].sprite, A.plate[k].cx - w * 0.5f, A.plate[k].cy - h * 0.5f, w, h);
+    return A.plate[k].on = u < 1.0f;
+}
+static void slide_start(int k, int sprite, float x0, float y0, float x1, float y1)
+{ A.slide[k].on = 1; A.slide[k].sprite = sprite; A.slide[k].x0 = x0; A.slide[k].y0 = y0; A.slide[k].dx = x1 - x0; A.slide[k].dy = y1 - y0; A.slide[k].t = 0; }
+static int slide_tick(int k, float dt)
+{
+    float u = (A.slide[k].t += dt) / 0.2f; if (u > 1.0f) u = 1.0f;
+    sprite_rect(A.slide[k].sprite, A.slide[k].x0 + u * A.slide[k].dx, A.slide[k].y0 + u * A.slide[k].dy, k_spr[A.slide[k].sprite].w, k_spr[A.slide[k].sprite].h);
+    return A.slide[k].on = u < 1.0f;
+}
+
+/* ---- the swarm of W's: 25 bonuses being paid out as a heart or as an extra life (0x47c5b0) ----------------- */
+static void swarm_start(int to_life, float relx)
+{
+    memset(&A.sw, 0, sizeof A.sw);
+    A.sw.on = 1; A.sw.to_life = to_life; A.sw.counter = 25.0f; A.sw.count = 1; A.sw.tx = relx;
+    for (int i = 0; i < 3; i++) { A.sw.p[i].x = k_slot[0][0]; A.sw.p[i].y = k_slot[0][1]; A.sw.p[i].size = k_spr[4].w; A.sw.p[i].fresh = 1; }
+    if (to_life) pop_start(3, 2, 17.0f, 37.0f, 0.2f);                  /* 0x460cc0 arms the lives pop for phase 2 right away */
+}
+static int swarm_tick(float dt)                                        /* 0x47c620 + 0x47c7c0 */
+{
+    const float span = k_spr[4].w - 23.0f;                             /* the W shrinks 94 -> 23 on the way */
+    if (A.sw.counter <= 0.0f) { A.sw.on = 0; A.sw.poprun = 0; A.pop[0].on = 0; return 0; }   /* the original tests == 0.0f exactly; <= 0 cannot get stuck */
+    float third = A.sw.tx / 3.0f;
+    for (int i = 0; i < A.sw.count; i++) {
+        SwarmW *p = &A.sw.p[i];
+        if (p->x >= third && p->x < 2.0f * third && !p->spawned && A.sw.count < 3) { A.sw.count++; p->spawned = 1; }   /* the next W leaves once this one is a third of the way */
+        if (A.sw.counter < 3.0f && p->fresh) continue;                 /* wind-down: do not launch a fresh W for the last two */
+        int n = (int)A.sw.counter;
+        if (n % 5 == 0 && !A.sw.poprun) { A.sw.popval = n - 5; pop_start(0, 1, 17.0f, 0.0f, 1.0f); A.sw.poprun = 1; }   /* 20, 15, 10, 5, 0, each shrinking away */
+        if (A.sw.poprun) A.sw.poprun = pop_tick(0, A.sw.popval, dt);   /* ticked once per W in flight, exactly as the original */
+        p->fresh = 0; p->t += dt;
+        if (p->t < SWARM_DUR) { float u = p->t / SWARM_DUR; p->x = k_slot[0][0] + A.sw.tx * u; p->y = k_slot[0][1] + span * 0.5f * u; p->size = k_spr[4].w - span * u; }
+        else { p->x = k_slot[0][0] + A.sw.tx; p->y = k_slot[0][1] + span * 0.5f; p->size = 23.0f; A.sw.counter -= 2.5f; }   /* ten landings pay out the 25 */
+        sprite_rect(4, p->x, p->y, p->size, p->size);
+        if (p->t >= SWARM_DUR) { p->x = k_slot[0][0]; p->y = k_slot[0][1]; p->size = k_spr[4].w; p->t = 0; p->fresh = 1; p->spawned = 0; }
+    }
+    return 1;
+}
+
+/* ---- starting an animation ---------------------------------------------------------------------------------- */
+/* 0x448510: kind 1..5 for types 30, 36, 35, 34, 37; screen = the pickup projected into the 640x480 HUD, NULL when it is off screen */
+void hud_anim_pickup(int kind, const float *screen, int face)
+{
+    if (!H.ok) return;
+    switch (kind) {
+    case 1:                                                            /* 0x461300: the character's own face flies to the portrait */
+        pop_start(3, 2, 17.0f, 37.0f, 0.2f);
+        fly_start(1, screen, face >= 0 && face < 3 ? face : 0, 6, 1);
+        break;
+    case 2:                                                            /* 0x461420: the $ item; its whole counter slides in, waits and leaves again */
+        slide_start(1, 3, k_slot[2][0], k_slot[2][1], -k_spr[3].w, k_slot[2][1]);
+        pop_start(1, 2, 17.0f, 37.0f, 0.2f);
+        plate_start(1, k_slot[3][0], k_slot[3][1], 0, 0, 34.0f, 34.0f);
+        fly_start(2, screen, 3, 2, 0);
+        A.stage[1] = 1; A.hold[1] = 0;
+        break;
+    case 3:                                                            /* 0x461560: the charge, the same sequence one row lower */
+        slide_start(2, 6, k_slot[4][0], k_slot[4][1], -k_spr[6].w, k_slot[4][1]);
+        pop_start(2, 2, 17.0f, 37.0f, 0.2f);
+        plate_start(2, k_slot[5][0], k_slot[5][1], 0, 0, 34.0f, 34.0f);
+        fly_start(3, screen, 6, 4, 1);
+        A.stage[2] = 1; A.hold[2] = 0;
+        break;
+    case 4:                                                            /* 0x4616a0: the big W to the bonus icon */
+        pop_start(0, 2, 17.0f, 37.0f, 0.2f);
+        fly_start(4, screen, 4, 0, 0);
+        A.latch = 0;                                                   /* hud+0x10 is cleared here and set again by the reward */
+        break;
+    case 5:                                                            /* 0x461760: the race flag, same slot */
+        pop_start(0, 2, 17.0f, 37.0f, 0.2f);
+        fly_start(5, screen, 5, 0, 0);
+        break;
+    default: break;                                                    /* kind 6 (type 38) does nothing */
+    }
+}
+/* 0x448380: the bonus counter went down, so 25 W's have just been paid out */
+static void hud_anim_reward(int to_life, float health_old)
+{
+    swarm_start(to_life, to_life ? (k_spr[0].w - 23.0f) * 0.5f + k_slot[6][0] - k_slot[0][0]    /* 548.5: a 23 wide square centred on the portrait */
+                                 : 559.0f - 30.0f * (health_old + 1.0f) - k_slot[0][0]);        /* the slot of the heart that is coming in */
+    A.latch = 1;
+}
+
+/* the animator itself: 0x4480d0, run after the static HUD so everything here draws on top */
+static void hud_anim_tick(const HudState *s, float dt)
+{
+    int lives_hud = s->lives > 0 ? s->lives - 1 : 0;                   /* hud+0x20, the value the row shows */
+    if (A.latch && !A.fly[4].on) A.latch = 0;                          /* the flight is what clears hud+0x10; never deadlock if it did not start */
+    if (A.sw.on && !A.latch) {
+        if (!A.sw.to_life) A.sw.on = swarm_tick(dt);                                         /* 0x460bb0: the heart variant is the swarm and nothing else */
+        else if (!A.sw.phase2) {                                                             /* 0x460be0 phase 1 */
+            if (!swarm_tick(dt)) A.sw.phase2 = 1;
+            number_sized(k_anchor[3][0], k_anchor[3][1], lives_hud > 0 ? lives_hud - 1 : 0, 17.0f);
+            A.sw.on = 1;
+        } else {                                                                             /* phase 2: the lives number pops to its new value */
+            number_sized(k_anchor[0][0], k_anchor[0][1], s->bonus > 0 ? s->bonus - 1 : 0, 17.0f);
+            if (!pop_tick(3, lives_hud, dt)) A.sw.on = 0;
+        }
+    }
+    if (A.fly[4].on) { fly_tick(4, dt); if (!A.sw.on) number_sized(k_anchor[0][0], k_anchor[0][1], s->bonus > 0 ? s->bonus - 1 : 0, 17.0f); }
+    else if (A.fly[5].on) { fly_tick(5, dt); number_sized(k_anchor[0][0], k_anchor[0][1], s->bonus > 0 ? s->bonus - 1 : 0, 17.0f); }
+    else if (A.pop[0].on && !A.sw.on) pop_tick(0, s->bonus == 0 && !s->race ? 25 : s->bonus, dt);   /* 0x4611b0: a counter that wrapped pops "25" */
+    if (A.fly[1].on) { fly_tick(1, dt); number_sized(k_anchor[3][0], k_anchor[3][1], lives_hud > 0 ? lives_hud - 1 : 0, 17.0f); }
+    else if (A.mlives) {                                                                     /* 0x461f00: a life lost, 17 -> 37 -> 17 and then away */
+        if (!pop_tick(3, lives_hud + 1, dt)) { if (A.mlives == 1) { A.mlives = 2; pop_start(3, 1, 17.0f, 0.0f, 0.2f); } else A.mlives = 0; }
+    } else if (A.pop[3].on && !A.sw.on) pop_tick(3, lives_hud, dt);
+    for (int k = 1; k <= 2; k++) {                                     /* 0x460db0 / 0x460fb0: the $ and charge counters appear, hold 1.5 s and leave */
+        int icon = k == 1 ? 3 : 6, slot_i = k == 1 ? 2 : 4, slot_p = k == 1 ? 3 : 5, value = k == 1 ? s->unique : s->charges;
+        if (!A.stage[k]) continue;                                     /* 0x447b18: outside the pause page 0x447660 draws no $ / charge row at all, so this sequence is the only thing showing them */
+        if (A.stage[k] == 1) {
+            if (A.fly[k + 1].on) fly_tick(k + 1, dt);
+            if (A.plate[k].on) { plate_tick(k, dt); continue; }
+            sprite(icon, k_slot[slot_i][0], k_slot[slot_i][1]); sprite(8, k_slot[slot_p][0], k_slot[slot_p][1]);
+            if (A.pop[k].on) { pop_tick(k, value, dt); continue; }
+            number_centred(k_anchor[k][0], k_anchor[k][1], value);
+            plate_start(k, k_slot[slot_p][0], k_slot[slot_p][1], 34.0f, 34.0f, 0, 0); A.stage[k] = 2;
+        } else if (A.stage[k] == 2) {
+            sprite(icon, k_slot[slot_i][0], k_slot[slot_i][1]); sprite(8, k_slot[slot_p][0], k_slot[slot_p][1]);
+            number_centred(k_anchor[k][0], k_anchor[k][1], value);
+            if ((A.hold[k] += dt) > 1.5f) A.stage[k] = 3;
+        } else {
+            plate_tick(k, dt);
+            if (!slide_tick(k, dt)) A.stage[k] = 0;
+        }
+    }
+    ghosts_draw(dt);
+    /* the setters 0x448380 / 0x4482c0 watch the values themselves; the port does the same by comparing frames */
+    if (A.prev_ok && !s->race) {
+        if (s->bonus < A.prev_bonus && !A.sw.on) hud_anim_reward(!(A.prev_health < 5.0f), A.prev_health);
+        if (s->lives < A.prev_lives && !A.mlives) { A.mlives = 1; pop_start(3, 2, 17.0f, 37.0f, 0.2f); }
+    }
+    A.prev_ok = 1; A.prev_lives = s->lives; A.prev_bonus = s->bonus; A.prev_health = s->health;
 }
 
 void hud_begin(int win_w, int win_h)
@@ -230,16 +514,21 @@ void hud_draw(const HudState *s, float dt)
     } else quad(384, Y, 172, BH, 0, 0, 0, 0, 0, 0x00ff0000, 0x00ff0000, 0x80ff0000, 0x80ff0000);
     quad(556, Y, 84, BH, 0, 0, 0, 0, 0, 0x80ff0000, 0x80ff0000, 0x80ff0000, 0x80ff0000);
     sprite(s->face >= 0 && s->face < 3 ? s->face : 0, 544, 30);                                             /* slot 6 */
-    sprite(8, 584, 70); number_centred(600, 86, s->lives > 0 ? s->lives - 1 : 0);                           /* slot 7, anchor A3 */
+    sprite(8, 584, 70);                                                                                     /* slot 7, anchor A3 */
+    if (!A.fly[1].on && !A.mlives && !(A.sw.on && A.sw.to_life && !A.latch)) number_centred(600, 86, s->lives > 0 ? s->lives - 1 : 0);   /* 0x44771e */
     sprite(s->race ? 5 : 4, 16, 16);                                                                        /* slot 0 */
-    sprite(8, 16, 66); number_centred(32, 82, s->bonus);                                                    /* slot 1, A0 */
-    if (s->show_total) {
+    sprite(8, 16, 66);                                                                                      /* slot 1, A0: the icon and the plate stay, only the number moves out of the way */
+    if (!A.sw.on && !A.fly[4].on && !A.fly[5].on) number_centred(32, 82, s->bonus);                          /* 0x44792e, 0x44794f */
+    if (s->show_total && !A.sw.on) {                                                                        /* the "taken / total" line goes too while the reward is paid out */
         uint16_t t[40]; int n = number_codes(t, s->got); const uint16_t *sl = hud_string(9);                /* "/" */
         for (; sl && *sl && n < 20; sl++) t[n++] = *sl;
         number_codes(t + n, s->total);
         font_size(17.0f); font_draw(110, Y + 12 - font_cell() * 0.5f, t, 0xfe808080);
     }
-    if (!s->race) for (int i = 1; i <= (int)s->health && i <= 5; i++) sprite(7, 559.0f - 29.0f * i, Y);
+    if (!s->race) for (int i = 1; i <= (int)s->health && i <= 5; i++) {
+        if (A.sw.on && !A.sw.to_life && i == (int)s->health) continue;                                       /* 0x447ad5: the heart the W's are bringing in is left out until they land */
+        sprite(7, 559.0f - 29.0f * i, Y);
+    }
     if (s->extended) {
         sprite(3, 16, 136); sprite(8, 50, 181); number_centred(66, 197, s->unique);                         /* slots 2/3, A1 */
         sprite(6, 16, 221); sprite(8, 50, 266); number_centred(66, 282, s->charges);                        /* slots 4/5, A2 */
@@ -248,6 +537,7 @@ void hud_draw(const HudState *s, float dt)
         if (s->power >= 1.0f) { H.blink += dt; if (H.blink >= 0.3f) H.blink -= 0.3f; sprite(10, 0, 426); if (H.blink >= 0.15f) sprite(11, 0, 421); }
         else { float w = s->power * 104.0f; sprite_part(10, 0, 426, w, 0xfe808080, 0xfe808080); sprite_part(11, 0, 421, w, 0xfe808080, 0xfe808080); }
     } else H.blink = 0;
+    hud_anim_tick(s, dt);                                                                                   /* 0x4480d0 runs after 0x447660, so the animations draw on top */
 }
 
 /* ---------------------------------------------------------------- text box: message 1080 (0x456ed0 / 0x4571c0) */
@@ -329,7 +619,7 @@ void hud_world_sprites_begin(const float *right, const float *up)
 void hud_world_sprite(int n, const float *pos, float size)
 {
     if (!H.ok || n < 0 || n >= 5 || !H.bonus[n]) return;
-    float h = size * 0.5f, c[3] = { pos[0], pos[1] + 50.0f, pos[2] };               /* +50: 0x4a9030 */
+    float h = size * 0.70710678f, c[3] = { pos[0], pos[1] + 50.0f, pos[2] };        /* +50: 0x4a9030; h = size/sqrt(2), see hud_world_fx */
     glBindTexture(GL_TEXTURE_2D, H.bonus[n]);
     glBegin(GL_QUADS);
     glTexCoord2f(0, 0); glVertex3f(c[0] - H.sr[0] * h + H.su[0] * h, c[1] - H.sr[1] * h + H.su[1] * h, c[2] - H.sr[2] * h + H.su[2] * h);
@@ -386,7 +676,9 @@ void hud_world_beam(const float *a, const float *b, const float *eye, float hw, 
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha)
 {
     int n = fx_slot(image), blend = image == 10 || image == 11; if (!H.ok || n < 0 || !H.fx[n] || alpha <= 0 || size <= 0) return;   /* the stars are alpha blended, the rest additive */
-    float h = size * 0.5f, c = (float)cos(turns * 6.2831853f) * h, s = (float)sin(turns * 6.2831853f) * h, r[3], u[3];
+    /* 0x470fee..0x4710b3: every corner is (size*cos t, size*sin t) with t = rot +- 45 deg, so `size` is the half
+     * DIAGONAL, not the half width: the half width is size/sqrt(2) and the side is 1.4142*size */
+    float h = size * 0.70710678f, c = (float)cos(turns * 6.2831853f) * h, s = (float)sin(turns * 6.2831853f) * h, r[3], u[3];
     for (int i = 0; i < 3; i++) { r[i] = H.sr[i] * c + H.su[i] * s; u[i] = H.su[i] * c - H.sr[i] * s; }
     glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[n]);
     if (blend) { glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glColor4f(rgb[0], rgb[1], rgb[2], alpha); }

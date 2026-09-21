@@ -45,5 +45,8 @@ void rnd_set_sky(Renderer *r, const uint32_t tex[5]);   /* level bank images 3,0
 int  rnd_screenshot(const Window *w, const char *path);   /* binary PPM of the current back buffer */
 Vec3 cam_forward(const FreeCamera *c);
 Vec3 cam_right(const FreeCamera *c);
+/* the projection inlined in 0x47b230: a world point into the 640x480 HUD space. 0 = outside the four side planes
+ * (the original then skips the animation that wanted it), 1 = sx/sy filled in. */
+int  rnd_project(const Window *w, const FreeCamera *cam, Vec3 p, float *sx, float *sy);
 
 #endif

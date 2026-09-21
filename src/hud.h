@@ -19,6 +19,12 @@ void hud_draw(const HudState *s, float dt);
 void hud_text_open(int halign, int valign, const uint32_t *ids, int n);   /* message 1080; ids = string refs, 0x20001 = spacer */
 void hud_text_draw(int closed, float dt);                       /* closed = the script variable went non-zero */
 void hud_text_reset(void);
+/* the HUD animator (hud+0x30, docs/HUD_TEXT.md 4.6): the icon that flies in from the pickup and the 25 W's that
+ * are paid out as a heart or an extra life. hud_draw ticks them; the reward is detected from the counters, like
+ * the original's setters do (0x448380). kind 1..5 = pickup types 30, 36, 35, 34, 37 (0x448510);
+ * screen = the pickup projected into 640x480, NULL when it is off screen; face = the portrait index for kind 1. */
+void hud_anim_reset(void);
+void hud_anim_pickup(int kind, const float *screen, int face);
 /* House menu pages (docs/TITLE.md 5): page 0 = "Press a key", page 1 = New game / Load game / Options / Quit; logo = House.rck image 1 */
 void hud_title_draw(int page, int sel, int want_logo, float dt);
 void hud_title_reset(void);

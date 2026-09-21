@@ -721,6 +721,24 @@ static void draw_outline(const Renderer *r, Instance *inst)
     g_last_material = 0xffffffffu;
 }
 
+int rnd_project(const Window *w, const FreeCamera *cam, Vec3 p, float *sx, float *sy)
+{
+    Vec3 fw = cam_forward(cam), rt = cam_right(cam);
+    Vec3 up = { rt.y * fw.z - rt.z * fw.y, rt.z * fw.x - rt.x * fw.z, rt.x * fw.y - rt.y * fw.x };
+    Vec3 d = { p.x - cam->pos.x, p.y - cam->pos.y, p.z - cam->pos.z };
+    float ex = d.x * rt.x + d.y * rt.y + d.z * rt.z, ey = d.x * up.x + d.y * up.y + d.z * up.z, ez = d.x * fw.x + d.y * fw.y + d.z * fw.z;
+    if (ez <= 0.001f || !w->width || !w->height) return 0;
+    float aspect = (float)w->width / (float)w->height;
+    int vpy = 0, vph = w->height;
+    if (cam->letterbox) { vpy = (int)(w->height * (cam->letterbox == 1 ? 0.125f : 0.1875f)); vph = (int)(w->height * 0.75f); aspect /= 0.75f; }
+    float f = 1.0f / tanf(cam->fov_deg * 3.14159265f / 360.0f);
+    float ndx = f / aspect * ex / ez, ndy = f * ey / ez;
+    if (ndx < -1 || ndx > 1 || ndy < -1 || ndy > 1) return 0;           /* the four side planes; there is no near/far test */
+    *sx = (ndx * 0.5f + 0.5f) * 640.0f;
+    *sy = (w->height - (vpy + (ndy * 0.5f + 0.5f) * vph)) * 480.0f / w->height;
+    return 1;
+}
+
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s)
 {
     glViewport(0, 0, w->width, w->height);

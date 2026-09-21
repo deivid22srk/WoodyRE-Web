@@ -376,6 +376,70 @@ static void stars_draw(float dt)
         }
     }
 }
+/* ---- pickup effects (docs/BONUS.md 2.4, 0x4793d0) --------------------------------------------------------------
+ * One emitter record per pickup. Neither emitter draws: both spawn the same particle (0x4791f0), a camera facing
+ * additive quad of bank 0 image 4 whose size swells 0 -> 30 -> 0 over its life. One pool as in the original
+ * ([0x5e823c]+0xdb8, 2000 records, no free list: a dead record is swapped with the last one). */
+static const float k_fx_shape[12][3] = {                                     /* 0x4b7990: the 8 corners of a cube, then a tetrahedron */
+    { 1, 1, 1}, { 1, 1,-1}, { 1,-1, 1}, { 1,-1,-1}, {-1, 1, 1}, {-1, 1,-1}, {-1,-1, 1}, {-1,-1,-1},
+    { 0, 0.5f, 0}, {-0.494f,-0.5f, 0.855f}, { 1,-0.5f, 0}, {-0.494f,-0.5f,-0.855f},
+};
+typedef struct { float age, life, acc; Vec3 pos; int kind, shape; } FxRec;   /* kind 0 = shape burst (0x478f70), 1 = sparkle box (0x4792d0), 2 = the particle (0x4791f0) */
+static FxRec g_fx[2000]; static int g_nfx;
+static FxRec *fx_new(float life, Vec3 pos, int kind)
+{
+    if (g_nfx >= 2000) return NULL;                                          /* 0x4793e7: a full pool silently drops the effect */
+    FxRec *r = &g_fx[g_nfx++]; r->age = 0; r->life = life; r->acc = 0; r->pos = pos; r->kind = kind; r->shape = 0; return r;
+}
+static float fx_rnd(void) { return (float)rand() / (float)RAND_MAX; }        /* 0x43ff40: rand() / 32767, so [0,1] inclusive */
+static void fx_rotmat(int a0, int a1, int a2, float M[9])                    /* 0x46d220; the angles are in 1/512 turn */
+{
+    const float k = 6.2831853f / 512.0f;
+    float S0 = sinf(a0 * k), C0 = cosf(a0 * k), S1 = sinf(a1 * k), C1 = cosf(a1 * k), S2 = sinf(a2 * k), C2 = cosf(a2 * k);
+    M[0] = C1 * C2;  M[1] = S0 * S1 * C2 + C0 * S2;  M[2] = S0 * S2 - C0 * S1 * C2;
+    M[3] = -C1 * S2; M[4] = C0 * C2 - S0 * S1 * S2;  M[5] = S0 * C2 + C0 * S1 * S2;
+    M[6] = S1;       M[7] = -S0 * C1;                M[8] = C0 * C1;
+}
+static struct { int kind; Vec3 pos; } g_pick[8]; static int g_npick;        /* pickups waiting to be projected: 0x448510 needs the view matrix, which the frame loop owns */
+void game_pickup_fx(int n, Vec3 pos)                                         /* 0x4793d0: n = 0 life, 1 charge, 2 W, 3 unique, 4 race/invincible */
+{
+    FxRec *e;
+    if (n == 0 || n == 1) { pos.y += 50.0f; if ((e = fx_new(2.0f, pos, 0)) != NULL) e->shape = n == 0 ? 1 : 0; }   /* tetrahedron resp. cube */
+    else if (n >= 2 && n <= 4) fx_new(1.0f, pos, 1);
+}
+static void fx_update(float dt)
+{
+    static const float white[3] = { 1, 1, 1 };                               /* rgb 0.5 with the engine's x2 = full white; alpha is a constant 1 */
+    for (int i = 0; i < g_nfx; i++) {                                        /* 0x470c70 re-reads the bound, so a particle born this frame also draws this frame */
+        FxRec *e = &g_fx[i];
+        float u = (e->age += dt) / e->life;
+        if (u < 1.0f) {
+            if (e->kind == 2) {                                              /* 0x4791f0: the only thing that draws. The fade in and out is the size, not the alpha */
+                float size = 30.0f * sinf(3.14159265f * (int)(255.0f * u) / 256.0f);
+                hud_world_fx(4, &e->pos.x, size, (float)(int)(45.0f * u) / 512.0f, white, 1.0f);
+            } else if (e->kind == 0) {                                       /* 0x478f70: a rotating cage of spark sources that shrinks onto the point */
+                float M[9]; fx_rotmat((int)(u * 255.5f), (int)(u * 408.8f), (int)(u * 511.0f), M);
+                int first = e->shape ? 8 : 0, cnt = e->shape ? 4 : 8, reps;
+                e->acc += dt * 60.0f; reps = (int)e->acc; e->acc -= reps;     /* the original emits one set per FRAME; normalised to its 60 Hz so the density does not follow our frame rate */
+                for (int r = 0; r < reps; r++) for (int k = 0; k < cnt; k++) {
+                    const float *S = k_fx_shape[first + k], s = 1.0f - u;
+                    float X = s * S[0] * 40.0f, Y = s * S[1] * 40.0f, Z = s * S[2] * 40.0f;
+                    Vec3 p = { e->pos.x + M[0] * X + M[3] * Y + M[6] * Z, e->pos.y + M[1] * X + M[4] * Y + M[7] * Z, e->pos.z + M[2] * X + M[5] * Y + M[8] * Z };
+                    if (!fx_new(0.4f, p, 2)) break;
+                }
+            } else {                                                         /* 0x4792d0: 50 sparks a second in a box over the bonus, each 0.2 s */
+                float acc = e->acc + dt; int n = (int)(acc * 50.0f); e->acc = acc - n * 0.02f;
+                while (n-- > 0) {
+                    Vec3 p = { e->pos.x + fx_rnd() * 60.0f - 30.0f, e->pos.y + (fx_rnd() + 1.0f) * 25.0f, e->pos.z + fx_rnd() * 60.0f - 30.0f };
+                    if (!fx_new(0.2f, p, 2)) break;
+                }
+            }
+            continue;
+        }
+        g_fx[i] = g_fx[--g_nfx]; i--;                                        /* 0x470cf4: swap with the last and look at this slot again */
+    }
+}
+
 static void launchers_draw(const float *eye)
 {
     static const float white[3] = { 1, 1, 1 };
@@ -701,7 +765,16 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 55: if (in && rocket_of(in) && m->nargs > 2) { Rocket *rk = rocket_of(in); if (m->args[1] == 1) rk->fly_time = (float)(int32_t)m->args[2] * 0.01f; else if (m->args[1] == 2) rk->vmax = (float)(int32_t)m->args[2]; } break;
     case 7: if (in) { int k = 0; for (int i = 0; i < g_nretry; i++) if (slot_instance(g_retry[i].args[0]) != in) g_retry[k++] = g_retry[i]; g_nretry = k; } break;
     case 10:                                                                        /* Collect (docs/BONUS.md): the level script saw the player enter the bonus volume */
-        if (in && g_player && in->visible && player_collect(g_player, in->type, m->nargs > 1 ? (int)m->args[1] : 0)) in->visible = 0;   /* 0x407850: cell = -1 */
+        if (in && g_player && in->visible && player_collect(g_player, in->type, m->nargs > 1 ? (int)m->args[1] : 0)) {
+            int t = in->type;
+            Vec3 fp = in->position;
+            if (t == 34 && in->node_world) { fp.x = in->node_world[0].m[12]; fp.y = in->node_world[0].m[13]; fp.z = in->node_world[0].m[14]; }   /* 0x44f630: the W sits on its animated volume node, not on inst.pos */
+            int fx = t == 30 ? 0 : t == 35 ? 1 : t == 34 ? 2 : t == 36 ? 3 : (t == 37 || t == 38) ? 4 : -1;
+            int kind = t == 30 ? 1 : t == 36 ? 2 : t == 35 ? 3 : t == 34 ? 4 : t == 37 ? 5 : 0;       /* 0x448510; type 38 has no HUD animation */
+            in->visible = 0;                                                        /* 0x407850: cell = -1 */
+            if (fx >= 0) game_pickup_fx(fx, fp);
+            if (kind && g_npick < 8) { g_pick[g_npick].kind = kind; g_pick[g_npick].pos = fp; g_npick++; }   /* projected and started in the frame loop, where the camera is */
+        }
         break;
     case 1020:                                                                      /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes; + 0x459030 unless in the side view */
         if (g_player) {
@@ -814,7 +887,7 @@ static void level_free(Level *L)
 {
     g_nlasers = 0; g_nlaunchers = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
-    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -868,6 +941,7 @@ int main(int argc, char **argv)
     int have_pos = 0; float pos_args[3] = {0, 0, 0};                               /* --pos x y z: start the player there (testing) */
     int have_yaw = 0; float yaw_arg = 0;
     double enter_at = -1;                                                         /* --enter T: press Enter on the title after T s (testing) */
+    int pick_type = 0, pre_bonus = -1; float pre_health = -1; double pick_at = 0;   /* --pickup TYPE T, --bonus N, --health N (testing) */
     int new_game = 0; const char *next_name = NULL; double next_at = 0;                              /* --next LVL T: change to level LVL after T s (testing) */
     double walk_for = 0, walk_at = getenv("WOODY_WALKAT") ? atof(getenv("WOODY_WALKAT")) : 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     for (int i = (argc > 2 && argv[2][0] != '-') ? 3 : 2; i < argc; i++) {
@@ -880,6 +954,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--pos") && i + 3 < argc) { for (int k = 0; k < 3; k++) pos_args[k] = (float)atof(argv[i + 1 + k]); have_pos = 1; i += 3; }
         else if (!strcmp(argv[i], "--fly")) fly = 1;
         else if (!strcmp(argv[i], "--enter") && i + 1 < argc) { enter_at = atof(argv[i + 1]); i += 1; }
+        else if (!strcmp(argv[i], "--pickup") && i + 2 < argc) { pick_type = atoi(argv[i + 1]); pick_at = atof(argv[i + 2]); i += 2; }   /* --pickup TYPE T: collect a bonus of that type in front of the camera (testing) */
+        else if (!strcmp(argv[i], "--bonus") && i + 1 < argc) { pre_bonus = atoi(argv[i + 1]); i += 1; }                                 /* --bonus N: start with N W's in the counter (testing) */
+        else if (!strcmp(argv[i], "--health") && i + 1 < argc) { pre_health = (float)atof(argv[i + 1]); i += 1; }                        /* --health N: hearts before the pickup (testing) */
         else if (!strcmp(argv[i], "--yaw") && i + 1 < argc) { have_yaw = 1; yaw_arg = (float)atof(argv[i + 1]) * 3.14159265f / 180; i += 1; }   /* with --pos: facing in degrees */
         else if (!strcmp(argv[i], "--unlock")) g_unlock_all = 1;                       /* every level door open */
         else if (!strcmp(argv[i], "--newgame")) new_game = 1;                          /* ignore woodyre.sav */
@@ -1067,10 +1144,28 @@ int main(int argc, char **argv)
                         }
                     }
                 }
-                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt);
+                launchers_draw(&cam.pos.x); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */
+            if (L.have_player && now - t0 >= pick_at - 0.5) {            /* set the counters a few frames early, so the HUD sees them change like it would in play */
+                if (pre_bonus >= 0) { L.player.bonus_count = pre_bonus; pre_bonus = -1; }
+                if (pre_health >= 0) { L.player.health = pre_health; pre_health = -1; }
+            }
+            if (pick_type && now - t0 >= pick_at && L.have_player) {     /* --pickup: the same path a script pickup takes, 400 units in front of the camera */
+                Vec3 f = cam_forward(&cam), fp = { cam.pos.x + f.x * 400, cam.pos.y + f.y * 400, cam.pos.z + f.z * 400 };
+                int t = pick_type, fx = t == 30 ? 0 : t == 35 ? 1 : t == 34 ? 2 : t == 36 ? 3 : (t == 37 || t == 38) ? 4 : -1;
+                int kind = t == 30 ? 1 : t == 36 ? 2 : t == 35 ? 3 : t == 34 ? 4 : t == 37 ? 5 : 0;
+                player_collect(&L.player, t, 300);
+                if (fx >= 0) game_pickup_fx(fx, fp);
+                if (kind && g_npick < 8) { g_pick[g_npick].kind = kind; g_pick[g_npick].pos = fp; g_npick++; }
+                pick_type = 0;
+            }
+            for (int i = 0; i < g_npick; i++) {                          /* 0x448510: the flight starts from where the bonus was on screen */
+                float sc[2]; int on = rnd_project(&win, &cam, g_pick[i].pos, &sc[0], &sc[1]);
+                hud_anim_pickup(g_pick[i].kind, on ? sc : NULL, g_char);
+            }
+            g_npick = 0;
             hud_begin(win.width, win.height);
             if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
                 const Player *pl = &L.player; int race = pl->inst->type == 18 || pl->inst->type == 19;
