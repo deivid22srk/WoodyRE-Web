@@ -437,7 +437,7 @@ static void hud_anim_reward(int to_life, float health_old)
 static void hud_anim_tick(const HudState *s, float dt)
 {
     int lives_hud = s->lives > 0 ? s->lives - 1 : 0;                   /* hud+0x20, the value the row shows */
-    if (A.latch && !A.fly[4].on) A.latch = 0;                          /* the flight is what clears hud+0x10; never deadlock if it did not start */
+    if (A.latch && !A.fly[4].on && !A.pop[0].on) A.latch = 0;          /* 0x44812b clears hud+0x10 with the flag; never deadlock if the flight never started */
     if (A.sw.on && !A.latch) {
         if (!A.sw.to_life) A.sw.on = swarm_tick(dt);                                         /* 0x460bb0: the heart variant is the swarm and nothing else */
         else if (!A.sw.phase2) {                                                             /* 0x460be0 phase 1 */
@@ -449,7 +449,11 @@ static void hud_anim_tick(const HudState *s, float dt)
             if (!pop_tick(3, lives_hud, dt)) A.sw.on = 0;
         }
     }
-    if (A.fly[4].on) { fly_tick(4, dt); if (!A.sw.on) number_sized(k_anchor[0][0], k_anchor[0][1], s->bonus > 0 ? s->bonus - 1 : 0, 17.0f); }
+    if (A.fly[4].on || A.latch) {                                      /* 0x4611b0; 0x448115 feeds it a literal 25 while the latch is up, so the circle reads 24 and then pops 25 */
+        int v = A.latch ? 25 : s->bonus;
+        if (A.fly[4].on) { fly_tick(4, dt); number_sized(k_anchor[0][0], k_anchor[0][1], v > 0 ? v - 1 : 0, 17.0f); }
+        else if (!A.pop[0].on || !pop_tick(0, v, dt)) A.latch = 0;     /* the whole animation, flight and pop, holds the reward back */
+    }
     else if (A.fly[5].on) { fly_tick(5, dt); number_sized(k_anchor[0][0], k_anchor[0][1], s->bonus > 0 ? s->bonus - 1 : 0, 17.0f); }
     else if (A.pop[0].on && !A.sw.on) pop_tick(0, s->bonus == 0 && !s->race ? 25 : s->bonus, dt);   /* 0x4611b0: a counter that wrapped pops "25" */
     if (A.fly[1].on) { fly_tick(1, dt); number_sized(k_anchor[3][0], k_anchor[3][1], lives_hud > 0 ? lives_hud - 1 : 0, 17.0f); }
