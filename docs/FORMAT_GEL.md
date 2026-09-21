@@ -36,7 +36,7 @@ count x record:
 | Offset | Grootte | Type | Betekenis |
 |---|---|---|---|
 | 0x00 | 4 | u32 | `nverts` (in alle 28 levels altijd 3) |
-| 0x04 | 4 | u32 | `material`: bits 0..14 = index in de materiaaltabel van `<LVL>.tex` (`level+0x5c`, 0x24 B/stuk: 8 floats uv-projectie + texture-pointer op +0x20); bit 15 (`test ah,0x80`) = geen materiaal / niet renderen (bv. 0x8000 in Blackbox, 0xDAD6 in W3B/K3A) |
+| 0x04 | 4 | u32 | `material`: bits 0..14 = index in de materiaaltabel van `<LVL>.tex` (`level+0x5c`, 0x24 B/stuk: 8 floats uv-projectie + texture-pointer op +0x20); bit 15 (`test ah,0x80`) = **geen materiaal: alleen collision, nooit getekend** (bv. 0x8000 in Blackbox, 0xDAD6 in W3B/K3A). De renderer slaat zo'n vlak over vóór alles (`0x42acd3`, zie SKY.md §1), de collision en het grondtype (`0x462948`) lezen hem gewoon: zo zijn de onzichtbare barrières gebouwd — de "glasplaat" van W1A is er één (issue #2) |
 | 0x08 | 16 | 4 x f32 | vlak `(nx, ny, nz, d)`; test in `0x40a0c0`: `nx*x + ny*y + nz*z + d` |
 | 0x18 | 4·n | u32[n] | vertexindices (in sectie 4) |
 
@@ -196,10 +196,8 @@ ongebruikte knopen, elke buur grenst aan het juiste vlak.
 
 ## Nog onzeker
 
-* Betekenis van bit 15 van `material`: zeker "niet via de materiaaltabel
-  renderen" (`0x42acd6`, `0x462948`), maar of dit "onzichtbaar/alleen
-  collision" of iets anders betekent is niet nagegaan; overige bits >15 komen
-  niet voor.
+* Overige bits >15 van `material` komen niet voor. (Bit 15 zelf is opgelost:
+  onzichtbaar, alleen collision — §1.)
 * Waarom sommige sectoren méér polygonen bevatten dan hun bladcellen samen
   (2 van 128 in W1A, 1 van 193 in W3B).
 * Het hoge woord van het knooptype in de lokale buurbomen (rommel of

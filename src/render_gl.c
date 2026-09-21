@@ -151,6 +151,17 @@ static void light_textures(Renderer *r)                 /* generator 0x480090: 1
     }
 }
 
+/* 0x42acd3: a world face whose material has bit 15 set has no material and is never handed to the face drawer
+ * 0x42b6c0 - it is collision only (the ground type lookup 0x462948 tests the same bit), which is how an invisible
+ * barrier like the glass plate in W1A is built. Drawing such a face anyway put flat grey slabs in the middle of the
+ * room (issue #2), because without a material it can only be vertex colour. A material or group index past the end of
+ * the table cannot be drawn either and is treated the same way. */
+static int gel_face_invisible(const GelFile *g, const TexFile *t, uint32_t i)
+{
+    uint32_t mat = g->polys[i].material;
+    return (mat & 0x8000) || (mat & 0x7fff) >= t->nmaterials || t->materials[mat & 0x7fff].group >= t->ngroups;
+}
+
 int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis)
 {
     memset(r, 0, sizeof *r); r->tex = tex; r->gel = gel; r->ins = ins; r->show_world = r->show_instances = r->show_light = 1;
@@ -174,16 +185,16 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
         for (uint32_t k = 0; k < L->na; k++) if (L->a[k] < gel->npolys) lit_face[L->a[k]] = 1;
         for (uint32_t k = 0; k < L->nb; k++) if (L->b[k] < gel->npolys) lit_face[L->b[k]] = 1;
     }
-    r->nbatches = tex->ngroups + 1;
+    r->nbatches = tex->ngroups;
     r->batches = (struct WorldBatch *)calloc(r->nbatches, sizeof *r->batches); r->litb = (struct WorldBatch *)calloc(r->nbatches, sizeof *r->litb);
     uint32_t *cap = (uint32_t *)calloc(r->nbatches * 2, 4);
     for (uint32_t g = 0; g < r->nbatches; g++) r->batches[g].group = r->litb[g].group = g;
     for (uint32_t i = 0; i < gel->npolys; i++) {
         GelPoly *p = &gel->polys[i]; if (p->nverts < 3) continue;
-        int nomat = (p->material & 0x8000) != 0;
-        const Material *m = nomat ? NULL : &tex->materials[p->material & 0x7fff];
-        uint32_t grp = nomat ? tex->ngroups : m->group; uint32_t gflags = nomat ? 0 : tex->groups[grp].flags;
-        if (!nomat && ((gflags >> 8) & 0xff) == 2) {                               /* sky group (0x42acea): the face is never drawn, it only switches the sky cube on */
+        if (gel_face_invisible(gel, tex, i)) continue;                             /* collision only, never drawn (0x42acd3) */
+        const Material *m = &tex->materials[p->material & 0x7fff];
+        uint32_t grp = m->group; uint32_t gflags = tex->groups[grp].flags;
+        if (((gflags >> 8) & 0xff) == 2) {                                         /* sky group (0x42acea): the face is never drawn, it only switches the sky cube on */
             TexGroup *sg = &tex->groups[grp];
             if (!r->have_sky) { r->have_sky = 1; r->sky_hu = 0.5f / (float)sg->width; r->sky_hv = 0.5f / (float)sg->height; for (int f = 0; f < 5; f++) r->sky_tex[f] = sg->gl_frames[(uint32_t)f < sg->frame_count ? f : 0]; }
             continue;
@@ -200,7 +211,7 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
             for (int c = 0; c < 3; c++) {
                 GelVert *v = &gel->verts[idx[c]]; size_t o = (size_t)b->ntris * 3 + c;
                 b->pos[o * 3] = v->x; b->pos[o * 3 + 1] = v->y; b->pos[o * 3 + 2] = v->z;
-                float u = 0, vv = 0; if (m) material_uv(m, v->x, v->y, v->z, &u, &vv);
+                float u, vv; material_uv(m, v->x, v->y, v->z, &u, &vv);
                 b->uv[o * 2] = u; b->uv[o * 2 + 1] = vv;
                 float scale[3] = { 2, 2, 2 };                                  /* bytes R,G,B; 128 = neutral (modulate 2x) */
                 if (multipass) scale[0] = scale[1] = scale[2] = 1.0f;           /* texture pass: 2 * src * dst */
@@ -237,8 +248,10 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
         uint32_t lcap[16] = { 0 }; light_textures(r);
         for (uint32_t l = 0; l < r->lit->nlights; l++) {
             const LitLight *L = &r->lit->lights[l];
-            for (uint32_t k = 0; k < L->na; k++) if (L->a[k] < gel->npolys) { const GelPoly *p = &gel->polys[L->a[k]]; light_poly(r, L, p->plane, (const int32_t *)p->indices, p->nverts, lcap, L->a[k]); }
-            for (uint32_t k = 0; k < L->nc; k++) light_poly(r, L, L->c[k].plane, L->c[k].indices, L->c[k].n, lcap, L->c[k].face);
+            /* no light spot on a face that is not drawn; a fragment whose face index is unusable is kept, the
+             * visibility pass keeps those too */
+            for (uint32_t k = 0; k < L->na; k++) if (L->a[k] < gel->npolys && !gel_face_invisible(gel, tex, L->a[k])) { const GelPoly *p = &gel->polys[L->a[k]]; light_poly(r, L, p->plane, (const int32_t *)p->indices, p->nverts, lcap, L->a[k]); }
+            for (uint32_t k = 0; k < L->nc; k++) if (L->c[k].face >= gel->npolys || !gel_face_invisible(gel, tex, L->c[k].face)) light_poly(r, L, L->c[k].plane, L->c[k].indices, L->c[k].n, lcap, L->c[k].face);
         }
         uint32_t nl = 0; for (int t = 0; t < 16; t++) nl += r->lightb[t].ntris;
         printf("lighting: %u lights, %u light triangles\n", r->lit->nlights, nl);
@@ -590,7 +603,8 @@ static void cast_shadow(const Renderer *r, Instance *inst)
         const uint32_t *faces = list ? L->b : L->a; uint32_t nf = list ? L->nb : L->na;
         for (uint32_t fi = 0; fi < nf; fi++) {
             uint32_t f = faces[fi]; if (f >= r->gel->npolys) continue;
-            const GelPoly *gp = &r->gel->polys[f]; const float *pl = gp->plane, *fb = &r->face_bound[4 * f]; if (gp->nverts < 3) continue;
+            const GelPoly *gp = &r->gel->polys[f]; const float *pl = gp->plane, *fb = &r->face_bound[4 * f];
+            if (gp->nverts < 3 || gel_face_invisible(r->gel, r->tex, f)) continue;                               /* nor a shadow on one */
             float dl = pl[0] * L->pos.x + pl[1] * L->pos.y + pl[2] * L->pos.z + pl[3], dc = pl[0] * c[0] + pl[1] * c[1] + pl[2] * c[2] + pl[3];
             if (dl <= 1.0f || dc >= dl || dc < -rad) continue;                 /* caster must be between the light and the plane */
             n_plane++;
@@ -1005,7 +1019,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         set_blend(pass);
         for (uint32_t i = 0; i < r->nbatches; i++) {
             struct WorldBatch *b = &r->batches[i]; if (batch_empty(r, b) || group_blended(r, b->group) != pass) continue;
-            if (b->group < r->tex->ngroups) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->tex->groups[b->group].gl_tex); } else glDisable(GL_TEXTURE_2D);
+            glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->tex->groups[b->group].gl_tex);
             glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(3, GL_UNSIGNED_BYTE, 0, b->col);
             batch_draw(r, b);
         }
@@ -1032,7 +1046,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
             for (uint32_t i = 0; i < r->nbatches; i++) {
                 struct WorldBatch *b = &r->litb[i]; if (batch_empty(r, b)) continue;
-                if (b->group < r->tex->ngroups) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->tex->groups[b->group].gl_tex); } else glDisable(GL_TEXTURE_2D);
+                glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->tex->groups[b->group].gl_tex);
                 glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(3, GL_UNSIGNED_BYTE, 0, b->col);
                 batch_draw(r, b);
             }
