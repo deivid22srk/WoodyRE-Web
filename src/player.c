@@ -379,6 +379,8 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel)
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins_pose(&ins->models[mi].instances[k], 0, 0);
     p->spawn_pos = p->pos; p->spawn_yaw = p->yaw;
     printf("player: start (%.0f %.0f %.0f) yaw %.1f deg, %u trigger volumes\n", p->pos.x, p->pos.y, p->pos.z, p->yaw * 57.2958f, p->nvol);
+    if (getenv("WOODY_VOLDUMP")) for (uint32_t v = 0; v < p->nvol; v++)   /* id of every trigger volume (VOL_FLAG5 in the level script) and the instance carrying it */
+        printf("  VOL 0x%x: inst %u at %.0f %.0f %.0f", p->vol_id[v], p->vol_inst[v]->index, p->vol_inst[v]->position.x, p->vol_inst[v]->position.y, p->vol_inst[v]->position.z), puts("");
     return 0;
 }
 
@@ -1092,7 +1094,9 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
     p->script_act = act; p->lanim = -1; anim_request(p, act == 17 ? 0x18 : 0x19, 1.0f); p->script_t = anim_len(p, act == 17 ? 0x18 : 0x19, 0); p->script_faded = 0;
-    if (act == 18) p->fade_req = 2;                                                          /* fade in 0.5 s on the first frame; 0x44dda0 leaves the camera alone */
+    if (act == 18) { p->fade_req = 2; p->cam_cut_req = 1; }   /* fade in 0.5 s on the first frame. 0x44dda0 leaves the camera alone; the cut belongs to message 26, which arrives in the same
+                                                               * script tick - but 0x44a650 refuses to move him while the previous action is still running, and this action does place him
+                                                               * (pos = P0 of the door vector, 0x44dec4), so the camera has to follow that placement in either case */
     player_apply_transform(p);
 }
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44ce11 -> 0x44a650: SetPos + ground snap 0x462990, anim controllers reset, camera cut 0x458f90 */
@@ -1105,7 +1109,10 @@ void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44c
         p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->att_inst = NULL; p->lanim = -1;
         jumper_reset(&p->jumper); p->on_ground = 1; player_apply_transform(p);
     }
-    player_camera_reset(p);                                             /* 0x458f90 sits outside that test and cuts HERE, on the facing of this moment; the door action that follows turns the player without moving the camera */
+    p->cam_cut_req = 1;                                                 /* 0x458f90 sits outside that test: 0x41f9f0(2) + SetMode(0, 0). The camera places itself in the next camera update, after
+                                                                         * the rest of this script tick: a door sends message 26 and then 1040 / action 18, and only that action knows where and
+                                                                         * facing which way he comes out (mode 1 of message 26 carries no direction). Cutting right here would put the camera
+                                                                         * on the old facing, in the wall beside the new door, for the whole 1.5 s of the walk-out. */
 }
 void player_script_hold(Player *p, float t) { p->atk = 0; p->charge = 0; p->use_atk_disp = 0; lock_move(p, t); }
 

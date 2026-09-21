@@ -45,6 +45,11 @@ Loader in de exe: `0x4424b0` (leest bestand, versiecheck), `0x442570` (bouwt tab
   reactief blok binnen het object.
 - **Init** (`0x4427e0`) draait alle objecten **twee keer**; de berichten van de eerste ronde worden
   weggegooid (`0x441d40`), timers gereset, dan ronde twee "echt".
+  De berichten van ronde twee gaan in de **wachtrij** (`0x5bd300`, max 1280) en worden pas **na** de init aan de
+  game gegeven, net als elke tick. Dat is niet vrijblijvend: een handler die een scriptvariabele zet
+  (`1082 LevelIsEnable` voor de hub-deuren, GAMEFLOW.md §4.6) wekt daarmee zijn watcherobject, en aan het eind van
+  `0x4427e0` worden alle wekkerlijsten gewist. Geeft de port ze meteen tijdens de init door, dan verdwijnen die
+  wekkers en draait zo'n object nooit (`level_load` doet de doorgifte daarom na `eko_init`).
 
 ### Tick (`0x442240`, aangeroepen uit de game-loop `0x4019c0`)
 1. `0x442350`: voer alle verlopen **DELAY**-entries uit (gesorteerde lijst `0x5d24d8..`, entry = {tijd, doel}).

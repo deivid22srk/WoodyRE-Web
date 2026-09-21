@@ -227,6 +227,41 @@ var21 == 1                          → 1081(2)  [GotoLevel W1A, fade 1.5 s]
 Of een deur open mag: **1082 `LevelIsEnable(level, var)`** (§6.3). Einde van een level (W1A, woord
 13794..13839): `1040(exitdeur, 17)`, deur-anim, geluid, `DELAY 100` → **`1083(0)`**.
 
+#### Het vinkje / kruisje naast de deur
+
+Dat is **één instantie** met een textuurgroep van twee frames (WWS-groep 145: frame 0 = rood kruis,
+frame 1 = groene pijl; de lichtbalk boven de deur is groep 146, ook rood → groen). Instanties laten hun
+textuurframes **nooit vanzelf** lopen (`0x47f290` kijkt alleen naar de override op `inst+0xd8`, INSTANCE.md §2),
+dus zonder bericht blijft frame 0 staan: het kruis. Groen zetten gebeurt met **bericht 16**
+`16 [marker, 0xffff, 1, 50]` = speel de frames eenmalig vooruit in 0,5 × de textuurduur en blijf op frame n−1 staan.
+
+Het **init-blok** van elk deurobject vraagt `1082 LevelIsEnable(level, var)` en is daarmee watcher van die
+variabele; wordt hij 1, dan stuurt het reactieve blok bericht 16 naar de marker en zet de variabele op 2 (zodat
+het één keer gebeurt). Uit `out/wws_code.txt`:
+
+| scriptobject | 1081 GotoLevel | level | 1082 → var | deur | marker |
+|---|---|---|---|---|---|
+| 217 + 193 | 2 | W1A | — (altijd open) | 223 | 193 |
+| 218 | 3 | W1B | 26 | 224 | 194 |
+| 322 | 4 | W2A | 84 | 323 | 180 |
+| 324 | 5 | W2B | 89 | 325 | 181 |
+| 326 | 6 | W2D | 94 | 327 | 182 |
+| 328 | 7 | W3A | 99 | 329 | 157 |
+| 330 | 8 | W3B | 104 | 333 | 158 |
+| 331 | 9 | W3C | 109 | 334 | 159 |
+| 332 | 10 | W3D | 114 | 335 | 160 |
+
+Object **193** (W1A) heeft geen voorwaarde: het stuurt bericht 16 in zijn **init-blok**, dus die deur staat
+vanaf het eerste bezoek op groen. De marker betekent dus **open**, niet *uitgespeeld*. Object **297** speelt de
+onthulling opnieuw af als je terugkomt uit het level dat de volgende deur vrijspeelde (`1084 GetPrevLevel`,
+`1085 LevelIsDone(10)`): eerst bericht 16 met modus 0 (terug naar het kruis), later modus 1. De drie
+gebiedspoorten werken met een **paar** instanties (groene pijl 77/79/56, rood kruis 78/80/57, groepen 123/124)
+vanuit de objecten 287/354. KWS en SWS hebben dezelfde opbouw.
+
+> Poort: de init-berichten moeten **na** `eko_init` aan de app gegeven worden (VM.md §2, `level_load`),
+> anders schrijft 1082 zijn variabele nog tijdens de init en wist het einde van de init de wekkerlijst —
+> dan stuurt geen enkel deurobject ooit bericht 16 en blijft alles op het rode kruis staan.
+
 ## 5. Het menu (state 0, `0x404e90`)
 
 - Menu-object `app+0x3c` (`0x445e30`): tabel van pagina-objecten op `menu + 4*page`, huidige pagina

@@ -1,6 +1,6 @@
 /* instance.c - generic instance behaviour of the base class (docs/INSTANCE.md): animation clock 0x43eee0,
  * PlayAnim messages 1..5/12/13, path follower 42/43/44/46, transparency fade 56/57, show/hide 6.
- * Not ported: texture overrides 15..19, SetFlags 45 (stored only), orientation along the path (46). */
+ * texture frame override 16/18/19. Not ported: the UV scroll override 15/17, SetFlags 45 (stored only), orientation along the path (46). */
 #include <math.h>
 #include "instance.h"
 
@@ -18,6 +18,7 @@ void inst_init(Instance *I)                                                     
     I->a_speed = I->a_base_speed = 0; I->a_start = 0; I->a_pos = 0; I->a_ended = 0;
     I->fade = 0; I->fade_target = 0; I->fade_rate = 100.0f; I->noncollide = 0; I->setflags = 0;
     I->traj_flags = 0; I->traj_start = 0; I->traj_dur = 1.0f; I->scripted = 1;
+    I->tex_mode = 0; I->tex_t0 = 0; I->tex_fac = 1.0f;
 }
 
 /* returns 1 when the message must be offered again next frame (12/13 waiting for the running animation to end) */
@@ -69,6 +70,11 @@ int inst_msg(Instance *I, uint32_t id, const uint32_t *arg, uint32_t nargs, floa
         I->traj_dur = a2 * 0.01f; I->traj_start = now;
         I->position = I->traj.points[a1 == 1 ? 0 : I->traj.npoints - 1]; return 0;
     case 44: I->traj_flags &= ~T_ACTIVE; return 0;
+    case 16: case 18:                                             /* texture frame override B (docs/INSTANCE.md 2): 16 = one shot, 18 = loop; a2 = 1 forward, 0 backward,
+                                                                   * 2 there and back; a3 x 0.01 = factor on the texture duration, a1 (0xffff) is stored but never read */
+        I->tex_mode = (id == 16 ? 1 : 4) + (a2 == 1 ? 0 : a2 == 0 ? 1 : 2);
+        I->tex_t0 = now; I->tex_fac = a3 * 0.01f; return 0;
+    case 19: I->tex_mode = 0; return 0;                           /* 0x42db86: override off, back to the frame of the global texture animation */
     case 45: I->setflags |= (uint32_t)a1 & 0x23; return 0;
     case 56:                                                      /* transparency: direct on the base class, a target on classes behind 0x44e8f0 */
         if (I->type == 0 || I->type == 41 || I->type == 90) I->fade = I->fade_target = a1 * 0.01f; else I->fade_target = a1 * 0.01f;

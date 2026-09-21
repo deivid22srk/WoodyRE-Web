@@ -11,7 +11,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Klimmen: geen botsing met de wereld (zijwaarts door muren), geen vonken (`0x479c80`) | analyse klaar | OBJECTS.md §1.3 |
 | Bukken (actie 5), rondkijken (actie 7) | niet geanalyseerd | PERSO_MOVE.md |
 | Idle-variaties 0x59/0x5a | niet geport | PERSO_MOVE.md §4.3 |
-| Gescripte Perso-acties (bericht 1040): 17/18 (deur in/uit, met fade), teleport (bericht 26) en beide camera-acties (cut bij de teleport, `0x44e5a0` aan het eind van 18) geport; overige acties (10..16, 19: wortelbeweging) alleen stilstaan; bericht 30 (LockMove) niet. Valt de teleport nog in toestand 5 (de DELAY van het script is even lang als animatie 17), dan cut de camera bij de oude deur en vliegt hij tijdens animatie 18 naar de nieuwe - net als in het origineel, maar het valt hier meer op | grotendeels | PERSO_DEATH.md §1-2.1, CINEMATIC.md §6 |
+| Gescripte Perso-acties (bericht 1040): 17/18 (deur in/uit, met fade), teleport (bericht 26) en beide camera-acties (cut bij de teleport, `0x44e5a0` aan het eind van 18) geport; overige acties (10..16, 19: wortelbeweging) alleen stilstaan; bericht 30 (LockMove) niet | grotendeels | PERSO_DEATH.md §1-2.1, CINEMATIC.md §6 |
 | Doodsanimaties per soort en hit-animatie geport. Niet: tekstballon (soort 1, `0x478980`), skelet-flits (soort 2/9, `0x477e40`), waterplons (soort 7, `0x478660`), gebukte varianten, race-variant `0x464a00`, wit knipperen bij de onkwetsbaarheidsbonus (`0x44cf50`) | deels | PERSO_DEATH.md §3-6 |
 | Perso-toestand 8 (raket berijden, type 20): geport. Niet: afstap-anim (in het origineel ook nergens aangevraagd), type 21 (meerijden op de kanonbom) | grotendeels | ROCKET.md §6 |
 | Perso-toestand 6 (bom dragen) | op hoofdlijnen | BONUS.md §7 |
@@ -49,7 +49,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | 90 | omgevingsdeeltjes-volume (1501/1502) | analyse op hoofdlijnen | OBJECTS.md §2.4 |
 | 60 | eigen handler (1503/1506) | niet geanalyseerd | OBJECTS.md §3 |
 | 50 / 51 / 52 | laser: reizende puls, bliksemboog, inslag-sprite, straal tegen instanties | kern geport | OBJECTS.md §2.1 |
-| berichten 15..19 | textuurframe-/UV-override per instantie | analyse klaar | INSTANCE.md §2 |
+| berichten 16/18/19 (textuurframe-override) geport; 15/17 (UV-scroll-override) niet | textuurframe-/UV-override per instantie | grotendeels | INSTANCE.md §2 |
 | 1201 / 1202 | typewoord-bit 0x400 (aanvalbaar doel) | analyse klaar | OBJECTS.md §3 |
 
 ## Effecten

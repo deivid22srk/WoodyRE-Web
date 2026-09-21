@@ -112,6 +112,7 @@ typedef struct Instance {
     Mat4 *node_world;                           /* per node, updated by ins_pose() */
     int tint_red;                               /* render colour hook vtbl[26]: vertex colours times (1,0,0) (the rocket's warning blink 0x4537d0) */
     Vec3 ldir; float lcol[3]; int l_init, light, l_seen;   /* model lighting: smoothed light vector, light colour, chosen light, seen by it (0x43b912, 0x42e3e4) */
+    int tex_mode; float tex_t0, tex_fac;                   /* +0xd8 bits 0-2, +0xdc, +0xe0: texture frame override, messages 16 / 18 / 19 (docs/INSTANCE.md 2) */
 } Instance;
 
 typedef struct Model {

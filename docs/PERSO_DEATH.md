@@ -129,7 +129,7 @@ De enige twee camera-acties zitten in bericht 26 en aan het **eind** van actie 1
 
 | moment | aanroep | effect |
 |---|---|---|
-| bericht 26 (teleport) | `0x458f90` (§1.1), **buiten** de toestand-5-test | harde cut: volgcamera opnieuw **achter de kijkrichting van dat moment** (nog die van de eerste deur) op de nieuwe positie |
+| bericht 26 (teleport) | `0x458f90` (§1.1), **buiten** de toestand-5-test | harde cut: `0x41f9f0(2)` + `SetMode(0, 0)` → `0x41e450` → `0x4247f0` zet de volgcamera **op dat moment** neer: `P = pos − look + (0,100,0)`, dan 1 stap van 0,1 s en 100 van 0,04 s in behind-mode |
 | eind actie 18, na `facing = −facing` | `0x44e5a0`, alleen als `+0x4ec == 0` | `0x41f9d0(0.5)` + `0x41f9f0(1)` + `SetMode(0, 0)`: volgcamera achter de **nieuwe** kijkrichting, met een travelling van 0,5 s |
 
 `0x44e5a0` zelf: `p->targetPtr (+0x18) = &P.pos`, `p+0x28 = −1`, `p->dir (+0x1c) = M-kijkrichting`, `p+0x30 = 0`
@@ -138,6 +138,19 @@ De enige twee camera-acties zitten in bericht 26 en aan het **eind** van actie 1
 Zonder die laatste reset staat de camera na het uitstappen **vóór** de speler: de camera stond achter de kijkrichting
 "de deur in", en die draait in het laatste frame 180°. De `+0x4ec`-test is er voor deuren die in een zij-aanzicht-stuk
 uitkomen: het script zet dat stuk (bericht 1088) in hetzelfde frame weer aan, en dan blijft mode 0x20 staan.
+
+**Volgorde binnen één scripttick, en waar de port afwijkt.** Het script stuurt 26 en 1040/18 achter elkaar
+(`out/w1a_code.txt` 2297..2313), zonder DELAY ertussen. Bericht 26 draagt in de deurscripts modus 1: alleen een
+positie, **geen richting**; en `0x44a650` verplaatst niets zolang toestand 5 nog loopt (de `DELAY 150` van het script
+is even lang als animatie 17, dus dat gebeurt geregeld). Pas actie 18 legt vast waar hij staat en welke kant hij op
+kijkt (`pos = P0` van de deurvector, `0x44dec4`). Zet je de camera zoals het origineel **tijdens** bericht 26 neer, dan
+staat hij dus achter de kijkrichting van de *vorige* deur — bij de W1A-deur 336 → 334 scheelt dat 135° en kijkt de
+speler anderhalve seconde lang tegen een muur aan. De port vraagt daarom alleen een cut aan (`cam_cut_req`, ook vanuit
+actie 18 zelf) en plaatst de camera in de camera-update **na** de scripttick, dus met de positie en kijkrichting
+waarmee hij de deur uit komt. Het scherm is op dat moment zwart (fade-out klaar aan het eind van 17, fade-in 0,5 s in 18),
+dus er is niets van te zien; het verschil met het origineel is één frame aan het begin van actie 18.
+(Niet dynamisch geverifieerd: of het origineel op die 135° hetzelfde beeld geeft — behind-mode staat in toestand 5 uit
+(`CAMERA.md` §3, `p+0x74`), dus de camera hercentreert daar ook niet vanzelf.)
 
 ---
 

@@ -303,7 +303,25 @@ static void bt_vertex(float x, float y, float z)
     memcpy(g_bt.prev, v, sizeof v); g_bt.count++;
 }
 
-static void set_material(const Renderer *r, uint32_t material, const Material **mat_out, uint32_t frame)   /* frame: models never auto-cycle (0x47f290) */
+static float g_tex_now;                                          /* game time of this frame, for the per instance texture override */
+static uint32_t tex_frame(const Instance *I, const TexGroup *g)   /* frame mode B of 0x47f290 (docs/INSTANCE.md 2), n = frame_count, P = duration x factor */
+{
+    int n = (int)g->frame_count; float P = g->anim_duration * I->tex_fac;
+    if (n < 2 || P <= 0) return 0;
+    float t = g_tex_now - I->tex_t0, u = t / P; int k, f = 0;
+    u = u - floorf(u);                                           /* the looping modes run on the fraction, the one shot modes test t against P first */
+    switch (I->tex_mode) {
+    case 1: f = t >= P ? n - 1 : (int)(t / P * n); break;
+    case 2: f = t >= P ? 0 : (int)((1.0f - t / P) * n); break;
+    case 3: if (t >= P) { f = 0; break; } k = (int)(t / P * (2 * n - 1)); f = k >= n ? 2 * n - 1 - k : k; break;
+    case 4: f = (int)(u * n); break;
+    case 5: f = (int)((1.0f - u) * n); break;
+    case 6: k = (int)(u * (2 * n - 1)); f = k >= n ? 2 * n - 1 - k : k; break;
+    }
+    return (uint32_t)(f < 0 ? 0 : f > n - 1 ? n - 1 : f);
+}
+
+static void set_material(const Renderer *r, uint32_t material, const Material **mat_out, uint32_t frame, const Instance *inst)   /* frame: models never auto-cycle (0x47f290), only an override does */
 {
     /* GL state = (texture or none, blend mode). Every polygon has its own material record (a planar projection), so the
      * batch is keyed on the state, not on the material index: g_last_material holds texture id + 1 (0 = untextured) | blend << 31 */
@@ -313,6 +331,7 @@ static void set_material(const Renderer *r, uint32_t material, const Material **
     else if (material < r->tex->nmaterials) {
         const Material *m = &r->tex->materials[material]; *mat_out = m; const TexGroup *g = &r->tex->groups[m->group];
         bl = (g->flags & 2) != 0; if (bl) g_mat_scale = ((g->flags >> 16) & 0xff) / 255.0f;
+        if (!frame && inst && inst->tex_mode) frame = tex_frame(inst, g);
         tex = g->gl_frames[frame < g->frame_count ? frame : 0]; col[0] = col[1] = col[2] = g_mat_scale;
     }
     uint32_t key = (tex + 1) | (uint32_t)bl << 31;
@@ -488,7 +507,7 @@ static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int 
     Model *m = inst->model; InsNode *n = &m->nodes[ni]; const Material *mat;
     for (uint32_t k = 0; k < n->npolys; k++) {
         InsPoly *p = &n->polys[k]; if (p->nverts < 3 || mat_blended(r, p->material) != pass) continue;
-        set_material(r, p->material, &mat, frame);
+        set_material(r, p->material, &mat, frame, inst);
         bt_begin(1);
         for (uint32_t c = 0; c < p->nverts; c++) {
             InsPoint *pt = &m->points[p->indices[c]];
@@ -529,7 +548,7 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
         bt_begin(0);
         for (uint32_t t = 0; t < m->ntris; t++) {
             InsTri *tr = &m->tris[t]; if (mat_blended(r, tr->material) != pass) continue;
-            if (tr->material != last) { bt_end(); set_material(r, tr->material, &mat, 0); last = tr->material; base[0] = base[1] = base[2] = 1; if (tr->material & 0x8000) argb1555_to_rgb(tr->material, base); bt_begin(0); }
+            if (tr->material != last) { bt_end(); set_material(r, tr->material, &mat, 0, inst); last = tr->material; base[0] = base[1] = base[2] = 1; if (tr->material & 0x8000) argb1555_to_rgb(tr->material, base); bt_begin(0); }
             uint32_t idx[3] = { tr->i0, tr->i1, tr->i2 };
             for (int c = 0; c < 3; c++) {
                 int o = own[idx[c]]; InsPoint *pt = &m->points[idx[c]]; Vec3 lp = pt->pos; if (o >= 0) { lp.x -= m->nodes[o].pivot.x; lp.y -= m->nodes[o].pivot.y; lp.z -= m->nodes[o].pivot.z; }
@@ -546,6 +565,7 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s)
 {
     glViewport(0, 0, w->width, w->height);
+    g_tex_now = time_s;
     for (uint32_t g = 0; g < r->tex->ngroups; g++) {                 /* texture animation: frame_count frames over anim_duration seconds */
         TexGroup *tg = &r->tex->groups[g];
         if (tg->frame_count > 1 && tg->anim_duration > 0 && ((tg->flags >> 8) & 0xff) != 2) tg->gl_tex = tg->gl_frames[(uint32_t)(time_s / tg->anim_duration * tg->frame_count) % tg->frame_count];

@@ -26,7 +26,7 @@ static InsFile g_ins;
 static int g_log_msgs = 1;
 static Player *g_player;
 static EnemySet g_enemies;
-static float g_now;                                  /* game time in seconds (VM time base) */
+static float g_now; static double g_clock;           /* game time in seconds (VM time base): World+0x20 / +0x30 (0x401880), the sum of the CLAMPED frame times */
 /* messages 12/13 wait for the running animation to end: offered again every frame (max 32 in the original, 0x4012f0 clears) */
 static EkoMsg g_retry[32]; static int g_nretry;
 static float inst_yaw(const Instance *in) { Vec3 f = mat4_apply(&in->world, (Vec3){ 0, -1, 0 }); return atan2f(f.x - in->position.x, f.z - in->position.z); }   /* as player_bind */
@@ -578,6 +578,10 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
     case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) in->visible = 0;   /* 0x472530: missiles wait hidden in their pool */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; } if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 16: case 18: case 19:                                                      /* texture frame override (docs/INSTANCE.md 2): the level-select doors turn their red
+                                                                                     * cross into a green tick with it; 0x42db50 has no scripted test */
+        if (in) inst_msg(in, m->id, m->args, m->nargs, g_now);
+        break;
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
     case 42: case 43: case 44: case 45: case 56: case 57:
         if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
@@ -708,7 +712,7 @@ static void level_free(Level *L)
 static int level_load(Level *L, const char *dir, const char *lvl)
 {
     char path[512]; memset(L, 0, sizeof *L); snprintf(L->name, sizeof L->name, "%s", lvl);
-    g_now = 0;                                         /* the init scripts start animations / launchers against the new level's clock, not the previous level's */
+    g_now = 0; g_clock = 0;                            /* the init scripts start animations / launchers against the new level's clock, not the previous level's */
     if (char_of_level(g_level) >= 0) g_char = char_of_level(g_level);
     snprintf(path, sizeof path, "%s/%s/%s.tex", dir, lvl, lvl); if (tex_load(&L->tex, path)) return -1;
     snprintf(path, sizeof path, "%s/%s/%s.gel", dir, lvl, lvl); if (gel_load(&L->gel, path)) { tex_free(&L->tex); return -1; }
@@ -732,6 +736,10 @@ static int level_load(Level *L, const char *dir, const char *lvl)
       if (g_level == 0) audio_music((title_n++ & 1) ? 0 : 48); }                   /* 0x404e30: the title alternates Menu02 / Menu; levels send 1655 during init */
     printf("VM init...\n"); eko_init(&L->vm);
     printf("init done: %d messages\n", L->vm.nmsgs);
+    for (int i = 0; i < L->vm.nmsgs; i++) on_msg(&L->vm, &L->vm.msgs[i], NULL);   /* docs/VM.md 2: the exe queues the messages and the game loop only takes the queue after the tick,
+                                                                                  * so a variable one of them writes (1082 LevelIsEnable for the level-select doors) wakes its
+                                                                                  * object in the first tick instead of in an init whose wake lists are cleared at the end */
+    eko_msg_reset(&L->vm);
     if (L->have_player) { SaveChar *sc = &g_save.chr[g_char]; L->player.lives = sc->lives; L->player.health = sc->health > 0 ? sc->health : 1.0f; }   /* 0x44a6a0 / 0x44a759 */
     L->t0 = win_time();
     return 0;
@@ -786,8 +794,10 @@ int main(int argc, char **argv)
     double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, enter_prev = 0, l_prev = 0, new_game_pending = 0, title_page = 0, title_sel = 0, title_prev[2] = {0, 0}; float title_t = 0; int paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[3] = {0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
-        double now = win_time(); float dt = (float)(now - last); last = now; g_now = (float)(now - t0);
+        double now = win_time(); float dt = (float)(now - last); last = now;
         if (dt > 0.1f) dt = 0.1f;
+        g_clock += dt; g_now = (float)g_clock;         /* 0x401880: everything (Perso timers, animations, the script VM) runs on this one clock, so a hitch cannot make script delays
+                                                        * run ahead of the action timers - a door would then teleport while action 17 is still running and 0x44a650 refuses the move */
         if (win.keys[VK_F5] && !f5_prev && L.have_player) { fly ^= 1; if (!fly) L.player.cam_init = 0; }
         f5_prev = win.keys[VK_F5];
         /* camera */
@@ -868,6 +878,8 @@ int main(int argc, char **argv)
             rockets_update(dt, &L.player, L.have_player && !fly);
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             if (L.player.fade_req) { fade_start(0.5f, L.player.fade_req == 1); L.player.fade_req = 0; }           /* door actions 17 / 18 */
+            if (L.player.cam_cut_req) { L.player.cam_cut_req = 0; if (!g_cam.plane_on) { g_cam.cut = 1; cam_set_mode(1); } }   /* teleport, message 26 -> 0x458f90: hard cut, cam_update below puts the follow camera behind him;
+                                                                                                                  * not when the script has meanwhile switched the side view back on (message 1088), that camera places itself */
             if (L.player.cam_end_req) { L.player.cam_end_req = 0;                                                    /* end of door action 18: 0x44e5a0 = 0x41f9d0(0.5), 0x41f9f0(1), SetMode(0, 0) */
                 /* but only when the side view is off: 0x44dcf1 skips it while Perso+0x4ec is set, and the script turns
                  * that on again (message 1088) in the same frame as the end of the action for a door into a side section */
@@ -895,7 +907,7 @@ int main(int argc, char **argv)
         double pt1 = win_time();
         /* VM tick: time in 1/100 s like the original */
         if (!paused) {
-            eko_tick(&L.vm, (int32_t)((now - t0) * 100.0));
+            eko_tick(&L.vm, (int32_t)((g_clock - dt) * 100.0));   /* 0x401a0c writes the VM clock AFTER the tick, so a tick always runs on the value of the previous frame */
             { int n = g_nretry; g_nretry = 0; for (int i = 0; i < n; i++) { Instance *ri = slot_instance(g_retry[i].args[0]); if (ri && inst_msg(ri, g_retry[i].id, g_retry[i].args, g_retry[i].nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = g_retry[i]; } }
             for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
                 Instance *ii = &g_ins.models[mi].instances[k];
@@ -906,7 +918,7 @@ int main(int argc, char **argv)
         if (!paused) launchers_update((float)g_now, dt, &L.player, &L.gel, L.have_player && !fly && !L.player.dead_kind && !cin_running());
         double pt2 = win_time();
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
-        rnd_frame(&L.rnd, &win, &cam, (float)(now - t0));
+        rnd_frame(&L.rnd, &win, &cam, g_now);                  /* the same game clock as the instances: a texture override (message 16) starts on it */
         {   /* 2D layer (docs/HUD_TEXT.md 5.4): HUD, then the text box, then the fades. No HUD in menus, BlackBox, cinematics and the fall death camera (0x401e19) */
             {   /* pickups: no mesh, a pulsing sprite (50..110, period 1 s) 50 above the instance; type 34 sits on its animated volume node */
                 Vec3 cr = cam_right(&cam), cf = cam_forward(&cam), cu = { cf.y * cr.z - cf.z * cr.y, cf.z * cr.x - cf.x * cr.z, cf.x * cr.y - cf.y * cr.x };

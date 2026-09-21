@@ -37,7 +37,8 @@ textuurgroepen met vlag-bit 1 worden additief geblend.
 vloer/muur-botsing op de `.gel`-polygonen en op de hull-nodes van instanties, volgcamera, en triggervolumes (convexe volume-nodes)
 die `eko_vol_perso_enter/in/leave` naar de script-VM sturen; `--walk T` loopt T seconden vooruit voor tests. W1A komt nu overeen met een screenshot van het origineel (spiegeling, kleuren, oriëntatie van de zwevende schotels, gloei-effecten).
 ```bash
-python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c src/main_engine.c src/player.c src/ekovm.c -lopengl32 -lgdi32 -luser32
+python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c src/main_engine.c src/player.c src/instance.c src/enemy.c src/ekovm.c src/audio.c src/hud.c -lopengl32 -lgdi32 -luser32 -lwinmm
+./out/woody.exe extract/Data                     # zonder level: het titelscherm (House, level 0); Enter start, daarna de hub
 ./out/woody.exe extract/Data W1A                 # pijltjes/WASD lopen (t.o.v. camera), spatie springen, F5 vrije camera (dan WASD + rechtermuisknop), [ ] animatie, Tab instantie, F1-F3 toggles
 ./out/woody.exe extract/Data W1A --shot out/s.ppm 3   # screenshot na 3 s en stoppen
 ./out/woody.exe extract/Data W1A --cam 537 -1800 -2450 0 -10   # camera: x y z yaw pitch (graden)
