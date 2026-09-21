@@ -101,6 +101,7 @@ void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir);   /* message 
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);
 int  player_segment_blocked(const Player *p, Vec3 a, Vec3 b);   /* world polygons only */
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b);   /* first world polygon hit on a->b as a fraction 0..1, or 2 when nothing is hit */                 /* Perso vt[38] */
+float gel_ray_hit(const GelFile *g, Vec3 a, Vec3 b, Vec3 *n_out);   /* the same, and the normal of that polygon, turned towards a */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
 
 /* footstep effects, drawn by the app (main_engine.c) as the pickup effects are (docs/FOOTSTEPS.md)

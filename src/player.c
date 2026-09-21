@@ -452,7 +452,7 @@ static int gel_ray_blocked(const GelFile *g, Vec3 a, Vec3 b)
     return 0;
 }
 
-float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b)
+float gel_ray_hit(const GelFile *g, Vec3 a, Vec3 b, Vec3 *n_out)
 {
     float best = 2.0f;
     GelPolySet ps = gel_polys_on_seg(g, a, b);
@@ -463,10 +463,14 @@ float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b)
         if ((da > 0) == (db > 0)) continue;
         float t = da / (da - db); if (t >= best) continue;
         Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
-        if (poly_contains(g, pl, q)) best = t;
+        if (!poly_contains(g, pl, q)) continue;
+        best = t;
+        if (n_out) { *n_out = (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] };                  /* towards the side the ray came from */
+                     if (da < 0) { n_out->x = -n_out->x; n_out->y = -n_out->y; n_out->z = -n_out->z; } }
     }
     return best;
 }
+float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b) { return gel_ray_hit(g, a, b, NULL); }
 
 int player_segment_blocked(const Player *p, Vec3 a, Vec3 b) { return gel_ray_frac(p->gel, a, b) <= 1.0f; }
 
@@ -532,9 +536,11 @@ static void jumper_force_fall(Jumper *j, int force)                             
 }
 static int attack_probe(Player *p, Vec3 v)                                                          /* 0x4575b0 */
 {
-    Vec3 a = { p->pos.x, p->pos.y + 5.0f, p->pos.z }, b = { a.x + v.x, a.y + v.y, a.z + v.z };
-    float f = gel_ray_frac(p->gel, a, b); if (f > 1.0f) return 0;
-    game_peck_fx(1, (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }, NULL);   /* 0x4575b0: the beak sparks on any hit */
+    Vec3 a = { p->pos.x, p->pos.y + 5.0f, p->pos.z }, b = { a.x + v.x, a.y + v.y, a.z + v.z }, face_n;
+    float f = gel_ray_hit(p->gel, a, b, &face_n); if (f > 1.0f) return 0;
+    /* 0x4575b0 fires the impact on ANY hit. It passes no normal (kind 1); the port takes the normal of the face the
+     * same ray just hit, because the hole and the chips have to come out of that face (docs/OBJECTS.md 1.6). */
+    game_peck_fx(1, (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }, &face_n);
     int found; const Instance *hi; const InsNode *hn;
     float gy = world_ground(p, (Vec3){ p->pos.x, p->pos.y + 1.0f, p->pos.z }, &found, &hi, &hn);
     int n = (found && p->pos.y - gy > 100.0f) ? 0xe : 0xd;
@@ -756,7 +762,8 @@ static int climb_try(Player *p)
     p->wall_n = (Vec3){ n.x / l, 0, n.z / l }; p->wall_inst = wi; p->yaw = atan2f(-p->wall_n.x, -p->wall_n.z);
     p->climb_sub = p->on_ground ? 1 : 2; p->grip = 0.8f; p->peck_t = 0.3f; jumper_reset(&p->jumper);   /* 0x462c90 at 0x4650ce */
     p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->vel = (Vec3){ 0, 0, 0 }; p->use_atk_disp = 0;
-    { float f = g_climb_frac; game_peck_fx(1, (Vec3){ from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f, from.z + (to.z - from.z) * f }, NULL); }   /* the hit that grabs is a probe hit, and those spark (0x4575b0) */
+    /* the hit that grabs is a probe hit (0x4575b0), so it pecks too; the wall normal is the one climb_ray just measured */
+    { float f = g_climb_frac * 0.95f; game_peck_fx(1, (Vec3){ from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f, from.z + (to.z - from.z) * f }, &n); }
     printf("  CLIMB grab on instance %u\n", wi->index);
     return 1;
 }

@@ -330,7 +330,7 @@ Voor de port: `ins_root_end()` (`src/level.h`) doet al `E`; nodig is een variant
 `cam_target = lerp(pos, q(f), f)`, model blijft op `pos` staan met de wortel-track van anim 15 aan; op het einde `pos = E.t` + snap-to-ground.
 Onzeker: of de port-renderer de wortel-translatie van animaties al toepast (zo niet, teken het model dan op `q(f)` zonder menging).
 
-### 1.6 Pikinslag `0x479c80(soort, punt, normaal)` — afdruk en vonken
+### 1.6 Pikinslag `0x479c80(soort, punt, normaal)` — pikgat en houtsnippers
 
 De engine roept dit effect aan op elke plek waar de snavel neerkomt:
 
@@ -344,23 +344,29 @@ Vast staat dat hij een punt en optioneel een oppervlaktenormaal krijgt — dezel
 `0x47cba0(pos, normaal, richting, links/rechts, grondsoort)` (FOOTSTEPS.md, PERSO_MOVE.md §4.3) — dus het effect richt zich
 naar het vlak dat het markeert, en het zit in dezelfde effectenmodule als de pickup-deeltjes (BONUS.md §2.4).
 
-**Wat de port tekent** (`game_peck_fx`, `src/main_engine.c`) is daarom een **reconstructie**, op dezelfde twee primitieven als
-de voetstappen, plus het enige inslageffect dat wél ontleed is: de lasertreffer `0x46efb9` (§2.1) = een sprite op het trefpunt
-plus **vonken 50/s**.
+**Wat de port tekent** (`game_peck_fx` / `peck_draw`, `src/main_engine.c`) is daarom een **reconstructie**, maar wel van het
+juiste soort: een snavel schroeit hout niet, hij hapt eruit. Er blijft dus een **pikgat** in het geraakte vlak achter en het
+losgeslagen hout vliegt als **snippers** de wand uit. (De eerste versie van deze port tekende hier de lasertreffer `0x46efb9`
+(§2.1) na — een additieve gloed plus vonken 50/s. Dat is wat een energiebol met een muur doet, niet wat een specht met een
+plank doet; issue #4 ging daar in tweede instantie over.)
 
 | | port |
 |---|---|
-| afdruk | één record in de markeringspool van FOOTSTEPS.md (`Mark`, 48 stuks, de oudste wijkt): `hud_world_decal` legt de quad ín het geraakte vlak (halve diagonaal 22, sterkte 0.45, 2 s, staat 1 s en vervaagt daarna), rechtop in de wand omdat Woody omhoog klimt, om en om gespiegeld zodat een rij pikgaten er niet gestempeld uitziet |
-| vonken | een uitbarsting van 10 × het standaarddeeltje `0x4791f0` (beeld 4, 0.2 s) in een bol van ±25 om het punt, 10 eenheden vóór het vlak en nooit erachter — evenveel als de 50/s van de lasertreffer over de 0.3 s van één pik |
-| zonder normaal | geen vlak om te markeren (de aanvalsstraal geeft er geen mee): alleen de vonken |
+| pikgat | eigen pool van 64 (`Peck`, de oudste wijkt), zodat lopen de gaten niet uit de voetstappenpool (48) duwt en een wand het hele geklommen spoor houdt. `hud_world_gouge` legt een **gerafelde kuil ín het vlak** (buitenstraal 26, 11 hoeken met een straal van 0.6..1.0× daarvan uit een hash van de seed, dus elk gat anders en per frame hetzelfde), vermenigvuldigend getekend zoals de voetstapafdruk (`dst · (1 − rgb·sterkte)`, sterkte 0.72) met daaromheen een zwakke additieve rand als versplinterd, lichter hout. Het gat blijft **20 s** staan en vervaagt pas in zijn laatste 4 s |
+| houtsnippers | 10 × `hud_world_chip` per pik: een massieve spaander (geen sprite), 32..56 lang en 10..18 breed, in een eigen houtkleur met eigen schaduwtoon. Snelheid: 130..320 van het vlak af, 40..190 er zijdelings omheen, plus 70..220 omhoog; daarna de val van de engine zelf (`vel.y −= dt·g·200` met g = 5 en ondergrens −800, `0x44945f`) en luchtdemping `pow(0.97, dt·60)` (T+0x28), dus **fladderend** i.p.v. als een steen. Ze tuimelen om een eigen as (6..18 rad/s), leven 0.9..1.5 s en vervagen in hun laatste 30 % |
+| zaagsel | één klein stofwolkje (dezelfde `Dust`-pool als de voetstappen, beeld 14, nu met eigen kleur) uit het gat, 0.3 s |
+| zonder normaal | geen vlak om in te happen: alleen de snippers. De aanvalsstraal `0x4575b0` geeft zelf geen normaal mee, maar de port meet in `gel_ray_hit` de normaal van het vlak dat diezelfde straal raakt en geeft die door, zodat ook een aanval tegen een muur een gat slaat |
 
 Bij het klimmen levert dat een spoor van pikgaten op de wand op: pik elke 0.3 s, 250 eenh/s omhoog, dus om de ~75 eenheden een
-afdruk die 2 s blijft. `WOODY_FXLOG=1` logt elke pik; `WOODY_STEPIMG=<n>` kiest een ander bank-0-beeld voor de afdruk (zie FOOTSTEPS.md §4).
+gat dat blijft staan; de snippers vallen er onderlangs vanaf. Ook de pik waarmee hij zich **vastgrijpt** (`climb_try`, via de
+aanvalsstraal) slaat nu een gat, met de wandnormaal die `climb_ray` net gemeten heeft. `WOODY_FXLOG=1` logt elke pik.
 De gloeiende "pik hier"-vlakken van de klimwand zelf zijn iets anders: dat zijn modelvlakken met textuurgroepvlag bit 1
 (§1.3), die sinds LIGHTING.md recept 5 (issue #5) onbelicht additief getekend worden.
 
-**Onzeker / met Frida op `0x479c80` te controleren**: aantal, kleur, grootte en levensduur van de deeltjes; of de afdruk in het
-origineel blijft liggen (een echte decal op de geometrie) in plaats van uit te doven; en waarin soort 0 en 1 van elkaar verschillen.
+**Onzeker / met Frida op `0x479c80` te controleren**: aantal, kleur, grootte en levensduur van de snippers; hoe lang het gat in
+het origineel blijft liggen (hier 20 s; als het écht blijft staan hoort er een grotere pool bij); waarin soort 0 en 1 van elkaar
+verschillen; en of het origineel bij een niet-houten vlak iets anders doet dan hout laten springen (de port kent geen
+materiaalsoort voor "hout" — de grondsoort-byte van FOOTSTEPS.md §2 kent alleen gewoon/glad/stof).
 `0x47cba0` (voetstappen) en `0x476140` (stof bij landen) horen bij dezelfde familie en zijn evenmin gelezen (FOOTSTEPS.md).
 
 ## 2. Klassen
