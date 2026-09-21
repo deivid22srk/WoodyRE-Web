@@ -588,30 +588,122 @@ void hud_text_draw(int closed, float dt)
     for (int i = 0; i < H.box.n; i++) { const uint16_t *s = hud_string(H.box.id[i]); if (s) font_draw(H.box.x[i], H.box.y[i], s, col); }
 }
 
-/* ---------------------------------------------------------------- House menu pages (docs/TITLE.md 5) */
+/* ---------------------------------------------------------------- menu pages (docs/TITLE.md 5) */
 void hud_title_reset(void) { H.logo_v = 0; H.menu_t = 0; }
+
+/* the item list of the common page class (0x446640): one size S for the whole page, shrunk until the widest item
+ * fits in 640; y = yfrac * 480 and a cell (62 * S / 40) per item; the selected item is left out while the blink
+ * phase is under 0.25 s - the original has no cursor and no colour difference. Advancing the phase is the caller's
+ * job (0x4464f0 does it once per frame), so hud_menu_page and hud_title_draw never both tick it. */
+static void page_items(const uint32_t *ids, int n, float yfrac, int sel)
+{
+    float S = 30.0f;                                                  /* 0x4b39a8 */
+    for (int i = 0; i < n; i++) {
+        const uint16_t *s = hud_string(ids[i]); if (!s) continue;
+        while (S > 15.0f) { font_size(S); if (font_measure(s) < 640.0f) break; S -= 1.0f; }
+    }
+    font_size(S);
+    float y = yfrac * 480.0f, cell = font_cell();
+    for (int i = 0; i < n; i++) {
+        const uint16_t *s = hud_string(ids[i]);
+        if (s && !(i == sel && H.menu_t < 0.25f)) font_draw(320 - font_measure(s) * 0.5f, y, s, 0xff808080);
+        y += cell;
+    }
+    font_size(17.0f);
+}
+
+void hud_menu_page(const uint32_t *ids, int n, float yfrac, int sel, float dt)
+{
+    if (!H.ok) return;
+    H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;           /* [0x5d7b1c], wraps at 0.5 (0x4b39a4) */
+    page_items(ids, n, yfrac, sel);
+}
 
 void hud_title_draw(int page, int sel, int want_logo, float dt)
 {
     if (!H.ok) return;
+    static const uint32_t items0[1] = { 21 };                        /* "Press a key" */
     static const uint32_t items1[4] = { 22, 23, 36, 2 };             /* New game, Load game, Options, Quit */
     H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;
-    int hide_sel = H.menu_t < 0.25f;                                  /* the selected item blinks at 2 Hz; no colour highlight, no cursor */
+    if (page == 0) page_items(items0, 1, 0.7f, 0);
+    else if (page == 1) page_items(items1, 4, 0.55f, sel);
     font_size(30.0f);
-    if (page == 0) {
-        const uint16_t *s = hud_string(21);                           /* "Press a key", y fraction 0.7 */
-        if (s && !hide_sel) font_draw(320 - font_measure(s) * 0.5f, 336, s, 0xff808080);
-    } else if (page == 1) {
-        for (int i = 0; i < 4; i++) {
-            const uint16_t *s = hud_string(items1[i]);
-            if (s && !(i == sel && hide_sel)) font_draw(320 - font_measure(s) * 0.5f, 264 + 46.5f * i, s, 0xff808080);
-        }
-    }
     if (H.logo && H.logo_v > 0) {                                     /* 0x446b00: alpha = 254 * v / 5, source 0,0,209,247 at (216,16) */
         uint32_t c = (uint32_t)(254.0f * H.logo_v / 5.0f) << 24 | 0x808080;
         quad(216, 16, 209, 247, H.logo, 0, 0, 209.0f / H.logo_w, 247.0f / H.logo_h, c, c, c, c);
     }
     if (want_logo) { H.logo_v += 5 * dt; if (H.logo_v > 5) H.logo_v = 5; } else H.logo_v = 0;
+    font_size(17.0f);
+}
+
+/* ---------------------------------------------------------------- results screen (docs/GAMEFLOW.md 5.1, HUD_TEXT.md 6)
+ * The strings are the ones the original reserves for it (12 CLEARED!!, 13 RESULTS, 15 OK, 17 HIGH SCORE, 46 points,
+ * 127 Level, 128 Seconds, 129 Final Score, 130 "Total Score :" and the characters 7 "%", 8 "=", 10 ":", 11 "+"), the
+ * two categories are the ones the score formula 0x453cb0 uses, and each one gets its "+ 50 %" when it is complete.
+ * The layout itself (the 20-odd Measure/Draw pairs of 0x454963..0x455d97) is NOT decompiled: the placement below is
+ * this port's, and so is the dark backdrop (drawn like the text box of message 1080). String 14 "TOTAL" has no place
+ * here yet because nothing says where the original puts it. */
+static uint16_t g_row[64]; static int g_rown;
+static void row_reset(void) { g_rown = 0; g_row[0] = 0; }
+static void row_str(uint32_t ref)
+{
+    const uint16_t *s = hud_string(ref);
+    for (; s && *s && g_rown < 62; s++) g_row[g_rown++] = *s;
+    g_row[g_rown] = 0;
+}
+static void row_space(void)                                          /* Common string 40 is "a a": its middle code is the space glyph */
+{
+    const uint16_t *s = hud_string(40);
+    if (s && s[0] && s[1] && g_rown < 62) { g_row[g_rown++] = s[1]; g_row[g_rown] = 0; }
+}
+static void row_num(int v)
+{
+    uint16_t d[16]; int n = number_codes(d, v);
+    for (int i = 0; i < n && g_rown < 62; i++) g_row[g_rown++] = d[i];
+    g_row[g_rown] = 0;
+}
+static float row_draw(float x, float y, int right, uint32_t col)     /* right: x is the right edge */
+{
+    float w = font_measure(g_row);
+    font_draw(right ? x - w : x, y, g_row, col);
+    return w;
+}
+
+void hud_results_draw(const HudResults *r, int show_ok, float dt)
+{
+    if (!H.ok) return;
+    H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;
+    const uint32_t col = 0xff808080;                                  /* the menu colour: 0x80 per channel is 1.0 (docs/HUD_TEXT.md 5.2) */
+    const float L = 150, R = 490, rows = 42;
+    quad(96, 14, 448, 464, 0, 0, 0, 0, 0, 0x60000000, 0x60000000, 0x60000000, 0x60000000);   /* backdrop, like the 1080 text box: black at half the text alpha */
+    font_size(35.0f);
+    { const uint16_t *s = hud_string(12); if (s) font_draw(320 - font_measure(s) * 0.5f, 28, s, col); }     /* CLEARED!! */
+    font_size(30.0f);
+    { const uint16_t *s = hud_string(13); if (s) font_draw(320 - font_measure(s) * 0.5f, 78, s, col); }     /* RESULTS */
+    font_size(24.0f);
+    float y = 132;
+    row_reset(); row_str(127); row_space(); row_str(10); row_draw(L, y, 0, col);                            /* "Level :" */
+    row_reset(); row_num(r->level); row_draw(R, y, 1, col);
+    y += rows;
+    for (int cat = r->race ? 1 : 0; cat < 2; cat++) {                                                       /* the score categories of 0x453cb0; a race level only counts the second one */
+        int got = cat ? r->got_b : r->got_a, tot = cat ? r->total_b : r->total_a;
+        sprite_rect(cat ? 4 : 12, L, y - 6, 40, 40);                                                        /* sprite 4 = the W of the HUD; 12 is the 64x64 icon of image 64 the HUD never draws */
+        row_reset(); row_num(got); row_space(); row_str(8); row_space(); row_num(tot);                       /* "got = total" */
+        if (tot && got == tot) { row_space(); row_space(); row_str(11); row_num(50); row_str(7); }           /* "+50%" */
+        row_draw(R, y, 1, col);
+        y += rows;
+    }
+    row_reset(); row_str(128); row_space(); row_str(10); row_draw(L, y, 0, col);                            /* "Seconds :" */
+    row_reset(); row_num((int)r->time); row_draw(R, y, 1, col);
+    y += rows + 10;
+    row_reset(); row_str(129); row_space(); row_str(10); row_draw(L, y, 0, col);                            /* "Final Score :" */
+    row_reset(); row_num(r->score); row_space(); row_str(46); row_draw(R, y, 1, col);                        /* "<score> points" */
+    y += rows;
+    if (r->high) { const uint16_t *s = hud_string(17); if (s && H.menu_t >= 0.25f) font_draw(320 - font_measure(s) * 0.5f, y, s, col); }   /* HIGH SCORE, blinking with the menu phase */
+    y += rows;
+    row_reset(); row_str(130); row_draw(L, y, 0, col);                                                       /* "Total Score :" (the best run of this level) */
+    row_reset(); row_num(r->best > r->score ? r->best : r->score); row_draw(R, y, 1, col);
+    if (show_ok) { const uint32_t ok = 15; page_items(&ok, 1, 0.90f, 0); }                                    /* the panel item of page 0x1e */
     font_size(17.0f);
 }
 

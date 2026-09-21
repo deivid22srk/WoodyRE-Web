@@ -536,7 +536,17 @@ vlag 8. Textuurfilter: niet afgelezen (**onzeker**; de zachte alfaranden vragen 
 * **Resultaten** (na EndLevel): strings 12 "CLEARED!!", 13 "RESULTS", 14 "TOTAL", 15 "OK", 17 "HIGH SCORE",
   46 "points", 127 "Level", 128 "Seconds", 129 "Final Score", 130 "Total Score :", en de tekens 7 "%", 8 "=",
   10 ":", 11 "+". Tekenaars: het blok `0x454963..0x455d97` (Perso-eindsequentie, 20+ `Measure`/`Draw`-paren) —
-  **niet uitgewerkt**.
+  **niet uitgewerkt**. De port tekent het scherm zelf (`hud_results_draw`, aangestuurd door de statemachine in
+  GAMEFLOW §5.2) met precies die strings, maar in een **eigen indeling**: "CLEARED!!" (S 35) op y 28 en "RESULTS"
+  (S 30) op y 78, daaronder op S 24 de regels `Level :`, de twee categorieën (icoon + `gepakt = totaal`, plus
+  `+ 50 %` als de categorie compleet is), `Seconds :`, `Final Score : <n> points`, "HIGH SCORE" (knippert mee met de
+  menufase, alleen bij een record) en `Total Score :` met de beste score; label links op x 150, waarde rechts op
+  x 490, achtergrond een half-zwart vlak zoals het tekstvak van §3. Het "OK"-item is het paneel van pagina 0x1e en
+  wordt met de gewone pagina-itemlijst (§TITLE 5.1) op y-fractie 0.90 getekend. Iconen: sprite 4 (de W van de HUD)
+  voor de bonussen en sprite **12** voor de vijanden — 12 is het 64×64-icoon in beeld 64 dat de HUD nooit tekent, dus
+  vermoedelijk precies hiervoor bedoeld (**aanname**). String 14 "TOTAL" heeft nog geen plek.
+* **Opslaan-vraag**: pagina 6 (35 "Do you want to save?" / 5 "Yes" / 6 "No") met 8 "Game Saved" en 9 "Save failed."
+  liggen in de port over het paneel heen, allemaal via `hud_menu_page` (dezelfde itemlijst, y-fractie 0.4).
 * **`extract/Game/mask.bin`** (786 432 B): geladen door de ctor `0x488790` (`0x4887f6`, pad `\Game\mask.bin`)
   als **4 blokken van 0x30000 = 196 608 bytes** (`obj+0x20`, `+0x30020`, `+0x60020`, `+0x90020`; pointers op
   `obj+0xc0020..`). Hetzelfde object houdt 8 afbeeldingsrefs van de **levelbank** `0x01010000..7` en tekent 256×256
@@ -562,6 +572,11 @@ vlag 8. Textuurfilter: niet afgelezen (**onzeker**; de zachte alfaranden vragen 
 5. **Tekstvak** (§3): struct `{state, t, size, var, n, line[3]{id,x,y}, rect}`; `msg_1080` doet de layout
    (let op: meten op `size`, tekenen op `size − 2`); per frame na de HUD: fade 0.5 s in, wachten op `vars[var] != 0`,
    0.5 s uit; achtergrond zwart met alfa/2, marge 16; afstandsregel `0x20001`.
+6a. **Menu-pagina's**: `hud_menu_page(ids, n, yfrac, sel, dt)` tekent de itemlijst van de gemeenschappelijke
+   pagina-klasse (TITLE §5.1): één grootte voor de hele pagina (30, krimpend tot alles past), `y = yfrac·480`, per
+   item een cel `62·S/40`, gecentreerd, en het geselecteerde item verdwijnt zolang de knipperfase < 0.25 s. Titel
+   (pagina 0/1), opslaan-vraag (6/8/9) en het OK van het resultatenscherm gebruiken hem allemaal; de fase mag maar
+   één keer per frame doorlopen, dus wie twee lagen tekent geeft de onderste `dt = 0`.
 6. **HUD** (§4.3/4.4), in deze volgorde: blauwe balk, rode balk + 5 slots (of race-variant), gezicht + levens,
    W/vlag + rondje + getal + "n / totaal", health-balletjes, (pauze of 1172:) $ en lading, krachtmeter. Getallen
    rood `(255,0,0)`, S = 17 (≥ 100: 12.75), gecentreerd op het anker. Sla de HUD over tijdens cinematics en de
@@ -595,9 +610,13 @@ Levelbanken: één string "TOTO" (testrest). Volledige dump: `python tools/fontr
 1. HUD-animaties (§4.6): banen, duur en easing van de `0x4606xx..0x4624xx`-functies zijn niet uitgewerkt.
 2. Baas-health (`0x47aca0..0x47b165`): hoofdlijnen gelezen; inschuifduur en exacte y-offsets niet.
 3. Of Perso-kind 2/4 echt Knothead en 3/5 Splinter is (§4.2).
-4. Resultatenscherm (`0x4549xx..0x455dxx`) en menu-layout (`0x45bxxx..0x4622xx`): alleen gelokaliseerd.
+4. Resultatenscherm (`0x4549xx..0x455dxx`) en menu-layout (`0x45bxxx..0x4622xx`): alleen gelokaliseerd. De port
+   heeft er een eigen indeling voor (§6); zodra het origineel weer te traceren is: y-posities, lettergroottes en de
+   iconen van de twee categorieën vergelijken.
 5. Textuurfilter van de 2D-laag en de afrondingsmodus van `ftol` (`0x499580`).
-6. Sprite 15 (0,96,31,31 in afbeelding 63) lijkt leeg; gebruiker niet gevonden.
+6. Sprite 15 (0,96,31,31 in afbeelding 63) lijkt leeg; gebruiker niet gevonden. Sprite 12 (63,0,64,64 in
+   afbeelding 64) wordt door de HUD ook niet getekend; de port gebruikt hem als vijand-icoon op het
+   resultatenscherm (**onzeker**).
 7. Rol van het level `Lang` bij de taalkeuze; mask.bin-indeling (4 × 512×384?).
 8. Krachtmeter: dat sprite 11 óók wordt afgesneden staat in de code, maar het beoogde uiterlijk is niet tegen het
    origineel gecontroleerd.

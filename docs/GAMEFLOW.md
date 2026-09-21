@@ -306,6 +306,54 @@ stat[2]*100(+50 % als == stat[0]) + stat[3]*100(+50 % als == stat[1])`. Als scor
 `stats` = `app+0x74` = kopie van `perso+0x710`: {totaal A, totaal B, verzameld A, verzameld B, float tijd}
 (`0x453c80` init met `[0x4c5330]` en het Bonus-Woody-totaal `[0x5e54e4]`; zie BONUS.md).
 
+**Welke twee categorieën?** `0x453c80` krijgt de twee totalen mee: `[0x4c5330]` (elke vijand telt zichzelf in zijn
+PostLoad, ENEMY.md) en `[0x5e54e4]` (het Bonus-Woody-totaal, `[0x5e54f4]` in een race-level). Omdat de score
+`stat[2]` met `stat[0]` vergelijkt (en `stat[3]` met `stat[1]`) móet `stat[2]` het aantal **verslagen vijanden** zijn —
+de +50 % is er voor "alles opgeruimd". `[0x4c532c]`, dat EndLevel over `stat[2]` heen kopieert, wordt elke frame in
+App::Frame bijgewerkt (`0x40177c`), vermoedelijk als "totaal − nog levend"; niet gedecompileerd (was §10.2).
+`stat[4]` is de klok `perso+0x710+0x10` (`0x453ca0`, elke frame `+= dt`).
+
+### 5.2 De port van het resultatenscherm (`src/main_engine.c`, `src/hud.c`, `src/player.c`)
+
+De hele keten draait nu: **1083 EndLevel** bewaart de vijf statistieken van het level dat je verlaat
+(`results_capture`, = `memcpy(app+0x74, perso+0x710, 20)`; ze moeten de levelwissel overleven, want het scherm draait
+in de hub), **1140** start de sequentie (`results_begin` = `0x453d90`) en `results_update` (= `0x454090`) loopt de
+toestanden af:
+
+| `perso+0x724` | port | wat er gebeurt |
+|---|---|---|
+| 0 | `case 0` | Perso op de deurvector met **gescripte actie 0x4a** (.ins-anim 74, mét eigen cameratrack): de binnenzwevende animatie uit het screenshot van issue #7 — of de parasol in die animatie zit of de prop van bericht 1142 is, is niet nagekeken (geen data in de repo). Die prop wordt op dezelfde plek neergezet en getoond (`0x4077f0`). Zodra de actie klaar is: actie **0x4b** en toestand 1 |
+| 1 | `case 1` | paneel zichtbaar (`0x454560`). OK: `n` = categorieën compleet, `n` unieke items erbij, juichen met **0x4e** (n ≠ 0) of **0x4c**, toestand 2/3, paneel weg |
+| 2 / 3 | `case 2/3` | klaar met juichen → actie **0x4d**, score opslaan, toestand 4 en menupagina **6** ("Do you want to save?") |
+| 4 | `case 4` | pagina 6 → **Ja**: `woodyre.sav` schrijven → pagina 8 "Game Saved" (of 9 "Save failed.") → terug naar 6; **Nee**: `0x454050` = fade-out 0,5 s, toestand 5 |
+| 5 | `default` | na 0,5 s: prop verbergen (`0x407850`), fade-in 0,5 s, camera terug (mode 1), Perso vóór de deur en **`SetVar(perso+0x728, 1)`** — daar wacht het hub-script op |
+
+De gescripte acties zelf lopen via `player_script_action`: het actienummer is het ruwe .ins-animatienummer, de
+logische records 26..30 (`0x1a..0x1e` in `log_anim`) zijn de one-shots voor 74..78, en alles wat geen deur is (dus ook
+10..16 en 19) volgt nu de **wortelbeweging** van `0x44e290` via `ins_root_at(inst, actie, fase, 1)`: het model wordt op
+`(1−f)·pos + f·q(f)` getekend en op het laatste frame staat de Perso waar de wortel hem gebracht heeft, kijkend langs
+`−E.rij2`, op de grond gezet. Dat is de "invliegende" beweging van de parasol-animatie.
+
+**Afwijkingen en aannames** (alles wat hier staat is niet gedecompileerd):
+- De **layout** van het paneel (`0x454963..0x455d97`) is niet ontleed; `hud_results_draw` gebruikt de strings die het
+  origineel ervoor reserveert (12, 13, 15, 17, 46, 127, 128, 129, 130 en de tekens 7/8/10/11) in een eigen indeling,
+  met een half-zwarte achtergrond zoals het tekstvak van 1080. String 14 "TOTAL" heeft nog geen plek.
+- De twee categorieregels tonen `gepakt = totaal` plus "+ 50 %" als de categorie compleet is, met sprite 4 (de W van
+  de HUD) en sprite **12** — een 64×64-icoon in bank-0-beeld 64 dat de HUD zelf nooit tekent (aanname: de vijanden).
+- "Level" krijgt het volgnummer binnen de set van het personage (W1A = 1 … W3D = 9), want de levelnamen staan niet in
+  de stringtabel.
+- Slotkeuze (pagina's 5 / 0x17 / 0xc) bestaat niet: de port heeft één `woodyre.sav` (§6, bewuste afwijking), dus "Ja"
+  schrijft meteen en gaat naar 8 of 9. De cursor van pagina 6 begint op het eerste kiesbare item ("Yes"); alleen van
+  pagina 0x1c is bekend dat hij op "No" begint.
+- De eindpositie van toestand 5 (`0x454244..`) is onbekend: de port zet hem terug op de deurvector, achter de fade.
+- Het spel wordt tijdens het scherm **niet** gepauzeerd (de animaties moeten lopen) en er ligt geen halfzwart vlak
+  overheen; welke vlaggen tabel `0x405af8` voor pagina 0x1e zet is niet gelezen. De gewone HUD blijft weg.
+- De prop van 1142 wordt één keer neergezet (zoals `0x453d90` doet) en loopt niet met de animatie mee.
+
+**Testen** (met de originele data): `./out/woody.exe extract/Data WWS --prev W1A --stats 12 12 25 20 245`
+= "we komen uit W1A, 12 van de 12 vijanden, 20 van de 25 bonussen, 245 s"; het hub-script stuurt dan zelf 1140.
+Enter/spatie = bevestigen, pijltjes omhoog/omlaag = Ja/Nee.
+
 ## 6. Save
 
 ### 6.1 Bestand `Woody.sav` (werkmap), 0x52c4 bytes
@@ -329,6 +377,10 @@ schrijven `0x450b30`, bestaan-check `0x450aa0`. Slot-manager `app+0x4c` (vtable 
 | rec+0x04 | byte **done** (`0x4509e0` lezen, `0x450700` zetten) |
 | rec+0x05 .. +0x24 | 32 bytes "uniek item n van dit level al gepakt" (`0x450730/0x450760`) |
 | rec+0x28..+0x38 | 5 stats van de beste run (4 int + float tijd) |
+
+(De port heeft deze drie velden nu ook: `SaveChar.best[29]`, `stats[29][4]` en `stat_time[29]` in `woodyre.sav`,
+geschreven door `results_store`. Het bestandsformaat is daarmee veranderd; de magic is `WSV2`, oudere bestanden
+worden genegeerd en het spel begint opnieuw.)
 | +0x14a0 | u32 (in `0x450a10` opgeteld bij de som van alle scores) |
 
 De Perso schrijft levens/items/ladingen **direct** in deze struct terwijl je speelt (`0x44c7a0`,
@@ -444,14 +496,12 @@ Een commandoregel-level kan blijven werken als "dev-slot": index 0x1b, personage
 ## 10. Onzeker
 
 1. De resultaten-statemachine `perso+0x724` (update `0x454090`, tabel `0x4542c4`) is alleen in grote
-   lijnen gelezen: 0 → prop `perso+0x748` tonen (`0x4077f0`), wachten tot de Perso vrij is
-   (`+0x21c == 0`), actie 0x4b, state 1 (paneel); 2/3 → juichen, dan `0x454020` (actie 0x4d, state 4 =
-   score verwerken); 5 (gezet door `0x454050`, dat ook een fade-out van 0.5 s start en `+0x744 = 0.5`
-   zet) → na 0.5 s: prop verbergen (`0x407850`), fade-in 0.5 s, camera terug (`0x41f9f0(2)`),
-   **`SetVar(perso+0x728, 1)`** (`0x45422c`) en de Perso vóór de deur zetten. Het hub-script wacht dus op
-   `var == 1`. De exacte eindpositie (`0x454244..`) is niet uitgewerkt.
-2. Exacte betekenis van de 5 stat-velden `perso+0x710..` (welke teller "Bonus Woody" is) en of
-   `app+0x7c = [0x4c532c]` (overschrijft `stats[2]`) een tijd- of een bonusteller is.
+   lijnen gelezen (zie §5.1/§5.2 voor de keten die de port daaruit draait). Niet uitgewerkt: de exacte
+   eindpositie van toestand 5 (`0x454244..`), de layout van het paneel (`0x454963..0x455d97`) en wat
+   tabel `0x405af8` voor pagina 0x1e aan pauze-/overlayvlaggen zet.
+2. `stat[2]` is gezien de score-vergelijking het aantal verslagen vijanden (§5.1); waar `[0x4c532c]`
+   precies vandaan komt (`0x40177c`, elke frame) is niet gedecompileerd. Welke van de twee totalen
+   "Bonus Woody" is, staat wél vast: `stat[1]`.
 3. 1082 leest het blok van het *huidige* personage. In KWS (personage 1) vraagt het script
    `LevelIsEnable(13..17)`; K1A (12) wordt zonder 1082 geopend. `LevelIsEnable(11/12)` zou in blok 1 naar
    W2D kijken en dus altijd 0 geven; de personagekeuze gebruikt daarvoor `0x4509b0` met expliciet
