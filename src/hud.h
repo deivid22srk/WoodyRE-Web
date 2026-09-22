@@ -44,6 +44,19 @@ void hud_rect(uint32_t argb);                                   /* flat colour o
  * cross = draw the red cross over free slots (page 2), title = Common string (25 / 24) */
 typedef struct { int sel, pct[4], open[4], cross; float slide; uint32_t title; } HudSlots;
 void hud_slot_list(const HudSlots *s, float dt);
+/* the 2D layer of the world-select carousel, page 3 (docs/MENU_LOAD.md 4.6, vt[17] 0x45e8a0): name on top, the stats
+ * panel left and "Game cleared" / "Location" right of the selected figure (only unlocked and not BlackBox: `stats`),
+ * the PLAY / SEE HIGH SCORES list (`list`: unlocked, the page neither opening nor closing), the two yellow arrows and
+ * "Total Score :". off = the text slide (<= 0), arrow_s = the arrows' slide, arrow_l / arrow_r their grey (128 = 1). */
+typedef struct {
+    uint32_t name;                                   /* Common string 30..34 */
+    int stats, face, lives, unique, charges; float health;
+    int pct; uint32_t world, part;                   /* location strings of the first unfinished level, 0 = none */
+    int list, nitems, list_sel; const MenuItem *items; float yfrac;
+    float off, arrow_s, arrow_l, arrow_r;
+    int total;
+} HudCarousel;
+void hud_carousel(const HudCarousel *c);
 /* the results screen after a level (docs/GAMEFLOW.md 5.1, docs/HUD_TEXT.md 6): the two collectible categories with
  * their "+50 %" bonus, the level time and the score. `level` is the number printed behind string 127 "Level". */
 typedef struct { int level, race, high, cats; int total_a, got_a, total_b, got_b; float time; int score, best; } HudResults;

@@ -230,6 +230,15 @@ met de basis gaat model-z naar camera-omhoog en model-y van de camera af, dus he
 elk figuur draait met θ mee (kijkt naar buiten), plus 10° kanteling. Volgorde en teken van de hoeken in `0x489780`
 zijn niet tot op het bit nagelopen (**onzeker**; zie §9 voor het port-alternatief).
 
+**Port** (`car_place` in `src/main_engine.c`, geverifieerd op screenshots): positie precies zoals hierboven (camera-ruimte
+→ wereld met `R·x − U·(0,75·y) + F·(z / 1,2)`, `R`/`U`/`F` = rechts/omhoog/vooruit van de titelcamera). Oriëntatie als
+zuivere rotatie, zonder de niet-uniforme schaal op de rijen: model-x → `(cos θ, 0, sin θ)`, model-y → `(−sin θ, 0, cos θ)`,
+model-z → `(0, −1, 0)` (omhoog), daarna 10° om de camera-x-as zodat de voorkant van de ring zakt (dezelfde kanteling
+als de offsets `26,047·cos θ`). Resultaat: figuren rechtop, elk kijkt van het ringmidden naar buiten, het voorste
+recht in de lens, de sokkels als ellipsen van bovenaf; Woody staat met zijn voeten op zijn sokkel. Het "?"-figuur en de
+BlackBox-kast zweven in frame 0 van hun anim 0 een stuk boven hun sokkel (zo staat het in de data; niet te
+vergelijken zonder beeld van het origineel). De plaatsing draait elke frame na de titelbaan-camera en vóór het renderen.
+
 **De camera gaat nergens heen.** Pagina 3 roept geen `SetMode` aan; de titelcamera (mode 0x80, cirkel om het
 boomhuis, TITLE §2) draait gewoon door, de carrousel hangt vast vóór de lens en het decor draait erachter. De
 bestandsposities van 105–114 (x ≈ −10500, y ≈ 4000, z ≈ 4000–5000) en de intro-vector (−11299, −7, 601) van slot 115
@@ -252,6 +261,16 @@ spelen geen rol.
 BlackBox: `0x436ca0(1.0, {1,−1,−1,−1})`. Tijdens het draaien kan niet opnieuw gedraaid worden; er is **geen
 menugeluid** bij draaien (eventuele geluiden zitten in de animaties zelf).
 
+Nagelopen (port: `car_anim_sel` / `car_anim_prev`):
+- `0x436ca0(inst, f, s0..s3)` = klok `inst+0xa8` = nu, wachtrij `+0xb0..+0xbc` = s0..s3, snelheid `0x42e290(f · [0x4a988c])`
+  met `[0x4a988c]` = **3,0**; de BlackBox speelt anim 1 dus ook op snelheid 3 en blijft daarna op het laatste frame staan.
+- `0x45f5d0` (nieuw figuur): eerst snelheid 3,0 en klok = nu, dan per rol (`inst+0x184`): 0..2 → wachtrij {1,2,2,2},
+  3 → `0x436ca0(1.0, {1,−1,−1,−1})`, 4 ("?") → niets meer (anim 0 één keer op snelheid 3).
+- `0x45f690` (vertrekkend figuur): rol 3 → `0x436ca0(1.0, {1,−1,−1,−1})` (herstart); anders alleen **slot 0 = 1 en
+  slots 1..3 = 0 op de lopende klok** (geen herstart, snelheid blijft 3): de fase van anim 1 volgt uit de klok, daarna
+  anim 0 in een lus.
+- De andere figuren houden hun ctor-toestand (anim 0, snelheid 0 = stilstaand frame 0) tot ze een keer voor staan.
+
 ### 4.6 2D-laag (`vt[17]` = `0x45e8a0`)
 `off` = schuif: `+0x21 ? (0,5 − +0x1c)·(−600) : +0x20 ? +0x1c·(−600) : 0` (in/uit bij openen en rond elke draai).
 
@@ -264,10 +283,26 @@ menugeluid** bij draaien (eventuele geluiden zitten in de animaties zelf).
 | pijlen | `0x45fac0` | Common afb. 63 bron (0,96,31,31) = **HUD-sprite 15, een geel pijl-contour** (alfa 0 in de data, dus alleen additief zichtbaar: lost HUD_TEXT §9 punt 6 op), verdubbeld tot 62×62, **additief**; rechts op (470 + s, 209), links gespiegeld op (108 − s, 209), `s = (sluiten ? +0x28 : 0,5 − +0x28)·600`. Grijswaarde 128; de pijl in de draairichting dimt tijdens het draaien naar 32 en terug (`128 − t·96/0,25`, daarna `(t − 0,25)·96/0,25 + 32`) |
 | totaalscore | `0x45e8a0` | 130 "Total Score :" (15, `0xfeffffff`) op (16, 410), daaronder het getal `0x450a10` (som van alle `best` + `save+0x14a0`) |
 
+Details (nagelopen voor de port, `hud_carousel` in `src/hud.c`):
+- Getallen links (`0x45eb00` → `0x45f2a0`): grootte 17; een waarde ≥ 100 zet `30 × 0,75 = 22,5` en die maat **blijft
+  staan** voor de volgende getallen van dezelfde frame.
+- Rechts (`0x45f790`): "NN%" staat op `110 + celhoogte` van de (verkleinde) grootte-20-regel; het deel (`+0x144`) wordt
+  op de maat van de wereldregel gemeten en getekend (geen eigen verkleining), op `270 + celhoogte`.
+- Naam (`0x45fe30`): de grijze kopie `0xfe808080` op `(x + 0,05·h, y + 0,05·h)`, daarover `0xfe801400` op `(x, y)`.
+- Pijlen: bron `[0x4ab784..0x4ab794]` = (0, 96, 31, 31), afbeelding 63; grijs `128 − t·96/0,25` bij uitschuiven,
+  `(t − 0,25)·96/0,25 + 32` bij inschuiven, alleen voor de pijl van de draairichting. **Port-keuze**: de bron een halve
+  texel ingekort, omdat de rij erboven (y 95) wit is en de bilineaire filter op 2× schaal er een lijn boven de pijl van
+  maakte.
+- Totaalscore: string 130 grootte 15 op (16, 410), het getal op (16, 410 + celhoogte), beide `0xfeffffff`.
+- De lijst op pagina 3 zit niet in de gewone lijstnavigatie van de port: omhoog/omlaag wisselt PLAY ↔ SEE HIGH SCORES,
+  op de BlackBox-plek is item 1 een kop en blijft de selectie op PLAY.
+
 Locatie-strings `0x45ec50(level)` (tabel `0x45ed60`): W1A/K1A/S1A = 47 "Space" + 51 "Part A"; W1B = Space + 52
 "Part B"; K1R/S1R = Space + 55 "Race"; W2A/K2A/S2A = 48 "Pirate" + Part A; W2B = Pirate + Part B; **W2D = Pirate +
 53 "Part C"**; K2R/S2R = Pirate + Race; W3A/K3A/S3A = 49 "House" + Part A; W3B/W3C/W3D = House + Part B/C/D;
-K3R/S3R = House + Race; hubs: niets.
+K3R/S3R = House + Race; hubs: niets (de functie laat dan de vorige strings staan; ze worden alleen bij NN < 100
+getekend). Volledig: W1A 47+51, W1B 47+52, W2A 48+51, W2B 48+52, W2D 48+53, W3A 49+51, W3B 49+52, W3C 49+53, W3D 49+54
+("Part D"), K1A/S1A 47+51, K1R/S1R 47+55, K2A/S2A 48+51, K2R/S2R 48+55, K3A/S3A 49+51, K3R/S3R 49+55.
 
 ### 4.7 Bevestigen (`0x45ee50`)
 - **PLAY** (item 0): alleen als het record vrij is en niet al sluitend: iris 0,37 → 0 in 0,5 s (`+0x28 = 0`), **geen
@@ -276,6 +311,8 @@ K3R/S3R = House + Race; hubs: niets.
   verbergen** (`0x4891d0(0)` → `0x407850`).
 - **SEE HIGH SCORES** (item 1): vrij, niet sluitend, niet plek 4: idem maar `+0x14 = 4` en `[0x5e5a8c]+0x3c = k`
   (pagina 4 = high scores van personage k, klasse `0x45bfb0`, niet verder ontleed; terug → pagina 3, `0x405749`).
+  **Port**: niet geport — het item doet niets (alleen een regel in de console). Pagina 4 is geen kleine klasse: vtable
+  `0x4ab368`, enter `0x45bfd0`, tekenen `0x45bff0` → `0x45c090` … `0x45cd50` (~1500 instructies, een tabel per level).
 - Gesloten figuur: niets (geen geluid).
 
 ## 5. Pagina 5 (slotkeuze opslaan) en 0x17 — kort
@@ -456,6 +493,16 @@ void carousel_place(const FreeCamera *cam, float pos) {                    /* na
 2D van pagina 3: volg de tabel in §4.6 letterlijk (sprites uit `k_spr`, pijl = sprite 15 additief ×2, getallen rood).
 Volgorde: 3D (met figuren) → iris → 2D-teksten/pijlen → faders.
 
+**Stand van de port (pagina 3 geport)**: `src/main_engine.c` `g_car` + `car_fill` / `car_place` / `car_rotate` /
+`carousel_enter` / `carousel_update` / `carousel_draw` / `carousel_frame` (elke frame na `menu_update` en de
+titelcamera, vóór `rnd_frame`); records via de vaste slots 105..114 (`slot_instance`), niet via bericht 58; `level_free`
+vergeet de pointers (`car_forget`). Donker = `Instance.tint_scale = 0,1` (renderhaak naast `tint_red` in
+`src/render_gl.c`). 2D = `hud_carousel(HudCarousel *)` in `src/hud.c`. Na PLAY laadt `level_load` het personage uit het
+level (`char_of_level`: KWS → Knothead, blok 1 van de save; geverifieerd: KWS met Knothead, 7 levens (HUD toont 6) + 5 hartjes uit een
+testsave). Gevonden en verholpen: de hoofdlus kopieerde elke frame de levens/health/items/ladingen van de House-Perso in
+`g_save.chr[g_char]`, dus "Load game" → WWS begon altijd met 9 levens / 3 health; het origineel schrijft alleen via
+setters bij een wijziging, dus op niveau 0 slaat de port die kopie nu over.
+
 ## 9. Onzeker / open
 
 1. **Zichtbaarheid van de klasse-110-figuren buiten pagina 3.** `vt[3]` (`0x489650`) plaatst ze elke frame
@@ -463,10 +510,12 @@ Volgorde: 3D (met figuren) → iris → 2D-teksten/pijlen → faders.
    cel losmaken) zou daardoor een frame later al ongedaan zijn, en de figuren die niet in een record zitten (107/109
    of 108/110) staan op camera-ruimte (0, 0, 300). Dat het origineel op de titel en na "terug" geen figuren toont
    (TITLE §3.2) volgt dus niet uit deze code — ergens zit nog een poort (cel-zoektocht `0x4081c0` die buiten de
-   kd-sectoren −1 geeft? de zichtbare-sectorlijst?). Port: alleen de 8 record-instanties tonen, alleen op pagina 3.
+   kd-sectoren −1 geeft? de zichtbare-sectorlijst?). Port: alleen de 8 record-instanties tonen, alleen op pagina 3
+   (gedaan; verborgen bij de resultaatlevering en bij elke andere pagina).
    Controle met `tools/wtrace.py`: breakpoint `0x4077f0` met `ecx` = instantie 105, `inst+0x1c` loggen op pagina 1.
 2. Volgorde/teken van de drie hoeken in `0x489780` (pitch −10°, yaw θ) en de invloed van de niet-uniforme schaal
-   op de oriëntatierijen (`0x4894xx` normaliseert achteraf).
+   op de oriëntatierijen (`0x4894xx` normaliseert achteraf). De port-lezing (§4.4) ziet er goed uit; bit-exact is ze niet
+   nagelopen.
 3. Welke gezichten horen bij welk personage: de code gebruikt voor Knothead (0,63) en voor Splinter (63,0) van
    afbeelding 61 (zowel slotpaneel als statistiek: `+0x58` = 2 resp. 1). HUD_TEXT §4.2 noemt sprite 1 = "karakter 1";
    dat label is mogelijk verwisseld.
@@ -475,7 +524,8 @@ Volgorde: 3D (met figuren) → iris → 2D-teksten/pijlen → faders.
 5. `vt[6]` van pagina 3 (`0x45fff0`: 2 als het gekozen record vrij is, anders 1): geen lezer gevonden.
 6. Muziekobject `[0x5e61a4]->vt[0x50]/vt[0x54](0.5)` in de opslaanketen (dempen?); `[0x5e618c]` (trilling) op de pc.
 7. `save+0x14a0` ("extra score"): geen schrijver gevonden.
-8. Pagina 4 (high scores, klasse `0x45bfb0`) is niet ontleed.
+8. Pagina 4 (high scores, klasse `0x45bfb0`) is niet ontleed en niet geport (§4.7); "SEE HIGH SCORES" doet in de
+   port niets.
 9. De exacte afronding van `fistp` bij 108,5 (ringbron) en 50,5 (ring-y): afhankelijk van de FPU-afrondingsmodus
    (standaard: naar even ⇒ 108 resp. 50).
 10. Alles is statisch; aanbevolen controle met `tools/wtrace.py`: breakpoints op `0x4051da`, `0x4052db` (slot),

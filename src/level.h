@@ -142,6 +142,7 @@ typedef struct Instance {
     uint32_t traj_flags; float traj_start, traj_dur;                         /* path follower (+0x78) */
     Mat4 *node_world;                           /* per node, updated by ins_pose() */
     int tint_red;                               /* render colour hook vtbl[26]: vertex colours times (1,0,0) (the rocket's warning blink 0x4537d0) */
+    float tint_scale;                           /* the same hook as a factor on the lit colour, 0 = off: 0.1 = a locked figure of the world-select carousel (0x451a40) */
     Vec3 ldir; float lcol[3]; int l_init, light, l_seen;   /* model lighting: smoothed light vector, light colour, chosen light, seen by it (0x43b912, 0x42e3e4) */
     int tex_mode; float tex_t0, tex_fac;                   /* +0xd8 bits 0-2, +0xdc, +0xe0: texture frame override, messages 16 / 18 / 19 (docs/INSTANCE.md 2) */
     int drawn;                                             /* set by the renderer each frame: this instance survived the visibility pass */

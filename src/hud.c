@@ -739,6 +739,61 @@ void hud_slot_list(const HudSlots *s, float dt)
     font_size(17.0f);
 }
 
+/* ---------------------------------------------------------------- page 3, the world-select carousel (docs/MENU_LOAD.md 4.6) */
+static void row_centred(float cx, float y, uint32_t col) { font_draw(cx - font_measure(g_row) * 0.5f, y, g_row, col); }
+void hud_carousel(const HudCarousel *c)
+{
+    if (!H.ok) return;
+    float off = c->off;
+    if (c->stats) {
+        /* 0x45f6f0: the portrait, the lives plate, the health dots (0x45ea00), $ and charge icons with their plates */
+        sprite(c->face, 16 + off, 113); sprite(8, 56 + off, 153);
+        for (int i = 0; i < (int)c->health; i++) sprite(7, 31 + off + 24.0f * i, 78);
+        sprite(3, 22 + off, 213); sprite(8, 56 + off, 258); sprite(6, 22 + off, 308); sprite(8, 56 + off, 353);
+        /* 0x45eb00 -> 0x45f2a0: red, size 17 centred on the plates; a value >= 100 sets 30 x 0.75 and that size stays for the next ones */
+        const int v[3] = { c->lives - 1, c->unique, c->charges }; float S = 17.0f;
+        for (int i = 0; i < 3; i++) {
+            uint16_t s[16]; number_codes(s, v[i]); if (v[i] >= 100) S = 22.5f; font_size(S);
+            font_draw(72 + off - font_measure(s) * 0.5f, 169 + 105.0f * i - font_cell() * 0.5f, s, 0xfeff0000);
+        }
+        /* 0x45f790(-off): centred on x 565 + off', every line shrunk to <= 115 wide */
+        float cx = 565 - off;
+        row_reset(); row_str(43); fit_size(g_row, 20, 115, 10); row_centred(cx, 110, 0xfeffffff);          /* "Game cleared" */
+        float y = 110 + font_cell();
+        row_reset(); row_num(c->pct); row_str(7); fit_size(g_row, 50, 115, 10); row_centred(cx, y, 0xfeff1400);   /* "NN%" */
+        if (c->pct < 100) {
+            row_reset(); row_str(44); fit_size(g_row, 20, 115, 10); row_centred(cx, 240, 0xfeffffff);      /* "Location" */
+            row_reset(); if (c->world) row_str(c->world); fit_size(g_row, 25, 115, 10); row_centred(cx, 270, 0xfeff1400);
+            y = 270 + font_cell();
+            row_reset(); if (c->part) row_str(c->part); row_centred(cx, y, 0xfeff1400);                                 /* measured at the world's size, no fit of its own */
+        }
+    }
+    if (c->list && c->items) hud_menu_items(c->items, c->nitems, c->yfrac, c->list_sel, 1);   /* 0x446640 */
+    {   /* 0x45fe30: size 30, the grey copy 5 % of a cell right and down, the orange-red one on top */
+        row_reset(); row_str(c->name); font_size(30.0f);
+        float w = font_measure(g_row), h = font_cell(), x = 320 - w * 0.5f, y = 16 + off;
+        font_draw(x + 0.05f * h, y + 0.05f * h, g_row, 0xfe808080);
+        font_draw(x, y, g_row, 0xfe801400);
+    }
+    {   /* 0x45fac0: HUD sprite 15 (Common image 63, 0,96,31,31) doubled to 62x62, additive (flag 4); the left one mirrored */
+        int i = k_spr[15].img;
+        if (H.img[i]) {
+            float W = (float)H.img_w[i], Hh = (float)H.img_h[i], u0 = (k_spr[15].x + 0.5f) / W, v0 = (k_spr[15].y + 0.5f) / Hh, u1 = (k_spr[15].x + k_spr[15].w - 0.5f) / W, v1 = (k_spr[15].y + k_spr[15].h - 0.5f) / Hh;   /* half a texel in: the row above is opaque white, which the bilinear filter smeared into a line over the arrow at 2x */
+            uint32_t gr = (uint32_t)(int)(c->arrow_r + 0.5f) & 255, gl = (uint32_t)(int)(c->arrow_l + 0.5f) & 255;
+            uint32_t cr = 0xfe000000u | gr << 16 | gr << 8 | gr, cl = 0xfe000000u | gl << 16 | gl << 8 | gl;
+            glBlendFunc(GL_ONE, GL_ONE);
+            quad(470 + c->arrow_s, 209, 62, 62, H.img[i], u0, v0, u1, v1, cr, cr, cr, cr);
+            quad(108 - c->arrow_s, 209, 62, 62, H.img[i], u1, v0, u0, v1, cl, cl, cl, cl);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+    }
+    {   /* 0x45e8a0: 130 "Total Score :" size 15 at (16, 410), the sum 0x450a10 one cell below, both white */
+        row_reset(); row_str(130); font_size(15.0f); font_draw(16, 410, g_row, 0xfeffffff);
+        row_reset(); row_num(c->total); font_draw(16, 410 + font_cell(), g_row, 0xfeffffff);
+    }
+    font_size(17.0f);
+}
+
 /* ---------------------------------------------------------------- results screen (docs/GAMEFLOW.md 5.1, HUD_TEXT.md 6)
  * The strings are the ones the original reserves for it (12 CLEARED!!, 13 RESULTS, 15 OK, 17 HIGH SCORE, 46 points,
  * 127 Level, 128 Seconds, 129 Final Score, 130 "Total Score :" and the characters 7 "%", 8 "=", 10 ":", 11 "+"), the
