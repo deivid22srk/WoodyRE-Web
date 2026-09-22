@@ -219,6 +219,15 @@ een holle plooi heen steekt wint hij de dieptetest — dáár komen de lijnen om
 **Wat wel en niet meedoet**: alle achterwaartse skinned driehoeken; node-polygonen alleen als ze niet
 dubbelzijdig zijn (vlag 0x2) en geen blendvlaggen hebben (`flags & 0x60`, `0x43c0c2`). Typecode-2-nodes en de
 ooglid-laag (typecode 5..8, `0x43bf65`) doen niet mee.
+
+**Afwijking in de port**: de bit komt niet alleen van het script. De baasinstanties komen zonder bit 0x20 bij de
+renderer aan — Buzz (type 14) staat in W1B zonder de lijn die elke andere figuur wél heeft — en hun klassen
+(`0x40eb50`, `0x40d850`, `0x40c730`) zijn niet gedecompileerd. Klassen zijn in het origineel de tweede bron van
+deze bits (type 40 zet bit 1 op zichzelf, `0x44d304`), dus `src/main_engine.c` zet bit 0x20 bij bericht 1200
+(SetTypeInstance) op elke actorklasse: 1..16, 18 en 19 (Perso, vijanden, bazen). Waar het script de instantie toch
+al vlagt verandert er niets. `WOODY_SHLOG=1` schrijft sindsdien per seconde één regel voor elke getekende actor
+die géén contour krijgt, met de afstand en de reden (geen bit 0x20, of verder dan 1500), zodat te zien is welke
+van de twee poorten hem tegenhoudt.
 ## Onzeker
 - Tekenvolgorde van de twee ooglagen: `0x43d790` tekent niet direct maar vult batches per (textuur, modus)
   (`renderer+0x1b8`, lijsten `+0x1c0`); een afgesloten batch wordt vooraan gelinkt, zodat de later afgesloten

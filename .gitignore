@@ -19,3 +19,5 @@ out/*.pdb
 out/synth.*
 out/trunc.*
 woodyre.sav
+out/msg1042.inc
+out/switchtest

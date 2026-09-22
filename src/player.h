@@ -95,6 +95,8 @@ void player_place(Player *p, Vec3 pos, float yaw);     /* Perso reset + SetPos +
 void player_kill(Player *p, int kind);
 Quat q_slerp(Quat a, Quat b, float u);
 int  player_mount(Player *p, Instance *obj);           /* 0x465740: only in state 0 on the ground */
+int  player_state_free(const Player *p);               /* Perso state +0x21c == 0: he has his own controls (0x44bcf0) */
+void player_brake_charge(Player *p);                   /* 0x458e40: message 1042 stops the charge run the release just started */
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir);   /* message 26 (0x44ce11); the caller leaves all volumes in the VM */
 /* message 1040 / 1140 (0x44dda0): the action number IS the raw .ins animation. 17 = into a door, 18 = out of it;
  * 10..16, 19 and 72..78 (the results animations) run with the root motion of 0x44e290. */

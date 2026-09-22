@@ -1181,7 +1181,14 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     switch (m->id) {
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; that page is not ported, so keep them out of sight */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    /* Every actor class carries the black outline. The renderer gates the ink line on SetFlags bit 0x20 (message 45,
+     * docs/MODEL_RENDER.md 7); the level script sets that bit per instance and the Perso and the ordinary enemies are
+     * in its list, but Buzz (type 14) stands in W1B without the line every other character has, so the bosses are not.
+     * Classes are the second source of those bits in the original - type 40 sets bit 1 on itself (0x44d304) - and the
+     * three boss classes 0x40eb50 / 0x40d850 / 0x40c730 are not ported, so the port sets the bit itself when the class
+     * is assigned. Wherever the script already flags the instance this changes nothing; WOODY_SHLOG=1 lists the actors
+     * that still come out without a rim, with the reason. */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if ((in->type >= 1 && in->type <= 16) || in->type == 18 || in->type == 19) in->setflags |= 0x20; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; that page is not ported, so keep them out of sight */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1501: case 1504: {                                                         /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
         EnvInst *E = in ? env_of(in) : NULL;
         if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
@@ -1265,25 +1272,37 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1140:                                                                                              /* hub: the player arrives at the door he came out of and the results screen runs (0x453d90) */
         if (in && g_player && m->nargs > 1) results_begin(vm, in, m->args[1]);
         break;
-    case 1042:                                                                                              /* near `inst` (xz) and facing it within `angle` degrees */
+    case 1042:                                                                                              /* peck switch: is the player at `inst` and pointing the same way as its marker? */
         if (m->nargs > 3) {
-            int ok = 0;
-            if (in && g_player && g_player->dead_kind == 0) {
-                /* 0x445269 (docs/OBJECTS.md 1): on the ground, within `dist` (xz) of the START of the instance's vector marker (typecode 0, else 5),
-                 * and moving/facing along the marker direction within `angle` degrees. Without a marker: the instance position and the direction to it. */
-                Vec3 p0, dir; int have = inst_vector(in, 0, &p0, &dir) || inst_vector(in, 5, &p0, &dir);
-                if (!have) { p0 = in->position; dir.x = p0.x - g_player->pos.x; dir.y = 0; dir.z = p0.z - g_player->pos.z; }
-                float dx = p0.x - g_player->pos.x, dz = p0.z - g_player->pos.z, d = sqrtf(dx * dx + dz * dz), dl = sqrtf(dir.x * dir.x + dir.z * dir.z);
-                if (d <= (float)(int)m->args[1] && g_player->on_ground)
-                    ok = dl < 1e-3f || (sinf(g_player->yaw) * dir.x + cosf(g_player->yaw) * dir.z) / dl > cosf((float)(int)m->args[2] * 3.14159265f / 180.0f);
-                if (getenv("WOODY_SWLOG")) printf("  1042 inst %u marker %d dist %.0f/%d facing ok %d", in->index, have, d, (int)m->args[1], ok), puts("");
+            /* 0x445269 (docs/OBJECTS.md 1.2), the engine half of every peck switch and every door in the game.
+             * It answers only for a Perso who has his own controls (state 0) and stands on the ground, it measures
+             * the xz distance to the START of the instance's own vector marker (typecode 0, else 5) - not to the
+             * instance - and it does not test "looks at the switch" but "faces the same way as that marker".
+             * On a yes it brakes the charge run that releasing the attack button started in the Perso update of this
+             * same frame (0x44542f -> 0x458e40): that brake, animation 0x12, IS the peck the player sees at a switch.
+             * Without it he keeps the 700 u/s of the charge run and storms into the thing he meant to peck. */
+            int ok = 0, atk = g_player ? g_player->atk : 0; float d = 0, c = 0; int have = 0;
+            if (in && g_player && player_state_free(g_player) && g_player->on_ground) {
+                Vec3 p0, dir; have = inst_vector(in, 0, &p0, &dir) || inst_vector(in, 5, &p0, &dir);
+                if (!have) { p0 = in->position; dir.x = p0.x - g_player->pos.x; dir.y = 0; dir.z = p0.z - g_player->pos.z; }   /* the original reads an uninitialised vector here; aim at the instance instead */
+                float dx = p0.x - g_player->pos.x, dz = p0.z - g_player->pos.z, dl = sqrtf(dir.x * dir.x + dir.z * dir.z);
+                d = sqrtf(dx * dx + dz * dz);
+                c = dl < 1e-3f ? 1.0f : (sinf(g_player->yaw) * dir.x + cosf(g_player->yaw) * dir.z) / dl;   /* Mover direction . marker direction, both flattened */
+                ok = d <= (float)(int)m->args[1] && c > cosf((float)(int)m->args[2] * 3.14159265f / 180.0f);   /* 0x445341: `dist` is raw, not x0.01 */
+                if (ok) player_brake_charge(g_player);
             }
+            if (getenv("WOODY_SWLOG") && in)
+                printf("  1042 inst %u marker %d dist %.0f/%d angle %.0f/%d deg state %s atk %d -> %d", in->index, have, d, (int)m->args[1],
+                       acosf(c < -1 ? -1 : c > 1 ? 1 : c) * 180.0f / 3.14159265f, (int)m->args[2],
+                       !g_player ? "-" : !player_state_free(g_player) ? "busy" : !g_player->on_ground ? "air" : "free", atk, ok), puts("");
             eko_set_var(vm, m->args[3], ok);
         }
         break;
     case 1048: case 1049: case 1050:                                                                        /* key tests on actions 0, 1, 6 */
         if (m->nargs > 1) { int k = m->id - 1048, mode = (int)m->args[1], now = g_act_now[k], prev = g_act_prev[k];
-                            eko_set_var(vm, m->args[0], mode == 0 ? now : mode == 1 ? (now && !prev) : (!now && prev)); }   /* 0x467400 held, 0x467420 just pressed, 0x467440 just released */
+                            int v = mode == 0 ? now : mode == 1 ? (now && !prev) : (!now && prev);            /* 0x467400 held, 0x467420 just pressed, 0x467440 just released */
+                            if (getenv("WOODY_SWLOG") && v) printf("  %u action %d mode %d -> 1", m->id, k == 2 ? 6 : k, mode), puts("");
+                            eko_set_var(vm, m->args[0], v); }
         break;
     case 1141: g_pose = in; break;
     case 1160: if (m->nargs) { g_intro_var = m->args[0]; g_have_intro = 1; } break;
