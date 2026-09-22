@@ -18,7 +18,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_CLOSE: case WM_DESTROY: if (w) w->quit = 1; return 0;
     case WM_SIZE: if (w) { w->width = LOWORD(lp); w->height = HIWORD(lp); } return 0;
-    case WM_KEYDOWN: if (w && wp < 256) w->keys[wp] = 1; if (wp == VK_ESCAPE && w) w->quit = 1; return 0;
+    case WM_KEYDOWN: if (w && wp < 256) w->keys[wp] = 1; return 0;   /* Esc is a menu key now (docs/MENU_NEWGAME.md 1.3), not quit */
     case WM_KEYUP: if (w && wp < 256) w->keys[wp] = 0; return 0;
     case WM_RBUTTONDOWN: if (w) { w->mouse_right = 1; SetCapture(h); } return 0;
     case WM_RBUTTONUP: if (w) { w->mouse_right = 0; ReleaseCapture(); } return 0;
@@ -551,12 +551,13 @@ static int instance_visible(Renderer *r, Instance *inst, float aspect, float fy,
 static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat4 *M, const InsPoint *pt, const float base[3])
 {
     if (g_mat_blended) { float a = 1.0f - inst->fade; bt_color(base[0] * a, base[1] * a, base[2] * a); return; }
-    if (!r->lit || !r->show_light) { bt_color(base[0] * pt->colour.x / 128.0f, base[1] * pt->colour.y / 128.0f, base[2] * pt->colour.z / 128.0f); return; }
+    float ts = inst->tint_scale > 0 ? inst->tint_scale : 1.0f;   /* 0x451a40: [0x5ac850] = 1, [0x5ac854..5c] = 0.1 times the lit colour (0x43bdfc) */
+    if (!r->lit || !r->show_light) { bt_color(ts * base[0] * pt->colour.x / 128.0f, ts * base[1] * pt->colour.y / 128.0f, ts * base[2] * pt->colour.z / 128.0f); return; }
     const float *a = M->m; Vec3 n = pt->normal;
     Vec3 w = { a[0] * n.x + a[4] * n.y + a[8] * n.z, a[1] * n.x + a[5] * n.y + a[9] * n.z, a[2] * n.x + a[6] * n.y + a[10] * n.z };
     float l = sqrtf(w.x * w.x + w.y * w.y + w.z * w.z), ndl = l > 1e-6f ? (w.x * inst->ldir.x + w.y * inst->ldir.y + w.z * inst->ldir.z) / l : 0; if (ndl < 0) ndl = 0;
     float vc[3] = { pt->colour.x, pt->colour.y, pt->colour.z }, c[3];
-    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q]; if (q && inst->tint_red) c[q] = 0; }
+    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q] * ts; if (q && inst->tint_red) c[q] = 0; }
     bt_color(c[0], c[1], c[2]);
 }
 

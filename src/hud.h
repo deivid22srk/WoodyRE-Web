@@ -25,12 +25,38 @@ void hud_text_reset(void);
  * screen = the pickup projected into 640x480, NULL when it is off screen; face = the portrait index for kind 1. */
 void hud_anim_reset(void);
 void hud_anim_pickup(int kind, const float *screen, int face);
-/* House menu pages (docs/TITLE.md 5): page 0 = "Press a key", page 1 = New game / Load game / Options / Quit; logo = House.rck image 1 */
-void hud_title_draw(int page, int sel, int want_logo, float dt);
+/* menu pages of the common page class (docs/TITLE.md 5, MENU_NEWGAME.md 2): an item is {Common string, flags, value};
+ * flags 1 selectable, 2 header (never selected), 4 right, 8 left, 0x80 centred on x 160, 0x20 size x 0.8,
+ * 0x10 slider ("name value%"). The items run from y = yfrac * 480, one cell (62 * S / 40) apart, size 30 shrinking
+ * until the widest name fits; the selected one blinks away at 2 Hz. `ready` = the page's input delay is over. */
+typedef struct { uint32_t id, flags; int value; } MenuItem;
+void hud_menu_items(const MenuItem *it, int n, float yfrac, int sel, int ready);
+void hud_menu_tick(float dt);                                   /* the blink phase, once per frame */
+void hud_menu_blink(float t);                                   /* set it: 0 after up/down, 0.25 after a slider step */
+void hud_menu_page(const uint32_t *ids, int n, float yfrac, int sel, float dt);   /* tick + selectable items */
+void hud_logo(int grow, float dt);                              /* House.rck image 1: fades in on pages 0/1 (grow), out elsewhere */
+void hud_logo_off(void);
 void hud_title_reset(void);
-/* a panel page of the common menu class (docs/TITLE.md 5.1): the items centred from y = yfrac * 480, one cell
- * (62 * S / 40) apart, size 30 shrinking until the widest one fits, the selected one blinking away at 2 Hz. */
-void hud_menu_page(const uint32_t *ids, int n, float yfrac, int sel, float dt);
+void hud_iris(float v);                                         /* black ring, hole radius v * 475 (0 = black, 0.85 = open) */
+void hud_rect(uint32_t argb);                                   /* flat colour over the virtual screen */
+/* the save-slot list of pages 2 (load) and 5 (save), docs/MENU_LOAD.md 2.2: sel 1..4, pct 0 = free slot,
+ * open bit 0 Knothead / bit 1 Splinter unlocked, slide = the panels' offset while they move in or out,
+ * cross = draw the red cross over free slots (page 2), title = Common string (25 / 24) */
+typedef struct { int sel, pct[4], open[4], cross; float slide; uint32_t title; } HudSlots;
+void hud_slot_list(const HudSlots *s, float dt);
+/* the 2D layer of the world-select carousel, page 3 (docs/MENU_LOAD.md 4.6, vt[17] 0x45e8a0): name on top, the stats
+ * panel left and "Game cleared" / "Location" right of the selected figure (only unlocked and not BlackBox: `stats`),
+ * the PLAY / SEE HIGH SCORES list (`list`: unlocked, the page neither opening nor closing), the two yellow arrows and
+ * "Total Score :". off = the text slide (<= 0), arrow_s = the arrows' slide, arrow_l / arrow_r their grey (128 = 1). */
+typedef struct {
+    uint32_t name;                                   /* Common string 30..34 */
+    int stats, face, lives, unique, charges; float health;
+    int pct; uint32_t world, part;                   /* location strings of the first unfinished level, 0 = none */
+    int list, nitems, list_sel; const MenuItem *items; float yfrac;
+    float off, arrow_s, arrow_l, arrow_r;
+    int total;
+} HudCarousel;
+void hud_carousel(const HudCarousel *c);
 /* the results screen after a level (docs/GAMEFLOW.md 5.1, docs/HUD_TEXT.md 6): the two collectible categories with
  * their "+50 %" bonus, the level time and the score. `level` is the number printed behind string 127 "Level". */
 typedef struct { int level, race, high, cats; int total_a, got_a, total_b, got_b; float time; int score, best; } HudResults;
