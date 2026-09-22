@@ -1142,25 +1142,37 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1140:                                                                                              /* hub: the player arrives at the door he came out of and the results screen runs (0x453d90) */
         if (in && g_player && m->nargs > 1) results_begin(vm, in, m->args[1]);
         break;
-    case 1042:                                                                                              /* near `inst` (xz) and facing it within `angle` degrees */
+    case 1042:                                                                                              /* peck switch: is the player at `inst` and pointing the same way as its marker? */
         if (m->nargs > 3) {
-            int ok = 0;
-            if (in && g_player && g_player->dead_kind == 0) {
-                /* 0x445269 (docs/OBJECTS.md 1): on the ground, within `dist` (xz) of the START of the instance's vector marker (typecode 0, else 5),
-                 * and moving/facing along the marker direction within `angle` degrees. Without a marker: the instance position and the direction to it. */
-                Vec3 p0, dir; int have = inst_vector(in, 0, &p0, &dir) || inst_vector(in, 5, &p0, &dir);
-                if (!have) { p0 = in->position; dir.x = p0.x - g_player->pos.x; dir.y = 0; dir.z = p0.z - g_player->pos.z; }
-                float dx = p0.x - g_player->pos.x, dz = p0.z - g_player->pos.z, d = sqrtf(dx * dx + dz * dz), dl = sqrtf(dir.x * dir.x + dir.z * dir.z);
-                if (d <= (float)(int)m->args[1] && g_player->on_ground)
-                    ok = dl < 1e-3f || (sinf(g_player->yaw) * dir.x + cosf(g_player->yaw) * dir.z) / dl > cosf((float)(int)m->args[2] * 3.14159265f / 180.0f);
-                if (getenv("WOODY_SWLOG")) printf("  1042 inst %u marker %d dist %.0f/%d facing ok %d", in->index, have, d, (int)m->args[1], ok), puts("");
+            /* 0x445269 (docs/OBJECTS.md 1.2), the engine half of every peck switch and every door in the game.
+             * It answers only for a Perso who has his own controls (state 0) and stands on the ground, it measures
+             * the xz distance to the START of the instance's own vector marker (typecode 0, else 5) - not to the
+             * instance - and it does not test "looks at the switch" but "faces the same way as that marker".
+             * On a yes it brakes the charge run that releasing the attack button started in the Perso update of this
+             * same frame (0x44542f -> 0x458e40): that brake, animation 0x12, IS the peck the player sees at a switch.
+             * Without it he keeps the 700 u/s of the charge run and storms into the thing he meant to peck. */
+            int ok = 0, atk = g_player ? g_player->atk : 0; float d = 0, c = 0; int have = 0;
+            if (in && g_player && player_state_free(g_player) && g_player->on_ground) {
+                Vec3 p0, dir; have = inst_vector(in, 0, &p0, &dir) || inst_vector(in, 5, &p0, &dir);
+                if (!have) { p0 = in->position; dir.x = p0.x - g_player->pos.x; dir.y = 0; dir.z = p0.z - g_player->pos.z; }   /* the original reads an uninitialised vector here; aim at the instance instead */
+                float dx = p0.x - g_player->pos.x, dz = p0.z - g_player->pos.z, dl = sqrtf(dir.x * dir.x + dir.z * dir.z);
+                d = sqrtf(dx * dx + dz * dz);
+                c = dl < 1e-3f ? 1.0f : (sinf(g_player->yaw) * dir.x + cosf(g_player->yaw) * dir.z) / dl;   /* Mover direction . marker direction, both flattened */
+                ok = d <= (float)(int)m->args[1] && c > cosf((float)(int)m->args[2] * 3.14159265f / 180.0f);   /* 0x445341: `dist` is raw, not x0.01 */
+                if (ok) player_brake_charge(g_player);
             }
+            if (getenv("WOODY_SWLOG") && in)
+                printf("  1042 inst %u marker %d dist %.0f/%d angle %.0f/%d deg state %s atk %d -> %d", in->index, have, d, (int)m->args[1],
+                       acosf(c < -1 ? -1 : c > 1 ? 1 : c) * 180.0f / 3.14159265f, (int)m->args[2],
+                       !g_player ? "-" : !player_state_free(g_player) ? "busy" : !g_player->on_ground ? "air" : "free", atk, ok), puts("");
             eko_set_var(vm, m->args[3], ok);
         }
         break;
     case 1048: case 1049: case 1050:                                                                        /* key tests on actions 0, 1, 6 */
         if (m->nargs > 1) { int k = m->id - 1048, mode = (int)m->args[1], now = g_act_now[k], prev = g_act_prev[k];
-                            eko_set_var(vm, m->args[0], mode == 0 ? now : mode == 1 ? (now && !prev) : (!now && prev)); }   /* 0x467400 held, 0x467420 just pressed, 0x467440 just released */
+                            int v = mode == 0 ? now : mode == 1 ? (now && !prev) : (!now && prev);            /* 0x467400 held, 0x467420 just pressed, 0x467440 just released */
+                            if (getenv("WOODY_SWLOG") && v) printf("  %u action %d mode %d -> 1", m->id, k == 2 ? 6 : k, mode), puts("");
+                            eko_set_var(vm, m->args[0], v); }
         break;
     case 1141: g_pose = in; break;
     case 1160: if (m->nargs) { g_intro_var = m->args[0]; g_have_intro = 1; } break;

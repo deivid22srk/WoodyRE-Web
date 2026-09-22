@@ -643,7 +643,7 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
         auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
         if (p->charge > 0 && !in->jump) { p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return; }
         if (in->jump) { lock_move(p, 0); p->atk = 0; return; }             /* jump cancels the run */
-        p->charge = 0; p->atk_t = anim_len(p, 0x12, 0) + anim_len(p, 0x12, 1); lock_move(p, p->atk_t); p->atk = 11; return;   /* brake */
+        player_brake_charge(p); return;                                    /* 0x457e16: the charge ran out */
     case 11: if ((p->atk_t -= dt) <= 0) p->atk = 0; return;
     default: return;
     }
@@ -662,6 +662,27 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
             if (p->charge <= 0.1f) { lock_move(p, p->atk_t); p->charge = 0; }
         } else if (held) { p->charge += 4.0f * dt; if (p->charge > 1.5f) p->charge = 1.5f; }
     } else if (pressed && p->air_win > 0) p->atk = 1;                      /* air: peck dash */
+}
+
+/* Perso state (+0x21c), set by SetState 0x44c980 and read by 0x44bcf0: 0 means the player has his own controls.
+ * The port keeps that state in the fields that stand for it - 2 = dead, 4 = hanging in a peckable wall, 5 = a
+ * scripted action, 8 = riding a class-20 rocket - so the messages that only answer "when the Perso is free"
+ * (1042, and 0x465740 when he steps onto a rocket) ask here. */
+int player_state_free(const Player *p) { return !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride; }
+
+/* 0x458e40 Perso_BrakeCharge, the one brake that is called from outside the attack controller: the game code calls it
+ * at 0x44542f, in the handler of message 1042, when the player is standing at a peck switch. Releasing the attack
+ * button started the charge run (atk 9) in the Perso update of this very frame; the VM tick that follows brakes it
+ * again, so what the player sees at the switch is the peck animation 0x12 in place and not a run into it.
+ * Only the two charge states are braked - the dash and the rebounds are left alone - and the brake is the same one
+ * the controller uses internally (0x457b0a / 0x457e16, docs/PERSO_JUMP.md 2.3). */
+void player_brake_charge(Player *p)
+{
+    if (p->atk != 9 && p->atk != 10) return;
+    p->charge = 0;
+    p->atk_t = anim_len(p, 0x12, 0) + anim_len(p, 0x12, 1);
+    lock_move(p, p->atk_t);                                                /* LockMove(T, 0) */
+    p->atk = 11;                                                           /* atk_anim[11] = 0x12 plays the peck */
 }
 
 /* ---- damage, death, respawn (docs/PERSO_MOVE.md 4.4, PERSO_FRAME.md 4.1) ------------------------------------ */
@@ -1189,7 +1210,7 @@ Quat q_slerp(Quat a, Quat b, float u)
 }
 int player_mount(Player *p, Instance *obj)                              /* 0x465740 */
 {
-    if (p->dead_kind || p->climb_sub || p->script_act || p->ride || !p->on_ground) return 0;
+    if (!player_state_free(p) || !p->on_ground) return 0;               /* 0x465740: only in state 0 and on the ground */
     p->ride = obj; p->ride_state = 1; p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->has_target = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->att_inst = NULL;
     p->ride_p0 = p->pos; p->ride_q0 = p->ride_cur = p->inst->quat; p->ride_t = 0.7f; p->ride_jprev = p->ride_aprev = 1; p->lanim = -1;
     printf("  PLAYER mounts instance %u", obj->index), puts("");
