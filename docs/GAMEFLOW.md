@@ -325,7 +325,7 @@ toestanden af:
 | 0 | `case 0` | Perso op de deurvector met **gescripte actie 0x4a** (.ins-anim 74, mét eigen cameratrack): de binnenzwevende animatie uit het screenshot van issue #7 — of de parasol in die animatie zit of de prop van bericht 1142 is, is niet nagekeken (geen data in de repo). Die prop wordt op dezelfde plek neergezet en getoond (`0x4077f0`). Zodra de actie klaar is: actie **0x4b** en toestand 1 |
 | 1 | `case 1` | paneel zichtbaar (`0x454560`). OK: `n` = categorieën compleet, `n` unieke items erbij, juichen met **0x4e** (n ≠ 0) of **0x4c**, toestand 2/3, paneel weg |
 | 2 / 3 | `case 2/3` | klaar met juichen → actie **0x4d**, score opslaan, toestand 4 en menupagina **6** ("Do you want to save?") |
-| 4 | `case 4` | pagina 6 → **Ja**: `woodyre.sav` schrijven → pagina 8 "Game Saved" (of 9 "Save failed.") → terug naar 6; **Nee**: `0x454050` = fade-out 0,5 s, toestand 5 |
+| 4 | `case 4` | de menupagina's 6 → 5 (slot) → 0x17 (overschrijven?) → 8 "Game Saved" / 9 "Save failed." lopen via het menu (`menu_update`, MENU_LOAD.md §5); zodra er geen pagina meer is (**Nee** op 6, of Continue op 8) `0x454050` = fade-out 0,5 s, toestand 5 |
 | 5 | `default` | na 0,5 s: prop verbergen (`0x407850`), fade-in 0,5 s, camera terug (mode 1), Perso vóór de deur en **`SetVar(perso+0x728, 1)`** — daar wacht het hub-script op |
 
 De gescripte acties zelf lopen via `player_script_action`: het actienummer is het ruwe .ins-animatienummer, de
@@ -342,8 +342,8 @@ logische records 26..30 (`0x1a..0x1e` in `log_anim`) zijn de one-shots voor 74..
   de HUD) en sprite **12** — een 64×64-icoon in bank-0-beeld 64 dat de HUD zelf nooit tekent (aanname: de vijanden).
 - "Level" krijgt het volgnummer binnen de set van het personage (W1A = 1 … W3D = 9), want de levelnamen staan niet in
   de stringtabel.
-- Slotkeuze (pagina's 5 / 0x17 / 0xc) bestaat niet: de port heeft één `woodyre.sav` (§6, bewuste afwijking), dus "Ja"
-  schrijft meteen en gaat naar 8 of 9. De cursor van pagina 6 begint op het eerste kiesbare item ("Yes"); alleen van
+- Slotkeuze: pagina 5 / 0x17 zijn geport (MENU_LOAD.md §5); de wachtpagina 0xc (2 frames) valt weg. Pagina 8 + Continue
+  verlaat het menu (niet terug naar 6, zoals hier eerder stond); 9 gaat terug naar 6. De cursor van pagina 6 begint op het eerste kiesbare item ("Yes"); alleen van
   pagina 0x1c is bekend dat hij op "No" begint.
 - De eindpositie van toestand 5 (`0x454244..`) is onbekend: de port zet hem terug op de deurvector, achter de fade.
 - Het spel wordt tijdens het scherm **niet** gepauzeerd (de animaties moeten lopen) en er ligt geen halfzwart vlak
@@ -357,7 +357,7 @@ Enter/spatie = bevestigen, pijltjes omhoog/omlaag = Ja/Nee.
 ## 6. Save
 
 ### 6.1 Bestand `Woody.sav` (werkmap), 0x52c4 bytes
-`u32 versie 0x11004` · 4 × slot (0x14a4 B, vanaf 4) · `u32 sfxvol[4]` (0x5294) · `u32 musicvol[4]`
+`u32 versie 0x11004` · 4 × slot (0x14a4 B, vanaf 4) · `u32 musicvol[4]` (0x5294) · `u32 sfxvol[4]`
 (0x52a4) · `float x[4]` (0x52b4). Lezen `0x450be0` (versie ≠ → "Save file Woody.sav is obsolete..."),
 schrijven `0x450b30`, bestaan-check `0x450aa0`. Slot-manager `app+0x4c` (vtable `0x4aaf3c`, slots op
 `mgr+8`). Er wordt **alleen geschreven via het menu** (pagina 6 → 5 → 0xc), dus na elk uitgespeeld level.

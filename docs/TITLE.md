@@ -307,7 +307,7 @@ iris (0 → 0.85, 0.5 s) wanneer je uit de laad-/wereldkeuzepagina's terugkomt o
 | 0x17 | 61 "…overwrite this save?" / Yes / No | 0.4 | |
 | 0x18 / 0x19 | pauze: 4 Continue, (19 Start again), 36 Options, 2 Quit | 0.05 | enter `0x45b390` (logo uit) |
 | 0x1a | 101..103 controller disconnected | 0.4 | |
-| 0x1b | opties (klasse `0x4601f0`, 0x20 B; vermoedelijk de sliders 38/39 met itemvlag 0x10, **onzeker**) | | niet uitgewerkt |
+| 0x1b | opties (klasse `0x4601f0`): 36 kop, 38 / 39 / 132 regelaars, 4 Continue | 0.4 | MENU_OPTIONS.md |
 | 0x1c | 3 "Are you sure?" / 5 Yes / 6 No | 0.55 | cursor start op No |
 | 0x1d | game over (`0x45bbd0`: zwart vlak + string 56 "GAME OVER", S = 35, midden, kleur 0xfeffffff; na 5 s resultaat 5) | | |
 | 0x1e | resultaten (paneelpagina `0x45b830`, iris 0 → 0.37) | | GAMEFLOW §5.1 |

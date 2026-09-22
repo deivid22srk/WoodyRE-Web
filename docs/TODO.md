@@ -81,12 +81,18 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 
 | wat | status | waar |
 |---|---|---|
-| Titel: Opties doet niets, Stoppen slaat de bevestiging over, Laden gaat direct naar de hub, attract-timer | niet geport | TITLE.md |
-| Resultatenscherm na een level (paneel, juichen, score, "opslaan?"): geport volgens GAMEFLOW §5.2. Niet: de echte layout van het paneel (`0x454963..0x455d97`), de slotkeuze-pagina's en de pauze-/overlayvlaggen van pagina 0x1e | grotendeels | GAMEFLOW.md §5.1-5.2, HUD_TEXT.md §6 |
-| Pauzemenu, baas-levensbalk | niet geport | HUD_TEXT.md, GAMEFLOW.md |
+| Titelmenu: pagina 0/1, attract-timer, 0x1c "Are you sure?", 0x1f intro, invoerranden (Enter los / Esc los), logo-fade, iris | geport | MENU_NEWGAME.md |
+| Opties (pagina 0x1b): sfx/muziek/trilling, `woodyre.cfg`; trilling doet op pc niets (ook niet in het origineel) | geport | MENU_OPTIONS.md |
+| Opties die het origineel niet heeft (beeldverhouding, resolutie/4K, issue #12) | nog te doen | MENU_OPTIONS.md §9.4 |
+| Load game: pagina 7 / 0xa / 2 (slotkeuze) | geport | MENU_LOAD.md §1-3 |
+| Wereldkeuze-carrousel (pagina 3) en high scores (pagina 4) | zie MENU_LOAD.md §4 | MENU_LOAD.md |
+| Pauzemenu 0x18 (Continue / Options / Quit); niet: 0x19 "Start again" (checkpoint-herstart, resultaat 18) | grotendeels | MENU_NEWGAME.md, `0x4057f5` |
+| Resultatenscherm na een level (paneel, juichen, score, "opslaan?"): geport volgens GAMEFLOW §5.2. Niet: de echte layout van het paneel (`0x454963..0x455d97`) en de pauze-/overlayvlaggen van pagina 0x1e. De opslaanketen 6 → 5 → 0x17 → 8/9 is geport (MENU_LOAD.md §5) | grotendeels | GAMEFLOW.md §5.1-5.2, HUD_TEXT.md §6 |
+| Baas-levensbalk | niet geport | HUD_TEXT.md |
 | HNM-logo's en -films | niet geport | — |
 | Toetsen uit `Woody.cfg`, joystick | niet geport | — |
-| Savegame: eigen `woodyre.sav`, niet het originele formaat | bewust | GAMEFLOW.md |
+| Savegame: `woodyre.sav` heeft nu byte voor byte de indeling van `Woody.sav` (4 slots); een originele `Woody.sav` wordt geïmporteerd, nooit overschreven. De port schrijft na elk level automatisch in het slot waaruit gespeeld wordt (het origineel alleen via het menu) | bewust | MENU_LOAD.md §6-7 |
+| Unieke-itembits per level (`rec+0x05`) worden niet bijgehouden | niet geport | MENU_LOAD.md §6, BONUS.md |
 
 ## Geluid
 
