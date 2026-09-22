@@ -730,8 +730,8 @@ case S_DODGE:  anim = DODGE; if (e->t > 0) { e->t -= dt; enemy_move(e, pl, dodge
 5. **Projectiel**: `Shot` in `src/main_engine.c` uitbreiden met `speed`, `damage`, `steer`, `target`, `visual`, `owner_enemy`; per frame (alleen `steer > 0`):
    `k = powf(1 − steer, dt·60)`; `dir.xz = norm_xz(target − pos)·(1 − k) + dir.xz·k` (richthoogte 0), hernormaliseren, en terugzetten als
    `dot(dir.xz, dir0.xz) < 0`; y blijft 0. Treffer op de speler ⇒ `player_hit(dmg)`; bij dood `enemy → S_WIN`. Levensduur 15 s, eerste wereldtreffer = weg.
-   Visual 0/1 = missile (PROJECTILES.md §5.3: lint 20 × 25, kop beeld 4 oranje, explosie `0x477060(2, …)`, model uit de type-41-pool; W1A heeft er 8),
-   visual 3 = vuurbal (§5.5). Tot die visuals bestaan: de bol van visual 2 tonen met het juiste geluid.
+   Visual 0/1 = missile (PROJECTILES.md §5.3: lint 20 × 25, kop beeld 4 oranje, explosie `0x477060(2, …)`, model uit de type-41-pool; W1A heeft er 8): **geport**,
+   zie PROJECTILES.md §7.1. Visual 3 = vuurbal (§5.5): nog niet geport, wordt als de bol van visual 2 getekend, met het juiste geluid.
 6. **Test W1A**: instantie 312 (model 45) op (3701, 4, 2671), zicht door het script 800, leash 200: binnen 800 komen ⇒ 0.53 s uithalen, missile op
    mondingshoogte die in xz naar Woody buigt, daarna elke 2.0 s één schot; binnen 150 tijdens het uithalen ⇒ korte stormloop met hap (1 hartje);
    één pik = dood (hp 1), geluid 63..65 en 66..68 uit de animatie-events. K3A/W3A 549/550 voor het uitwijken van type 9 (lucht-pikduik van boven).

@@ -16,7 +16,7 @@ ENEMY.md §8 (schietende vijand), BONUS.md §7 (bom), SOUND.md §5 (SoundFx).
   draaiende additieve sprites, bank 0 beeld 6) met een **lint van 400 eenheden** (bank 0 beeld 0, breedte 60) en een flits bij de monding en bij de inslag.
   Het missile-model + rook (`0x4700e0`) hoort bij visueel soort 0/1, dat geen enkel script via 1002 kan kiezen (parameter 18 geeft alleen 2, 3, 4 of 0 — zie §3;
   0 komt in geen enkel level voor); het wordt alleen bereikt via parameterblokken die code zelf vult (vijanden `P+0x74`, klasse 20/21). De 8 type-41-instanties in W1A
-  zijn dus voor de lanceerders irrelevant; ze moeten alleen verborgen worden (`0x472530`).
+  zijn dus voor de lanceerders irrelevant, maar wél de modellenpool van de schutters: vijandtype 7 (soort 0) en 8 (soort 1) schieten er mee (ENEMY.md §8.1).
 - Raken: gesweepte bol (straal 5) tegen de cilinder van elke actor in actorlijst 1 → `actor->vtbl[39](0, schade = 1.0, &richting, &pos, 0)` = `Perso::Hit`
   (1 hartje, knockback 500 u/s langs de vliegrichting, 0.6 s onkwetsbaar; PERSO_MOVE.md §4.4). Daarna verdwijnt het projectiel. Wereld/instantie geraakt
   (straal `0x4359b0` van oude naar nieuwe positie) → projectiel weg (max. stuiters = 0). De aanval van de speler kan een projectiel **niet** vernietigen
@@ -307,7 +307,7 @@ sprite(img 6, wit, alpha 1 - u,       size, rot = (int)(t * 256),           flag
 sprite(img 4, wit, alpha 0.5 - 0.5*u, size, rot = (int)((1 - t*0.5) * 512), flags 7);   /* 0x4a9874 */
 ```
 
-### 5.3 Visueel soort 0/1 — missile `0x4700e0` (niet door W1A-lanceerders)
+### 5.3 Visueel soort 0/1 — missile `0x4700e0` (niet door W1A-lanceerders; **geport**, §7.1)
 
 Twee records: mondingsflits `0x46fa40` (0.4 s: beeld 32, wit, `size = 200·cos(u·π/2)`, `alpha = 0.5 − 0.5u`, `rot = (int)((1 − t/2)·512)`, vlag 7) en de missile `0x46fb30`:
 lint uit pool `0x5e82e8` (N = 21; `fx+0x3c = 500/((N−1)·speed)`, `fx+0x10 = 500/(speed·20)` → **20 segmenten × 25 = 500 eenheden**, `0x4a9998` = 500, `0x4a9994` = 20),
@@ -322,7 +322,7 @@ Explosie soort 2 (`0x47717a`): één record `0x4762e0`, 0.3 s, `R = 400`: negen 
 (`0x4abd0c` = −128, `0x4abd10` = −0.7, `0x4abd14` = −0.3, `0x4aab98` = 0.3). Soort 1 = grote explosie (`0x476b50`, `0x476cd0`, `0x4762e0` met R = 1400 én 400), soort 0 = met normaal (`0x4765f0`, `0x476710`,
 `0x476cd0`, scherven `0x476140`): niet gelezen. De explosie doet **geen schade** (schade komt alleen uit §2.5).
 
-### 5.4 Type 41 (missile-instantie) en de pool
+### 5.4 Type 41 (missile-instantie) en de pool (**geport**, §7.1)
 
 - Registratie: `0x403b5d` (SetTypeInstance 41) zet vtable `0x4a9360` en voegt de instantie toe aan `0x5e8344[]`, totaal `[0x5e840c]` (max 0x32 = 50, anders de Franse foutmelding);
   `[0x5e8410]` = aantal in gebruik. Beide tellers op 0 in `0x404360` (`0x4043c1`) en `0x46d1f3` (effecten opruimen).
@@ -365,6 +365,28 @@ vonkenrecords `0x4702b0`, en bij het einde `0x477060` (explosie). Geluid SoundFx
 - **Klasse 20/21** `0x452e10`, Perso `0x463530`/`0x463c90`, klasse 17-familie `0x40cb80`, vijanden `0x411e44`, `0x413516`, `0x414c96`, `0x41677e`: kopiëren een sjabloon; niet gevolgd.
 
 ## 7. Recept voor de port
+
+### 7.1 Wat er in `src/main_engine.c` staat
+
+Geport: de lanceerder (§4), het projectiel (§2, zonder zwaartekracht/stuiteren/zoeken behalve het xz-sturen), de energiebol van soort 2 (§5.1-5.2) **en de missile
+van soort 0/1 (§5.3-5.4)**. De missile-kant bestaat uit:
+
+| origineel | port |
+|---|---|
+| `0x403b5d` (SetTypeInstance 41) + `0x4723f0` | `missile_add`: elke type-41-instantie komt in `g_missiles[50]`, onzichtbaar, met het aantal typecode-9-mondstukken erbij |
+| `0x4722f0` / `0x472370` | `missile_take` / `missile_release`. Afwijking: het origineel wisselt de genomen entry naar voren in de pool, de port laat de records staan en zet een vlag, omdat het projectiel een pointer vasthoudt |
+| `0x4724e0` + `0x46d320` | `missile_place`: positie = het projectielpunt, rotatie = de rijen (X, Y, Z) als quaternion, dus **model +Z = vliegrichting** |
+| `0x46fb30` lint + kop | `launchers_draw`: 20 segmenten van 25 (halve breedte 7, beeld 0, `rgb = 1 − u`, `alpha = cos(u·π/2)`), kop beeld 4 in (1, 0.58, 0) op `pos + dir·55` |
+| `0x46fa40` mondingsflits | `flash_add(pos, 1)`: beeld 32, `size = 200·cos(u·π/2)`, `alpha = 0.5 − 0.5u`, 0.4 s |
+| `0x475440` uitlaat | `missile_exhaust`: per mondstuk twee gloeden (beeld 32, 40 en 35) en een vlam (beeld 31, `45 + rand·10 − 5`), plus `exhaust_smoke`: 200 wolkjes/s over de afgelegde weg. Toestand altijd 2 (aan): geen opstart-ramp, die hoort bij klasse 20/21 |
+| `0x477060(2, …)` → `0x4762e0` | `blast_add(pos, 400)`; `fx_smoke_draw` tekent de negen vlakke quads met `hud_world_fx_plane` |
+| lint krimpt `dt·3·0.05` | `shot_fade_len` = 0.167 s (de bol: 0.133 s) |
+
+Nog niet geport: vuurbal soort 3 (§5.5, wordt als de bol getekend), explosiesoorten 0/1 op hun deeltjes na de twee flitsen, de bommenwerper (sjabloon 0), stuiteren,
+zwaartekracht en doelzoeken via `T+0x38`. Het lint loopt recht achter de huidige richting aan in plaats van langs het werkelijk gevlogen pad, dus bij de enige
+doelzoekende schutter (type 7, `T+0x40 = 0.2`) sleept het mee in plaats van te krommen.
+
+### 7.2 Oorspronkelijk recept (soort 2)
 
 Doel: W1A-lanceerders 26/27/28/194/195 (eindeloos, elke 3 s, recht langs de marker, 1.4/1.5 s). Alles past in `src/main_engine.c` naast de `Laser`-array.
 
