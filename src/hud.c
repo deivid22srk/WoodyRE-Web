@@ -22,7 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
-    GLuint fx[11];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow (docs/ROCKET.md 5); slot 10 = the footstep mark (docs/FOOTSTEPS.md) */
+    GLuint fx[11];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow, shared by the rocket (docs/ROCKET.md 5) and the missiles (docs/PROJECTILES.md 5.3); slot 10 = the footstep mark (docs/FOOTSTEPS.md) */
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint env[4];                                        /* bank 0 images 53..56: the butterflies of the environment instances (0x47e050 picks one of the four) */
@@ -820,6 +820,31 @@ void hud_world_fx(int image, const float *pos, float size, float turns, const fl
     glTexCoord2f(0, 1); glVertex3f(pos[0] - r[0] - u[0], pos[1] - r[1] - u[1], pos[2] - r[2] - u[2]);
     glTexCoord2f(1, 1); glVertex3f(pos[0] + r[0] - u[0], pos[1] + r[1] - u[1], pos[2] + r[2] - u[2]);
     glTexCoord2f(1, 0); glVertex3f(pos[0] + r[0] + u[0], pos[1] + r[1] + u[1], pos[2] + r[2] + u[2]);
+    glEnd();
+    glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
+}
+/* the same quad, but lying in the plane with normal `n` (0x4717d7 builds it on S+0x230..0x238 when sprite flag bit 0
+ * is off). The flash of an explosion is nine of these, each on its own normal (docs/PROJECTILES.md 5.3), so which way
+ * round the two in-plane axes point does not matter: any pair perpendicular to `n` gives the same square. */
+void hud_world_fx_plane(int image, const float *pos, const float *n, float size, const float *rgb, float alpha)
+{
+    int k = fx_slot(image); if (!H.ok || k < 0 || !H.fx[k] || alpha <= 0 || size <= 0) return;
+    float N[3] = { n[0], n[1], n[2] }, l = (float)sqrt(N[0] * N[0] + N[1] * N[1] + N[2] * N[2]);
+    if (l < 1e-6f) return;
+    for (int i = 0; i < 3; i++) N[i] /= l;
+    float ax[3] = { 1, 0, 0 }; if (fabs(N[0]) > 0.9f) { ax[0] = 0; ax[2] = 1; }
+    float u[3] = { ax[1] * N[2] - ax[2] * N[1], ax[2] * N[0] - ax[0] * N[2], ax[0] * N[1] - ax[1] * N[0] };
+    l = (float)sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); if (l < 1e-6f) return;
+    float h = size * 0.70710678f;
+    for (int i = 0; i < 3; i++) u[i] *= h / l;
+    float v[3] = { (N[1] * u[2] - N[2] * u[1]), (N[2] * u[0] - N[0] * u[2]), (N[0] * u[1] - N[1] * u[0]) };
+    glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[k]);
+    glBlendFunc(GL_ONE, GL_ONE); glColor3f(rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(pos[0] - u[0] + v[0], pos[1] - u[1] + v[1], pos[2] - u[2] + v[2]);
+    glTexCoord2f(0, 1); glVertex3f(pos[0] - u[0] - v[0], pos[1] - u[1] - v[1], pos[2] - u[2] - v[2]);
+    glTexCoord2f(1, 1); glVertex3f(pos[0] + u[0] - v[0], pos[1] + u[1] - v[1], pos[2] + u[2] - v[2]);
+    glTexCoord2f(1, 0); glVertex3f(pos[0] + u[0] + v[0], pos[1] + u[1] + v[1], pos[2] + u[2] + v[2]);
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }

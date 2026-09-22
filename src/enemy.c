@@ -16,13 +16,13 @@
 /* parameter block P per type (0x41d510 and the subtype cases; docs/ENEMY.md 2.3 and 8.1) */
 static EnemyParams params_for(int type)
 {
-    EnemyParams p = { 30, 140, 200, 600, 800, 1500, 600, 1.5708f, 6.2832f, 800, 1, 1.5f, 1, 1, 2.0f, 400, 300, 0, 3000, 19 };
+    EnemyParams p = { 30, 140, 200, 600, 800, 1500, 600, 1.5708f, 6.2832f, 800, 1, 1.5f, 1, 1, 2.0f, 400, 300, 0, 3000, 2, 19 };
     if (type == 5) p.cool = 1.0f;
     if (type == 6) { p.hp = 2; p.cool = 0.5f; }
-    if (type >= 7) { p.dy = 800; p.turn_fast = 12.5664f; p.melee = 150; p.shot_fx = 17; p.steer = 0.2f; }
-    if (type == 8) { p.height = 130; p.hp = 2; p.cool = 1.0f; p.reload = 1.5f; p.steer = 0; p.shot_fx = 18; }
-    if (type == 13) { p.walk = 100; p.run = 300; p.dash = 500; p.dy = 10000; p.hp = 3; p.bite = 2; p.cool = 0.5f; p.shot_dmg = 2; p.reload = 1.0f; p.leash = 1000; p.melee = 300; p.shot_fx = 20; }   /* docs/ENEMY2.md 2 */
-    if (type == 9) { p.leash = 1000; p.hp = 3; p.bite = 3; p.shot_dmg = 2; p.melee = 10; p.steer = 0; p.shot_fx = 20; }
+    if (type >= 7) { p.dy = 800; p.turn_fast = 12.5664f; p.melee = 150; p.shot_visual = 0; p.shot_fx = 17; p.steer = 0.2f; }
+    if (type == 8) { p.height = 130; p.hp = 2; p.cool = 1.0f; p.reload = 1.5f; p.steer = 0; p.shot_visual = 1; p.shot_fx = 18; }
+    if (type == 13) { p.walk = 100; p.run = 300; p.dash = 500; p.dy = 10000; p.hp = 3; p.bite = 2; p.cool = 0.5f; p.shot_dmg = 2; p.reload = 1.0f; p.leash = 1000; p.melee = 300; p.shot_visual = 3; p.shot_fx = 20; }   /* docs/ENEMY2.md 2 */
+    if (type == 9) { p.leash = 1000; p.hp = 3; p.bite = 3; p.shot_dmg = 2; p.melee = 10; p.steer = 0; p.shot_visual = 3; p.shot_fx = 20; }
     return p;
 }
 
@@ -160,7 +160,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
             for (uint32_t i = 0; i < mo->nnodes; i++) if (mo->nodes[i].kind == 0x20 && mo->nodes[i].type_code == 1 && mo->nodes[i].npoints >= 1) { if (seen++ == want) { m0 = ins_point_world(in, mo->nodes[i].point_base); break; } }
             Vec3 sd = { tp.x - m0.x, tp.y - m0.y, tp.z - m0.z }; float sl = sqrtf(sd.x * sd.x + sd.y * sd.y + sd.z * sd.z);
             if (sl > 1e-3f && !player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, m0))
-                game_enemy_shot(e, m0, (Vec3){ sd.x / sl, sd.y / sl, sd.z / sl }, 1000.0f, e->P.shot_dmg, 0, e->P.shot_fx);   /* straight fireball at the feet (0x414d10) */
+                game_enemy_shot(e, m0, (Vec3){ sd.x / sl, sd.y / sl, sd.z / sl }, 1000.0f, e->P.shot_dmg, 0, e->P.shot_visual, e->P.shot_fx);   /* straight fireball at the feet (0x414d10) */
             e->reload += e->P.reload; e->hand ^= 1;
             break;
         }
@@ -298,7 +298,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         if (e->type == 9 && (e->t -= dt) > 0) break;
         /* 0x497ed0: from the own centre to the own muzzle; blocked = the shot is skipped but the reload still counts */
         if (!player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, m0))
-            game_enemy_shot(e, m0, (Vec3){ cosf(e->ang), 0, sinf(e->ang) }, 1000.0f, e->P.shot_dmg, e->P.steer, e->P.shot_fx);
+            game_enemy_shot(e, m0, (Vec3){ cosf(e->ang), 0, sinf(e->ang) }, 1000.0f, e->P.shot_dmg, e->P.steer, e->P.shot_visual, e->P.shot_fx);
         e->reload += e->P.reload; e->throw_hold = 1; e->st = S_WAIT;
         break; }
     case S_DASH0:

@@ -43,6 +43,9 @@ void hud_world_wing(int n, const float *c, const float *u, const float *v, float
 void hud_world_sprites_end(void);
 /* additive effect sprite (bank 0 image 0, 4 or 6), rotated by `turns` around the view axis; colour = rgb * alpha */
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha);
+/* the same sprite, but lying in the plane with normal `n` instead of facing the camera (sprite flag bit 0 off,
+ * 0x4717d7): what the nine quads of an explosion flash are made of (docs/PROJECTILES.md 5.3) */
+void hud_world_fx_plane(int image, const float *pos, const float *n, float size, const float *rgb, float alpha);
 /* a sprite that lies in a plane instead of facing the camera (0x4717d7: without flag bit 0 the quad is built on the
  * normal S+0x230..0x238), turned so that +v runs along `dir`, optionally mirrored (flag 0x40, docs/PERSO_DEATH.md).
  * `size` is the half diagonal, as for every sprite. It darkens what is under it by `rgb * strength`, see hud.c. */

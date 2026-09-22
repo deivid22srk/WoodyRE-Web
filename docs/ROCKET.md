@@ -282,8 +282,9 @@ Alleen type 20, toestand 6, niet gepauzeerd: `k = (int)(t · 20.0) & 1` (`0x4a99
 Vier effectrecords (pool `[0x5e823c]+0xdb8`, 0x50 B, max 2000): `0x476b50` (0.2 s: 60 deeltjes/s ≈ 12 stuks, elk record `0x4767f0`, levensduur 2.0 s, willekeurige richting
 `normalize(2r−1, 2r−0.5, 2r−1)`, startpunt `pos + richting·300`), `0x476cd0` (0.2 s: 400/s ≈ 80 stuks, record `0x4764f0`), `0x4762e0` met **R = 1400** (0.3 s) en — doorvallend
 in soort 2 — `0x4762e0` met **R = 400** (0.3 s). `0x4762e0` = negen vlakke quads beeld 12, `size = R·(0.3 + 0.7·sin(u·π/2))`, `alpha = 0.3·cos(u·π/2)` (PROJECTILES.md §5.3).
-De deeltjes-callbacks `0x4767f0` / `0x4764f0` zijn niet gelezen (onzeker 3); voor de port volstaan voorlopig de twee flitsen (1400 en 400) plus de bestaande explosie-hulp.
-Hetzelfde effect wordt door chests (`0x4517d0`) en bommen gebruikt, dus hoort in een gedeelde effectfunctie.
+De deeltjes-callbacks `0x4767f0` / `0x4764f0` zijn niet gelezen (onzeker 3); de port tekent voorlopig alleen de twee flitsen (1400 en 400) — sinds de missile-port wél
+als de negen vlakke quads van `0x4762e0` zelf (`hud_world_fx_plane`), niet meer als één billboard met ×3 helderheid. Hetzelfde effect wordt door chests (`0x4517d0`)
+en bommen gebruikt, dus hoort in een gedeelde effectfunctie: in `src/main_engine.c` is dat `blast_add` / `fx_smoke_draw`, die de raket en de missiles nu delen.
 
 ### 5.4 Geluiden (SoundFx-tabel SOUND.md §5; alle 3D op de raket-instantie)
 
