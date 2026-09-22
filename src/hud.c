@@ -27,6 +27,7 @@ static struct {
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint env[4];                                        /* bank 0 images 53..56: the butterflies of the environment instances (0x47e050 picks one of the four) */
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
+    GLuint sheet; int sheet_w, sheet_h;                   /* level bank image 0 (House and the three hubs carry the same one): the save-slot panel, ring and cross */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
 } H;
 
@@ -104,6 +105,7 @@ static void level_item(int type, int index, const uint8_t *d, uint32_t size)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         }
     }
+    if (type == 1 && index == 0) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.sheet = H.img[0]; H.sheet_w = H.img_w[0]; H.sheet_h = H.img_h[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; }
     if (type == 1 && index == 1) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.logo = H.img[0]; H.logo_w = H.img_w[0]; H.logo_h = H.img_h[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type != 3 || index != 0 || size < 0x1c) return;              /* font 0x01030000 (0x43f9a0) */
     H.nglyphs = rd32(d); H.npages = rd32(d + 4); H.psize = rd32(d + 8);
@@ -127,7 +129,7 @@ void hud_free(void)
 {
     for (int i = 0; i < 4; i++) if (H.img[i]) glDeleteTextures(1, &H.img[i]);
     for (int i = 0; i < 8; i++) if (H.page[i]) glDeleteTextures(1, &H.page[i]);
-    if (H.logo) glDeleteTextures(1, &H.logo);
+    if (H.logo) glDeleteTextures(1, &H.logo); if (H.sheet) glDeleteTextures(1, &H.sheet);
     for (int i = 0; i < 5; i++) if (H.sky[i]) glDeleteTextures(1, &H.sky[i]);
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
     for (int i = 0; i < 4; i++) if (H.env[i]) glDeleteTextures(1, &H.env[i]);
@@ -588,61 +590,14 @@ void hud_text_draw(int closed, float dt)
     for (int i = 0; i < H.box.n; i++) { const uint16_t *s = hud_string(H.box.id[i]); if (s) font_draw(H.box.x[i], H.box.y[i], s, col); }
 }
 
-/* ---------------------------------------------------------------- menu pages (docs/TITLE.md 5) */
+/* ---------------------------------------------------------------- menu pages (docs/TITLE.md 5, MENU_NEWGAME.md 2, MENU_OPTIONS.md 3)
+ * The common page class 0x445e30: 0x4464f0 ticks the blink phase once per frame, draws the page (vt[1], mostly the
+ * list 0x446640), then the logo (0x446b00). The page logic itself lives in main_engine.c; these are its pieces. */
 void hud_title_reset(void) { H.logo_v = 0; H.menu_t = 0; }
+void hud_menu_tick(float dt) { H.menu_t += dt; if (H.menu_t > 0.5f) H.menu_t = 0; }   /* [0x5d7b1c], back to 0 above 0.5 (0x4b39a4) */
+void hud_menu_blink(float t) { H.menu_t = t; }                                        /* up: 0, down: 0 or 0.25 (nothing to move to), slider step: 0.25 */
+void hud_logo_off(void) { H.logo_v = 0; }                                             /* New game, Load game, pages 0x18/0x19/0x1e/0x1f */
 
-/* the item list of the common page class (0x446640): one size S for the whole page, shrunk until the widest item
- * fits in 640; y = yfrac * 480 and a cell (62 * S / 40) per item; the selected item is left out while the blink
- * phase is under 0.25 s - the original has no cursor and no colour difference. Advancing the phase is the caller's
- * job (0x4464f0 does it once per frame), so hud_menu_page and hud_title_draw never both tick it. */
-static void page_items(const uint32_t *ids, int n, float yfrac, int sel)
-{
-    float S = 30.0f;                                                  /* 0x4b39a8 */
-    for (int i = 0; i < n; i++) {
-        const uint16_t *s = hud_string(ids[i]); if (!s) continue;
-        while (S > 15.0f) { font_size(S); if (font_measure(s) < 640.0f) break; S -= 1.0f; }
-    }
-    font_size(S);
-    float y = yfrac * 480.0f, cell = font_cell();
-    for (int i = 0; i < n; i++) {
-        const uint16_t *s = hud_string(ids[i]);
-        if (s && !(i == sel && H.menu_t < 0.25f)) font_draw(320 - font_measure(s) * 0.5f, y, s, 0xff808080);
-        y += cell;
-    }
-    font_size(17.0f);
-}
-
-void hud_menu_page(const uint32_t *ids, int n, float yfrac, int sel, float dt)
-{
-    if (!H.ok) return;
-    H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;           /* [0x5d7b1c], wraps at 0.5 (0x4b39a4) */
-    page_items(ids, n, yfrac, sel);
-}
-
-void hud_title_draw(int page, int sel, int want_logo, float dt)
-{
-    if (!H.ok) return;
-    static const uint32_t items0[1] = { 21 };                        /* "Press a key" */
-    static const uint32_t items1[4] = { 22, 23, 36, 2 };             /* New game, Load game, Options, Quit */
-    H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;
-    if (page == 0) page_items(items0, 1, 0.7f, 0);
-    else if (page == 1) page_items(items1, 4, 0.55f, sel);
-    font_size(30.0f);
-    if (H.logo && H.logo_v > 0) {                                     /* 0x446b00: alpha = 254 * v / 5, source 0,0,209,247 at (216,16) */
-        uint32_t c = (uint32_t)(254.0f * H.logo_v / 5.0f) << 24 | 0x808080;
-        quad(216, 16, 209, 247, H.logo, 0, 0, 209.0f / H.logo_w, 247.0f / H.logo_h, c, c, c, c);
-    }
-    if (want_logo) { H.logo_v += 5 * dt; if (H.logo_v > 5) H.logo_v = 5; } else H.logo_v = 0;
-    font_size(17.0f);
-}
-
-/* ---------------------------------------------------------------- results screen (docs/GAMEFLOW.md 5.1, HUD_TEXT.md 6)
- * The strings are the ones the original reserves for it (12 CLEARED!!, 13 RESULTS, 15 OK, 17 HIGH SCORE, 46 points,
- * 127 Level, 128 Seconds, 129 Final Score, 130 "Total Score :" and the characters 7 "%", 8 "=", 10 ":", 11 "+"), the
- * two categories are the ones the score formula 0x453cb0 uses, and each one gets its "+ 50 %" when it is complete.
- * The layout itself (the 20-odd Measure/Draw pairs of 0x454963..0x455d97) is NOT decompiled: the placement below is
- * this port's, and so is the dark backdrop (drawn like the text box of message 1080). String 14 "TOTAL" has no place
- * here yet because nothing says where the original puts it. */
 static uint16_t g_row[64]; static int g_rown;
 static void row_reset(void) { g_rown = 0; g_row[0] = 0; }
 static void row_str(uint32_t ref)
@@ -669,6 +624,128 @@ static float row_draw(float x, float y, int right, uint32_t col)     /* right: x
     return w;
 }
 
+/* the item list 0x446640: one size S for the whole page, shrunk (-1, down to 15) until every item NAME is under 640
+ * wide; from y = yfrac * 480 one cell per item. Headers (flag 2) always show, the other items only once the input
+ * delay page+8 has run out (`ready`) - the loop stops at the first one. The selected item is left out while the
+ * blink phase is under 0.25 s: the original has no cursor and no colour difference. A slider (flag 0x10) reads
+ * "name value%" (0x4467e0: the space from string 40, the "%" is string 7) and is centred as a whole. */
+void hud_menu_items(const MenuItem *it, int n, float yfrac, int sel, int ready)
+{
+    if (!H.ok) return;
+    float S = 30.0f;                                                  /* 0x4b39a8 */
+    for (int i = 0; i < n; i++) {
+        const uint16_t *s = hud_string(it[i].id); if (!s) continue;
+        while (S > 15.0f) { font_size(S); if (font_measure(s) < 640.0f) break; S -= 1.0f; }
+    }
+    float y = yfrac * 480.0f;
+    for (int i = 0; i < n; i++) {
+        if (!(it[i].flags & 2) && !ready) break;
+        font_size(it[i].flags & 0x20 ? S * 0.8f : S);
+        row_reset(); row_str(it[i].id);
+        if (it[i].flags & 0x10) { row_space(); row_num(it[i].value); row_str(7); }
+        float w = font_measure(g_row);
+        float x = (it[i].flags & 4) ? 640.0f - w - 6.4f : (it[i].flags & 8) ? 6.4f : (it[i].flags & 0x80) ? 160.0f - w * 0.5f : 320.0f - w * 0.5f;
+        if (!(i == sel && H.menu_t < 0.25f)) font_draw(x, y, g_row, 0xff808080);
+        y += font_cell();                                             /* CellH 0x441980 + Extra 0x441a50 (0) */
+    }
+    font_size(17.0f);
+}
+
+void hud_menu_page(const uint32_t *ids, int n, float yfrac, int sel, float dt)
+{
+    MenuItem it[8]; if (n > 8) n = 8;
+    for (int i = 0; i < n; i++) { it[i].id = ids[i]; it[i].flags = 1; it[i].value = 0; }
+    hud_menu_tick(dt);
+    hud_menu_items(it, n, yfrac, sel, 1);
+}
+
+/* the logo 0x446b00, drawn after the page, only in House: level bank image 1, source 0,0,209,247 at (216,16) with
+ * alpha trunc(50.8 v); pages 0 and 1 first add 10 dt (0x446ac0, up to 5), and every frame takes 5 dt off after the
+ * draw. Net: 1 s in on pages 0 and 1, 1 s out on every other page. */
+void hud_logo(int grow, float dt)
+{
+    if (!H.ok) return;
+    if (grow) { H.logo_v += 10 * dt; if (H.logo_v > 5) H.logo_v = 5; }
+    if (H.logo && H.logo_v > 0) {
+        uint32_t c = (uint32_t)(50.8f * H.logo_v) << 24 | 0x808080;
+        quad(216, 16, 209, 247, H.logo, 0, 0, 209.0f / H.logo_w, 247.0f / H.logo_h, c, c, c, c);
+    }
+    H.logo_v -= 5 * dt; if (H.logo_v < 0) H.logo_v = 0;
+}
+
+/* the iris 0x4776d0 (docs/MENU_NEWGAME.md 2.7): an opaque black ring of 50 segments around (320, 240), inner radius
+ * 0.99 * 480 * v, outer 0.99 * 480 - the corners are 400 away, so v = 0.85 shows nothing and v = 0 is all black.
+ * 0x482cf0 clips to the virtual screen; the viewport does that here. */
+void hud_iris(float v)
+{
+    if (!H.ok) return;
+    const float r = 0.99f * 480.0f, ri = r * v;
+    glDisable(GL_TEXTURE_2D); glColor4f(0, 0, 0, 1); glBegin(GL_QUADS);
+    for (int k = 0; k < 50; k++) {
+        float a0 = k * (6.2831853f / 50), a1 = (k + 1) * (6.2831853f / 50), c0 = cosf(a0), s0 = sinf(a0), c1 = cosf(a1), s1 = sinf(a1);
+        glVertex2f(320 + ri * c0, 240 + ri * s0); glVertex2f(320 + ri * c1, 240 + ri * s1);
+        glVertex2f(320 + r * c1, 240 + r * s1);   glVertex2f(320 + r * c0, 240 + r * s0);
+    }
+    glEnd();
+}
+
+/* a flat colour over the whole virtual screen: 0x80000000 is the half-black backdrop of a menu page in a level (0x404f1a) */
+void hud_rect(uint32_t argb) { if (H.ok) quad(0, 0, 640, 480, 0, 0, 0, 0, 0, argb, argb, argb, argb); }
+
+static void fit_size(const uint16_t *s, float S, float maxw, float minS) { font_size(S); while (S > minS && font_measure(s) > maxw) font_size(S -= 1.0f); }   /* 0x45dc90 */
+static void sheet_quad(float x, float y, float w, float h, float sx, float sy, float sw, float sh, uint32_t c, int additive)
+{
+    if (!H.sheet) return;
+    if (additive) glBlendFunc(GL_ONE, GL_ONE);                        /* flag 4: the neon panel and the ring have alpha 0 in the data */
+    quad(x, y, w, h, H.sheet, sx / H.sheet_w, sy / H.sheet_h, (sx + sw) / H.sheet_w, (sy + sh) / H.sheet_h, c, c, c, c);
+    if (additive) glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
+/* the save-slot list of pages 2 and 5 (docs/MENU_LOAD.md 2.2, 3): four panels in the corners, sliding in from the
+ * sides, and the page title (25 "Select game" / 24 "Select save") coming up from below. */
+void hud_slot_list(const HudSlots *s, float dt)
+{
+    static const float SX[4] = { 16, 488, 16, 488 }, SY[4] = { 48, 48, 324, 324 };   /* table 0x4ab420 */
+    static float blink;                                                                /* page+0x40 */
+    if (!H.ok) return;
+    blink += dt; if (blink > 0.6f) blink = 0;
+    for (int i = 0; i < 4; i++) {                                                      /* 0x45d530(i + 1, xoff) */
+        int sel = s->sel == i + 1; uint32_t c = sel ? 0xfe808080 : 0xfe202020, tc = c;
+        float x = SX[i] + ((i & 1) ? -s->slide : s->slide), y = SY[i];
+        if (!sel) sheet_quad(x, y, 137, 108, 0, 0, 137, 108, c, 1);
+        else if (blink > 0.3f) sheet_quad(x, y, 137, 108, 0, 0, 137, 108, 0xfe808080, 1);
+        else tc = 0xfe202020;
+        sheet_quad(x + 45, y + 50, 49, 49, 0, 108, 49, 49, c, 1);                     /* the gold ring */
+        if (s->pct[i] && H.img[0]) {                                                   /* the faces: Common image 61, alpha (flag 8) */
+            float W = (float)H.img_w[0], Hh = (float)H.img_h[0];
+            quad(x + 33, y - 7, 64, 64, H.img[0], 0, 0, 64 / W, 64 / Hh, c, c, c, c);                                   /* Woody */
+            if (s->open[i] & 1) quad(x - 4, y + 8, 64, 64, H.img[0], 0, 63 / Hh, 64 / W, 127 / Hh, c, c, c, c);          /* Knothead */
+            if (s->open[i] & 2) quad(x + 69, y + 7, 64, 64, H.img[0], 63 / W, 0, 127 / W, 64 / Hh, c, c, c, c);         /* Splinter */
+        }
+        row_reset(); row_str(s->pct[i] ? 26 + i : 18);                                /* "Save N" / "FREE" (0x45d3c0) */
+        fit_size(g_row, 28, 137, 10);
+        float w = font_measure(g_row), ly = i < 2 ? SY[i] + 108 : SY[i] - font_cell();
+        font_draw(x + 68.5f - w * 0.5f, ly, g_row, tc);
+        row_reset(); row_num(s->pct[i]); row_str(7);                                    /* "NN%", red, also "0%" on a free slot */
+        font_size(s->pct[i] >= 100 ? 12.0f : 16.0f);
+        font_draw(x + 69.5f - font_measure(g_row) * 0.5f, y + 75 - font_cell() * 0.5f, g_row, sel ? 0xfeff1400 : 0xfe3f0500);
+        if (s->cross && !s->pct[i]) sheet_quad(x + 20, y, 108, 108, 0, 160, 63, 63, 0xfe808080, 0);   /* page 2: the red cross over a free slot (0x45e050) */
+    }
+    row_reset(); row_str(s->title);
+    fit_size(g_row, 30, 330, 10);
+    float w = font_measure(g_row), h = font_cell(), x = 320 - w * 0.5f, y = 415 - s->slide;
+    font_draw(x, y, g_row, 0xfe808080);                                                /* first plain, then orange-red slightly up and left over it */
+    font_draw(x - 0.05f * h, y - 0.05f * h, g_row, 0xfe801400);
+    font_size(17.0f);
+}
+
+/* ---------------------------------------------------------------- results screen (docs/GAMEFLOW.md 5.1, HUD_TEXT.md 6)
+ * The strings are the ones the original reserves for it (12 CLEARED!!, 13 RESULTS, 15 OK, 17 HIGH SCORE, 46 points,
+ * 127 Level, 128 Seconds, 129 Final Score, 130 "Total Score :" and the characters 7 "%", 8 "=", 10 ":", 11 "+"), the
+ * two categories are the ones the score formula 0x453cb0 uses, and each one gets its "+ 50 %" when it is complete.
+ * The layout itself (the 20-odd Measure/Draw pairs of 0x454963..0x455d97) is NOT decompiled: the placement below is
+ * this port's, and so is the dark backdrop (drawn like the text box of message 1080). String 14 "TOTAL" has no place
+ * here yet because nothing says where the original puts it. */
 void hud_results_draw(const HudResults *r, int show_ok, float dt)
 {
     if (!H.ok) return;
@@ -703,7 +780,7 @@ void hud_results_draw(const HudResults *r, int show_ok, float dt)
     y += rows;
     row_reset(); row_str(130); row_draw(L, y, 0, col);                                                       /* "Total Score :" (the best run of this level) */
     row_reset(); row_num(r->best > r->score ? r->best : r->score); row_draw(R, y, 1, col);
-    if (show_ok) { const uint32_t ok = 15; page_items(&ok, 1, 0.90f, 0); }                                    /* the panel item of page 0x1e */
+    if (show_ok) { static const MenuItem ok = { 15, 1, 0 }; hud_menu_items(&ok, 1, 0.90f, 0, 1); }                                    /* the panel item of page 0x1e */
     font_size(17.0f);
 }
 
