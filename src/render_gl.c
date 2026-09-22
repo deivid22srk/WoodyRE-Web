@@ -855,8 +855,9 @@ void rnd_uv_report(const Renderer *r, const Instance *inst)
 }
 
 /* ---- outline (0x43ea30, fed by the two back-face lists 0x43b3f0 collects): the back faces once more, every vertex
- * pushed out along its own normal, flat black, at the same depth as the model. Only for instances that the level
- * script gave SetFlags bit 0x20 (message 45) - characters and a handful of props - and only within 1500 units.
+ * pushed out along its own normal, flat black, at the same depth as the model. Only for instances that carry SetFlags
+ * bit 0x20 (message 45) - the characters and handful of props the level script flags, plus every actor class the port
+ * flags itself when the class is assigned (main_engine.c, message 1200) - and only within 1500 units.
  * w = d/300 up to 2.5, then 5 - d/300 (0x43b4ce..0x43b4f3), so the rim keeps a constant width on screen. Drawn after
  * the model with the ordinary depth test: outside the silhouette the hull is all there is, and where it pokes through
  * a concave fold it beats the model - that is where the creases along a snout or a finger come from. */
@@ -875,11 +876,14 @@ static Vec3 ol_vertex(const Instance *inst, const Mat4 *M, const InsPoint *pt, V
 }
 static void draw_outline(const Renderer *r, Instance *inst)
 {
-    if (!(inst->setflags & 0x20) || !inst->node_world) return;                  /* 0x43b423; the second gate is the cfg detail level, 2 in the shipped Woody.cfg */
     const float *wm = inst->world.m;
     float dx = wm[12] - g_cam_pos.x, dy = wm[13] - g_cam_pos.y, dz = wm[14] - g_cam_pos.z;
-    float w = sqrtf(dx * dx + dy * dy + dz * dz) / 300.0f;
-    if (w > 2.5f) { w = 5.0f - w; if (w <= 0) return; }
+    float d = sqrtf(dx * dx + dy * dy + dz * dz), w = d / 300.0f;               /* 0x43b447..0x43b4fe */
+    if (w > 2.5f) w = 5.0f - w;                                                /* past 750 the rim narrows again, past 1500 there is none */
+    if (g_shlog && (inst->type || inst->model->ntris) && (!(inst->setflags & 0x20) || w <= 0))   /* WOODY_SHLOG: why a character (typed, or skinned like every character model) has no rim */
+        printf("  OL inst %u type %d setflags %x d %.0f: no outline (%s)", inst->index, inst->type, inst->setflags, d,
+               !(inst->setflags & 0x20) ? "no SetFlags bit 0x20" : "further than 1500"), puts("");
+    if (!(inst->setflags & 0x20) || !inst->node_world || w <= 0) return;        /* 0x43b423; the second gate is the cfg detail level, 2 in the shipped Woody.cfg */
     { const char *e = getenv("WOODY_OLW"); if (e) w *= (float)atof(e); }     /* test helper: scale the rim */
     Model *m = inst->model; const int32_t *own = model_owner(m); const Vec3 zero = { 0, 0, 0 };
     g_ol_n = 0;
