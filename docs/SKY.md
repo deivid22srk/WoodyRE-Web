@@ -176,14 +176,15 @@ Dus: opaak, wit × textuur, **geen** `.lit`-factor (de 0.6 van onbelichte faces 
 `0x42b6c0`, dat hier niet doorlopen wordt), geen vertexkleur, geen mist. Adresmodus is WRAP;
 het zijn de half-texel-inzet-UV's die voorkomen dat bilineair filteren over de rand heen de
 overkant binnenhaalt (op `u = hu` valt het monster precies op het midden van texel 0). De
-groep-texturen hebben 3 door de engine gegenereerde mipmaps (`0x47f7f0(…, 3, …)`, `0x426e9f`);
-op 128×128 over ~90° beeldhoek wordt mip 0 gebruikt zodra het venster breder dan ~256 px is,
-dus mip-bleeding speelt in de praktijk niet. Onzeker: of de bankafbeeldingen (`0x480780`)
-mipmaps krijgen.
+groep-texturen hebben 3 door de engine gegenereerde mipmaps (`0x47f7f0(…, 3, …)`, `0x426e9f`;
+details en de port in §8); op 128×128 over ~90° beeldhoek wordt mip 0 gebruikt zodra het
+venster breder dan ~256 px is, dus mip-bleeding speelt voor de kubus in de praktijk niet.
+Onzeker: of de bankafbeeldingen (`0x480780`) mipmaps krijgen.
 
-Voor OpenGL 1.1: `GL_REPEAT` + `GL_LINEAR` zonder mipmaps met de inzet-UV's geeft hetzelfde
+Voor OpenGL 1.1: `GL_REPEAT` + `GL_LINEAR` met de inzet-UV's geeft voor de kubus hetzelfde
 beeld (`GL_CLAMP` van 1.1 mengt de randkleur erin en is dus slechter; `GL_CLAMP_TO_EDGE`
-`0x812F` mag als de driver het kent, is niet nodig).
+`0x812F` mag als de driver het kent, is niet nodig). De port gebruikt voor de groepframes
+sinds issue #38 gewoon dezelfde gemipmapte texturen als de wereld (§8), net als het origineel.
 
 ## 4. De overige vlagbits en de andere vragen
 
@@ -275,8 +276,8 @@ geanimeerde vloeistof van §4.1.
    `litb` en niet in de lichtpolygonen van lijst A/C). Onthoud `r->sky_group = grp`.
 2. **Texturen**: als de level-`.rck` ≥ 5 afbeeldingen heeft, upload afbeeldingen 3,0,1,2,4
    (BGRA, rij 0 = bovenste rij, zelfde oriëntatie als de `.tex`-frames: de naden met E sluiten
-   in W2D) als `sky_tex[0..4]`; anders `sky_tex[i] = groups[sky_group].gl_frames[i]`. Zonder
-   mipmaps, `GL_LINEAR`, `GL_REPEAT`. De renderer heeft daarvoor toegang tot de levelbank
+   in W2D) als `sky_tex[0..4]`; anders `sky_tex[i] = groups[sky_group].gl_frames[i]` (die
+   hebben, zoals elke `.tex`-textuur, mipmaps: §8). `GL_LINEAR`, `GL_REPEAT`. De renderer heeft daarvoor toegang tot de levelbank
    nodig (nu in `hud.c`/`main_engine.c`): geef de vijf afbeeldingen door bij `rnd_init` of via
    een `rnd_set_sky(images)`.
 3. **Tekenen**, in `rnd_frame` direct na het zetten van projectie en view, vóór de wereld:
@@ -301,8 +302,10 @@ geanimeerde vloeistof van §4.1.
 
 - De wis-kleur van de framebuffer in het origineel (zichtbaar onder `y−S` als een level daar
   open is, en overal waar sky-faces niet in de zichtbare set zitten).
-- Of de bankafbeeldingen mipmaps krijgen (`0x480780` niet gelezen); voor de port irrelevant
-  zolang de sky zonder mipmaps getekend wordt.
+- Of de bankafbeeldingen mipmaps krijgen (`0x480780` niet gelezen); voor de kubus irrelevant,
+  die wordt op mip 0 bemonsterd.
+- W1B (§8): het beeld van het origineel is niet naast de port gelegd; dat de verre sterrenwanden
+  daar vrijwel zwart zijn volgt uit de mipmap-keten en MIPFILTER POINT, niet uit een screenshot.
 - Links/rechts-oriëntatie op het scherm is niet apart geverifieerd: het recept gebruikt
   wereldcoördinaten rechtstreeks en erft dus de (al tegen een screenshot gecontroleerde)
   conventie van de port "rechtshandig, y omhoog, +x links van +z". De naden zijn onafhankelijk
@@ -310,3 +313,51 @@ geanimeerde vloeistof van §4.1.
   afsluiten.
 - Betekenis van byte 1 `== 3` en van de bits `0x10..0x80` voor de *editor*; voor de engine
   hebben ze geen effect (§4.1, §4.3).
+
+## 8. W1B: sterrenhemel zonder sky-groep, en de mipmaps (issue #38)
+
+Issue #38: "Sky in sideways part W1B looks glitched" – in het zij-aanzicht bij de deur op
+(−11231, 187, −13722) (marker `0x19b`, script `1088 0x100019b 2`; testen met
+`WOODY_SIDE=0x19b … --pos -11231 187 -13722`, camera (−12231, 527, −13422) kijkend naar +x)
+was de hemel een flikkerende ruis van losse pixels.
+
+**W1B heeft geen sky-groep** (`tools/skycheck.py W1B`: geen groep met byte 1 `== 2`), dus er is
+geen kubus. De "hemel" is gewone `.gel`-geometrie: **groep 52** (128×128, vlaggen `0x00ff0000`,
+één frame, 171 sterren van één texel op een zwarte achtergrond) op 156 polygonen die dozen om de
+speelruimte vormen, o.a. x −13455..−9484, y 253..1253, z −15772..−8019 rond deze plek. Alle
+materialen van die groep hebben `|∂u/∂x| = 0.01`: **één herhaling per 100 eenheden, 1.28
+texels per eenheid**. Vanuit de zijcamera ligt de wand op x = −9484 zo'n 2750 eenheden verderop;
+bij 800 px beeldhoogte en ~84° verticale beeldhoek is één pixel daar ≈ 6 eenheden ≈ 8 texels.
+
+De port had **geen mipmaps**: `upload_texture` zette `GL_LINEAR` en bemonsterde dus uit mip 0
+één willekeurige texel op de acht, die bij elke camerabeweging een andere ster raakte of miste –
+de ruis uit het issue (en minder opvallend op elke verre vloer).
+
+Het origineel (alles statisch gelezen):
+
+| Adres | Wat |
+|---|---|
+| `0x426e9f..0x426eaa` | `.tex`-loader: per frame `0x47f7f0(stream, w, h, 3, colourkey, 0)` |
+| `0x47f82c` | → `0x47fa60(stream, w, h, mips = 3, colourkey, 0, tex)` |
+| `0x47fa93..0x47fa9d`, `0x47fac2` | `mips ≠ 0` → DDSD-vlaggen `0x21007` (+`DDSD_MIPMAPCOUNT`), `dwMipMapCount = 4` |
+| `0x47fb4f..0x47fb5c` | caps `0x401008` = `TEXTURE \| MIPMAP \| COMPLEX` |
+| `0x47fc80..0x47fed1` | lus van 3: `GetAttachedSurface` naar het volgende niveau, halve breedte/hoogte (`0x47fd2b`, `0x47fd2d`), per doeltexel het **2×2-boxgemiddelde** van de vier bronpixels, alfa inbegrepen (`0x47fd83..0x47fe17`: `Σ (p & 0xfcfcfc) >> 2` voor RGB, `Σ ((p >> 2) & 0x3fc00000)` voor A), terug naar het surfaceformaat (`0x47f170`) |
+| `0x47f1fd` | formaat 3 (colour key) = ARGB1555: alfa blijft alleen als bovenste bit over, dus een gemiddelde texel is ondoorzichtig als ≥ 3 van de 4 bronnen dat zijn |
+| `0x47ed3a..0x47ed62` | device-init, stage 0: `SetTextureStageState` (IDirect3DDevice7 `+0x94`) MAGFILTER 2 = `D3DTFG_LINEAR`, MINFILTER 2 = `D3DTFN_LINEAR`, **MIPFILTER 2 = `D3DTFP_POINT`** (D3D7: NONE 1, POINT 2, LINEAR 3); dezelfde drie voor stage 1 op `0x47edc4..0x47ede6`. Geen andere schrijver van 0x10/0x11/0x12 in de exe, geen LOD-bias (0x13) of MAXMIPLEVEL (0x14) |
+
+Dus: 4 niveaus (128, 64, 32, 16 voor een 128×128-groep), bilineair binnen het dichtstbijzijnde
+niveau = OpenGL `GL_LINEAR_MIPMAP_NEAREST`. Dit geldt voor **elke** `.tex`-textuur (wereld,
+modellen en de sky-kubus); de bankafbeeldingen (`0x480780`) en de gegenereerde 32×32-texturen
+(`0x47f840`) lopen via een andere route.
+
+Voor de W1B-hemel betekent dat: vanaf ~4 texels per pixel wordt niveau 2 of 3 gekozen, waarin
+een ster van één texel over 16 of 64 texels is uitgesmeerd; de verre sterrenwanden zijn dan een
+vrijwel zwart, rustig vlak en alleen dichtbij (het plafond op y = 1253 recht boven de speler)
+blijven losse sterren zichtbaar. Geen flikkering.
+
+**Port** (`src/render_gl.c`, `upload_texture` + `box_halve`): mip 0 zoals voorheen, daarna
+steeds de halve maat met hetzelfde 2×2-boxgemiddelde (alfa van colour-key-texturen terug naar
+0/255 met drempel 128, zoals de 1555-bit), `GL_TEXTURE_MAX_LEVEL` (`0x813D`) = 3,
+`GL_LINEAR_MIPMAP_NEAREST` / `GL_LINEAR`. De keten wordt tot 1×1 doorgerekend zodat de textuur
+ook onder een strikte GL 1.1 compleet is; `MAX_LEVEL` beperkt het gebruik tot de vier niveaus
+van het origineel. Niet nagebootst: de 16-bits kwantisering tussen de niveaus.
