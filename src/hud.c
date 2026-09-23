@@ -617,13 +617,6 @@ static void row_num(int v)
     for (int i = 0; i < n && g_rown < 62; i++) g_row[g_rown++] = d[i];
     g_row[g_rown] = 0;
 }
-static float row_draw(float x, float y, int right, uint32_t col)     /* right: x is the right edge */
-{
-    float w = font_measure(g_row);
-    font_draw(right ? x - w : x, y, g_row, col);
-    return w;
-}
-
 /* the item list 0x446640: one size S for the whole page, shrunk (-1, down to 15) until every item NAME is under 640
  * wide; from y = yfrac * 480 one cell per item. Headers (flag 2) always show, the other items only once the input
  * delay page+8 has run out (`ready`) - the loop stops at the first one. The selected item is left out while the
@@ -794,49 +787,150 @@ void hud_carousel(const HudCarousel *c)
     font_size(17.0f);
 }
 
-/* ---------------------------------------------------------------- results screen (docs/GAMEFLOW.md 5.1, HUD_TEXT.md 6)
- * The strings are the ones the original reserves for it (12 CLEARED!!, 13 RESULTS, 15 OK, 17 HIGH SCORE, 46 points,
- * 127 Level, 128 Seconds, 129 Final Score, 130 "Total Score :" and the characters 7 "%", 8 "=", 10 ":", 11 "+"), the
- * two categories are the ones the score formula 0x453cb0 uses, and each one gets its "+ 50 %" when it is complete.
- * The layout itself (the 20-odd Measure/Draw pairs of 0x454963..0x455d97) is NOT decompiled: the placement below is
- * this port's, and so is the dark backdrop (drawn like the text box of message 1080). String 14 "TOTAL" has no place
- * here yet because nothing says where the original puts it. */
-void hud_results_draw(const HudResults *r, int show_ok, float dt)
+/* ---------------------------------------------------------------- results screen, menu page 0x1e (docs/RESULTS.md)
+ * The page object of vtable 0x4aa934: no panel, no backdrop and no OK item. Once shown (0x454560) a black iris closes
+ * round the centre of the screen (1.0 -> 0.37 in 0.5 s), "RESULTS" slides in from the left, "HIGH SCORE" from the right
+ * and the level name with "CLEARED!!" from below; then a column of lines on the left counts up one after the other
+ * (0x454700 / race 0x454860): time, "+", enemies, "+", W bonuses, TOTAL, $. Each line slides in from -200 in 0.2 s,
+ * then "=" on x 85 and a number counting up at 5000 points/s, right aligned so that the final value starts at x 100;
+ * the time at which a line is done is the start of the next one. */
+static struct {
+    int shown, iris_on;                         /* +0x5c, +0x38 */
+    float t, delay;                             /* +0x28 (time since enter / show / hide), +8 (input delay) */
+    float iv0, iv1, it;                         /* iris 0x4776b0: from, to, time */
+    float clock, end[6];                        /* +0x3c, +0x40 (start of line 0) and +0x44..+0x54 (-1 = not done) */
+    int counting;                               /* a counter asked for the tick loop this frame (0x468e40) */
+} RS;
+void hud_results_enter(void)                    /* 0x4544b0 (+ 0x45b8c0: SoundFx 0x3f and the 0.5 s input delay are the caller's / here) */
 {
-    if (!H.ok) return;
-    H.menu_t += dt; if (H.menu_t >= 0.5f) H.menu_t -= 0.5f;
-    const uint32_t col = 0xff808080;                                  /* the menu colour: 0x80 per channel is 1.0 (docs/HUD_TEXT.md 5.2) */
-    const float L = 150, R = 490, rows = 42;
-    quad(96, 14, 448, 464, 0, 0, 0, 0, 0, 0x60000000, 0x60000000, 0x60000000, 0x60000000);   /* backdrop, like the 1080 text box: black at half the text alpha */
-    font_size(35.0f);
-    { const uint16_t *s = hud_string(12); if (s) font_draw(320 - font_measure(s) * 0.5f, 28, s, col); }     /* CLEARED!! */
-    font_size(30.0f);
-    { const uint16_t *s = hud_string(13); if (s) font_draw(320 - font_measure(s) * 0.5f, 78, s, col); }     /* RESULTS */
-    font_size(24.0f);
-    float y = 132;
-    row_reset(); row_str(127); row_space(); row_str(10); row_draw(L, y, 0, col);                            /* "Level :" */
-    row_reset(); row_num(r->level); row_draw(R, y, 1, col);
-    y += rows;
-    for (int cat = r->race ? 1 : 0; cat < 2; cat++) {                                                       /* the score categories of 0x453cb0; a race level only counts the second one */
-        int got = cat ? r->got_b : r->got_a, tot = cat ? r->total_b : r->total_a;
-        sprite_rect(cat ? 4 : 12, L, y - 6, 40, 40);                                                        /* sprite 4 = the W of the HUD; 12 is the 64x64 icon of image 64 the HUD never draws */
-        row_reset(); row_num(got); row_space(); row_str(8); row_space(); row_num(tot);                       /* "got = total" */
-        if (tot && got == tot) { row_space(); row_space(); row_str(11); row_num(50); row_str(7); }           /* "+50%" */
-        row_draw(R, y, 1, col);
-        y += rows;
+    memset(&RS, 0, sizeof RS); RS.delay = 0.5f; RS.iv0 = RS.iv1 = 1.0f;
+    for (int i = 1; i < 6; i++) RS.end[i] = -1.0f;
+}
+void hud_results_show(void) { if (RS.shown) return; RS.shown = 1; RS.t = 0; RS.delay = 0.5f; RS.iv0 = 1.0f; RS.iv1 = 0.37f; RS.it = 0; RS.iris_on = 1; }   /* 0x454560 -> 0x4544f0 */
+void hud_results_hide(void) { if (!RS.shown) return; RS.shown = 0; RS.t = 0; RS.delay = 0.5f; RS.iv0 = 0.37f; RS.iv1 = 1.0f; RS.it = 0; RS.iris_on = 1; }   /* 0x454580 -> 0x454530 */
+int hud_results_confirm(void)                   /* 0x4545a0; 1 = everything has been counted (result 5) */
+{
+    if (RS.delay > 0) return 0;
+    if (RS.end[5] > -1) return RS.shown;
+    if (RS.t > 0.5f) { float k = RS.clock; RS.clock += 60.0f; for (int i = 0; i < 6; i++) RS.end[i] = k; }   /* still counting: all lines done at once */
+    return 0;
+}
+
+static const float k_res_row[9][2] = { { 16, 16 }, { 45, 106 }, { 45, 215 }, { 45, 341.44f }, { 45, 291.44f }, { 45, 375 }, { 85, 405 }, { 624, 16 }, { 320, 415 } };   /* 0x4b5748 (0x4543c0) */
+static void res_text(float x, float y, uint32_t col, int shadow)                  /* g_row; the shadow is the same text in white 0.05 cell down right, first */
+{
+    if (shadow) { float d = 0.05f * font_cell(); font_draw(x + d, y + d, g_row, 0xfe808080); }
+    font_draw(x, y, g_row, col);
+}
+static void res_icon(int n, float xoff)                                           /* the six icons of 0x4542f0, all centred on x 45 */
+{
+    switch (n) {
+    case 0: case 1:                                                               /* clock / enemy face: hub bank image 1, additive (flag 4) */
+        if (!H.logo) break;
+        { float sx = n ? 0 : 51, sw = n ? 50 : 36, x = n ? 20 : 27, y = n ? 170 : 75;
+          glBlendFunc(GL_ONE, GL_ONE);
+          quad(x + xoff, y, sw, sw, H.logo, sx / H.logo_w, 0, (sx + sw) / H.logo_w, sw / H.logo_h, 0xfe808080, 0xfe808080, 0xfe808080, 0xfe808080);
+          glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); }
+        break;
+    case 2: sprite_rect(4, 9 + xoff, 275, 71, 71); break;                         /* the big W, 94 x 0.76 */
+    case 3: sprite_rect(5, 9 + xoff, 225, 71, 71); break;                         /* the flag (race) */
+    case 4: glBlendFunc(GL_ONE, GL_ONE); quad(16 + xoff, 370, 140, 2, 0, 0, 0, 0, 0, 0xfe808080, 0xfe808080, 0xfe808080, 0xfe808080); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;   /* the bar above TOTAL */
+    case 5: sprite_rect(3, 21 + xoff, 410, 49, 49); break;                        /* $, 64 x 0.76 */
     }
-    row_reset(); row_str(128); row_space(); row_str(10); row_draw(L, y, 0, col);                            /* "Seconds :" */
-    row_reset(); row_num((int)r->time); row_draw(R, y, 1, col);
-    y += rows + 10;
-    row_reset(); row_str(129); row_space(); row_str(10); row_draw(L, y, 0, col);                            /* "Final Score :" */
-    row_reset(); row_num(r->score); row_space(); row_str(46); row_draw(R, y, 1, col);                        /* "<score> points" */
-    y += rows;
-    if (r->high) { const uint16_t *s = hud_string(17); if (s && H.menu_t >= 0.25f) font_draw(320 - font_measure(s) * 0.5f, y, s, col); }   /* HIGH SCORE, blinking with the menu phase */
-    y += rows;
-    row_reset(); row_str(130); row_draw(L, y, 0, col);                                                       /* "Total Score :" (the best run of this level) */
-    row_reset(); row_num(r->best > r->score ? r->best : r->score); row_draw(R, y, 1, col);
-    if (show_ok) { static const MenuItem ok = { 15, 1, 0 }; hud_menu_items(&ok, 1, 0.90f, 0, 1); }                                    /* the panel item of page 0x1e */
+}
+static float res_slide(float start) { float d = RS.clock - start; return d < 0.2f ? (0.2f - d) * -1000.0f : 0; }   /* 0x454f20 */
+static void res_line(float xoff, int n, float size, uint32_t col, int shadow)    /* 0x4549c0: icon n, the label in g_row (empty: none) on row n + 1 */
+{
+    font_size(size); res_icon(n, xoff);
+    if (g_rown) res_text(45 - font_measure(g_row) * 0.5f + xoff, k_res_row[n + 1][1], col, shadow);
+}
+static float res_count(float start, int value, int row, float size, uint32_t col, int shadow)   /* 0x454f60: "=" and the counter; the time it is done or -1 */
+{
+    if (start + 0.2f > RS.clock) return -1.0f;
+    font_size(size);
+    const float x = k_res_row[6][0], y = k_res_row[row][1];
+    row_reset(); row_str(8); font_draw(x - font_measure(g_row) * 0.5f, y, g_row, 0xfe808080);
+    row_reset(); row_num(value); float right = x + font_measure(g_row) + 15.0f;
+    int n = (int)lrintf((RS.clock - start - 0.2f) * 5000.0f); float done = -1.0f;
+    if (n > value) { n = value; done = RS.clock; }
+    row_reset(); row_num(n); res_text(right - font_measure(g_row), y, col, shadow);
+    if (done == -1.0f) RS.counting = 1;
+    return done;
+}
+static void res_plus(int k) { font_size(15.0f); row_reset(); row_str(11); font_draw(45 - font_measure(g_row) * 0.5f, k_res_row[k][1] + 30.0f, g_row, 0xfe808080); }   /* 0x454920 */
+static void res_ratio(int a, int b) { row_reset(); row_num(a); row_str(9); row_num(b); }                                              /* "a/b" */
+static int res_bonus(int got, int total) { int v = got * 100; return got == total ? v + v / 2 : v; }                                 /* 0x453d50 / 0x453d20 */
+static float res_total(const HudResults *r, float start)                          /* 0x455580 */
+{
+    float S = 15.0f; const uint16_t *s = hud_string(14);
+    if (s) { fit_size(s, S, 65.0f, 10.0f); S = H.k * (H.H - H.B); }
+    row_reset(); row_str(14); res_line(res_slide(start), 4, S, 0xfeff0000, 1);
+    int v = r->race ? res_bonus(r->st[3], r->st[1]) : (r->time < 1800 ? 1800 - (int)r->time : 0) * 10 + res_bonus(r->st[2], r->st[0]) + res_bonus(r->st[3], r->st[1]);
+    return res_count(start, v, 5, S, 0xfe808080, 0);
+}
+static float res_dollar(const HudResults *r, float start)                          /* 0x455650: the number of new unique items, big and red */
+{
+    row_reset(); res_line(res_slide(start), 5, 0, 0xfe808080, 0);
+    if (start + 0.2f <= RS.clock) { font_size(40.0f); row_reset(); row_str(8); font_draw(k_res_row[6][0] - font_measure(g_row) * 0.5f, k_res_row[6][1], g_row, 0xfe808080); }
+    return res_count(start + 0.4f, r->cats, 6, 40.0f, 0xfeff0000, 1);
+}
+static void res_lines(const HudResults *r, float dt)                              /* 0x454700 (normal) / 0x454860 (race) */
+{
+    RS.clock += dt;
+    float *e = RS.end;
+    if (!r->race) {
+        int t = (int)r->time;                                                     /* _ftol */
+        row_reset(); row_num(t / 60); row_str(10); if (t % 60 < 10) row_num(0); row_num(t % 60);
+        res_line(res_slide(e[0]), 0, 15.0f, 0xfe808080, 0);
+        { float d = res_count(e[0], (t < 1800 ? 1800 - t : 0) * 10, 1, 15.0f, 0xfe808080, 0); if (e[1] == -1.0f) e[1] = d; }
+        if (e[1] <= -1.0f) return;
+        res_plus(1);
+        res_ratio(r->st[2], r->st[0]); res_line(res_slide(e[1]), 1, 15.0f, 0xfe808080, 0);
+        { float d = res_count(e[1], res_bonus(r->st[2], r->st[0]), 2, 15.0f, 0xfe808080, 0); if (e[2] == -1.0f) e[2] = d; }
+        if (e[2] <= -1.0f) return;
+        res_plus(2);
+        res_ratio(r->st[3], r->st[1]); res_line(res_slide(e[2]), 2, 15.0f, 0xfe808080, 0);
+        { float d = res_count(e[2], res_bonus(r->st[3], r->st[1]), 3, 15.0f, 0xfe808080, 0); if (e[3] == -1.0f) e[3] = d; }
+    } else {                                                                      /* the flag line starts at +0x48 = -1: no slide, the counter is as good as done */
+        res_ratio(r->st[3], r->st[1]); res_line(res_slide(e[2]), 3, 15.0f, 0xfe808080, 0);
+        { float d = res_count(e[2], res_bonus(r->st[3], r->st[1]), 4, 15.0f, 0xfe808080, 0); if (e[3] == -1.0f) e[3] = d; }
+    }
+    if (e[3] <= -1.0f) return;
+    { float d = res_total(r, e[3]); if (e[4] == -1.0f) e[4] = d; }
+    if (e[4] <= -1.0f) return;
+    { float d = res_dollar(r, e[4]); if (e[5] == -1.0f) e[5] = d; }
+}
+static void res_name(int level, uint32_t *a, uint32_t *b)                        /* 0x4559b0, table 0x455b60: 47 Space / 48 Pirate / 49 House / 50 Mini Game, 51..54 Part A..D, 55 Race */
+{
+    static const unsigned char k[24][2] = {
+        { 47, 51 }, { 47, 52 }, { 48, 51 }, { 48, 52 }, { 48, 53 }, { 49, 51 }, { 49, 52 }, { 49, 53 }, { 49, 54 },   /* W1A .. W3D (2..10) */
+        { 1, 1 }, { 47, 51 }, { 47, 55 }, { 48, 51 }, { 48, 55 }, { 49, 51 }, { 49, 55 },                             /* KWS, K1A .. K3R (11..17) */
+        { 1, 1 }, { 47, 51 }, { 47, 55 }, { 48, 51 }, { 48, 55 }, { 49, 51 }, { 49, 55 }, { 50, 1 } };               /* SWS, S1A .. S3R, BlackBox (18..25) */
+    *a = *b = 1;
+    if (level >= 2 && level <= 25) { *a = k[level - 2][0]; *b = k[level - 2][1]; }
+}
+int hud_results_draw(const HudResults *r, float dt)
+{
+    RS.counting = 0;
+    if (!H.ok) return 0;
+    RS.t += dt; if (RS.delay > 0) RS.delay -= dt;
+    if (RS.iris_on) { RS.it += dt; float f = RS.it / 0.5f; if (f > 1) f = 1; hud_iris(RS.iv0 - (RS.iv0 - RS.iv1) * f); }   /* 0x477920, round (320, 240) */
+    if (!RS.shown) return 0;
+    float off;
+    if (RS.t <= 0.5f) off = (0.5f - RS.t) * -300.0f / 0.5f;                       /* -300 -> 0; the lines wait */
+    else { off = 0; res_lines(r, dt); }
+    font_size(25.0f); row_reset(); row_str(13); res_text(16 + off, 16, 0xfe800000, 1);                                  /* RESULTS 0x455790 */
+    font_size(18.0f); row_reset(); row_str(17);                                                                          /* HIGH SCORE 0x455850 */
+    { float wl = font_measure(g_row); font_draw(624 - wl - off, 16, g_row, 0xfe808080);
+      row_reset(); row_num(r->best); font_draw(624 - wl * 0.5f - off - font_measure(g_row) * 0.5f, 16 + font_cell(), g_row, 0xfe808080); }   /* the best score saved BEFORE this run */
+    uint32_t na, nb; res_name(r->level, &na, &nb);                                                                       /* 0x455bc0 */
+    row_reset(); row_str(na); row_space(); row_str(nb);
+    { float S = 15.0f; font_size(S); while (S > 10.0f && font_measure(g_row) > 400.0f) font_size(S -= 1.0f);
+      font_draw(320 - font_measure(g_row) * 0.5f, 415 - off, g_row, 0xfe808080);
+      float y = 415 + font_cell() - off;
+      font_size(20.0f); row_reset(); row_str(12); res_text(320 - font_measure(g_row) * 0.5f, y, 0xfe801400, 1); }     /* CLEARED!! */
     font_size(17.0f);
+    return RS.counting;
 }
 
 /* ---------------------------------------------------------------- pickup sprites in the world (0x479530 -> DrawSprite 0x470f10) */

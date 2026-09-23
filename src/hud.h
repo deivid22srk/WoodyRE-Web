@@ -57,10 +57,15 @@ typedef struct {
     int total;
 } HudCarousel;
 void hud_carousel(const HudCarousel *c);
-/* the results screen after a level (docs/GAMEFLOW.md 5.1, docs/HUD_TEXT.md 6): the two collectible categories with
- * their "+50 %" bonus, the level time and the score. `level` is the number printed behind string 127 "Level". */
-typedef struct { int level, race, high, cats; int total_a, got_a, total_b, got_b; float time; int score, best; } HudResults;
-void hud_results_draw(const HudResults *r, int show_ok, float dt);
+/* the results screen after a level, menu page 0x1e (docs/RESULTS.md): level = the index of the level just left
+ * (app+0x6c), st = {total enemies, total W, enemies beaten, W found} (app+0x74..), time in s, best = the saved best
+ * score from BEFORE this run, cats = complete categories = new unique items (the $ line). */
+typedef struct { int level, race; int st[4]; float time; int best, cats; } HudResults;
+void hud_results_enter(void);                                   /* 0x4544b0: page entered (state 0), nothing drawn yet */
+void hud_results_show(void);                                    /* 0x454560: iris closes, texts slide in, the lines count (state 1) */
+void hud_results_hide(void);                                    /* 0x454580: everything gone at once, iris opens (state 2/3) */
+int  hud_results_confirm(void);                                 /* 0x4545a0: 1 = all counted (OK); while counting it skips to the end */
+int  hud_results_draw(const HudResults *r, float dt);           /* 1 while a number is counting (tick loop SoundFx 0x3d) */
 int  hud_sky_images(uint32_t out[5]);                           /* level bank images in cube order 3,0,1,2,4 when the bank has >= 5 images, else 0 */
 /* pickups are sprites, not meshes (docs/BONUS.md 3.1, 0x479530): n = 0 life, 1 charge, 2 W, 3 $, 4 flag. Call between the 3D frame and hud_begin. */
 void hud_world_sprites_begin(const float *right, const float *up);

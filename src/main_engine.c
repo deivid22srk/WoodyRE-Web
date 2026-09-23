@@ -338,7 +338,7 @@ static int inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir) { r
 /* ---- results screen (docs/GAMEFLOW.md 5.1 and 10.1): the hub script ends a level with 1140 [door, var], the engine
  * puts the Perso on the door vector with scripted action 0x4a (he comes down at the door with his parasol, animation
  * 74 with its own camera track) and runs the state machine perso+0x724 while menu page 0x1e is up:
- *   0 arriving  -> the Perso is free again: action 0x4b (the pose that holds the panel), panel visible (state 1)
+ *   0 arriving  -> the Perso is free again: action 0x4b (he lies under the parasol), page 0x1e shown (state 1)
  *   1 panel     -> OK: n = categories with collected == total != 0 (0x453cf0), n unique items (0x44c840),
  *                  cheer action 0x4e (n != 0) or 0x4c (0x453fc0), state 2 / 3, panel hidden
  *   2 / 3 cheer -> cheer over: action 0x4d and state 4 (0x454020)
@@ -346,7 +346,7 @@ static int inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir) { r
  *   5 leaving   -> 0x454050 started a 0.5 s fade-out and set +0x744 = 0.5; after it: prop hidden, fade-in 0.5 s,
  *                  camera back (0x41f9f0(2)), the Perso in front of the door and SetVar(perso+0x728, 1) (0x45422c),
  *                  which is what the hub script has been waiting for.
- * The exact end position of state 5 (0x454244..) and the layout of the panel are not decompiled; see docs/GAMEFLOW.md 10. */
+ * He ends on P0 facing P0 - P1 (0x454244). The 2D page (iris, counting lines) is in hud.c, docs/RESULTS.md. */
 static struct { int have, level; int stats[4]; float time; } g_stats;   /* app+0x74: copied from perso+0x710 by EndLevel (0x404c21) */
 static struct {
     int on, state;                          /* perso+0x724 */
@@ -364,8 +364,6 @@ static int results_score(const int *st, float time, int race)                   
     return s + st[3] * 100 + (st[1] && st[3] == st[1] ? st[3] * 50 : 0);                                              /* a complete category is worth 50 % more */
 }
 static int results_cats(const int *st) { return (st[0] && st[2] == st[0]) + (st[1] && st[3] == st[1]); }               /* 0x453cf0 */
-/* the number behind string 127 "Level": the position of the level inside its own character's set */
-static int results_level_no(int level) { return level >= 2 && level <= 10 ? level - 1 : level >= 12 && level <= 17 ? level - 11 : level >= 19 && level <= 24 ? level - 18 : level; }
 
 static void script_action_camera(void)      /* the tail of 0x44dda0: an action whose animation carries a camera track becomes the camera (0x44df67) */
 {
@@ -433,6 +431,7 @@ static void results_begin(EkoVM *vm, Instance *door, uint32_t var)              
     player_script_action(g_player, 0x4a, have, p0, dir);                              /* 0x453dbb: the arrival at the hub door */
     script_action_camera();
     if (g_prop) results_prop(g_prop, p0, dir);
+    hud_results_enter(); audio_fx(63, NULL, NULL);                                    /* menu page 0x1e (0x404df0): 0x4544b0 + 0x45b8c0, SoundFx 0x3f */
     printf("  RESULTS begin: level %s, score %d, best %d%s", k_levels[lvl >= 0 && lvl < 29 ? lvl : 0], g_res.score, g_res.best, g_res.high ? " (new record)" : ""), puts("");
 }
 
@@ -890,16 +889,18 @@ static void results_update(EkoVM *vm, float dt, int ok)               /* the tab
     if (!g_res.on || !g_player) return;
     switch (g_res.state) {
     case 0:                                                                            /* he is coming down; wait until the Perso is free again (+0x21c == 0) */
+        if (ok) hud_results_confirm();                                                 /* the page already takes input: after 0.5 s this marks every line as done (RESULTS.md 4.1) */
         if (!g_player->script_act) { results_action(0x4b); g_res.state = 1; }
         break;
-    case 1:                                                                            /* 0x454560: the panel is up, OK closes it */
+    case 1:                                                                            /* 0x454560: iris, texts and the counting lines; OK when everything has been counted */
+        hud_results_show();
         if (!g_player->script_act) results_action(0x4b);                               /* 0x45410a: 0x4b again, he stays lying under the parasol */
-        if (ok) {
+        if (ok && hud_results_confirm()) {                                             /* 0x4545a0 result 5; the first OK while counting only skips to the end */
             g_res.cats = results_cats(g_stats.stats);
             g_player->unique_items += g_res.cats;                                      /* 0x44c840: n unique items straight into the save block */
             g_save.chr[g_char].unique = g_player->unique_items;
             results_action(g_res.cats ? 0x4e : 0x4c);                                  /* 0x453fc0: 0x453fd6 cheering, 0x453ffd shrugging */
-            g_res.state = g_res.cats ? 2 : 3; audio_fx(63, NULL, NULL);
+            g_res.state = g_res.cats ? 2 : 3; hud_results_hide();                         /* 0x454580: texts gone at once, the iris opens */
         }
         break;
     case 2: case 3:
@@ -2232,12 +2233,14 @@ int main(int argc, char **argv)
                                 g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, paused || g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };
                 hud_draw(&hs, dt);
             }
-            if (g_res.on) {                                                          /* menu page 0x1e: the panel is up in state 1 (0x454560) and hidden while he cheers (0x454580) */
-                if (g_res.state == 1 || g_res.state == 4) {
-                    HudResults hr = { results_level_no(g_stats.level), g_res.race, g_res.high, g_res.cats,
-                                      g_stats.stats[0], g_stats.stats[2], g_stats.stats[1], g_stats.stats[3], g_stats.time, g_res.score, g_res.best };
-                    hud_results_draw(&hr, g_res.state == 1, M.page >= 0 ? 0.0f : dt);    /* one blink phase per frame: the page below ticks it when it is up */
+            {   /* menu page 0x1e runs from 1140 until page 6 takes over in state 4 (docs/RESULTS.md) */
+                static int ticking;
+                int counting = 0;
+                if (g_res.on && g_res.state <= 3) {
+                    HudResults hr = { g_stats.level, g_res.race, { g_stats.stats[0], g_stats.stats[1], g_stats.stats[2], g_stats.stats[3] }, g_stats.time, g_res.best, results_cats(g_stats.stats) };
+                    counting = hud_results_draw(&hr, dt);
                 }
+                if (counting != ticking) { if (counting) audio_fx(61, &g_res, NULL); else audio_fx_stop(61, &g_res, 0); ticking = counting; }   /* 0x468e50: the tick loop SoundFx 0x3d */
             }
             if (L.have_player && !fly) menu_draw(dt);
             { uint32_t v = g_text_var & 0xffffff; hud_text_draw(v < L.vm.nvars && L.vm.varval[v] != 0, paused ? 0 : dt); }

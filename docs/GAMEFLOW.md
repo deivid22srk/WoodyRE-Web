@@ -323,7 +323,7 @@ toestanden af:
 | `perso+0x724` | port | wat er gebeurt |
 |---|---|---|
 | 0 | `case 0` | Perso op de deurvector met **gescripte actie 0x4a** (.ins-anim 74, mét eigen cameratrack): hij komt binnenzweven en gaat onder de parasol liggen (screenshot van issue #7). De parasol, de ligstoel en het glas zijn **niet** van Woody maar de prop van bericht 1142 (WWS: instantie 366, model 67), die tegelijk zijn eigen animatie 0 afspeelt (§5.3). Zodra de actie klaar is: actie **0x4b** en toestand 1 |
-| 1 | `case 1` | paneel zichtbaar (`0x454560`); 0x4b wordt telkens opnieuw gestart als hij afloopt (`0x45410a`), Woody blijft dus liggen. OK: `n` = categorieën compleet, `n` unieke items erbij, juichen met **0x4e** (n ≠ 0) of **0x4c**, toestand 2/3, paneel weg |
+| 1 | `case 1` | pagina 0x1e getoond (`0x454560`: iris dicht, teksten schuiven in, de regels tellen op, RESULTS.md); 0x4b wordt telkens opnieuw gestart als hij afloopt (`0x45410a`), Woody blijft dus liggen. OK: `n` = categorieën compleet, `n` unieke items erbij, juichen met **0x4e** (n ≠ 0) of **0x4c**, toestand 2/3, teksten weg en iris open (`0x454580`). De eerste OK terwijl er nog geteld wordt zet alleen alle regels op hun eindwaarde |
 | 2 / 3 | `case 2/3` | klaar met juichen → actie **0x4d** (`0x454020`), score opslaan, toestand 4 en menupagina **6** ("Do you want to save?") |
 | 4 | `case 4` | 0x4d in een lus (`0x454164`); de menupagina's 6 → 5 (slot) → 0x17 (overschrijven?) → 8 "Game Saved" / 9 "Save failed." lopen via het menu (`menu_update`, MENU_LOAD.md §5); zodra er geen pagina meer is (**Nee** op 6, of Continue op 8) `0x454050` = fade-out 0,5 s, toestand 5 |
 | 5 | `default` | 0x4d in een lus (`0x454192`); na 0,5 s: prop uit de wereld (`0x407850`), fade-in 0,5 s, camera-cut terug naar de volgcamera (`0x41f9f0(2)`, `CamMgr+0x368 = 0`, `SetMode(0, 0)`), **`SetVar(perso+0x728, 1)`** — daar wacht het hub-script op — grond (`0x462990`), kijkrichting **P0 − P1** (`0x454244`: van de deur af, de hub in), idle, `+0x550 = 0`, toestand 0 |
@@ -361,24 +361,24 @@ model 67: vijf mesh-nodes en één animatie van 1740 frames / 8,7 eenheden, **ex
 
 De port: `results_prop` in `src/main_engine.c` (quaternion uit de drie assen, `inst_play_once(prop, 0, 3.0, nu)`).
 
-**Afwijkingen en aannames** (alles wat hier staat is niet gedecompileerd):
-- De **layout** van het paneel (`0x454963..0x455d97`) is niet ontleed; `hud_results_draw` gebruikt de strings die het
-  origineel ervoor reserveert (12, 13, 15, 17, 46, 127, 128, 129, 130 en de tekens 7/8/10/11) in een eigen indeling,
-  met een half-zwarte achtergrond zoals het tekstvak van 1080. String 14 "TOTAL" heeft nog geen plek.
-- De twee categorieregels tonen `gepakt = totaal` plus "+ 50 %" als de categorie compleet is, met sprite 4 (de W van
-  de HUD) en sprite **12** — een 64×64-icoon in bank-0-beeld 64 dat de HUD zelf nooit tekent (aanname: de vijanden).
-- "Level" krijgt het volgnummer binnen de set van het personage (W1A = 1 … W3D = 9), want de levelnamen staan niet in
-  de stringtabel.
+**Het scherm zelf** (pagina 0x1e) staat in **RESULTS.md** en is zo geport (`hud_results_enter/show/hide/confirm/draw`
+in `src/hud.c`): zwarte iris om het schermmidden, "RESULTS" linksboven, "HIGH SCORE" met de oude beste score
+rechtsboven, levelnaam + "CLEARED!!" onderaan, links de optellende regels tijd / vijanden / W / TOTAL / $, tikgeluid
+SoundFx 0x3d zolang er geteld wordt en SoundFx 0x3f bij het openen van de pagina.
+
+**Afwijkingen en aannames**:
 - Slotkeuze: pagina 5 / 0x17 zijn geport (MENU_LOAD.md §5); de wachtpagina 0xc (2 frames) valt weg. Pagina 8 + Continue
   verlaat het menu (niet terug naar 6, zoals hier eerder stond); 9 gaat terug naar 6. De cursor van pagina 6 begint op het eerste kiesbare item ("Yes"); alleen van
   pagina 0x1c is bekend dat hij op "No" begint.
 - Eindpositie van toestand 5: P0 van de deurvector (de laatste 0x4d zette hem daar), grond, kijkend naar P0 − P1.
-- Het spel wordt tijdens het scherm **niet** gepauzeerd (de animaties moeten lopen) en er ligt geen halfzwart vlak
-  overheen; welke vlaggen tabel `0x405af8` voor pagina 0x1e zet is niet gelezen. De gewone HUD blijft weg.
+- Het spel wordt tijdens het scherm **niet** gepauzeerd en er ligt geen halfzwart vlak overheen, de gewone HUD blijft
+  weg (tabel `0x405af8[0x1e] = 1`, RESULTS.md §6).
 
 **Testen** (met de originele data): `./out/woody.exe extract/Data WWS --prev W1A --stats 12 12 25 20 245`
-= "we komen uit W1A, 12 van de 12 vijanden, 20 van de 25 bonussen, 245 s"; het hub-script stuurt dan zelf 1140.
-Enter/spatie = bevestigen, pijltjes omhoog/omlaag = Ja/Nee.
+= "we komen uit W1A, 12 van de 12 vijanden, 20 van de 25 bonussen, 245 s" (volgorde: totaal A, gepakt A, totaal B,
+gepakt B, seconden); het hub-script stuurt dan zelf 1140. Enter/spatie = bevestigen, pijltjes omhoog/omlaag = Ja/Nee.
+Het scherm staat er rond 7 s na de start, `--shot out/x.ppm 9` geeft het met alle regels geteld; race:
+`KWS --prev K1R`.
 
 ## 6. Save
 
