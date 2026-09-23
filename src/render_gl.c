@@ -697,21 +697,25 @@ static void event_frames(const Instance *inst, uint32_t out[4])
  * polygon on the CPU - the device is left on D3DCULL_NONE - because polygon flag 0x2 marks a double-sided polygon that
  * must survive. Drawing the back faces too is not just wasted fill: a back face has its normals pointing away, so
  * lit_vertex_colour() gives it ndl = 0 and only the 0.6 * vcol ambient term, and wherever front and back tie in depth
- * (exactly along a silhouette) the dark one can win - a dark rim around every character. */
+ * (exactly along a silhouette) the dark one can win - a dark rim around every character.
+ * The plane is the loader's (0x4280c2-0x428375): over every run of three consecutive vertices P, Q, R it keeps the one
+ * with the longest n = (R-Q) x (R-P) above 0.01, and d = -n.R; no triple that long -> (1, 0, 0, 0). The winding alone
+ * decides the side - the stored vertex normals are never looked at, and on some models they are junk: W1A model 18
+ * (the glass lift plate, issue #2) has every face twice, textured and a reversed 0xFFFF copy, and choosing the side by
+ * the normal sum kept the wrong one of each pair. */
 static const float *poly_plane(Model *m, const InsNode *n, InsPoly *p)
 {
     if (!p->plane_ok) {
-        const InsPoint *a = &m->points[p->indices[0]], *b = &m->points[p->indices[1]], *c = &m->points[p->indices[2]];
-        float ux = b->pos.x - a->pos.x, uy = b->pos.y - a->pos.y, uz = b->pos.z - a->pos.z;
-        float vx = c->pos.x - a->pos.x, vy = c->pos.y - a->pos.y, vz = c->pos.z - a->pos.z;
-        float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-        float sx = 0, sy = 0, sz = 0;                                          /* the file winding points inward; the stored
-                                                                                * vertex normals say which way is out */
-        for (uint32_t i = 0; i < p->nverts; i++) { const InsPoint *q = &m->points[p->indices[i]]; sx += q->normal.x; sy += q->normal.y; sz += q->normal.z; }
-        if (nx * sx + ny * sy + nz * sz < 0) { nx = -nx; ny = -ny; nz = -nz; }
-        float l = sqrtf(nx * nx + ny * ny + nz * nz); if (l > 1e-12f) { nx /= l; ny /= l; nz /= l; }
-        float ax = a->pos.x - n->pivot.x, ay = a->pos.y - n->pivot.y, az = a->pos.z - n->pivot.z;
-        p->plane[0] = nx; p->plane[1] = ny; p->plane[2] = nz; p->plane[3] = -(nx * ax + ny * ay + nz * az);
+        float best = 0, nx = 1, ny = 0, nz = 0; const InsPoint *rb = NULL;
+        for (uint32_t i = 0; i < p->nverts; i++) {
+            const InsPoint *P = &m->points[p->indices[i]], *Q = &m->points[p->indices[(i + 1) % p->nverts]], *R = &m->points[p->indices[(i + 2) % p->nverts]];
+            float ux = R->pos.x - Q->pos.x, uy = R->pos.y - Q->pos.y, uz = R->pos.z - Q->pos.z;
+            float vx = R->pos.x - P->pos.x, vy = R->pos.y - P->pos.y, vz = R->pos.z - P->pos.z;
+            float cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx, l = sqrtf(cx * cx + cy * cy + cz * cz);
+            if ((!rb || best < l) && l > 0.01f) { best = l; nx = cx / l; ny = cy / l; nz = cz / l; rb = R; }
+        }
+        p->plane[0] = nx; p->plane[1] = ny; p->plane[2] = nz; p->plane[3] = 0;
+        if (rb) p->plane[3] = -(nx * (rb->pos.x - n->pivot.x) + ny * (rb->pos.y - n->pivot.y) + nz * (rb->pos.z - n->pivot.z));
         p->plane_ok = 1;
     }
     return p->plane;

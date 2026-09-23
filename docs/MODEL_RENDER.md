@@ -45,8 +45,12 @@ het bestand / `insparse.py`); in de C-port (0-based array) is dat steeds één l
 9. **Backface-culling doet de engine zelf, per polygoon; het apparaat staat op `D3DCULL_NONE`** (`0x47ec8b`),
    want polygoonvlag `0x2` markeert een dubbelzijdige polygoon die wél getekend moet worden. Node-polygonen
    (`0x43bf65`): breng de camera naar de lokale ruimte van de node en sla de polygoon over als
-   `n·cam_lokaal + d ≤ 0` met het vlak dat de loader uit de rustpose bouwt (`0x4280c2`; de winding in het bestand
-   wijst naar binnen, dus richt de normaal op de som van de opgeslagen vertexnormalen). Skinned driehoeken
+   `n·cam_lokaal + d ≤ 0` met het vlak dat de loader uit de rustpose bouwt (`0x4280c2`–`0x428375`): over elk
+   drietal opeenvolgende hoeken P, Q, R het drietal met de langste `n = (R−Q) × (R−P)` boven 0.01, genormaliseerd,
+   `d = −n·R`; geen enkel drietal zo lang → (1, 0, 0, 0). **Alleen de winding beslist**; de vertexnormalen worden
+   niet bekeken (ze zijn op sommige modellen onzin: W1A-model 18, de glazen liftplaat van issue #2, heeft elk vlak
+   twee keer, getextureerd en als omgekeerde 0xFFFF-kopie, en een keuze op de normalensom hield van elk paar de
+   verkeerde over). Skinned driehoeken
    (`0x43c1a4`), elke frame in wereldruimte: `n = (A−B) × (A−C)`, tekenen als `n·(camera − A) > 0`.
    Zonder dit worden ook de achterkanten getekend; die krijgen `ndl = 0` en dus alleen de ambient-term
    (0.6 × vertexkleur), en precies op de silhouetrand — waar voor- en achterkant dezelfde diepte hebben —
