@@ -512,6 +512,10 @@ in `0x44bf10` aangeroepen om de instantie van de speler in de juiste wereldcel t
   (= voeten+43): `0x436f00` meldt dan `onGround` en zet `pos.y += 43` (!), en in de sweep geldt "op de grond". In de praktijk hebben levels
   overal een vloer of een script-volume dat `Kill` stuurt; het gedrag boven een echt gat is niet in het spel geverifieerd (§7).
 * `0x462990` (teleport/respawn-hulp): zet de speler op de vloer onder `pos + 43`, `onGround = 1`, J gereset, cel opnieuw bepaald (`0x428ce0`).
+  Ook de **levelstart** eindigt ermee: Game-ctor `0x445850` → `0x445930` → `0x44a810(0)` → `0x44a6a0` (Reset, `pos = +0x30c`,
+  health/levens uit de save, `0x44a7ee`: grond-snap), daarna `0x44a902` en nog een directe `0x44a6a0` (`0x4458e2`). De `.ins`-positie
+  van de speler zweeft een paar eenheden boven de vloer; zonder deze snap begint elk level met een val (issue #11). Respawn
+  (`0x445b41` → `0x44a650`), einde resultatenscherm (`0x45423f`) en einde cinematic (`0x445af9` → `0x44a650`) snappen ook.
 
 ## 7. Open vragen en tegenstrijdigheden
 

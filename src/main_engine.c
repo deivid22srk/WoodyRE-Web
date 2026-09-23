@@ -222,6 +222,7 @@ static void cin_update(EkoVM *vm, float dt, float now)
             if (g_player && g_player->inst == m) {
                 m->scripted = 0;
                 if (ins_root_end(m, g_cin.anim, &pos, &fwd)) player_place(g_player, pos, atan2f(fwd.x, fwd.z));
+                player_ground_snap(g_player);                                   /* 0x445b41 -> 0x44a650 */
             }
             g_cam.cut = 1; cam_set_mode(1);
         }
@@ -917,6 +918,7 @@ static void results_update(EkoVM *vm, float dt, int ok)               /* the tab
         fade_start(0.5f, 0);
         g_player->script_act = 0; g_player->use_root = 0;                              /* "No" can come before 0x4d has played out; its root motion must not move him after this */
         player_place(g_player, g_res.door_p, (g_res.door_d.x * g_res.door_d.x + g_res.door_d.z * g_res.door_d.z) > 1e-6f ? atan2f(-g_res.door_d.x, -g_res.door_d.z) : g_player->yaw);   /* 0x454244: facing P0 - P1, away from the door */
+        player_ground_snap(g_player);                                                  /* 0x45423f */
         g_cam.cut = 1; cam_set_mode(1); g_player->cam_init = 0;                        /* 0x41f9f0(2) + SetMode(0, 0) */
         eko_set_var(vm, g_res.var, 1);                                                 /* 0x45422c: the hub script opens the next door */
         save_auto(); g_res.on = 0; g_stats.have = 0;
@@ -1921,7 +1923,8 @@ static int level_load(Level *L, const char *dir, const char *lvl)
                                                                                   * object in the first tick instead of in an init whose wake lists are cleared at the end */
     eko_msg_reset(&L->vm);
     if (L->have_player) { SaveChar *sc = &g_save.chr[g_char]; L->player.lives = sc->lives; L->player.health = sc->health > 0 ? sc->health : 1.0f;
-                          L->player.unique_items = sc->unique; L->player.special_charges = sc->charges; }   /* 0x44a6a0 / 0x44a759 */
+                          L->player.unique_items = sc->unique; L->player.special_charges = sc->charges;
+                          player_ground_snap(&L->player); }   /* 0x44a6a0 / 0x44a759; 0x44a7ee: he starts standing on the floor, not falling onto it */
     L->t0 = win_time();
     return 0;
 }
