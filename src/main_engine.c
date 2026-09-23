@@ -2260,6 +2260,10 @@ int main(int argc, char **argv)
           if (g_sfade.rest > 0 && g_sfade.total > 0) { float k = g_sfade.rest / g_sfade.total, b = g_sfade.out ? k : 1.0f - k; if (b < f) f = b; g_sfade.rest -= dt; if (g_sfade.rest <= 0 && g_sfade.out && !g_sfade.script) g_sfade.hold = 1; }
           /* a finished fade-out keeps the 3D picture black until the next fade-in; that is drawn under the 2D layer (above) */
           if (f < 1.0f) rnd_fade(f); }
+        {   /* WOODY_SHOTSEQ="prefix start step count": a burst of screenshots prefix_NNN.ppm (testing: popping, flicker) */
+            static char pre[200]; static double st, sp; static int cnt = -1, k; if (cnt < 0) { cnt = 0; if (getenv("WOODY_SHOTSEQ")) sscanf(getenv("WOODY_SHOTSEQ"), "%199s %lf %lf %d", pre, &st, &sp, &cnt); }
+            if (k < cnt && now - t0 >= st + k * sp) { char fn[256]; snprintf(fn, sizeof fn, "%s_%03d.ppm", pre, k); rnd_screenshot(&win, fn); k++; }
+        }
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
         double pt3 = win_time();
         win_swap(&win);
