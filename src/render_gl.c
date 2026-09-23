@@ -106,6 +106,34 @@ static void batch_reserve(struct WorldBatch *b, uint32_t extra_tris, uint32_t *c
     if (b->face) b->face = (uint32_t *)realloc(b->face, (size_t)*cap * 4);
 }
 /* one light polygon (flush 0x4293f0 / 0x42c320): constant colour C*k, radial texture 15 - round(k*15.49) */
+/* The world face a C polygon lies on. Its own field +0x08 is NOT that face: it holds the material word of the parent
+ * (docs/LIGHTING.md 2; 0x42c320 never reads it), so culling the fragment by it tied every partial light patch to an
+ * unrelated face and the lit part of a floor came and went with the sectors in view. The parent is the B face of the
+ * same light that is coplanar with the fragment (litparse check 3: every C polygon has one) and holds its centroid;
+ * several coplanar tiles are told apart by that containment test. -1 = none found (the fragment is then always kept). */
+static uint32_t lit_c_parent(const Renderer *r, const LitLight *L, const LitPoly *P)
+{
+    const GelFile *g = r->gel; float c[3] = { 0, 0, 0 }, t[3]; uint32_t best = UINT32_MAX; float best_d = 1e30f;
+    if (P->n < 3) return UINT32_MAX;
+    for (uint32_t k = 0; k < P->n; k++) { const float *v = lit_vpos(r, P->indices[k], t); c[0] += v[0]; c[1] += v[1]; c[2] += v[2]; }
+    for (int q = 0; q < 3; q++) c[q] /= (float)P->n;
+    for (uint32_t k = 0; k < L->nb; k++) {
+        uint32_t f = L->b[k]; if (f >= g->npolys) continue;
+        const GelPoly *gp = &g->polys[f]; const float *pl = gp->plane; if (gp->nverts < 3) continue;
+        if (pl[0] * P->plane[0] + pl[1] * P->plane[1] + pl[2] * P->plane[2] < 0.999f || fabsf(pl[3] - P->plane[3]) > 1.0f) continue;
+        float dmax = -1e30f, dmin = 1e30f;                     /* signed edge distances; the winding decides which sign is outside */
+        for (uint32_t e = 0; e < gp->nverts; e++) {
+            const GelVert *a = &g->verts[gp->indices[e]], *b = &g->verts[gp->indices[(e + 1) % gp->nverts]];
+            float ex = b->x - a->x, ey = b->y - a->y, ez = b->z - a->z;
+            float nx = ey * pl[2] - ez * pl[1], ny = ez * pl[0] - ex * pl[2], nz = ex * pl[1] - ey * pl[0], nl = sqrtf(nx * nx + ny * ny + nz * nz);
+            if (nl < 1e-6f) continue;
+            float d = ((c[0] - a->x) * nx + (c[1] - a->y) * ny + (c[2] - a->z) * nz) / nl; if (d > dmax) dmax = d; if (d < dmin) dmin = d;
+        }
+        float out = dmax < -dmin ? dmax : -dmin; if (out < 0) out = 0;   /* 0 = the centroid is inside the face */
+        if (out < best_d) { best_d = out; best = f; }
+    }
+    return best;
+}
 static void light_poly(Renderer *r, const LitLight *L, const float *plane, const int32_t *idx, uint32_t n, uint32_t cap[16], uint32_t face)
 {
     if (n < 3) return;
@@ -251,7 +279,10 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
             /* no light spot on a face that is not drawn; a fragment whose face index is unusable is kept, the
              * visibility pass keeps those too */
             for (uint32_t k = 0; k < L->na; k++) if (L->a[k] < gel->npolys && !gel_face_invisible(gel, tex, L->a[k])) { const GelPoly *p = &gel->polys[L->a[k]]; light_poly(r, L, p->plane, (const int32_t *)p->indices, p->nverts, lcap, L->a[k]); }
-            for (uint32_t k = 0; k < L->nc; k++) if (L->c[k].face >= gel->npolys || !gel_face_invisible(gel, tex, L->c[k].face)) light_poly(r, L, L->c[k].plane, L->c[k].indices, L->c[k].n, lcap, L->c[k].face);
+            for (uint32_t k = 0; k < L->nc; k++) {
+                uint32_t f = lit_c_parent(r, L, &L->c[k]);
+                if (f >= gel->npolys || !gel_face_invisible(gel, tex, f)) light_poly(r, L, L->c[k].plane, L->c[k].indices, L->c[k].n, lcap, f);
+            }
         }
         uint32_t nl = 0; for (int t = 0; t < 16; t++) nl += r->lightb[t].ntris;
         printf("lighting: %u lights, %u light triangles\n", r->lit->nlights, nl);
@@ -518,6 +549,11 @@ static void instance_light(const Renderer *r, Instance *inst, float dt)
     }
     if (inst->light >= 0) for (int q = 0; q < 3; q++) inst->lcol[q] = lf->lights[inst->light].colour[q];
 }
+/* Who casts a shadow: the player, SetFlags bit 1 (0x42b3cc); the other types are our addition */
+static int shadow_caster(const Instance *inst)
+{
+    return inst->type == 1 || inst->type == 2 || inst->type == 3 || inst->type == 18 || inst->type == 19 || (inst->setflags & 1) || (inst->type >= 4 && inst->type <= 13);
+}
 static Vec3 g_cam_pos;                 /* the camera of this frame, for the per polygon back-face test and the culling */
 
 /* Is this instance drawn at all this frame? The cone test on the model's bounding sphere is what the port already
@@ -606,6 +642,7 @@ static void cast_shadow(const Renderer *r, Instance *inst)
             uint32_t f = faces[fi]; if (f >= r->gel->npolys) continue;
             const GelPoly *gp = &r->gel->polys[f]; const float *pl = gp->plane, *fb = &r->face_bound[4 * f];
             if (gp->nverts < 3 || gel_face_invisible(r->gel, r->tex, f)) continue;                               /* nor a shadow on one */
+            if (r->cull && r->face_stamp[f] != r->stamp_gen) continue;                                             /* a face not drawn this frame cannot show one */
             float dl = pl[0] * L->pos.x + pl[1] * L->pos.y + pl[2] * L->pos.z + pl[3], dc = pl[0] * c[0] + pl[1] * c[1] + pl[2] * c[2] + pl[3];
             if (dl <= 1.0f || dc >= dl || dc < -rad) continue;                 /* caster must be between the light and the plane */
             n_plane++;
@@ -643,19 +680,21 @@ static void cast_shadow(const Renderer *r, Instance *inst)
 }
 static void draw_cast_shadows(const Renderer *r)
 {
-    { static int last = -1; int s = (int)g_tex_now; g_shlog = getenv("WOODY_SHLOG") && s != last; if (g_shlog) last = s; }
+    { static int last = -1; int s = (int)g_tex_now; g_shlog = getenv("WOODY_SHLOG") && (s != last || atoi(getenv("WOODY_SHLOG")) == 2); if (g_shlog) last = s; }
     glDisable(GL_TEXTURE_2D); glDisable(GL_BLEND); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glEnable(GL_STENCIL_TEST); glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -1.0f); glColor3f(LIT_AMB, LIT_AMB, LIT_AMB);
     for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) {
         Model *m = &r->ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k];
-            int caster = inst->type == 1 || inst->type == 2 || inst->type == 3 || inst->type == 18 || inst->type == 19 || (inst->setflags & 1) || (inst->type >= 4 && inst->type <= 13);   /* the player, SetFlags bit 1 (0x42b3cc); enemies are our addition */
+            int caster = shadow_caster(inst);
             if (g_shlog && (caster || inst->type)) printf("  SH t %.1f model %u inst %u type %d setflags %x caster %d vis %d fade %.2f l_seen %d light %d nodes %d at %.0f %.0f %.0f", g_tex_now, mi, k, inst->type, inst->setflags, caster, inst->visible, inst->fade, inst->l_seen, inst->light, inst->node_world != NULL, inst->world.m[12], inst->world.m[13], inst->world.m[14]), puts("");
             /* 0x42e2c3/0x42e377/0x42e417: no sector, fade >= 0.98 or an empty sector light list drop the shadow. Whether
              * the light SEES the caster is never tested - a character standing in shadow still casts one, from the
-             * fallback light (0x42e524). */
-            if (!caster || !inst->drawn || inst->light < 0 || !inst->node_world) continue;   /* drawn: the original gates the caster on the same sector visibility */
+             * fallback light (0x42e524). Nor whether the caster itself is on screen: 0x42b380 runs 0x42e2b0 with bit 2
+             * for every instance of world+0x64, so a platform just outside the picture still shades the floor in it.
+             * Gating on the caster's own visibility made those shadows vanish the moment the camera turned away. */
+            if (!caster || !inst->visible || inst->fade > 0.98f || inst->light < 0 || !inst->node_world) continue;
             cast_shadow(r, inst);
         }
     }
@@ -976,7 +1015,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     float frust[6][4]; frustum_planes(cam, fw, rt, up, aspect, f, zn, zf, frust);
     { double a = win_time(); world_visibility(r, cam, frust); T[5] += win_time() - a; }
     {   /* Pose every visible instance, on screen or not: player.c collides against node_world, so a platform that
-         * stops being posed stops carrying the player. Lighting and shadows only go to what is actually drawn. */
+         * stops being posed stops carrying the player. Lighting goes to what is actually drawn, and to every shadow caster. */
         float dt = time_s - r->last_time; if (dt < 0 || dt > 0.25f) dt = 0.016f; r->last_time = time_s;
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k]; inst->drawn = 0;
@@ -986,7 +1025,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             Instance *inst = &m->instances[k];
             if (!inst->visible || inst->fade > 0.98f) continue;
             inst->drawn = instance_visible(r, inst, aspect, f, fw, rt, up);
-            if (inst->drawn && r->lit) instance_light(r, inst, dt); } }
+            if ((inst->drawn || shadow_caster(inst)) && r->lit) instance_light(r, inst, dt); } }   /* a caster off screen still needs its light for the shadow */
     }
     glEnable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GEQUAL, 127.0f / 255.0f);   /* 0x47ec50/0x47ec5c: ALPHAREF 0x7f, GREATEREQUAL. The device stays on CULL_NONE; the culling is per polygon on the CPU */
     glPolygonMode(GL_FRONT_AND_BACK, r->wireframe ? GL_LINE : GL_FILL);

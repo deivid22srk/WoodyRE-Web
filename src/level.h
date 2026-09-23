@@ -77,7 +77,7 @@ typedef struct {
 } VisFile;
 
 /* ---- .lit: precomputed light visibility (docs/LIGHTING.md) ---------------------- */
-typedef struct { uint32_t n, face; float plane[4]; int32_t *indices; } LitPoly;   /* index < 0: extra vertex -i-1; face = the world polygon this fragment lies on (P+0x08) */
+typedef struct { uint32_t n, face; float plane[4]; int32_t *indices; } LitPoly;   /* index < 0: extra vertex -i-1; face = P+0x08, the parent's MATERIAL word, not a face index (render_gl.c finds the parent B face) */
 typedef struct {
     Vec3 pos; float colour[3]; float range;   /* colour 0..255 */
     uint32_t na, *a;                           /* faces the light sees completely */

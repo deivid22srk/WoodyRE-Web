@@ -245,6 +245,7 @@ flits/highlight, niet uitgezocht).
 | enige tests: bladsoort ≠ 2, ≥ 1 vertex vóór het ontvangstvlak, camera vóór dat vlak | plus zelfbedachte grenzen (`s > 40`, een bolstraal-`reach`-test, `k` buiten 1..100). Ze zijn er omdat de port A/B afloopt in plaats van de BSP, en kunnen geldige schaduwen laten vallen |
 | `0.01 < transparantie ≤ 0.98` → doorschijnende schaduw (emmer 2, `C·k·transparantie`) | altijd de opake AMB-variant tot 0.98 |
 | werper zonder animatie herbruikt zijn polygonen (`0x42f3d0`/`0x42f460`) | elke frame opnieuw |
+| werper wordt **niet** getest op zichtbaarheid: `0x42b380` roept `0x42e2b0` met bit 2 aan voor elke instantie in `wereld+0x64` | idem (issue #29); de port slaat alleen ontvangende faces over die deze frame niet getekend worden, wat exact is |
 
 ## 5. Detailoptie `[0x4c2c0c]`
 
@@ -277,7 +278,7 @@ het vlak of buiten bereik; (5) BSP-query: C-zwaartepunten 1653/1654 belicht, A 5
 - `light+0x28` (2, één keer 3) en het typebyte van `object_id`: geen lezer gevonden in de
   lichtpas.
 - C-veld `+0x08`: 7 % wijkt een paar eenheden af van het materiaalwoord van de ouder
-  (vermoedelijk hernummerde materiaaltabel na de lichtbouw); functioneel irrelevant.
+  (vermoedelijk hernummerde materiaaltabel na de lichtbouw); functioneel irrelevant. De port zoekt de echte ouder zelf (coplanaire B-face die het zwaartepunt bevat, `lit_c_parent`): het veld als face-index gebruiken koppelde in W1A/W1B/House 0 van de 7209 C-polygonen aan hun ouder, waardoor de belichte helft van vloeren met de zichtbare sectoren aan- en uitsprong (issue #29).
 - Vlagwaarde 1 in `lightsys+0x28` (wordt getest in `0x42ad0b`, nergens gezet).
 - `[0x5ac860]` = 1 met vector `[0x5ac864..0x5ac86c]` (`0x42ed16`): alternatieve
   lichtrichting voor modellen (menu/cutscene?), en `[0x5ac850]/[0x5ac854]` (kleur-optelling)
