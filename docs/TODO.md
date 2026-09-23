@@ -56,7 +56,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | 21 | bomkanon (W2A/W2B/W2D): Woody rijdt mee op een afgeschoten bom; **geblokkeerd op het bommensysteem (type 40)** | analyse klaar | ROCKET.md §7 |
 | 90 | omgevingsvolume: modus 0 (1501/1504) geport - de vlinders van het titelscherm, met hun dwaalgedrag, landen en vleugelslag. Niet: modus 1 (`0x47e160`, langs de grondnormaal) en 2. Alleen House gebruikt klasse 90 | grotendeels | TITLE.md §3.1, OBJECTS.md §2.4 |
 | 60 | eigen handler (1503/1506) | niet geanalyseerd | OBJECTS.md §3 |
-| 50 / 51 / 52 | laser: reizende puls, bliksemboog, inslag-sprite, straal tegen instanties | kern geport | OBJECTS.md §2.1 |
+| 50 / 51 / 52 | laser: kern, gloed, reizende puls, bliksemboog en inslag geport; de straal stopt nog alleen op wereldpolygonen, niet op instanties | grotendeels | OBJECTS.md §2.1 |
 | berichten 16/18/19 (textuurframe-override) geport; 15/17 (UV-scroll-override) niet | textuurframe-/UV-override per instantie | grotendeels | INSTANCE.md §2 |
 | 1201 / 1202 | typewoord-bit 0x400 (aanvalbaar doel) | analyse klaar | OBJECTS.md §3 |
 | 110 | figuurtjes van de wereldkeuze-carrousel: de port verbergt ze (zie TITLE.md §3.2). Niet geport: de pagina zelf, de carrouselhoek (`0x451890`) en de transform per frame (`0x489210`) | verborgen | TITLE.md §3.2 |

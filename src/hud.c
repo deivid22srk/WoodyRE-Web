@@ -1011,7 +1011,7 @@ int hud_sky_images(uint32_t out[5])
     return 1;
 }
 
-void hud_world_beam(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b)
+static void world_line(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, GLuint tex)
 {
     if (!H.ok) return;
     float d[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, m[3] = { (a[0] + b[0]) * 0.5f - eye[0], (a[1] + b[1]) * 0.5f - eye[1], (a[2] + b[2]) * 0.5f - eye[2] };
@@ -1019,7 +1019,7 @@ void hud_world_beam(const float *a, const float *b, const float *eye, float hw, 
     float l = (float)sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]); if (l < 1e-6f) return;
     for (int i = 0; i < 3; i++) s[i] *= hw / l;
     glBlendFunc(GL_ONE, GL_ONE); glDisable(GL_ALPHA_TEST);                          /* flag 4 = additive ONE/ONE */
-    if (H.beam) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, H.beam); } else glDisable(GL_TEXTURE_2D);
+    if (tex) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tex); } else glDisable(GL_TEXTURE_2D);
     glBegin(GL_QUADS);
     glColor3f(rgb[0] * alpha_a, rgb[1] * alpha_a, rgb[2] * alpha_a);
     glTexCoord2f(0, 0); glVertex3f(a[0] - s[0], a[1] - s[1], a[2] - s[2]);
@@ -1030,6 +1030,8 @@ void hud_world_beam(const float *a, const float *b, const float *eye, float hw, 
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
 }
+void hud_world_beam(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b) { world_line(a, b, eye, hw, rgb, alpha_a, alpha_b, H.beam); }
+void hud_world_line(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b) { world_line(a, b, eye, hw, rgb, alpha_a, alpha_b, 0); }
 
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha)
 {

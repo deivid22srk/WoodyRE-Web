@@ -930,7 +930,11 @@ static void results_update(EkoVM *vm, float dt, int ok)               /* the tab
 /* ---- lasers: classes 50 / 51 / 52 (docs/OBJECTS.md 2.1). One beam per typecode-0 vector marker; off until message 50.
  * 51: marker start along the marker direction for `len` (message 52, default 400), cut at the first world polygon;
  * 50: endless until the first hit; 52: to the marker start of the target instance (message 53). Touching a beam kills (Kill(2)). */
-typedef struct { Instance *inst, *target; int type, on; float len, phase; } Laser;
+/* one lazer effect object per marker (0x46e4a0, 0x40 B, flags +0x34 = 0x3c0 for every laser): the timers of the
+ * travelling pulse, the lightning arc and the impact at the hit point, plus the arc's own ring of 32 side offsets
+ * (pool 0x5e82a8, 100 lazers x 0x20 points of 0x1c B) */
+typedef struct { float acc, s, arc_t, salvo, imp_t, imp_r; int sub, regen, npts; float pts[32][2]; } LaserFx;
+typedef struct { Instance *inst, *target; int type, on; float len, phase; LaserFx fx[8]; } Laser;
 static Laser g_lasers[64]; static int g_nlasers;
 static Laser *laser_of(const Instance *in) { for (int i = 0; i < g_nlasers; i++) if (g_lasers[i].inst == in) return &g_lasers[i]; return NULL; }
 static int laser_segment(const Laser *z, uint32_t marker, const GelFile *gel, Vec3 *a, Vec3 *b, int *kind)
@@ -962,6 +966,73 @@ static int laser_hits_player(Vec3 a, Vec3 b, const Player *p)
     float l2 = d.x * d.x + d.z * d.z;
     if (l2 > 1e-6f) { float t = ((p->pos.x - a.x) * d.x + (p->pos.z - a.z) * d.z) / l2; t = t < 0 ? 0 : t > 1 ? 1 : t; float y = a.y + d.y * t - p->pos.y, x = a.x + d.x * t - p->pos.x, zz = a.z + d.z * t - p->pos.z; if (y >= 0 && y <= H && x * x + zz * zz < best) best = x * x + zz * zz; }
     return best <= R * R;
+}
+static float fx_rnd(void);
+static void laser_fx_init(LaserFx *fx)                                             /* 0x46e4a0 */
+{
+    memset(fx, 0, sizeof *fx);
+    fx->s = -1.0f; fx->salvo = -1.0f; fx->regen = 1;
+    fx->arc_t = fx_rnd() * 2.0f; fx->imp_r = fx_rnd() * 50.0f;
+}
+/* the rest of Lazer_Draw 0x46e530 after core and glow: g = the glow pulse, kind = rec+0x2c (0 free end, 1 on geometry, 2 to a target) */
+static void laser_fx_draw(LaserFx *fx, Vec3 a, Vec3 b, int kind, float g, const float *eye, float dt)
+{
+    Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z };
+    float len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+    fx->acc += fx_rnd() * 0.8f * dt; fx->arc_t += dt; fx->imp_t += dt;             /* 0x46e59b.. */
+    /* 0x80, 0x46ea1d: a blob that runs down the beam in 0.25 s, on average every 2.5 s: two textured quads of 0.1 of the length either side of it */
+    if (fx->acc > 1.0f) { fx->acc -= 1.0f; fx->s = 0; }
+    if (fx->s >= 0 && fx->s < 1.0f) {
+        fx->s += dt * 4.0f;
+        if (fx->s < 1.0f) {
+            static const float pc[3] = { 1, 0.6f, 0.6f };
+            Vec3 p = { a.x + d.x * fx->s, a.y + d.y * fx->s, a.z + d.z * fx->s };
+            Vec3 p1 = { a.x + d.x * (fx->s + 0.1f), a.y + d.y * (fx->s + 0.1f), a.z + d.z * (fx->s + 0.1f) }, p2 = { a.x + d.x * (fx->s - 0.1f), a.y + d.y * (fx->s - 0.1f), a.z + d.z * (fx->s - 0.1f) };
+            hud_world_beam(&p.x, &p1.x, eye, 25.0f, pc, g, 0); hud_world_beam(&p.x, &p2.x, eye, 25.0f, pc, g, 0);
+        } else fx->s = -1.0f;
+    } else fx->s = -1.0f;
+    /* 0x100, 0x46ebd4: every 2 s a 0.9 s salvo of lightning; its zigzag is new at 0, 0.3 and 0.6 s */
+    if (fx->arc_t > 2.0f) { fx->arc_t -= 2.0f; fx->salvo = 0; }
+    if (fx->salvo >= 0 && fx->salvo < 0.9f) {
+        float t = fx->salvo += dt;
+        int sub = t < 0.3f ? 1 : t < 0.6f ? 2 : t < 0.9f ? 3 : fx->sub;
+        if (sub != fx->sub) { fx->sub = sub; fx->regen = 1; }
+        int n = len < 1600.0f ? (int)(len * 0.02f) : 32;                           /* a kink every 50 units, at most 32 */
+        float step = n > 0 ? len / (float)n : 0;
+        if (fx->regen) {                                                            /* 0x47d370 + 0x47d160: offsets of +-25 across the beam */
+            fx->npts = 0;
+            for (int i = 0; i < n; i++) { float *q = fx->pts[fx->npts % 32]; q[0] = fx_rnd() * 50.0f - 25.0f; q[1] = fx_rnd() * 50.0f - 25.0f; if (fx->npts < 32) fx->npts++; }
+            fx->regen = 0;
+        }
+        float al = fx_rnd();                                                        /* one flicker per frame for the whole arc */
+        if (n > 0 && len > 0) {
+            Vec3 w = { d.x / len, d.y / len, d.z / len }, u, v;                     /* 0x46d320: rows u, v, w = the beam direction */
+            if (w.x < 0.001f && w.x > -0.001f && w.z < 0.001f && w.z > -0.001f) {
+                v = (Vec3){ 0, w.z, -w.y }; float l = sqrtf(v.y * v.y + v.z * v.z); if (l > 0) { v.y /= l; v.z /= l; }
+                u = (Vec3){ v.y * w.z - v.z * w.y, v.z * w.x - v.x * w.z, v.x * w.y - v.y * w.x };
+            } else {
+                u = (Vec3){ w.z, 0, -w.x }; float l = sqrtf(u.x * u.x + u.z * u.z); if (l > 0) { u.x /= l; u.z /= l; }
+                v = (Vec3){ w.y * u.z - w.z * u.y, w.z * u.x - w.x * u.z, w.x * u.y - w.y * u.x };
+            }
+            static const float white[3] = { 1, 1, 1 };
+            Vec3 prev = a;
+            for (int i = 0; i < n; i++) {                                           /* point i sits step*(i+1) down the beam, the last one on b */
+                const float *q = fx->pts[i < 32 ? i : 31]; float o = step * (float)(i + 1);
+                Vec3 p = { a.x + w.x * o + u.x * q[0] + v.x * q[1], a.y + w.y * o + u.y * q[0] + v.y * q[1], a.z + w.z * o + u.z * q[0] + v.z * q[1] };
+                float a0 = kind == 0 && i == 0 ? 0 : al, a1 = kind == 0 && i == n - 1 ? 0 : al;   /* a free end fades out */
+                hud_world_line(&prev.x, &p.x, eye, 3.0f, white, a0, a1);
+                prev = p;
+            }
+        }
+    } else fx->salvo = -1.0f;
+    /* 0x200, 0x46efb9: where the beam hits geometry, four crossed quads of bank 0 image 5. The spark loop there
+     * (50 a second) only draws two random numbers: its spawn is compiled out, so there are no sparks */
+    if (kind == 1) {
+        if (fx->imp_t > 0.1f) { fx->imp_t -= 0.1f; fx->imp_r = fx_rnd() * 50.0f; }
+        static const float ic[3] = { 1, 0.4f, 0.4f };
+        static const float in[4][3] = { { 0.7f, 0.7f, 0 }, { -0.7f, 0.7f, 0 }, { 0, 0.7f, 0.7f }, { 0, 0.7f, -0.7f } };
+        for (int q = 0; q < 4; q++) hud_world_fx_plane(5, &b.x, in[q], 60.0f + fx->imp_r, ic, 0.2f + fx->imp_r * 0.01f);
+    }
 }
 static uint32_t msvc_rand(void *user);
 static Quat quat_from_axes(Vec3 X, Vec3 Y, Vec3 Z);
@@ -1711,7 +1782,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
      * authentic: Woody in Blackbox/Credits/Lang, the W2B end boss (type 12) and the W3B ghosts (type 13). The port used
      * to set the bit here on every actor class because Buzz came out without a rim, but that was the outline distance
      * being measured from the .ins position instead of the animated root inst+0x60 (issue #35, ins_anim_centre). */
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1501: case 1504: {                                                         /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
         EnvInst *E = in ? env_of(in) : NULL;
         if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
@@ -2207,7 +2278,7 @@ int main(int argc, char **argv)
                     }
                 }
                 env_draw();
-                for (int li = 0; li < g_nlasers; li++) {                            /* Lazer_Draw 0x46e530: core (1,.7,.7) width 6 + glow (1,.4,.4) width 30 pulsing 0.5..1, ends fade over 70 */
+                for (int li = 0; li < g_nlasers; li++) {                            /* Lazer_Draw 0x46e530: core (1,.7,.7) width 6 + glow (1,.4,.4) width 30 pulsing 0.5..1, ends fade over 70, then laser_fx_draw */
                     Laser *z = &g_lasers[li]; if (!z->on || !z->inst->visible) continue;
                     if (!paused) z->phase += dt * 127.75f;
                     float g = 0.5f - 0.5f * cosf(2 * 3.14159265f * (float)(((int)z->phase % 254 + 0x80) & 0x1ff) / 512.0f);
@@ -2223,6 +2294,7 @@ int main(int argc, char **argv)
                             if (f > 0) { hud_world_beam(&a.x, &a1.x, &cam.pos.x, hw, c, 0, al); hud_world_beam(&b1.x, &b.x, &cam.pos.x, hw, c, al, 0); }
                             hud_world_beam(&a1.x, &b1.x, &cam.pos.x, hw, c, al, al);
                         }
+                        laser_fx_draw(&z->fx[mk], a, b, kind, g, &cam.pos.x, paused ? 0 : dt);   /* pulse, lightning arc, impact */
                     }
                 }
                 launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); peck_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);

@@ -450,12 +450,22 @@ if (fx->flags /*+0x34 = 0x3c0*/ & 0x80) {                             /* puls, 0
 if (fx->flags & 0x100) {                                              /* bliksemboog, 0x46ebd4 */
     elke 2 s (+0x18, start rand*2) een salvo van 0.9 s (+0x1c); op 0 / 0.3 / 0.6 s worden N = lengte*0.02 punten (>= 1600: 32)
     met willekeurige dwarsafwijking +-25 (0x47d160, pool 0x5e82a8, max 100 lazers) opnieuw gegenereerd; polyline zonder textuur (flags 0xc00), breedte 3
+    details (0x46ec1f..0x46efa8): N = (int)(lengte*0.02), stap = lengte/N; punt i ligt op a + w*stap*(i+1) + u*ox + v*oy (ox, oy = rand*50-25,
+    in de ring van 32 punten per lazer); basis 0x46d320: w = richting, u = norm(w.z, 0, -w.x), v = w x u (bij een verticale straal
+    |w.x|, |w.z| < 0.001: v = norm(0, w.z, -w.y), u = v x w). Kleur wit (1,1,1) aan beide uiteinden, alpha = één rand01 per frame
+    voor de hele boog (flikkeren); alleen bij rec.kind == 0 is alpha 0 op a (i = 0) en op b (i = N-1)
 }
 if ((fx->flags & 0x200) && rec.kind == 1) {                           /* inslag op b, 0x46efb9 */
-    sprite bank 0 beeld 5 (ref 0x10005) op b, kleur (1, .4, .4), grootte 60 + r, alpha 0.2 + r*0.01, r = rand*50 elke 0.1 s opnieuw; 4x 0x470f10; plus vonken 50/s
+    sprite bank 0 beeld 5 (ref 0x10005) op b, kleur (1, .4, .4), grootte 60 + r, alpha 0.2 + r*0.01, r = rand*50 elke 0.1 s opnieuw; 4x 0x470f10(2)
+    met S+0x230 = (.7,.7,0), (-.7,.7,0), (0,.7,.7), (0,.7,-.7): vlag 2 = eigen kleur, zonder vlag 1 ligt de quad in het vlak met die normaal
+    (0x4717d7), dus vier gekruiste vlakken, additief. De "vonken 50/s"-lus (+0x28) roept alleen rand()%0x55 en rand01 aan en gooit beide weg:
+    het spawnen is weggecompileerd, er zijn GEEN vonken
 }
 ```
-Onzeker: exacte kleuren/alpha van de boog en de oriëntatie van de vier inslag-quads (`0x470f10` niet gelezen); vlagbit 0x40 van `fx+0x34`.
+Startwaarden (`0x46e4a0`): +0x0c fase = inst-id, +0x10 = 0, puls s +0x14 = -1, boogklok +0x18 = rand*2, salvo +0x1c = -1, deelfase +0x20 = 0,
+opnieuw-genereren +0x24 = 1, +0x28 = +0x2c = 0, r +0x30 = rand*50. De puls: +0x10 += rand01*0.8*dt per frame; > 1 → -1 en s = 0; s += 4*dt;
+kern-quads van a+(b-a)s naar a+(b-a)(s±0.1), kleur (1,.6,.6), alpha g → 0, breedte 25, getextureerd (bank 0 beeld 1). Geport in
+`laser_fx_draw` (main_engine.c). Onzeker: vlagbit 0x40 van `fx+0x34` (geen lezer in Lazer_Draw).
 
 **Model 33** (de W1A-laser): node 1 mesh 100 polygonen, textuurgroep 97 (128×128, `0x00ff0000` = ondoorzichtig, geen animatie/scroll);
 nodes 2 en 4 hull, node 3 press (typecode 0), node 5 bbox, node 6 **marker typecode 0** (de straalvector, 303 lang). Geen mesh-typecode 2/5..8,
