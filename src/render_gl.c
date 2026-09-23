@@ -527,7 +527,7 @@ static int sector_light(const Renderer *r, Vec3 p, int *have_list)
 }
 static void instance_light(const Renderer *r, Instance *inst, float dt)
 {
-    const LitFile *lf = r->lit; Vec3 p = { inst->world.m[12], inst->world.m[13] + 20.0f, inst->world.m[14] };
+    const LitFile *lf = r->lit; Vec3 p = ins_anim_centre(inst); p.y += 20.0f;   /* inst+0x60, the animated root (issue #35) */
     int have_list = 0, chosen = sector_light(r, p, &have_list), fallback = -1; float cd = 0;
     if (!have_list)                                                             /* no trailer in this .lit: the whole light list, as before */
         for (uint32_t l = 0; l < lf->nlights; l++) {
@@ -920,8 +920,8 @@ static Vec3 ol_vertex(const Instance *inst, const Mat4 *M, const InsPoint *pt, V
 }
 static void draw_outline(const Renderer *r, Instance *inst)
 {
-    const float *wm = inst->world.m;
-    float dx = wm[12] - g_cam_pos.x, dy = wm[13] - g_cam_pos.y, dz = wm[14] - g_cam_pos.z;
+    Vec3 c = ins_anim_centre(inst);                                            /* inst+0x60, the ANIMATED root: W1A's Buzz is placed 1800 units from where his cinematic */
+    float dx = c.x - g_cam_pos.x, dy = c.y - g_cam_pos.y, dz = c.z - g_cam_pos.z;   /* walks him, and measured from the .ins position he lost his rim (issue #35) */
     float d = sqrtf(dx * dx + dy * dy + dz * dz), w = d / 300.0f;               /* 0x43b447..0x43b4fe */
     if (w > 2.5f) w = 5.0f - w;                                                /* past 750 the rim narrows again, past 1500 there is none */
     if (g_shlog && (inst->type || inst->model->ntris) && (!(inst->setflags & 0x20) || w <= 0))   /* WOODY_SHLOG: why a character (typed, or skinned like every character model) has no rim */

@@ -787,3 +787,19 @@ Vec3 ins_point_world(const Instance *inst, uint32_t pi)
     Vec3 piv = m->nodes[o].pivot; p.x -= piv.x; p.y -= piv.y; p.z -= piv.z;
     return mat4_apply(&inst->node_world[o], p);
 }
+
+/* inst+0x60, written by the clock 0x43f2f1 after every pose: start at the model's first top-level node (S+0x6c, 1-based),
+ * step to the next sibling (N+0x80) as long as the node is a 0x80 dummy (Woody's camera nodes), and take the translation
+ * of that node's world matrix. In practice this is node 0, the skeleton root. The renderer measures the outline distance
+ * from it (0x43b447) and the light choice reads it (0x42e3e4 via the cell 0x4077f0), so a cinematic that walks a model
+ * far away from its .ins position is judged where it is, not where it was placed. */
+Vec3 ins_anim_centre(const Instance *inst)
+{
+    const Model *m = inst->model; Vec3 p = { inst->world.m[12], inst->world.m[13], inst->world.m[14] };
+    if (!inst->node_world || !m->nnodes) return p;
+    int32_t i = m->first_top_node ? (int32_t)m->first_top_node - 1 : 0;
+    for (uint32_t hop = 0; i >= 0 && (uint32_t)i < m->nnodes && m->nodes[i].kind == 0x80 && hop < m->nnodes; hop++) i = m->nodes[i].next_sibling;
+    if (i < 0 || (uint32_t)i >= m->nnodes) return p;
+    p.x = inst->node_world[i].m[12]; p.y = inst->node_world[i].m[13]; p.z = inst->node_world[i].m[14];
+    return p;
+}
