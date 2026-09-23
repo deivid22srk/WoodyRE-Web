@@ -322,17 +322,44 @@ toestanden af:
 
 | `perso+0x724` | port | wat er gebeurt |
 |---|---|---|
-| 0 | `case 0` | Perso op de deurvector met **gescripte actie 0x4a** (.ins-anim 74, mét eigen cameratrack): de binnenzwevende animatie uit het screenshot van issue #7 — of de parasol in die animatie zit of de prop van bericht 1142 is, is niet nagekeken (geen data in de repo). Die prop wordt op dezelfde plek neergezet en getoond (`0x4077f0`). Zodra de actie klaar is: actie **0x4b** en toestand 1 |
-| 1 | `case 1` | paneel zichtbaar (`0x454560`). OK: `n` = categorieën compleet, `n` unieke items erbij, juichen met **0x4e** (n ≠ 0) of **0x4c**, toestand 2/3, paneel weg |
-| 2 / 3 | `case 2/3` | klaar met juichen → actie **0x4d**, score opslaan, toestand 4 en menupagina **6** ("Do you want to save?") |
-| 4 | `case 4` | de menupagina's 6 → 5 (slot) → 0x17 (overschrijven?) → 8 "Game Saved" / 9 "Save failed." lopen via het menu (`menu_update`, MENU_LOAD.md §5); zodra er geen pagina meer is (**Nee** op 6, of Continue op 8) `0x454050` = fade-out 0,5 s, toestand 5 |
-| 5 | `default` | na 0,5 s: prop verbergen (`0x407850`), fade-in 0,5 s, camera terug (mode 1), Perso vóór de deur en **`SetVar(perso+0x728, 1)`** — daar wacht het hub-script op |
+| 0 | `case 0` | Perso op de deurvector met **gescripte actie 0x4a** (.ins-anim 74, mét eigen cameratrack): hij komt binnenzweven en gaat onder de parasol liggen (screenshot van issue #7). De parasol, de ligstoel en het glas zijn **niet** van Woody maar de prop van bericht 1142 (WWS: instantie 366, model 67), die tegelijk zijn eigen animatie 0 afspeelt (§5.3). Zodra de actie klaar is: actie **0x4b** en toestand 1 |
+| 1 | `case 1` | paneel zichtbaar (`0x454560`); 0x4b wordt telkens opnieuw gestart als hij afloopt (`0x45410a`), Woody blijft dus liggen. OK: `n` = categorieën compleet, `n` unieke items erbij, juichen met **0x4e** (n ≠ 0) of **0x4c**, toestand 2/3, paneel weg |
+| 2 / 3 | `case 2/3` | klaar met juichen → actie **0x4d** (`0x454020`), score opslaan, toestand 4 en menupagina **6** ("Do you want to save?") |
+| 4 | `case 4` | 0x4d in een lus (`0x454164`); de menupagina's 6 → 5 (slot) → 0x17 (overschrijven?) → 8 "Game Saved" / 9 "Save failed." lopen via het menu (`menu_update`, MENU_LOAD.md §5); zodra er geen pagina meer is (**Nee** op 6, of Continue op 8) `0x454050` = fade-out 0,5 s, toestand 5 |
+| 5 | `default` | 0x4d in een lus (`0x454192`); na 0,5 s: prop uit de wereld (`0x407850`), fade-in 0,5 s, camera-cut terug naar de volgcamera (`0x41f9f0(2)`, `CamMgr+0x368 = 0`, `SetMode(0, 0)`), **`SetVar(perso+0x728, 1)`** — daar wacht het hub-script op — grond (`0x462990`), kijkrichting **P0 − P1** (`0x454244`: van de deur af, de hub in), idle, `+0x550 = 0`, toestand 0 |
 
 De gescripte acties zelf lopen via `player_script_action`: het actienummer is het ruwe .ins-animatienummer, de
 logische records 26..30 (`0x1a..0x1e` in `log_anim`) zijn de one-shots voor 74..78, en alles wat geen deur is (dus ook
 10..16 en 19) volgt nu de **wortelbeweging** van `0x44e290` via `ins_root_at(inst, actie, fase, 1)`: het model wordt op
 `(1−f)·pos + f·q(f)` getekend en op het laatste frame staat de Perso waar de wortel hem gebracht heeft, kijkend langs
 `−E.rij2`, op de grond gezet. Dat is de "invliegende" beweging van de parasol-animatie.
+
+**Elke actie van de reeks krijgt de deurvector opnieuw mee** (`0x44dda0(act, perso+0x72c, 0)` in `0x453d90`, `0x453fc0`,
+`0x454020` en de lussen van `0x454090`): hij wordt telkens terug op P0 gezet, kijkend naar P1. De vijf animaties zijn in
+één gedeeld assenstelsel gemaakt (de wortel van 74 eindigt precies waar 75 begint, 76/78 eindigen waar 77 begint); de
+verplaatsing naar het einde van de wortel die `0x44db50` na elke actie doet, wordt zo door de volgende actie weer
+ongedaan gemaakt. De staart van `0x44dda0` zet de camera in hetzelfde frame op de cameratrack van de nieuwe actie (cut),
+over de volgcamera heen die `0x44e5a0` aan het eind van de vorige actie vroeg. `0x453d90` en de andere starters zetten
+direct daarna **Perso-toestand 9** (`0x44c980(9)`): de toestand-5-handler `0x44db50` loopt dan alleen nog via de
+aanroepen in `0x454090`. (Tot issue #28 gaf de port de vector niet mee: 75 speelde dan verschoven en gedraaid af, met de
+camera ver achter hem en zonder parasol in beeld.)
+
+### 5.3 De prop van bericht 1142: parasol, ligstoel en glas
+
+In WWS stuurt scriptobject 366 zelf `1142 [0x100016e]` (= zichzelf, `0x4449c2`: `perso+0x748 = inst`). Instantie 366 is
+model 67: vijf mesh-nodes en één animatie van 1740 frames / 8,7 eenheden, **exact even lang als Woody's anim 74**. Wat
+`0x453d90` ermee doet (`0x453e0a..0x453f9b`):
+
+1. positie (`inst+0xc`) én `inst+0x60` = P0 van de deurvector;
+2. `F` = horizontale (P0 − P1), genormaliseerd als de lengte > `[0x4a9004]` (anders blijft (0,0,0) staan);
+   `U = (0, 1, 0)` (`0x43ff80`), `R = F × U`, `T = U × R` (= F) (`0x41af10` is een kruisproduct `this × arg2 → arg1`);
+   de 3×3 van de instantie (`inst+0x28..+0x48`, rijen = beelden van de modelassen) wordt `R, T, U`: model-z omhoog
+   (3ds Max) en model **−y wijst de deur uit**, dezelfde kant op als Woody kijkt;
+3. `0x4077f0(0)`: in de wereldcel op zijn eigen positie (= tekenen; toestand 0 doet dat elke frame opnieuw);
+4. `0x436ca0(prop, 1.0, 0, −1, −1, −1)`: animatie 0 één keer vanaf nu, op de gewone klok (×3.0). Hij blijft op het
+   laatste frame staan tot toestand 5 hem met `0x407850` uit de wereld haalt.
+
+De port: `results_prop` in `src/main_engine.c` (quaternion uit de drie assen, `inst_play_once(prop, 0, 3.0, nu)`).
 
 **Afwijkingen en aannames** (alles wat hier staat is niet gedecompileerd):
 - De **layout** van het paneel (`0x454963..0x455d97`) is niet ontleed; `hud_results_draw` gebruikt de strings die het
@@ -345,10 +372,9 @@ logische records 26..30 (`0x1a..0x1e` in `log_anim`) zijn de one-shots voor 74..
 - Slotkeuze: pagina 5 / 0x17 zijn geport (MENU_LOAD.md §5); de wachtpagina 0xc (2 frames) valt weg. Pagina 8 + Continue
   verlaat het menu (niet terug naar 6, zoals hier eerder stond); 9 gaat terug naar 6. De cursor van pagina 6 begint op het eerste kiesbare item ("Yes"); alleen van
   pagina 0x1c is bekend dat hij op "No" begint.
-- De eindpositie van toestand 5 (`0x454244..`) is onbekend: de port zet hem terug op de deurvector, achter de fade.
+- Eindpositie van toestand 5: P0 van de deurvector (de laatste 0x4d zette hem daar), grond, kijkend naar P0 − P1.
 - Het spel wordt tijdens het scherm **niet** gepauzeerd (de animaties moeten lopen) en er ligt geen halfzwart vlak
   overheen; welke vlaggen tabel `0x405af8` voor pagina 0x1e zet is niet gelezen. De gewone HUD blijft weg.
-- De prop van 1142 wordt één keer neergezet (zoals `0x453d90` doet) en loopt niet met de animatie mee.
 
 **Testen** (met de originele data): `./out/woody.exe extract/Data WWS --prev W1A --stats 12 12 25 20 245`
 = "we komen uit W1A, 12 van de 12 vijanden, 20 van de 25 bonussen, 245 s"; het hub-script stuurt dan zelf 1140.

@@ -375,7 +375,16 @@ static void script_action_camera(void)      /* the tail of 0x44dda0: an action w
         g_cam.cut = 1; cam_set_mode(0x80);                                         /* 0x41f9f0(2) = cut, 0x41f410(7, 0) = mask 1 << 7; no letterbox, unlike a cinematic */
     }
 }
-static void results_action(int act) { Vec3 z = { 0, 0, 0 }; if (g_player) { player_script_action(g_player, act, 0, z, z); script_action_camera(); } }
+/* every action of the sequence goes through 0x44dda0 WITH the door vector perso+0x72c: he is put back on P0 facing P1,
+ * so the chain 74 -> 75 -> 76/78 -> 77 (authored in one shared frame, 74 ends where 75 starts) is never offset by the
+ * root motion the previous action ended with; and its tail cuts to the new action's camera track in the same frame,
+ * over the follow camera that 0x44e5a0 asked for at the end of the previous one */
+static void results_action(int act)
+{
+    if (!g_player) return;
+    player_script_action(g_player, act, 1, g_res.door_p, g_res.door_d);
+    g_player->cam_end_req = 0; script_action_camera();
+}
 
 static void results_capture(void)           /* 0x404c21: memcpy(app+0x74, perso+0x710, 20) before the level is unloaded */
 {
@@ -391,6 +400,23 @@ static void results_capture(void)           /* 0x404c21: memcpy(app+0x74, perso+
     printf("  RESULTS stats of %s: %d/%d enemies, %d/%d bonuses, %.0f s", k_levels[g_level], g_stats.stats[2], g_stats.stats[0], g_stats.stats[3], g_stats.stats[1], g_stats.time), puts("");
 }
 
+/* 0x453e0a..0x453f9b: the prop of message 1142 (the parasol, the deckchair and the glass: WWS model 67, one animation
+ * exactly as long as Woody's anim 74) is put on P0 of the door vector, turned so that its model -y points out of the door
+ * (rows of its 3x3 = F x up, F, up with F = the horizontal P0 - P1, normalised; 0x41af10 is a cross product), inserted
+ * into the world (0x4077f0) and its animation 0 started on the clock of now (0x436ca0(prop, 1.0, {0,-1,-1,-1})). It
+ * runs in step with Woody's action 0x4a and holds its last frame, him lying under the parasol, until state 5 hides it. */
+static Quat quat_from_axes(Vec3 X, Vec3 Y, Vec3 Z);
+static void results_prop(Instance *pr, Vec3 p0, Vec3 dir)
+{
+    Vec3 F = { -dir.x, 0, -dir.z }; float l = sqrtf(F.x * F.x + F.z * F.z);
+    if (l > 1e-4f) { F.x /= l; F.z /= l; } else F = (Vec3){ 0, 0, 0 };                /* [0x4a9004]: too short, the zero vector stays */
+    Vec3 U = { 0, 1, 0 }, R = { -F.z, 0, F.x };                                       /* F x U */
+    pr->position = p0;
+    if (l > 1e-4f) pr->quat = quat_from_axes(R, F, U);
+    mat4_from_trs(&pr->world, pr->position, pr->quat, pr->scale);
+    pr->visible = 1; pr->scripted = 1;
+    inst_play_once(pr, 0, 3.0f, g_now);                                               /* 1.0 x [0x4a988c], like every other .ins clock */
+}
 static void results_begin(EkoVM *vm, Instance *door, uint32_t var)                    /* 0x453d90 */
 {
     Vec3 p0, dir; int have = inst_vector(door, 5, &p0, &dir) || inst_vector(door, 0, &p0, &dir);
@@ -406,7 +432,7 @@ static void results_begin(EkoVM *vm, Instance *door, uint32_t var)              
     eko_set_var(vm, var, 0);
     player_script_action(g_player, 0x4a, have, p0, dir);                              /* 0x453dbb: the arrival at the hub door */
     script_action_camera();
-    if (g_prop) { g_prop->position = p0; mat4_from_trs(&g_prop->world, g_prop->position, g_prop->quat, g_prop->scale); g_prop->visible = 1; }   /* 0x4077f0 on perso+0x748 */
+    if (g_prop) results_prop(g_prop, p0, dir);
     printf("  RESULTS begin: level %s, score %d, best %d%s", k_levels[lvl >= 0 && lvl < 29 ? lvl : 0], g_res.score, g_res.best, g_res.high ? " (new record)" : ""), puts("");
 }
 
@@ -867,6 +893,7 @@ static void results_update(EkoVM *vm, float dt, int ok)               /* the tab
         if (!g_player->script_act) { results_action(0x4b); g_res.state = 1; }
         break;
     case 1:                                                                            /* 0x454560: the panel is up, OK closes it */
+        if (!g_player->script_act) results_action(0x4b);                               /* 0x45410a: 0x4b again, he stays lying under the parasol */
         if (ok) {
             g_res.cats = results_cats(g_stats.stats);
             g_player->unique_items += g_res.cats;                                      /* 0x44c840: n unique items straight into the save block */
@@ -879,14 +906,16 @@ static void results_update(EkoVM *vm, float dt, int ok)               /* the tab
         if (!g_player->script_act) { results_action(0x4d); results_store(); g_res.state = 4; menu_enter(6); M.results = 1; }   /* 0x454020: page 6, the cursor on "Yes" */
         break;
     case 4:                                                                            /* the save pages 6 -> 5 -> 0x17 -> 8 / 9 run as menu pages; "No" or "Game Saved" -> Continue ends them */
+        if (!g_player->script_act) results_action(0x4d);                               /* 0x454164: 0x4d in a loop */
         if (M.page < 0) results_close();
         break;
     default:                                                                           /* 5: the fade-out is running */
+        if (!g_player->script_act) results_action(0x4d);                               /* 0x454192 */
         if ((g_res.t -= dt) > 0) break;
         if (g_prop) g_prop->visible = 0;                                               /* 0x407850 */
         fade_start(0.5f, 0);
         g_player->script_act = 0; g_player->use_root = 0;                              /* "No" can come before 0x4d has played out; its root motion must not move him after this */
-        player_place(g_player, g_res.door_p, (g_res.door_d.x * g_res.door_d.x + g_res.door_d.z * g_res.door_d.z) > 1e-6f ? atan2f(g_res.door_d.x, g_res.door_d.z) : g_player->yaw);
+        player_place(g_player, g_res.door_p, (g_res.door_d.x * g_res.door_d.x + g_res.door_d.z * g_res.door_d.z) > 1e-6f ? atan2f(-g_res.door_d.x, -g_res.door_d.z) : g_player->yaw);   /* 0x454244: facing P0 - P1, away from the door */
         g_cam.cut = 1; cam_set_mode(1); g_player->cam_init = 0;                        /* 0x41f9f0(2) + SetMode(0, 0) */
         eko_set_var(vm, g_res.var, 1);                                                 /* 0x45422c: the hub script opens the next door */
         save_auto(); g_res.on = 0; g_stats.have = 0;
