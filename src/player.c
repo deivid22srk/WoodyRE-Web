@@ -102,6 +102,14 @@ static int point_in_tri_xz(Vec3 a, Vec3 b, Vec3 c, Vec3 q)
     float d3 = (a.x - c.x) * (q.z - c.z) - (a.z - c.z) * (q.x - c.x);
     return (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0);
 }
+/* Horizontal distance from p to an instance, measured from its animated root node (as the renderer's cull does), not
+ * from the .ins origin: an animation can carry the whole model far away - the W1B shuttle platforms (model 42) travel
+ * 4400 units from their origin and back, and an origin-based reject threw them out at the far end (issue #27). */
+static float inst_dist2_xz(const Instance *in, Vec3 p)
+{
+    const float *w = in->node_world ? in->node_world[0].m : in->world.m;
+    float dx = w[12] - p.x, dz = w[14] - p.z; return dx * dx + dz * dz;
+}
 static Vec3 g_ground_n = { 0, 1, 0 };   /* normal of the last world_ground() hit ([0x4b3108..10]) */
 static int32_t g_ground_mat = -1;       /* material of that hit when it is a world polygon ([0x53a554] == 1, poly+8), else -1 */
 static Vec3 g_ins_n;
@@ -113,8 +121,7 @@ static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float ma
         const Model *m = &ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
             const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip) continue;
-            /* cheap reject: instance origin far away horizontally */
-            float dx = in->position.x - p.x, dz = in->position.z - p.z; if (dx * dx + dz * dz > 4000.0f * 4000.0f) continue;
+            if (inst_dist2_xz(in, p) > 4000.0f * 4000.0f) continue;       /* cheap reject: far away horizontally */
             uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
                 uint32_t ni = cn[ci]; const InsNode *n = &m->nodes[ni];
@@ -210,7 +217,7 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
         const Model *m = &ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
             const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || !in->node_world) continue;
-            float dx = in->position.x - c.x, dz = in->position.z - c.z; if (dx * dx + dz * dz > 3000.0f * 3000.0f) continue;
+            if (inst_dist2_xz(in, c) > 3000.0f * 3000.0f) continue;
             uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
                 uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 4 || !nd->npoints) continue;
@@ -753,7 +760,7 @@ static int climb_ray(const Player *p, Vec3 from, Vec3 to, Vec3 *n_out, const Ins
             const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys) continue;
             for (uint32_t k = 0; k < m->ninstances; k++) {
                 const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == p->inst) continue;
-                float dx = in->position.x - from.x, dz = in->position.z - from.z; if (dx * dx + dz * dz > 3000.0f * 3000.0f) continue;
+                if (inst_dist2_xz(in, from) > 3000.0f * 3000.0f) continue;
                 for (uint32_t pi = 0; pi < nd->npolys; pi++) {
                     const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 8) continue;
                     Vec3 v[8]; for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
