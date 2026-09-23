@@ -88,7 +88,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Load game: pagina 7 / 0xa / 2 (slotkeuze) | geport | MENU_LOAD.md §1-3 |
 | Wereldkeuze-carrousel (pagina 3) en high scores (pagina 4) | zie MENU_LOAD.md §4 | MENU_LOAD.md |
 | Pauzemenu 0x18 (Continue / Options / Quit); niet: 0x19 "Start again" (checkpoint-herstart, resultaat 18) | grotendeels | MENU_NEWGAME.md, `0x4057f5` |
-| Resultatenscherm na een level (paneel, juichen, score, "opslaan?"): geport volgens GAMEFLOW §5.2. Niet: de echte layout van het paneel (`0x454963..0x455d97`) en de pauze-/overlayvlaggen van pagina 0x1e. De opslaanketen 6 → 5 → 0x17 → 8/9 is geport (MENU_LOAD.md §5) | grotendeels | GAMEFLOW.md §5.1-5.2, HUD_TEXT.md §6 |
+| Resultatenscherm na een level: parasol-prop (bericht 1142) met zijn animatie, de actieketen 0x4a..0x4e op de deurvector, pagina 0x1e (iris, optellende regels, HIGH SCORE, levelnaam, CLEARED!!, tikgeluid) en de opslaanketen 6 → 5 → 0x17 → 8/9 (MENU_LOAD.md §5) zijn geport. Niet: de grijze "W" rechtsboven uit het screenshot van issue #7 (niet gevonden, RESULTS.md §2.7); de wachtpagina 0xc | grotendeels | GAMEFLOW.md §5.1-5.3, RESULTS.md |
 | Baas-levensbalk | niet geport | HUD_TEXT.md |
 | HNM-logo's en -films | niet geport | — |
 | Toetsen uit `Woody.cfg`, joystick | niet geport | — |

@@ -535,18 +535,12 @@ vlag 8. Textuurfilter: niet afgelezen (**onzeker**; de zachte alfaranden vragen 
   HUD in toestand 1 (alle tellers zichtbaar, §4.4 rij 9–12) onder een 50 % zwarte laag. Layout **niet uitgewerkt**.
 * **Resultaten** (na EndLevel): strings 12 "CLEARED!!", 13 "RESULTS", 14 "TOTAL", 15 "OK", 17 "HIGH SCORE",
   46 "points", 127 "Level", 128 "Seconds", 129 "Final Score", 130 "Total Score :", en de tekens 7 "%", 8 "=",
-  10 ":", 11 "+". Tekenaars: het blok `0x454963..0x455d97` (Perso-eindsequentie, 20+ `Measure`/`Draw`-paren) —
-  **niet uitgewerkt**. De port tekent het scherm zelf (`hud_results_draw`, aangestuurd door de statemachine in
-  GAMEFLOW §5.2) met precies die strings, maar in een **eigen indeling**: "CLEARED!!" (S 35) op y 28 en "RESULTS"
-  (S 30) op y 78, daaronder op S 24 de regels `Level :`, de twee categorieën (icoon + `gepakt = totaal`, plus
-  `+ 50 %` als de categorie compleet is), `Seconds :`, `Final Score : <n> points`, "HIGH SCORE" (knippert mee met de
-  menufase, alleen bij een record) en `Total Score :` met de beste score; label links op x 150, waarde rechts op
-  x 490, achtergrond een half-zwart vlak zoals het tekstvak van §3. Het "OK"-item is het paneel van pagina 0x1e en
-  wordt met de gewone pagina-itemlijst (§TITLE 5.1) op y-fractie 0.90 getekend. Iconen: sprite 4 (de W van de HUD)
-  voor de bonussen en sprite **12** voor de vijanden — 12 is het 64×64-icoon in beeld 64 dat de HUD nooit tekent, dus
-  vermoedelijk precies hiervoor bedoeld (**aanname**). String 14 "TOTAL" heeft nog geen plek.
+  10 ":", 11 "+". Uitgewerkt in **RESULTS.md** (pagina 0x1e, vtable `0x4aa934`, tekenen `0x454610`) en zo geport:
+  geen paneel en geen "OK", maar een iris met links optellende regels; van de strings hierboven gebruikt het
+  origineel alleen 12, 13, 14, 17 en 8/9/10/11 (plus de levelnamen 47..55). 15 "OK", 46, 127..130 en 7 "%" komen op
+  dit scherm niet voor.
 * **Opslaan-vraag**: pagina 6 (35 "Do you want to save?" / 5 "Yes" / 6 "No") met 8 "Game Saved" en 9 "Save failed."
-  liggen in de port over het paneel heen, allemaal via `hud_menu_page` (dezelfde itemlijst, y-fractie 0.4).
+  lopen als gewone menupagina's (paginavlag 2: halfzwarte laag), allemaal via `hud_menu_page` (y-fractie 0.4).
 * **`extract/Game/mask.bin`** (786 432 B): geladen door de ctor `0x488790` (`0x4887f6`, pad `\Game\mask.bin`)
   als **4 blokken van 0x30000 = 196 608 bytes** (`obj+0x20`, `+0x30020`, `+0x60020`, `+0x90020`; pointers op
   `obj+0xc0020..`). Hetzelfde object houdt 8 afbeeldingsrefs van de **levelbank** `0x01010000..7` en tekent 256×256

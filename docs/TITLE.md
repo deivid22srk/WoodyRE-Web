@@ -262,7 +262,8 @@ cirkel; geëxporteerd en bekeken: `tools/rckexport.py`). `A = ftol(v·0.2·254)`
 elke frame `v -= 5·dt` (ondergrens 0) ná het tekenen; pagina's die het logo willen (0 en 1) doen in hun teken-functie
 `0x446ac0`: `v += 10·dt` (bovengrens 5). Netto: **fade-in 1.0 s op pagina 0/1, fade-out 1.0 s op elke andere pagina**;
 pagina 0x1f/0x18/0x19/0x1e (`0x45b390`) en New game/Load game zetten `v = 0` direct. House.rck afbeelding 0 (kruis +
-bolletjes) hoort bij de wereldkeuze, afbeelding 2 is blanco wit.
+bolletjes) hoort bij de wereldkeuze, afbeelding 2 is het vel met de klok en het vijandgezicht van het
+resultatenscherm (hetzelfde als afbeelding 1 van de hubs, RESULTS.md §2.1; de PNG-export lijkt wit omdat de alfa-byte 0 is).
 
 ### 5.3 Pagina 0 — titel (vtable `0x4aa9c8`, 0x14 B, handler `0x404fe4`)
 Teken `0x45bd10` = lijst + logo-fade. 1 item: **string 21 "Press a key"**, flags 1, resultaat 5; S = 30, y-fractie 0.7
