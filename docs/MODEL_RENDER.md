@@ -57,7 +57,8 @@ het bestand / `insparse.py`); in de C-port (0-based array) is dat steeds één l
    kan de donkere winnen: een donker randje om elk figuur.
 10. **Alfatest**: `ALPHAREF = 0x7f`, `ALPHAFUNC = GREATEREQUAL` (`0x47ec50`, `0x47ec5c`), aan/uit per **textuur**
    (de colour-key-vlag van de `.tex`-groep, `tex+0x44 & 1`), niet per pas (`0x429a6b`). Filter: MAG/MIN LINEAR,
-   MIP POINT (`0x47ed42`–`0x47ed62`), adressering WRAP behalve voor de lichtvlekken (CLAMP, `0x429597`).
+   MIP POINT (`0x47ed42`–`0x47ed62`) over 4 zelfgebouwde niveaus (SKY.md §8; port: `GL_LINEAR_MIPMAP_NEAREST`),
+   adressering WRAP behalve voor de lichtvlekken (CLAMP, `0x429597`).
    Bij het omzetten van een colour-key-textuur gooit het origineel de magenta wég: de texel wordt
    `ARGB 0x00000000`, dus **zwart met alfa 0** (`0x47fc1e`). Blijft de magenta staan, dan mengt het filter die
    met de ondoorzichtige buren en krijgt elke alfarand een roze zoom.

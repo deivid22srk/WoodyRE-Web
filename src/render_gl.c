@@ -69,15 +69,41 @@ Vec3 cam_forward(const FreeCamera *c) { Vec3 v = { sinf(c->yaw) * cosf(c->pitch)
 Vec3 cam_right(const FreeCamera *c) { Vec3 v = { -cosf(c->yaw), 0, sinf(c->yaw) }; return v; }   /* right-handed world: looking along +z, +x is on the left */
 
 /* ---------------------------------------------------------------- textures */
+/* 0x47fa60 (called by the .tex loader 0x426eaa with 3 extra levels): every level texture is a DirectDraw surface with
+ * DDSD_MIPMAPCOUNT = 4 (0x47fac2) and caps TEXTURE|MIPMAP|COMPLEX (0x47fb5c); the loop 0x47fc80..0x47fed1 fills the
+ * three smaller levels itself with a 2x2 box filter (0x47fd83..0x47fe17: (a+b+c+d)/4 per channel, alpha included).
+ * The device samples them with MIN/MAG LINEAR and MIPFILTER POINT (0x47ed3a..0x47ed62, D3D7 D3DTFP_POINT = 2), i.e.
+ * GL_LINEAR_MIPMAP_NEAREST. Without the smaller levels a far wall of a dense texture aliases into noise: W1B's star
+ * box (group 52, one-texel stars repeated every 100 units) turned into flickering speckles (issue #38). */
+static void box_halve(const uint8_t *src, int w, int h, uint8_t *dst, int colour_key)
+{
+    int dw = w > 1 ? w / 2 : 1, dh = h > 1 ? h / 2 : 1;
+    for (int y = 0; y < dh; y++) for (int x = 0; x < dw; x++) {
+        int x0 = 2 * x < w ? 2 * x : w - 1, x1 = 2 * x + 1 < w ? 2 * x + 1 : x0, y0 = 2 * y < h ? 2 * y : h - 1, y1 = 2 * y + 1 < h ? 2 * y + 1 : y0;
+        const uint8_t *a = src + 4 * (y0 * w + x0), *b = src + 4 * (y0 * w + x1), *c = src + 4 * (y1 * w + x0), *d = src + 4 * (y1 * w + x1);
+        uint8_t *o = dst + 4 * (y * dw + x);
+        for (int k = 0; k < 4; k++) o[k] = (uint8_t)((a[k] + b[k] + c[k] + d[k]) >> 2);
+        if (colour_key) o[3] = o[3] >= 128 ? 255 : 0;   /* the surface is ARGB1555 (0x47f1fd): alpha survives as its top bit, so 3 of 4 opaque texels stay opaque */
+    }
+}
 static GLuint upload_texture(const TexGroup *g, int frame)
 {
     GLuint id; glGenTextures(1, &id); glBindTexture(GL_TEXTURE_2D, id);
-    uint32_t n = g->width * g->height; uint8_t *rgba = (uint8_t *)malloc((size_t)n * 4);
+    int w = (int)g->width, h = (int)g->height; uint32_t n = g->width * g->height;
+    uint8_t *rgba = (uint8_t *)malloc((size_t)n * 4), *half = (uint8_t *)malloc((size_t)n * 4 + 4);
     rgb565_to_rgba(g->frames[frame], rgba, n, g->flags & 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)g->width, (GLsizei)g->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    int level = 0;
+    while (w > 1 || h > 1) {                  /* the original stops after 3 levels (GL_TEXTURE_MAX_LEVEL below); the rest only makes the chain complete for GL 1.1 */
+        box_halve(rgba, w, h, half, g->flags & 1);
+        w = w > 1 ? w / 2 : 1; h = h > 1 ? h / 2 : 1; level++;
+        glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, half);
+        uint8_t *t = rgba; rgba = half; half = t;
+    }
+    glTexParameteri(GL_TEXTURE_2D, 0x813D /* GL_TEXTURE_MAX_LEVEL (1.2) */, level < 3 ? level : 3);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    free(rgba); return id;
+    free(rgba); free(half); return id;
 }
 
 /* ---------------------------------------------------------------- world batches */
