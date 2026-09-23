@@ -182,6 +182,7 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
     Vec3 to = { look.x - P.x, look.y - P.y, look.z - P.z };
     cam->pos = P; cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z));
     cam->letterbox = g_cam.mode == 4; cam->fov_deg = g_cam.mode == 4 ? 68.04f : 83.97f;   /* tan(vfov/2) = 1.2 * 0.5625 resp. 1.2 * 0.75 */
+    if (g_cam.mode == 1 && p->cam_zoom != 1.2f) cam->fov_deg = 2.0f * atanf(p->cam_zoom * 0.75f) * 57.29578f;   /* the race sets zoom 1.5 (0x41f660, docs/RACE.md 5) */
     g_cam.pos = P; p->cam_yaw = cam->yaw;                         /* movement stays relative to the camera on screen */
 }
 
@@ -1761,11 +1762,23 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1085: if (m->nargs > 1) eko_set_var(vm, m->args[1], m->args[0] < 29 ? g_save.chr[g_char].rec[m->args[0]].done : 0); break;   /* LevelIsDone 0x4509e0 */
     case 1030:                                                                                              /* SaveAuto: checkpoint 0x445129 -> 0x44aa10 */
         if (in && g_player) {                                                                               /* +0x318 = inst.pos; +0x324 = xz of marker typecode 0 (P1 - P0, 0x42f6b0), else the current facing */
-            Vec3 p0, dir; g_player->spawn_pos = in->position;
+            Vec3 p0, dir; g_player->spawn_pos = in->position; g_player->has_ckpt = 1;   /* +0x330 */
             g_player->spawn_yaw = inst_vector(in, 0, &p0, &dir) && dir.x * dir.x + dir.z * dir.z > 1e-6f ? atan2f(dir.x, dir.z) : g_player->yaw;
         }
         break;
     case 1142: g_prop = in; break;
+    case 1121:                                                                                              /* StartBoostSurf 0x444a37 -> 0x456000: along marker typecode 0 of inst, speed a, a*0.01 s */
+        if (in && g_player && m->nargs > 2) { Vec3 p0, dir; if (!inst_vector(in, 0, &p0, &dir)) { puts("  Pas de Vecteur dans l'instance du message StartBoostSurf"); break; }
+            player_boost(g_player, p0, dir, (float)(int32_t)m->args[1], (float)(int32_t)m->args[2] * 0.01f); }
+        break;
+    case 1120:                                                                                              /* SetRaceInfo 0x455dc0(board, camera polyline): the board rides under the Perso (docs/RACE.md 1) */
+        if (in && g_player && m->nargs > 1) {
+            Camera *pc = slot_camera(m->args[1]);
+            if (!pc || !pc->traj.npoints) { puts("  Message SetRaceInfo : on doit envoyer une camera avec une polyline en 2eme argument"); break; }   /* 0x444b67 */
+            g_player->board = in; g_player->race_path = &pc->traj; in->scripted = 0; in->anim_speed = 0;
+            printf("  RACE board = instance %u, path = camera %u (%u points)\n", in->index, pc->index, pc->traj.npoints);
+        }
+        break;
     case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */
         if (g_player && m->nargs > 1) {
             plane_release(); Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir);
@@ -2110,6 +2123,8 @@ int main(int argc, char **argv)
             cin_update(&L.vm, dt, g_now);
             rockets_update(dt, &L.player, L.have_player && !fly);
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
+            player_sync_board(&L.player);
+            if (L.player.race_cam_req) { L.player.race_cam_req = 0; g_cam.cut = 1; cam_set_mode(1); L.player.cam_init = 0; }   /* race sub-state 0: 0x41f9f0(2) + SetMode(0, 0) */
             if (L.player.fade_req) { fade_start(0.5f, L.player.fade_req == 1); L.player.fade_req = 0; }           /* door actions 17 / 18 */
             if (L.player.cam_end_req) { L.player.cam_end_req = 0;                                                    /* end of door action 18: 0x44e5a0 = 0x41f9d0(0.5), 0x41f9f0(1), SetMode(0, 0) */
                 /* but only when the side view is off: 0x44dcf1 skips it while Perso+0x4ec is set, and the script turns

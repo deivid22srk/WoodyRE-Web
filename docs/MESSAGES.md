@@ -82,8 +82,8 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 1090 | inst, other, f | 0 | ✔ effect (particles) van inst naar other, `0x44d5d0` |
 | 1100 / 1101 | f / – | 0 | ✔ `0x451ba0(f·0.01)` / `0x451bd0()` |
 | 1110 | n, v | 0 | ✔ parameter n (1..9) van de zij-aanzichtcamera mode 0x20 (CAMERA_SCRIPT.md §4.2); 1088 start die mode |
-| 1120 | inst, other | 6 | ✔ `0x455dc0(inst, other->0x28)` als other type 3 |
-| 1121 | inst, a, f | 0 | ✔ **StartBoostSurf**(vector van inst, a, f·0.01) |
+| 1120 | inst, other | 6 | ✔ **SetRaceInfo**: `0x455dc0(inst, other->0x28)` als other type 3 (camera met polylijn): het board `inst` rijdt onder de Perso mee (`+0x4b4`), polylijn = de baan (RACE.md §2) |
+| 1121 | inst, a, f | 0 | ✔ **StartBoostSurf**(vector van inst, a, f·0.01): `0x456000`, RACE.md §3.3 |
 | 1130 | a, b, c | 0 | ✔ `0x44e990`/`0x44e9e0` op `game+0x64` |
 | 1131 / 1132 | inst, v | 0 | ✔ `0x44e980` / `0x44e9a0` |
 | 1140 | inst, var | 0 | ✔ var = 0; `0x404df0`; `0x453d90(vector, var)` (SaveAuto-achtig) |
