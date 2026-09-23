@@ -22,6 +22,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Obstakelsensor van de Mover (`0x44b2e0`, `p+0x234`): een stormloop remt in het origineel ook af voor een steile rand of muur; in de port loopt hij door tot de botsingscode hem stopt, dus tegen een instantie zonder hull-node stáát hij er half in. Vereist eerst `0x497a30` en de betekenis van resultaattype 3/4 | niet geport | PERSO_FRAME.md §3, PERSO_JUMP.md §2.3 |
 | Grondsoort `P+0x308` wordt gelezen (voor de voetstappen), maar soort 1 (glad/ijs) past de bijdraai-ramp `0x45a850` nog niet aan | deels | PERSO_MOVE.md §6.4, FOOTSTEPS.md §2 |
 | Geometrie-queries lopen nu via de kd-boom van `.gel` (vloer, push-out, zichtlijnen); instantie-hulls worden per knoop met een wereld-bbox afgewezen | opgelost (issue #9) | FORMAT_GEL.md 5 |
+| Snelle afwijzing van instanties in de botsingsqueries (vloer 4000, push-out en klimstraal 3000, een port-eigen versnelling) mat vanaf de `.ins`-oorsprong in plaats van de geanimeerde wortelknoop. De pendelplatforms van W1B (model 42, instanties 605/606) rijden 4400 eenheden van hun oorsprong en terug en verloren zo hun botsing aan het verre eind: 606 aan het begin van het parcours, 605 aan het eind. Nu vanaf `node_world[0]`, zoals de renderer al cullt. Testhaak `WOODY_POSAT="T x y z"` | opgelost (issue #27) | — |
 
 ## Camera
 
