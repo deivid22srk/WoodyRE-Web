@@ -15,7 +15,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Doodsanimaties per soort en hit-animatie geport. Niet: tekstballon (soort 1, `0x478980`), skelet-flits (soort 2/9, `0x477e40`), waterplons (soort 7, `0x478660`), gebukte varianten, race-variant `0x464a00`, wit knipperen bij de onkwetsbaarheidsbonus (`0x44cf50`) | deels | PERSO_DEATH.md §3-6 |
 | Perso-toestand 8 (raket berijden, type 20): geport. Niet: afstap-anim (in het origineel ook nergens aangevraagd), type 21 (meerijden op de kanonbom) | grotendeels | ROCKET.md §6 |
 | Perso-toestand 6 (bom dragen) | op hoofdlijnen | BONUS.md §7 |
-| Checkpoints: respawn-positie (1030) | controleren | GAMEFLOW.md |
+| Checkpoints (1030): positie én kijkrichting (marker typecode 0, `0x44aa10`) geport; de respawn `0x445930` wist het zij-aanzicht en cut naar de volgcamera. Zonder dat bleef het vlak-slot staan, werd het checkpoint vóór de deur van een zij-aanzicht-stuk op het vlak geprojecteerd (in de leegte) en ging Woody eindeloos opnieuw dood (W1B, deur 392). Testhaak `WOODY_KILLAT=T` (bericht 1020 na T s). Niet: `SavePos.bin` (`0x44a920`/`0x44a810` met save = 1) | opgelost (issue #39) | PERSO_DEATH.md §3.4, GAMEFLOW.md §4.5 |
 | Landingsring op de vloer onder een springende Woody (issue #1): geport, maar de tekenfunctie van het origineel is niet gevonden (kandidaat `0x44af90`, elk frame na het renderen) – straal, dikte, kleur en helderheid zijn van een schermafdruk geschat, niet gelezen | geport, maten onzeker | PERSO_JUMP.md §5 |
 | Salto die wegvalt bij springen in de lucht (melding gebruiker) | niet te reproduceren; welke toets/timing? | — |
 | Pikschakelaars: bericht 1042 doet nu de hele test van `0x445269` (markervector, toestand 0, op de grond) en remt de zojuist gestarte stormloop af (`0x458e40` = `player_brake_charge`). Zonder die rem ramde Woody elke schakelaar in plaats van hem te pikken | opgelost (issue #21) | OBJECTS.md §1.2 |
@@ -33,7 +33,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Railcamera mode 8 (540) | geport, niet in situ getest | CAMERA_SCRIPT.md |
 | Mode 0x80 (camera uit de animatietrack) geldt nu ook voor de deuracties 17/18, niet alleen voor cinematics — het zijaanzicht waarin Woody de deur in loopt | opgelost (issue #8) | CAMERA_SCRIPT.md §4.3 |
 | Zijaanzicht mode 0x20: teken van de zijkant | onzeker | CAMERA_SCRIPT.md |
-| Zijaanzicht: het vlak-slot eindigt nu bij gescripte actie (1040), teleport (26) en cinematic (`0x44de44`); niet bij dood/respawn op een checkpoint buiten het zijaanzicht | controleren | CAMERA_SCRIPT.md |
+| Zijaanzicht: het vlak-slot eindigt bij gescripte actie (1040), teleport (26), cinematic (`0x44de44`) en nu ook bij de respawn (Reset `0x44ab20` → `+0x4ec = 0` bij `0x44ad22`) | opgelost (issue #39) | CAMERA_SCRIPT.md §4.2, PERSO_DEATH.md §3.4 |
+| `g_cam` (vlak-slot, railpointer, doodscamera) wordt bij een levelwissel niet teruggezet; in het origineel maakt de Game-ctor een nieuwe Perso (`+0x4ec = 0`). Alleen relevant als een level eindigt terwijl het zij-aanzicht aanstaat | controleren | — |
 
 ## Objectklassen
 

@@ -199,8 +199,11 @@ de save-struct (§6.2): levens, items, ladingen, health.
 - **Standaard**: de positie van de Perso-instantie in het `.ins` van het level (`perso+0x30c` →
   `+0x1f4`, `0x44a6e6`). Er is géén engine-tabel "kom van level X → spawn Y".
 - **Checkpoints** binnen een level: bericht **1030 `SaveAuto(this)`** (`0x445129` → `0x44aa10`):
-  `perso+0x318` = positie van de instantie, `+0x324` = richting (vector-node van de instantie, anders de
-  huidige kijkrichting). Bij doodgaan met levens > 0 respawnt `0x44a810` daar. Niet persistent.
+  `perso+0x318` = positie van de instantie, `+0x324` = richting (xz van de marker met typecode 0 van de
+  instantie, genormaliseerd; anders de huidige kijkrichting). Bij doodgaan met levens > 0 respawnt `0x44a810`
+  daar (via `0x445930`). Niet persistent. De respawn wist ook het zij-aanzicht (`Perso+0x4ec = 0` in Reset
+  `0x44ab20`) en zet de volgcamera met een harde cut terug (`0x458f90`): wie in een zij-aanzicht-stuk
+  doodgaat, staat weer in 3D op het laatste checkpoint, meestal vóór de deur van dat stuk (PERSO_DEATH §3.4).
   (Bericht 1020 = `perso->vt[0x98](1)` + camera `0x459030`: hoort bij dezelfde soort volumes; exacte
   betekenis niet uitgezocht.)
 - **Terug in de hub**: het hub-script regelt het zelf. Object 297 in WWS (KWS/SWS analoog):
