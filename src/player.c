@@ -730,6 +730,7 @@ static void player_reset(Player *p)                                     /* vt[17
     if (p->health <= 0) p->health = 3.0f;
     p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0;
+    player_ground_snap(p);                                              /* 0x4459c0 -> 0x44a650 */
 }
 /* Game sequence 0x4459c0: 2 play -> (dead) 3 wait death_delay - 1 s -> 4 fade out 1 s -> lose a life -> 0 wait 0.25 s,
  * respawn -> 1 fade in 1 s -> 2. p->fade is the screen brightness (1 = normal). */
@@ -1238,15 +1239,23 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
                                        * blend back to it - that is cam_end_req, raised when the action runs out. */
     player_apply_transform(p);
 }
+/* 0x462990: the floor under feet + 43 (GetHeight 0x435650) becomes his height, onGround = 1, Jumper reset. The level start
+ * (0x44a6a0, from the Game ctor 0x445850 and 0x445930) and every respawn / teleport (0x44a650) end with it, so the player
+ * never starts in the air: without it the .ins position, which floats a few units above the floor, is a fall. */
+void player_ground_snap(Player *p)
+{
+    int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
+    if (found) p->pos.y = gy;
+    p->floor_y = p->pos.y; jumper_reset(&p->jumper); p->on_ground = 1; player_apply_transform(p);
+}
+
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44ce11 -> 0x44a650: SetPos + ground snap 0x462990, anim controllers reset, camera cut 0x458f90 */
 {
     for (uint32_t v = 0; v < p->nvol; v++) p->inside[v] = 0;
     if (!p->script_act) {                                               /* 0x44a650 does nothing in state 5 */
-        int found; float gy = player_ground_query(p, p->inst, (Vec3){ pos.x, pos.y + P_PROBE_Y, pos.z }, &found);
-        if (found) pos.y = gy;
         p->pos = pos; if (have_dir && dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z);
-        p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f;
-        jumper_reset(&p->jumper); p->on_ground = 1; player_apply_transform(p);
+        p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f;
+        player_ground_snap(p);
     }
     /* 0x458f90 (the camera cut that sits outside that test) is in the message-26 handler: it has to run in script order, because
      * what the rest of the tick does with the camera has to win over it. The follow camera still seats itself one frame later,
