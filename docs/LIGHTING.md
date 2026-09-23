@@ -170,7 +170,8 @@ Alles in de instantie-tekenfunctie `0x42e2b0`/`0x42e374` (arg-bits: 2 = schaduw 
 
 **Lichtkeuze** (`0x42e3e4..0x42e573`): lichtlijst van de **sector** van de instantie
 (`lightsys+0x10[inst+0x1c]` = `{n, index…}`). `n == 0` → geen licht (bit 2 vervalt).
-`n == 1` → dat licht. `n > 1`: per licht `f = 0x40b540(S, inst+0x60)` (instantiepositie):
+`n == 1` → dat licht. `n > 1`: per licht `f = 0x40b540(S, inst+0x60)` (de geanimeerde skeletwortel, INSTANCE.md §1.1;
+de port neemt `ins_anim_centre()` + 20 omhoog als enig meetpunt, ook voor de lichtrichting die het origineel per deel bepaalt):
 
 - `f == −1` en `|L − p|² < R²` → dit licht, klaar (`0x42e4c2`);
 - `f ≠ −1` en `vlak(f)·p > 0` (punt vóór de bladface = belicht) → dit licht, klaar (`0x42e541`);

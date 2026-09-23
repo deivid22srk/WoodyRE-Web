@@ -196,7 +196,10 @@ achterwaartse node-polygonen (`0x43c0c7`).
 2. `[0x4c2c0c] == 2` (`0x43b43a`) — de detailoptie uit `Woody.cfg` (bestandsoffset 0x40), in de meegeleverde cfg 2.
 3. De breedte moet positief zijn (hieronder).
 
-**Breedte** (`0x43b447..0x43b4fe`), met `d` = afstand van de camera tot `inst+0x60` (het geanimeerde middelpunt):
+**Breedte** (`0x43b447..0x43b4fe`), met `d` = afstand van de camera tot `inst+0x60` (de geanimeerde skeletwortel,
+INSTANCE.md §1.1; port `ins_anim_centre()`). **Niet** de instantiepositie: Buzz in W1A (slot 276) staat 1800 eenheden
+van de plek waar zijn filmpje (deur 321) hem heen laat lopen, en gemeten vanaf `inst+0xc` viel hij buiten 1500 en
+verloor hij zijn contour (issue #35):
 
 | d | w (wereldeenheden) |
 |---|---|
@@ -224,14 +227,13 @@ een holle plooi heen steekt wint hij de dieptetest — dáár komen de lijnen om
 dubbelzijdig zijn (vlag 0x2) en geen blendvlaggen hebben (`flags & 0x60`, `0x43c0c2`). Typecode-2-nodes en de
 ooglid-laag (typecode 5..8, `0x43bf65`) doen niet mee.
 
-**Afwijking in de port**: de bit komt niet alleen van het script. De baasinstanties komen zonder bit 0x20 bij de
-renderer aan — Buzz (type 14) staat in W1B zonder de lijn die elke andere figuur wél heeft — en hun klassen
-(`0x40eb50`, `0x40d850`, `0x40c730`) zijn niet gedecompileerd. Klassen zijn in het origineel de tweede bron van
-deze bits (type 40 zet bit 1 op zichzelf, `0x44d304`), dus `src/main_engine.c` zet bit 0x20 bij bericht 1200
-(SetTypeInstance) op elke actorklasse: 1..16, 18 en 19 (Perso, vijanden, bazen). Waar het script de instantie toch
-al vlagt verandert er niets. `WOODY_SHLOG=1` schrijft sindsdien per seconde één regel voor elke getekende actor
-die géén contour krijgt, met de afstand en de reden (geen bit 0x20, of verder dan 1500), zodat te zien is welke
-van de twee poorten hem tegenhoudt.
+**De bit komt alleen van het script.** Elk level stuurt direct na bericht 1200 (SetTypeInstance) bericht 45 met
+0x21 naar elke actor die een contour heeft, de bazen inbegrepen (W1B Buzz slot 405, W3D 775/790/801). Over alle 28
+levels krijgen alleen deze actoren géén 0x20, en dat is authentiek: Woody in Blackbox/Credits/Lang, de eindbaas van
+W2B (type 12) en de drie spoken van W3B (type 13). De port zette de bit vroeger zelf op elke actorklasse omdat Buzz
+zonder lijn stond; dat was echter de afstandsfout hierboven (zijn geanimeerde wortel staat in W1B 3400 eenheden van
+`inst+0xc`), en die hack is weg. `WOODY_SHLOG=1` schrijft per seconde één regel voor elke getekende actor die géén
+contour krijgt, met de afstand en de reden (geen bit 0x20, of verder dan 1500).
 ## Onzeker
 - Tekenvolgorde van de twee ooglagen: `0x43d790` tekent niet direct maar vult batches per (textuur, modus)
   (`renderer+0x1b8`, lijsten `+0x1c0`); een afgesloten batch wordt vooraan gelinkt, zodat de later afgesloten

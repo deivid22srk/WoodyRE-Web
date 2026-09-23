@@ -203,6 +203,8 @@ int  ins_root_end(const Instance *inst, int anim, Vec3 *pos, Vec3 *forward);
 int  ins_root_at(const Instance *inst, int anim, float phase, int base, Vec3 *pos, Vec3 *forward);
 /* Transform point i of the model (owner node applied, pivot subtracted) to world space. */
 Vec3 ins_point_world(const Instance *inst, uint32_t point_index);
+/* inst+0x60 (0x43f2f1): where the animation has put the model - the world position of its skeleton root. */
+Vec3 ins_anim_centre(const Instance *inst);
 /* Which node owns point index i (0-based node index). */
 int  ins_point_owner(const Model *m, uint32_t point_index);
 /* The nodes a collision query has to look at: press nodes (kind 1) and collision hulls (kind 4). */

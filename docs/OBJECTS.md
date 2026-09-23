@@ -284,7 +284,7 @@ Hulp `0x42f7e0(inst, float fase, int anim, Mat34 *out, int metWereld)`:
 ```c
 W = metWereld ? { rij0 = inst[+0x28..]*inst.sx(+0x4c), rij1 = inst[+0x34..]*sy(+0x50), rij2 = inst[+0x40..]*sz(+0x54), t = inst.pos(+0xc) } : I;
 model = inst->+0xf8;  frame = (float)model->anims(+8)[anim].nframes /*int op +0, 8 B/entry*/ * fase;
-node = &model->nodes(+0x68)[model->nnodes(+0x6c) − 1];                   /* begin bij de LAATSTE node */
+node = &model->nodes(+0x68)[model->first_top(+0x6c) − 1];                /* S+0x6c = eerste top-level node (1-based, FORMAT_INS §2 #6), geen nodeaantal */
 while (node->flags(+0) != 0) node = &model->nodes[node->+0x80 − 1];       /* volg +0x80 (1-based) tot de node met flags == 0 = skeletwortel */
 if (node->rotTrack(+0x74)) q   = RotKey(node, anim, frame);               /* 0x43a9c0 */
 if (node->posTrack(+0x70)) pos = PosKey(node, anim, frame);               /* 0x43a590, lineair */

@@ -21,7 +21,7 @@ Animatietabel van het model: `S = inst+0xf8`, `S+4` = hoogste geldige anim-index
 |---|---|---|---|
 | +0x58 | u32 | framenummer van de laatste klok-update (klok draait max. 1× per frame) | `0x43eeee` |
 | +0x5c | u32 | index van de eerste wereldmatrix van deze instantie in `[0x509adc]+0xa0` | `0x43f2bc` |
-| +0x60..0x68 | vec3 | wereldpositie van de laatste niet-0x80-node (na animatie), gebruikt voor cel-herbepaling `0x4077f0(&+0x60)` | `0x43f33a` |
+| +0x60..0x68 | vec3 | wereldpositie van de skeletwortel na animatie: begin bij de eerste top-level node (`S+0x6c`, 1-based; **geen** nodeaantal), volg `N+0x80` (next_sibling) zolang de node een 0x80-dummy is, neem de translatie van zijn wereldmatrix. Gebruikt voor cel-herbepaling `0x4077f0(&+0x60)`, de lichtkeuze en de contourafstand. Port: `ins_anim_centre()` (level.c) | `0x43f2f1..0x43f34e` |
 | +0x88 | i32 | status; de klok zet hem op 0 zodra snelheid ≠ 0, behalve als hij 2 is | `0x43ef8c`, `0x42d64d` |
 | +0x9c | i32 | "einde bereikt in deze update": 0 aan het begin van elke lopende update, 1 zodra fase buiten [0,1) komt (wrap of einde). Berichten 1/2/3(n>10)/4 zetten hem op 0. 12/13 wachten tot hij ≠ 0 is | `0x43efb7`, `0x43f0c9`, `0x42d619` |
 | +0xa0 | f32 | snelheid (teken = richting; 0 = stilstaan op `+0xac`) | `0x42e290` |
@@ -299,7 +299,7 @@ Type 90 is een omgevings-/deeltjesvolume (string "une instance d'environnement n
 ## 8. Beweging van instanties: overzicht
 
 1. **Animatietracks** (klok §1): alle node-beweging binnen het model; de instantiepositie zelf verandert niet, maar `+0x60..0x68`
-   (wereldpositie van de laatste gewone node) wordt gebruikt om de instantie opnieuw in een cel te hangen. Draaiende ventilatoren,
+   (wereldpositie van de skeletwortel, zie §1.1) wordt gebruikt om de instantie opnieuw in een cel te hangen. Draaiende ventilatoren,
    deuren en liften zijn dus gewoon animaties die met 3/4 gestart worden (lus = 4, open/dicht = 3 met flag 1/0).
 2. **Padvolger** (§3): enige generieke verplaatsing van `inst.pos`; constante snelheid over de booglengte, tijd in 1/100 s voor het hele pad,
    opties lus / heen-en-weer / orienteren. Gestart met 42/43, gestopt met 44.
