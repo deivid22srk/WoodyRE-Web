@@ -250,6 +250,8 @@ SetTransition(2);  SetMode(5, 0);                                               
 vlak: n = ..., perso->+0x4f0..+0x4fc = (n, -n·A)  // 0x459bbf..0x459c57: speler wordt op het verticale vlak door A,B gehouden (0x459eb0)
 ```
 Einde: Perso-toestandswissel `0x44de44` zet `+0x4ec = 0`; het script schakelt de camera terug met 580/500.
+Ook de respawn na een dood (`0x445930` → `0x44a810` → Reset `0x44ab20`, `0x44ad22`) zet `+0x4ec = 0`, en `0x458f90` cut
+dan naar de volgcamera: het zij-aanzicht komt pas terug als het script opnieuw 1088 stuurt (PERSO_DEATH §3.4).
 
 **Per frame** vult `Perso::0x459c70` (alleen als `+0x4ec`) het blok `p = CamMgr+0x61c`:
 `p->pos (+8) = spelerpos`; `p->dir (+0x14)` = looprichting langs het vlak; `p->h (+4)` = **0** als actie 2 (↑) ingedrukt,

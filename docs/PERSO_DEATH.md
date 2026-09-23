@@ -228,6 +228,34 @@ Race-variant (`0x44c4c0` → `+0x4d8 = 1`, `0x464a00`, tabel `0x464b48`, verzoek
 en 0x76 (B) + dezelfde camera-actie bij `T` over `L(0x75)`; 2 → 0x72; 3 → 0x74; 4/5 → niets; 6 → 0x73; 7 → 0x77 + `0x462c90(J)`;
 8 → 0x71. Kill-kant: `+0x240 = L(0x72)` resp. `L(0x75)`, soort 7 `+0x288 = 4.0`. Niet verder uitgewerkt.
 
+### 3.4 Respawn `0x445930` — checkpoint, kijkrichting, zij-aanzicht en camera
+
+Aangeroepen uit toestand 0 van `0x4459c0` (PERSO_FRAME §4.1), 0,25 s na het leven-eraf (`0x44c730`):
+```c
+Fader(Game+4, 0, 0, 0.1);  Game->state = 0;  Game->timer = 0.1;  [0x4b3354] = 0.2f;
+Perso_Respawn(P, 0);                    /* 0x44a810 */
+Actors_ResetAll();                      /* 0x40c040: vtbl[28] van alle actoren */
+CamFollow_Reset(Game+8);                /* 0x458f90 (§1.1): 0x41df70, 0x41f9f0(2) harde cut, SetMode(0, 0) = volgcamera */
+```
+`0x44a810(P, save)`: als `P+0x250` (levens) 0 is ⇒ game over (`0x404e10`, of `0x44a6a0` = levelstart als
+`[0x5e5814]+0x384 & 4`). Anders (met `save` = 1 eerst `SavePos.bin` lezen, hier 0): **`P.pos = P+0x318`**, `P->vtbl[17]()`
+= Reset `0x44ab20`, grond-snap `0x462990`. Reset zet o.a. **`0x459ff0(M, P+0x324)`** (kijkrichting van het checkpoint),
+health 3 als die op was, `+0x270 = 1.0` (onkwetsbaar), en **`+0x4ec = 0` (`0x44ad22`)**: het vlak-slot van het
+zij-aanzicht (CAMERA_SCRIPT §4.2) houdt op bij de dood. Samen met de volgcamera van `0x458f90` betekent dat: na een dood in
+een zij-aanzicht-stuk staat Woody **gewoon in 3D op het laatste checkpoint, met de camera achter zich**. Er is geen apart
+"zij-aanzicht-checkpoint"; het script zet het zij-aanzicht pas weer aan (1088) als hij opnieuw door de deur van dat stuk gaat.
+
+Het checkpoint zelf (`1030 SaveAuto`, `0x445129` → `0x44aa10`): `+0x318 = inst.pos`; `+0x324` = `(P1.x − P0.x, 0, P1.z − P0.z)`
+van de marker met typecode 0 (`0x42f6b0(inst, 0, v, 0)`), genormaliseerd; zonder marker de huidige kijkrichting (`0x445780`);
+`+0x330 = 1`, `+0x4e0 = +0x264`. Alle checkpoint-instanties van W1B (0x196, 0x200..0x20b, 0x238) hebben zo'n marker.
+
+**W1B, issue #39.** Het zij-aanzicht-stuk achter deur 392 (→ 409, vlak 411, `1088 [411, 2]`) heeft geen eigen checkpoint;
+het laatste is 0x206 op (−8009, 430, −16808), 575 eenheden vóór deur 392, marker naar de deur (−x). De port hield het
+vlak-slot (`g_cam.plane_on`) aan na de respawn, dus werd die positie elk frame op het vlak x = −11231 geprojecteerd: naar
+(−11231, 140, −16808), in de leegte naast het stuk, waar hij viel, in het water belandde (soort 7) en opnieuw doodging —
+zonder einde. De port doet nu wat `0x44ad22` + `0x458f90` doen (`respawn_req` → `plane_release()` + harde cut naar de
+volgcamera, vóór de vlak-projectie in hetzelfde frame) en neemt de kijkrichting van het checkpoint uit de marker over.
+
 ---
 
 ## 4. Effecten

@@ -145,7 +145,6 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
             cam->letterbox = g_cam.anim_letterbox; cam->fov_deg = g_cam.anim_letterbox ? 68.04f : 83.97f;
             g_cam.pos = e; g_cam.active = 0; return; }
     }
-    if (g_cam.death_cam && !p->dead_kind) { g_cam.death_cam = 0; g_cam.cut = 1; cam_set_mode(1); }   /* respawn: hard cut back to the follow camera (0x41f9f0(2), SetMode(0,0)) */
     if (g_cam.mode == 0x20 && g_cam.plane_on) {                  /* 0x424bf0 */
         const float *q = g_cam.sv_par; Vec3 d = g_cam.plane_d, sidev = { -d.z, 0, d.x };   /* (0,-1,0) x dir */
         float htarget = behind_key == 2 ? q[3] : behind_key == 3 ? q[4] : q[2];
@@ -1760,7 +1759,12 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         save_auto(); request_level(g_char == 0 ? 1 : g_char == 1 ? 11 : 18, 0.5f); break;
     case 1082: if (m->nargs > 1) eko_set_var(vm, m->args[1], level_is_enable((int)m->args[0])); break;
     case 1085: if (m->nargs > 1) eko_set_var(vm, m->args[1], m->args[0] < 29 ? g_save.chr[g_char].rec[m->args[0]].done : 0); break;   /* LevelIsDone 0x4509e0 */
-    case 1030: if (in && g_player) { g_player->spawn_pos = in->position; g_player->spawn_yaw = g_player->yaw; }   /* direction: the instance's vector node when it has one (not parsed), else the current facing */ break;   /* SaveAuto: checkpoint */
+    case 1030:                                                                                              /* SaveAuto: checkpoint 0x445129 -> 0x44aa10 */
+        if (in && g_player) {                                                                               /* +0x318 = inst.pos; +0x324 = xz of marker typecode 0 (P1 - P0, 0x42f6b0), else the current facing */
+            Vec3 p0, dir; g_player->spawn_pos = in->position;
+            g_player->spawn_yaw = inst_vector(in, 0, &p0, &dir) && dir.x * dir.x + dir.z * dir.z > 1e-6f ? atan2f(dir.x, dir.z) : g_player->yaw;
+        }
+        break;
     case 1142: g_prop = in; break;
     case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */
         if (g_player && m->nargs > 1) {
@@ -2111,6 +2115,13 @@ int main(int argc, char **argv)
                 /* but only when the side view is off: 0x44dcf1 skips it while Perso+0x4ec is set, and the script turns
                  * that on again (message 1088) in the same frame as the end of the action for a door into a side section */
                 if (!g_cam.plane_on) { g_cam.dur = 0.5f; g_cam.dur_from_speed = 0; g_cam.cut = 0; cam_set_mode(1); } }
+            if (L.player.respawn_req) { L.player.respawn_req = 0;                                                  /* respawn 0x445930 (docs/PERSO_DEATH.md 3.4) */
+                /* 0x44a810 -> Reset 0x44ab20 clears Perso+0x4ec (0x44ad22), so a death in a side section ends its plane lock; left on,
+                 * it pulled the checkpoint position onto the plane, into the void next to the section, and Woody died again and again
+                 * (issue #39). Then 0x458f90: 0x41f9f0(2) + SetMode(0, 0) = hard cut to the follow camera, whatever mode was running
+                 * (the side view, the death camera of 0x459030 / 0x41fb50, a script camera). The script turns the side view on again
+                 * only through the section's own door (1088), exactly as the first time. This runs before the plane projection below. */
+                plane_release(); g_cam.death_cam = 0; g_cam.cut = 1; cam_set_mode(1); }
             if (g_res.on) results_update(&L.vm, dt, mk.ok);      /* 0x454090: after the action tick, so a finished action starts the next one in the same frame */
             if (g_cam.mode != 0x20 && (L.player.dead_cam_req || (L.player.dead_kind == 7 && !g_cam.death_cam))) {     /* 0x41fb50: kind 1 is watched from where he hung (+100), kind 7 from where the camera is */
                 g_cam.fix_pos = L.player.dead_kind == 7 ? g_cam.pos : (Vec3){ L.player.pos.x, L.player.pos.y + 100.0f, L.player.pos.z };
@@ -2251,6 +2262,9 @@ int main(int argc, char **argv)
         for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
         { static int side_done; if (getenv("WOODY_SIDE") && now - t0 >= 1.0 && !side_done && L.have_player) { side_done = 1; Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(getenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); } }   /* testing: force the side view on a marker instance */
         { static int posat_done; float pa[4]; if (getenv("WOODY_POSAT") && !posat_done && L.have_player && sscanf(getenv("WOODY_POSAT"), "%f %f %f %f", &pa[0], &pa[1], &pa[2], &pa[3]) == 4 && now - t0 >= pa[0]) { posat_done = 1; L.player.pos = (Vec3){ pa[1], pa[2], pa[3] }; L.player.floor_y = pa[2] - 1000.0f; L.player.on_ground = 0; } }   /* testing: WOODY_POSAT="T x y z" = --pos, but T s into the level (for moving platforms) */
+        {   /* testing: WOODY_KILLAT="T" = the pit message 1020 (Kill(1) + death camera) T s into the level, once; for the respawn */
+            static int killat_done; if (getenv("WOODY_KILLAT") && !killat_done && L.have_player && now - t0 >= atof(getenv("WOODY_KILLAT"))) {
+                killat_done = 1; EkoMsg em; memset(&em, 0, sizeof em); em.id = 1020; on_msg(&L.vm, &em, NULL); } }
         if ((next_name && now - t0 >= next_at && !strcmp(next_name, "END")) || (win.keys[VK_END] && !end_prev)) {   /* End key / --next END T: finish the level as its exit door does (message 1083) */
             EkoMsg em; memset(&em, 0, sizeof em); em.id = 1083; on_msg(&L.vm, &em, NULL); if (next_name && !strcmp(next_name, "END")) next_name = NULL;
         }

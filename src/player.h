@@ -71,6 +71,7 @@ typedef struct Player {
     /* death / hit animations, scripted door actions (docs/PERSO_DEATH.md) */
     float dead_T, nograv_t, hit_anim_t; int dead_ground, hit_anim, dead_cam_req;
     int script_act, script_log; float script_t, script_total; int script_faded, fade_req, cam_end_req;   /* fade_req: 1 = fade out 0.5 s, 2 = fade in 0.5 s; cam_end_req: 0x44e5a0, back to the follow camera (both consumed by the app) */
+    int respawn_req;                                                    /* respawn 0x445930 happened: side view off + camera reset 0x458f90 (consumed by the app) */
     /* Perso state 8: riding a class-20 rocket (docs/ROCKET.md 6). The app fills ride_state / ride_seat / ride_q before the update */
     Instance *ride; int ride_state; Vec3 ride_seat, ride_p0; Quat ride_q, ride_q0, ride_cur; float ride_t; int ride_jprev, ride_aprev;
     /* statistics */

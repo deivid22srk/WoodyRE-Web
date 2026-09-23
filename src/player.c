@@ -730,7 +730,10 @@ static void player_reset(Player *p)                                     /* vt[17
     if (p->health <= 0) p->health = 3.0f;
     p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0;
-    player_ground_snap(p);                                              /* 0x4459c0 -> 0x44a650 */
+    player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
+    /* 0x445930 -> 0x44a810 -> Reset 0x44ab20 clears Perso+0x4ec (0x44ad22): the side view's plane lock ends with the death,
+     * and 0x445930 then calls 0x458f90 (hard cut back to the follow camera). Both live in the app (g_cam). */
+    p->respawn_req = 1;
 }
 /* Game sequence 0x4459c0: 2 play -> (dead) 3 wait death_delay - 1 s -> 4 fade out 1 s -> lose a life -> 0 wait 0.25 s,
  * respawn -> 1 fade in 1 s -> 2. p->fade is the screen brightness (1 = normal). */
