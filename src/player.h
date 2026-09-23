@@ -73,6 +73,15 @@ typedef struct Player {
     int script_act, script_log; float script_t, script_total; int script_faded, fade_req, cam_end_req;   /* fade_req: 1 = fade out 0.5 s, 2 = fade in 0.5 s; cam_end_req: 0x44e5a0, back to the follow camera (both consumed by the app) */
     int respawn_req;                                                    /* respawn 0x445930 happened: side view off + camera reset 0x458f90 (consumed by the app) */
     /* Perso state 8: riding a class-20 rocket (docs/ROCKET.md 6). The app fills ride_state / ride_seat / ride_q before the update */
+    /* race levels (script types 18/19, docs/RACE.md): message 1120 hangs the board under the Perso (+0x4b4) and gives the track polyline (+0x4b0) */
+    Instance *board; const Trajectory *race_path;
+    /* Perso state 1 = riding (subtype 4/5): sub-state +0x4a8 (0 wait for the path, 1 ride, 2 crash), ride direction M+0x1c,
+     * start-anim timer +0x4e4, boost +0x4c4.., stuck counter +0x4ac, lean +0x4bc/+0x4c0, crouch +0x694, up filter +0x210 */
+    int race_char, race_sub, race_stuck, race_lean, race_crouch, has_ckpt;
+    float race_start_t, race_lean_t, race_crouch_t, race_crash_t, boost_t, boost_speed;
+    Vec3 race_dir, boost_target, race_upf;
+    int race_cam_req;                                                   /* sub-state 0: hard cut to the follow camera (consumed by the app) */
+    float cam_dist, cam_height, cam_zoom;                               /* follow camera C+0x7e0 (400), C+0x7d8 (180), zoom cam+0x678 (1.2) */
     Instance *ride; int ride_state; Vec3 ride_seat, ride_p0; Quat ride_q, ride_q0, ride_cur; float ride_t; int ride_jprev, ride_aprev;
     /* statistics */
     float play_time;                /* Perso+0x710 accumulator (0x453ca0): seconds played in this level, one of the five result stats */
@@ -86,6 +95,8 @@ void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* b
 void player_camera_reset(Player *p);                   /* SetMode(0, 0) / message 500: put the camera behind the player now */
 int  volume_contains(const Instance *inst, uint32_t node, Vec3 p);   /* 0x4300c0: is the point inside this volume node of the instance? */
 void player_free(Player *p);
+void player_boost(Player *p, Vec3 p0, Vec3 dir, float speed, float dur);   /* message 1121 StartBoostSurf 0x456000 */
+void player_sync_board(Player *p);                    /* 0x44bf10 tail + 0x463e60: the race board takes the Perso's placement and animation */
 /* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
 /* landing ring (docs/PERSO_JUMP.md 5): the floor point and its normal under an airborne Woody, 0 = draw nothing */

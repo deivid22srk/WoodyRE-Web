@@ -32,6 +32,7 @@
 #define P_BODY_H       193.0f     /* P+0x0c: body height (61 when ducking) */
 #define P_PROBE_Y      43.0f      /* P+0x00: ground probe / collision centre above the feet */
 #define P_RADIUS       69.0f      /* P+0x04: horizontal collision radius (0x434820 in 0x4624f0) */
+#define P_RACE_SPEED   1250.0f    /* P+0x1c of the race columns 3/4: the constant ride speed (docs/RACE.md 6) */
 #define P_VOL_PROBE_Y  71.0f      /* volume test point above the feet: 0x462760(perso, 71.0), docs/EVENTS.md 2.1 */
 /* follow camera (docs/CAMERA.md 3) */
 #define CAM_DIST_MIN   300.0f     /* xz distance to T is kept inside 300..400 */
@@ -113,6 +114,10 @@ static float inst_dist2_xz(const Instance *in, Vec3 p)
 static Vec3 g_ground_n = { 0, 1, 0 };   /* normal of the last world_ground() hit ([0x4b3108..10]) */
 static int32_t g_ground_mat = -1;       /* material of that hit when it is a world polygon ([0x53a554] == 1, poly+8), else -1 */
 static Vec3 g_ins_n;
+/* the race board (message 1120) moves with its rider, so it must never be the rider's floor or wall: standing on its
+ * hull lifted the board, which lifted him again, every frame */
+static const Instance *g_rider, *g_rider_board;
+static int skip_inst(const Instance *in, const Instance *skip) { return in == skip || (skip && skip == g_rider && in == g_rider_board); }
 static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float max_drop, int *found, const Instance *skip,
                              const Instance **hit_inst, const InsNode **hit_node)
 {
@@ -120,7 +125,7 @@ static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float ma
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
         const Model *m = &ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip) continue;
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, skip)) continue;
             if (inst_dist2_xz(in, p) > 4000.0f * 4000.0f) continue;       /* cheap reject: far away horizontally */
             uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
@@ -216,7 +221,7 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
         const Model *m = &ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || !in->node_world) continue;
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, skip) || !in->node_world) continue;
             if (inst_dist2_xz(in, c) > 3000.0f * 3000.0f) continue;
             uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
@@ -335,16 +340,19 @@ static void attach_store(Player *p, const Instance *inst, const InsNode *node, V
 }
 
 /* ---- Jumper (0x462d70 update, 0x462fd0 tick) ------------------------------------ */
-static void jumper_start_jump(Jumper *j) { j->D = J_P68 * 0.75f; j->t = (j->D / J_V) * -0.5f; j->h_prev = 0; j->v_down = 0; j->short_hop = j->fell_off = 0; }   /* 0x462d10 */
-static void jumper_start_fall(Jumper *j, int fell_off) { j->D = J_P68 * 1.25f; j->fell_off = fell_off; j->h_prev = J_HEIGHT; j->t = 0; }                       /* 0x462d40 */
+/* P+0x64 / +0x68 / +0x6c for the parameter column of the player (0x4b5f14): the race columns 3/4 jump 400 high with
+ * 1250 / 1250 (T_jump 0.375 s, T_fall 0.625 s, docs/RACE.md 6); every other character keeps Woody's values */
+static float g_jH = J_HEIGHT, g_jP68 = J_P68, g_jV = J_V;
+static void jumper_start_jump(Jumper *j) { j->D = g_jP68 * 0.75f; j->t = (j->D / g_jV) * -0.5f; j->h_prev = 0; j->v_down = 0; j->short_hop = j->fell_off = 0; }   /* 0x462d10 */
+static void jumper_start_fall(Jumper *j, int fell_off) { j->D = g_jP68 * 1.25f; j->fell_off = fell_off; j->h_prev = g_jH; j->t = 0; }                       /* 0x462d40 */
 static int jumper_tick(Jumper *j, float dt, int on_ground)
 {
     j->t += dt;
-    float u = j->t / (0.5f * j->D / J_V), h = J_HEIGHT - J_HEIGHT * u * u;
+    float u = j->t / (0.5f * j->D / g_jV), h = g_jH - g_jH * u * u;
     if (j->t >= J_APEX_T && j->state == 1 && !j->short_hop) { j->state = 7; j->open_window = 1; }   /* 0x457560(0.5): air attack window */
     if (j->t >= 0 && (j->state == 7 || (j->state == 1 && j->short_hop))) {
         j->state = j->short_hop ? (on_ground ? 6 : 4) : 3;
-        jumper_start_fall(j, 0); h = J_HEIGHT;
+        jumper_start_fall(j, 0); h = g_jH;
     }
     if (u > 1.0f) { float k = u - 1.0f < 0.5f ? u - 1.0f : 0.5f; j->dy = -(((J_TERMINAL - j->v_down) * 2 * k + j->v_down) * dt); }
     else { j->dy = h - j->h_prev; j->v_down = -j->dy / dt; }
@@ -364,8 +372,8 @@ static void jumper_update(Jumper *j, int jump_held, int on_ground, float height_
     case 0: j->state = 1; /* fallthrough */
     case 1:
         if (!jump_held && j->t < J_SHORT_HOP_T) {                 /* variable jump height: only the clock jumps */
-            float u = J_SHORT_HOP_T / (0.5f * j->D / J_V);
-            j->short_hop = 1; j->t = J_SHORT_HOP_T; j->h_prev = J_HEIGHT - J_HEIGHT * u * u;
+            float u = J_SHORT_HOP_T / (0.5f * j->D / g_jV);
+            j->short_hop = 1; j->t = J_SHORT_HOP_T; j->h_prev = g_jH - g_jH * u * u;
         }
         jumper_tick(j, dt, on_ground); return;
     case 7: if (jumper_tick(j, dt, on_ground) && on_ground) j->state = 6; return;
@@ -404,6 +412,7 @@ int volume_contains(const Instance *inst, uint32_t node, Vec3 p)
 
 /* The player is the instance the level script gives a Perso class (SetTypeInstance 1, 2, 3, 18 or 19): Woody in the W
  * levels, type 2 in the K levels, 3 in the S levels, 18 in the races. Until the script has run it is model 0 instance 0. */
+static void race_enter(Player *p);
 void player_bind(Player *p, Instance *inst)
 {
     p->inst = inst; p->pos = inst->position; p->floor_y = p->pos.y; p->cam_init = 0;
@@ -412,6 +421,9 @@ void player_bind(Player *p, Instance *inst)
     Vec3 fwd = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); fwd = vsub(fwd, inst->position);
     p->yaw = atan2f(fwd.x, fwd.z);
     p->spawn_pos = p->pos; p->spawn_yaw = p->yaw;
+    p->race_char = inst->type == 18 || inst->type == 19;                  /* subtypes 5/4: Reset 0x44ab20 enters state 1 through SurfEnter */
+    g_jH = p->race_char ? 400.0f : J_HEIGHT; g_jP68 = p->race_char ? 1250.0f : J_P68; g_jV = p->race_char ? 1250.0f : J_V;
+    if (p->race_char) race_enter(p);
 }
 
 int player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex)
@@ -422,6 +434,7 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex)
     player_bind(p, &ins->models[0].instances[0]);
     p->jumper.state = 2; p->jumper.armed = 1;                      /* 0x462c90 reset */
     p->health = 3.0f; p->lives = 3; p->game_state = 2; p->fade = 1.0f; p->lanim = -1;
+    p->cam_dist = 400.0f; p->cam_height = 180.0f; p->cam_zoom = 1.2f;
     /* volume table */
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) p->nvol += ins->models[mi].nvolume_nodes * ins->models[mi].ninstances;
     p->inside = (uint8_t *)calloc(p->nvol ? p->nvol : 1, 1);
@@ -483,25 +496,30 @@ int player_segment_blocked(const Player *p, Vec3 a, Vec3 b) { return gel_ray_fra
 
 /* ---- logical animations: table 0x4b6180 (0x1c bytes per record: sub[4], prio, speed, restart) --------------
  * A logical animation is a chain of up to four .ins animations played in order, the last one looping (-1 = hold);
- * the speed divides the .ins duration (docs/PERSO_JUMP.md 4). Priorities are not used here. */
-typedef struct { int sub[4]; float speed; int restart; } LogAnim;
+ * the speed divides the .ins duration (docs/PERSO_JUMP.md 4). Priorities are not used here. The 128 records are
+ * copied from the exe: 0x1a..0x1e results, 0x25..0x30 deaths, 0x3b..0x3e rocket, 0x5c..0x7f the race rider (docs/RACE.md). */
+typedef struct { int sub[4]; int prio; float speed; int restart; } LogAnim;
 static const LogAnim *log_anim(int n)
 {
-    static const LogAnim t[0x18] = {
-        {{0,0,0,0},3,0}, {{0,0,0,0},3,0}, {{1,2,2,2},3,1}, {{2,2,2,2},3,0}, {{3,4,4,4},8,1}, {{5,6,7,7},2,1}, {{6,7,7,7},3,0},
-        {{6,7,7,7},3,1}, {{8,0,0,0},3,1}, {{7,32,33,33},3,0}, {{34,0,0,0},3,1}, {{9,9,9,9},3,1}, {{10,11,-1,-1},3,1},
-        {{16,0,0,0},3,1}, {{19,6,7,7},3,1}, {{21,13,13,13},3,1}, {{38,51,51,51},3,1}, {{51,51,51,51},3,0}, {{51,52,0,0},3,0},
-        {{86,0,0,0},3,1}, {{12,13,13,13},5,1}, {{13,13,13,13},3,0}, {{14,6,7,7},3,0}, {{15,-1,-1,-1},3,0} };   /* 0x14..0x17: grab, climb, let go, over the top */
-    /* doors 0x18/0x19 (records 24/25), hit 0x1f/0x20, deaths 0x25..0x30 (docs/PERSO_DEATH.md 3.3) */
-    static const struct { int n; LogAnim a; } x[] = {
-        { 0x18, {{17,-1,-1,-1},3,1} }, { 0x19, {{18,-1,-1,-1},3,1} }, { 0x1f, {{20,0,0,0},3,1} }, { 0x20, {{22,0,0,0},3,1} },
-        { 0x25, {{29,30,30,30},3,1} }, { 0x26, {{28,30,30,30},3,1} }, { 0x29, {{31,-1,-1,-1},3,1} }, { 0x2a, {{27,-1,-1,-1},3,1} },
-        { 0x3b, {{84,-1,-1,-1},3,1} }, { 0x3c, {{80,-1,-1,-1},3,1} }, { 0x3d, {{81,82,82,82},3,1} }, { 0x3e, {{82,82,82,82},3,1} },   /* rocket: mount, sit, ignition, flight */
-        { 0x2b, {{37,-1,-1,-1},3,1} }, { 0x2e, {{35,-1,-1,-1},3,1} }, { 0x2f, {{48,33,33,33},3,1} }, { 0x30, {{85,-1,-1,-1},3,1} },
-        /* results screen (docs/CINEMATIC.md 6): one-shot records for the .ins animations 74..78, all speed 3 */
-        { 0x1a, {{74,-1,-1,-1},3,1} }, { 0x1b, {{75,-1,-1,-1},3,1} }, { 0x1c, {{78,-1,-1,-1},3,1} }, { 0x1d, {{76,-1,-1,-1},3,1} }, { 0x1e, {{77,-1,-1,-1},3,1} } };
-    for (unsigned i = 0; i < sizeof x / sizeof x[0]; i++) if (x[i].n == n) return &x[i].a;
-    return (n >= 0 && n < 0x18) ? &t[n] : &t[0];
+    static const LogAnim t[0x80] = {
+        {{0,0,0,0},1100,3,0}, {{0,0,0,0},6500,3,0}, {{1,2,2,2},1501,3,1}, {{2,2,2,2},1500,3,0}, {{3,4,4,4},1501,8,1}, {{5,6,7,7},1050,2,1}, {{6,7,7,7},1000,3,0}, {{6,7,7,7},5000,3,1},
+        {{8,0,0,0},1500,3,1}, {{7,32,33,33},1600,3,0}, {{34,0,0,0},5200,3,1}, {{9,9,9,9},1600,3,1}, {{10,11,-1,-1},1600,3,1}, {{16,0,0,0},1600,3,1}, {{19,6,7,7},1600,3,1}, {{21,13,13,13},1600,3,1},
+        {{38,51,51,51},1700,3,1}, {{51,51,51,51},1700,3,0}, {{51,52,0,0},1700,3,0}, {{86,0,0,0},5500,3,1}, {{12,13,13,13},5001,5,1}, {{13,13,13,13},5000,3,0}, {{14,6,7,7},5000,3,0}, {{15,-1,-1,-1},5002,3,0},
+        {{17,-1,-1,-1},6000,3,1}, {{18,-1,-1,-1},6000,3,1}, {{74,-1,-1,-1},6000,3,1}, {{75,-1,-1,-1},6000,3,1}, {{78,-1,-1,-1},6000,3,1}, {{76,-1,-1,-1},6000,3,1}, {{77,-1,-1,-1},6000,3,1}, {{20,0,0,0},5110,3,1},
+        {{22,0,0,0},5110,3,1}, {{68,47,47,47},5110,3,1}, {{67,47,47,47},5110,3,1}, {{26,25,25,25},5110,3,1}, {{64,60,60,60},5110,3,1}, {{29,30,30,30},6000,3,1}, {{28,30,30,30},6000,3,1}, {{69,30,30,30},6000,3,1},
+        {{70,30,30,30},6000,3,1}, {{31,-1,-1,-1},6000,3,1}, {{27,-1,-1,-1},6000,3,1}, {{37,-1,-1,-1},6000,3,1}, {{36,-1,-1,-1},6000,3,1}, {{63,-1,-1,-1},6000,3,1}, {{35,-1,-1,-1},6000,3,1}, {{48,33,33,33},6000,3,1},
+        {{85,-1,-1,-1},6000,3,1}, {{24,25,25,25},1750,4,1}, {{25,25,25,25},1750,3,0}, {{23,0,0,0},1750,4,1}, {{39,0,0,0},1750,3,1}, {{40,0,0,0},1750,3,1}, {{45,-1,-1,-1},1800,3,1}, {{41,-1,-1,-1},1800,3,1},
+        {{42,43,43,43},1800,3,1}, {{43,43,43,43},1800,3,1}, {{44,7,7,7},1800,3,1}, {{84,-1,-1,-1},1800,3,1}, {{80,-1,-1,-1},1800,3,1}, {{81,82,82,82},1800,3,1}, {{82,82,82,82},1800,3,1}, {{83,7,7,7},1800,3,1},
+        {{47,47,47,47},1100,3,0}, {{50,49,49,49},1501,3,1}, {{49,49,49,49},1500,3,0}, {{61,0,0,0},1500,3,1}, {{62,7,7,7},1500,3,1}, {{46,47,47,47},1500,3,1}, {{71,0,0,0},1500,3,1}, {{53,54,54,54},1501,3,1},
+        {{55,56,56,56},1000,3,0}, {{55,56,56,56},5000,3,1}, {{57,47,47,47},1500,3,1}, {{56,66,33,33},1600,3,0}, {{47,47,47,47},5200,3,1}, {{65,33,33,33},6000,3,1}, {{58,60,60,60},1750,4,1}, {{60,60,60,60},1750,3,0},
+        {{59,47,47,47},1750,4,1}, {{72,0,0,0},6000,3,1}, {{73,0,0,0},6000,3,1}, {{74,0,0,0},6000,3,1}, {{75,0,0,0},6000,3,1}, {{76,0,0,0},6000,3,1}, {{77,0,0,0},6000,3,1}, {{78,0,0,0},6000,3,1},
+        {{79,0,0,0},6000,3,1}, {{0,88,87,87},1110,3,0}, {{89,89,89,89},1110,3,0}, {{0,90,0,0},1110,3,0}, {{0,0,0,0},1100,3,1}, {{42,0,0,0},1100,3,1}, {{1,20,8,8},1501,2,1}, {{20,8,8,8},1501,6,1},
+        {{8,8,8,8},1501,3,1}, {{21,2,0,0},1501,6,1}, {{2,0,0,0},1501,3,1}, {{3,22,9,9},1501,2,1}, {{22,9,9,9},1501,6,1}, {{9,9,9,9},1501,3,1}, {{23,4,0,0},1501,6,1}, {{4,0,0,0},1501,3,1},
+        {{5,6,6,6},1750,5,1}, {{6,6,6,6},1750,3,1}, {{7,0,0,0},1750,5,1}, {{24,25,25,25},1501,8,1}, {{29,26,27,27},1500,3,1}, {{26,27,27,27},1000,3,0}, {{26,27,27,27},5000,3,1}, {{28,0,0,0},1500,3,1},
+        {{30,32,33,33},6000,3,1}, {{34,-1,-1,-1},6000,3,1}, {{38,-1,-1,-1},6000,3,1}, {{36,-1,-1,-1},6000,3,1}, {{37,-1,-1,-1},6000,3,1}, {{39,40,40,40},6000,3,1}, {{39,-1,-1,-1},6000,3,1}, {{41,-1,-1,-1},6000,3,1},
+        {{10,0,0,0},6000,3,1}, {{11,0,0,0},6000,3,1}, {{12,0,0,0},6000,3,1}, {{13,0,0,0},6000,3,1}, {{14,0,0,0},6000,3,1}, {{15,0,0,0},6000,3,1}, {{16,0,0,0},6000,3,1}, {{17,0,0,0},6000,3,1},
+    };
+    return (n >= 0 && n < 0x80) ? &t[n] : &t[0];
 }
 /* 0x463e30: a scripted action names a raw .ins animation; the logical record is the first one that starts with it */
 static int log_from_raw(int act) { for (int n = 0; n < 0x80; n++) if (log_anim(n)->sub[0] == act) return n; return -1; }
@@ -695,6 +713,18 @@ void player_brake_charge(Player *p)
 /* ---- damage, death, respawn (docs/PERSO_MOVE.md 4.4, PERSO_FRAME.md 4.1) ------------------------------------ */
 void player_kill(Player *p, int kind)                                   /* vt[38] Kill(kind) 0x44c110 */
 {
+    if (p->race_char) {                                                  /* subtypes 4/5: the race kill 0x44c4c0 (docs/RACE.md 4.9) */
+        if (p->dead_kind && !(kind == 7 && p->dead_kind != 7)) return;   /* only water overrides a running death */
+        if (kind == 2 && p->invuln_respawn > 0) return;                   /* no invulnerability test for the other kinds */
+        p->death_delay = kind == 2 || kind == 8 ? 1.5f : kind == 3 || kind == 6 ? 2.5f : kind == 7 ? 4.0f : 3.5f;
+        p->cam_dist = 200.0f;
+        if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else if (kind == 1) jumper_force_fall(&p->jumper, 0);
+        p->nograv_t = kind == 1 ? anim_len(p, 0x75, 0) : kind == 2 ? anim_len(p, 0x72, 0) : 0;   /* +0x240 */
+        p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL; p->race_crouch = 0;
+        p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;  /* +0x4d8 = 1, state := 2 */
+        printf("  PLAYER killed in the race (kind %d), lives %d\n", kind, p->lives);
+        return;
+    }
     if (p->dead_kind) { if (!((kind == 7 && p->dead_kind != 7) || (kind == 1 && p->dead_kind != 1))) return; }
     if ((kind == 2 || kind == 9 || kind == 3 || kind == 8 || kind == 4 || kind == 5 || kind == 6) && p->invuln_respawn > 0) return;
     p->death_delay = 3.5f;                                              /* +0x288: time until the fade */
@@ -730,6 +760,7 @@ static void player_reset(Player *p)                                     /* vt[17
     if (p->health <= 0) p->health = 3.0f;
     p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0;
+    if (p->race_char) race_enter(p);                                   /* 0x44ac33: SurfEnter + state 1 */
     player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
     /* 0x445930 -> 0x44a810 -> Reset 0x44ab20 clears Perso+0x4ec (0x44ad22): the side view's plane lock ends with the death,
      * and 0x445930 then calls 0x458f90 (hard cut back to the follow camera). Both live in the app (g_cam). */
@@ -763,7 +794,7 @@ static int climb_ray(const Player *p, Vec3 from, Vec3 to, Vec3 *n_out, const Ins
         for (uint32_t ni = 0; ni < m->nnodes; ni++) {
             const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys) continue;
             for (uint32_t k = 0; k < m->ninstances; k++) {
-                const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == p->inst) continue;
+                const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, p->inst)) continue;
                 if (inst_dist2_xz(in, from) > 3000.0f * 3000.0f) continue;
                 for (uint32_t pi = 0; pi < nd->npolys; pi++) {
                     const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 8) continue;
@@ -881,6 +912,18 @@ static void player_apply_transform(Player *p)
     mat4_from_trs(&in->world, in->position, in->quat, in->scale);
 }
 
+/* 0x44bf10: when Perso+0x4b4 (the race board, message 1120) is set, the board gets the Perso's position, centre, rotation
+ * and cell every frame; its own animation controller +0x498 receives every request the rider's +0x494 gets and is
+ * ticked at the same rate (0x463e60), so the board always shows the same animation and frame as the rider. */
+void player_sync_board(Player *p)
+{
+    Instance *b = p->board, *r = p->inst;
+    if (!b || !r || b == r) return;
+    b->position = r->position; b->quat = r->quat; b->world = r->world;
+    if ((uint32_t)r->anim < b->model->nanims) { b->anim = r->anim; b->anim_time = r->anim_time; b->anim_speed = r->anim_speed; }
+    if (getenv("WOODY_BOARDLOG")) printf("  BOARD inst %u vis %d pos %.0f %.0f %.0f anim %d t %.2f | rider inst %u pos %.0f %.0f %.0f anim %d t %.2f\n", b->index, b->visible, b->position.x, b->position.y, b->position.z, b->anim, b->anim_time, r->index, r->position.x, r->position.y, r->position.z, r->anim, r->anim_time);
+}
+
 void player_place(Player *p, Vec3 pos, float yaw)
 {
     p->pos = pos; p->yaw = yaw; p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->atk = 0; p->move_lock = 0; p->lanim = -1; p->step_u = -1.0f;
@@ -906,9 +949,147 @@ static void player_volumes_y(Player *p, EkoVM *vm, float probe_y)
 static Quat q_unit(Quat q);
 static void player_volumes(Player *p, EkoVM *vm) { player_volumes_y(p, vm, P_VOL_PROBE_Y); }
 
+/* ---- Perso state 1: riding the race board (subtypes 4/5 = script types 18/19, docs/RACE.md) ------------------ */
+static Vec3 xz_unit(Vec3 v) { float l = sqrtf(v.x * v.x + v.z * v.z); return l > 0 ? (Vec3){ v.x / l, 0, v.z / l } : (Vec3){ v.x, 0, v.z }; }
+static void race_enter(Player *p)                                          /* SurfEnter 0x456150, from Reset for subtypes 4/5 */
+{
+    p->race_stuck = 0; p->race_sub = 0; p->boost_t = 0; p->race_lean = 0; p->race_lean_t = 0; p->race_crouch = 0; p->race_crash_t = 0;
+    p->race_upf = (Vec3){ 0, 1, 0 };                                       /* Reset: +0x210 = (0,1,0) */
+    p->race_start_t = anim_len(p, 0x5d, 0);
+    p->lanim = -1; anim_request(p, 0x5d, 1.0f);                            /* start anim on rider and board (the board mirrors, player_sync_board) */
+}
+void player_boost(Player *p, Vec3 p0, Vec3 dir, float speed, float dur)  /* 0x456000 */
+{
+    Vec3 d = xz_unit(dir);
+    p->boost_t = dur; p->boost_speed = speed;
+    p->boost_target = (Vec3){ p0.x + d.x * speed * dur * 1.1f, p0.y, p0.z + d.z * speed * dur * 1.1f };   /* 0x4aa168 */
+    audio_fx(59, NULL, NULL);
+}
+/* 0x438400 on the track polyline: index of the segment nearest to P (3D), searched from 0 every frame */
+static int race_nearest(const Trajectory *t, Vec3 P)
+{
+    int best = -1; float bd = 0;
+    for (uint32_t i = 0; i + 1 < t->npoints; i++) {
+        Vec3 A = t->points[i], B = t->points[i + 1], d = vsub(B, A), c;
+        float dp = vdot(d, P), da = vdot(d, A), db = vdot(d, B);
+        if (dp - db > 0) c = B; else if (dp - da < 0) c = A;
+        else { float u = (dp - da) / (db - da); c = (Vec3){ A.x + d.x * u, A.y + d.y * u, A.z + d.z * u }; }
+        Vec3 e = vsub(c, P); float d2 = vdot(e, e);
+        if (best < 0 || d2 < bd) { best = (int)i; bd = d2; }
+    }
+    return best < 0 ? 0 : best;
+}
+/* Race_Ride 0x456210: 1250 units/s from the first frame, no acceleration; actions 0/1 turn the ride direction about the
+ * world up at 1.8 rad/s (1.2 crouched), not during the start anim or a boost; a turn that would point the board at or past
+ * perpendicular to the nearest track segment is undone. Returns the displacement of this frame. */
+static Vec3 race_ride(Player *p, const PlayerInput *in, float dt)
+{
+    Vec3 disp = { 0, 0, 0 };
+    switch (p->race_sub) {
+    case 2: {                                                              /* Race_Crash 0x456ba0 */
+        if (p->race_crash_t == 0.0f) { p->cam_dist = 400.0f; p->lanim = -1; anim_request(p, 0x70, 1.0f); jumper_force_fall(&p->jumper, 0); }
+        p->race_crash_t += dt;
+        float L = anim_len(p, 0x70, 1) + anim_len(p, 0x70, 0);
+        if (p->race_crash_t >= L) { jumper_update(&p->jumper, 0, p->on_ground, p->pos.y - p->floor_y, dt); disp.y = p->jumper.dy; }   /* before L he hangs where he crashed */
+        if ((p->race_crash_t >= L && p->on_ground) || p->race_crash_t >= 2.0f) player_kill(p, 8);
+        return disp; }
+    case 1: disp = p->race_dir; break;                                     /* 0x456cf0: M+0x1c, the direction of the previous frame */
+    case 0:
+        if (!p->race_path || p->race_path->npoints < 2) return disp;      /* before message 1120: nothing */
+        p->race_cam_req = 1; p->cam_zoom = 1.5f; p->cam_height = 100.0f; p->cam_dist = 4.0f;   /* 0x41f9f0(2), SetMode(0,0), 0x41f660 / 0x41fa60 / 0x41fa80 */
+        if (p->has_ckpt) disp = (Vec3){ sinf(p->spawn_yaw), 0, cosf(p->spawn_yaw) };             /* +0x324 */
+        else disp = (Vec3){ p->race_path->points[1].x - p->race_path->points[0].x, 0, p->race_path->points[1].z - p->race_path->points[0].z };
+        p->race_stuck = 0; p->race_sub = 1; p->race_lean = 0; p->race_lean_t = 0;
+        break;
+    }
+    int i = race_nearest(p->race_path, p->pos);
+    Vec3 seg = { p->race_path->points[i + 1].x - p->race_path->points[i].x, 0, p->race_path->points[i + 1].z - p->race_path->points[i].z };   /* not normalized */
+    float step = P_RACE_SPEED * dt;
+    if (p->boost_t > 0) { p->boost_t -= dt; step = p->boost_speed * dt; disp = (Vec3){ p->boost_target.x - p->pos.x, 0, p->boost_target.z - p->pos.z }; }
+    disp = xz_unit(disp);
+    Vec3 old = disp;
+    float turn = (p->race_crouch ? 1.2f : 1.8f) * dt;                      /* 0x4aa39c, 0x4ab290 */
+    if (p->boost_t > 0) turn = 0;
+    if (p->race_start_t > 0) p->race_start_t -= dt;                        /* start anim: no steering */
+    else if (in->left || in->right) {                                      /* action 0 (-1) wins over action 1 (+1) */
+        float a = (in->left ? -1.0f : 1.0f) * turn, c = cosf(a), s = sinf(a);
+        disp = (Vec3){ old.x * c - old.z * s, 0, old.x * s + old.z * c };  /* RotateAxis 0x440d40 about (0,1,0) */
+    }
+    float d1 = vdot(disp, seg), d2 = vdot(old, seg);
+    if (d1 < 0.5f && d1 < d2) disp = old;                                  /* 0x4a9014 */
+    if (disp.x * disp.x + disp.z * disp.z < 1e-4f) disp = (Vec3){ 1, 0, 0 };   /* M_SetRideDir: |dir| < 0.01 -> x = 1 */
+    p->race_dir = xz_unit(disp); p->yaw = atan2f(p->race_dir.x, p->race_dir.z);   /* M+0x1c = M+0x10: the facing */
+    disp = (Vec3){ p->race_dir.x * step, 0, p->race_dir.z * step };
+    jumper_update(&p->jumper, in->jump, p->on_ground, p->pos.y - p->floor_y, dt);   /* 0x462d70 with action 4 */
+    disp.y = p->jumper.dy;
+    return disp;
+}
+/* crouch 0x465b10 in state 1: action 8 (the attack key here), anims 0x68 / 0x69 / 0x6a; lowers the body to 81 and halves
+ * the wall radius, the speed stays. The stand-up ray of the race columns is 2 units long and is left out. */
+static void race_crouch(Player *p, const PlayerInput *in, float dt)
+{
+    if (p->race_start_t > 0) return;
+    switch (p->race_crouch) {
+    case 0: if (in->action && p->on_ground) { p->race_crouch = 1; anim_request(p, 0x68, 1.0f); p->race_crouch_t = anim_len(p, 0x68, 0); } break;
+    case 1: if ((p->race_crouch_t -= dt) <= 0) p->race_crouch = 2; break;
+    case 2: anim_request(p, 0x69, 1.0f); p->race_crouch_t = anim_len(p, 0x69, 0);
+            if (!in->action) { anim_request(p, 0x6a, 1.0f); p->race_crouch_t = anim_len(p, 0x6a, 0); p->race_crouch = 3; } break;
+    case 3: if ((p->race_crouch_t -= dt) <= 0) p->race_crouch = 0; break;
+    }
+}
+/* Race_CheckCrash 0x4567f0, after the collision: stuck for more than 5 frames (moved < 70 % of the wanted displacement),
+ * or a wall straight ahead at both 40 and body height - 10 within 69 + 40 units. The original's rays also hit instances;
+ * here they are world polygons only (a blocking instance still ends in the stuck test). */
+static void race_check_crash(Player *p, Vec3 old_pos, Vec3 disp, float body_h)
+{
+    if (p->race_sub == 2) return;
+    Vec3 mv = vsub(p->pos, old_pos); float moved = sqrtf(vdot(mv, mv)), want = sqrtf(vdot(disp, disp));
+    if (want > 0 && moved / want < 0.7f) {                                 /* 0x4aa1d8; a frame without displacement is 0/0 in the original (counted as stuck), not here */
+        if (++p->race_stuck > 5 && !getenv("WOODY_GOD")) { p->race_sub = 2; p->race_crash_t = 0; puts("  RACE crash (stuck)"); }
+    } else p->race_stuck = 0;
+    Vec3 U = p->ground_n, F = p->race_dir, fw = vcross(U, vcross(F, U));
+    Vec3 end = { p->pos.x + fw.x * (P_RADIUS + 40.0f), p->pos.y + fw.y * (P_RADIUS + 40.0f), p->pos.z + fw.z * (P_RADIUS + 40.0f) };   /* 0x4ab294 */
+    Vec3 n40 = { 0, 0, 0 }; int both = 1;
+    const float hs[2] = { body_h - 10.0f, 40.0f };                        /* 0x4a9750 */
+    for (int k = 0; k < 2; k++) {
+        Vec3 a = { p->pos.x, p->pos.y + hs[k], p->pos.z }, b = { end.x, end.y + hs[k], end.z }, n;
+        if (gel_ray_hit(p->gel, a, b, &n) > 1.0f) both = 0; else if (k == 1) n40 = n;
+    }
+    if (both && p->race_sub != 2 && !getenv("WOODY_GOD")) {
+        if (n40.x * n40.x + n40.z * n40.z > 1e-6f) p->yaw = atan2f(-n40.x, -n40.z);   /* Mover_SetFacing(-hitN) */
+        p->race_sub = 2; p->race_crash_t = 0; puts("  RACE crash (wall ahead)");
+    }
+}
+/* 0x464c20: lean left/right on the ground, the jump set of 0x4642f0 in the air; nothing during the start anim or a crash */
+static void race_anims(Player *p, const PlayerInput *in, float dt)
+{
+    if (p->race_sub == 2 || !p->board || p->race_start_t > 0) return;
+    int js = p->jumper.state;
+    if (js != 2) {
+        int a = -1;
+        if (js == 0 || js == 1) a = 0x6b; else if (js == 7) a = 0x6c;
+        else if (js == 3 || (js == 4 && !p->on_ground)) { if (p->jumper.fell_off) a = 0x6e; else if (p->jumper.short_hop) a = 0x6d; }
+        else if (js == 4 || js == 5) a = 0x6f;
+        if (a >= 0) anim_request(p, a, 1.0f);
+        return;
+    }
+    if (p->race_crouch) { p->race_lean = 0; return; }
+    if ((p->race_lean_t -= dt) > 0) return;
+    int L = in->left, R = in->right && !L, a = 0;
+    switch (p->race_lean) {
+    case 0: if (L) { p->race_lean = 1; a = 0x5e; } else if (R) { p->race_lean = 3; a = 0x63; } break;
+    case 1: if (L) { p->race_lean = 2; a = 0x5f; } else { p->race_lean = 0; a = 0x62; } break;
+    case 2: if (!L) { p->race_lean = 1; a = 0x61; } break;
+    case 3: if (R) { p->race_lean = 4; a = 0x64; } else { p->race_lean = 0; a = 0x67; } break;
+    case 4: if (!R) { p->race_lean = 3; a = 0x66; } break;
+    }
+    if (a) { p->race_lean_t = anim_len(p, a, 0); anim_request(p, a, 1.0f); }
+}
+
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw)
 {
     if (dt <= 0) return;
+    g_rider = p->inst; g_rider_board = p->board;
     p->vy_corr = 0;
     p->play_time += dt;                                                   /* 0x453ca0: the accumulator Perso+0x710 runs in every state, it is the level time on the results screen */
     if (p->move_lock > 0) p->move_lock -= dt;
@@ -977,7 +1158,11 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); if (p->climb_sub) p->on_ground = 0; player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return; }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
-    if (!p->dead_kind) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } }
+    int racing = p->race_char && !p->dead_kind;                           /* Perso state 1: no attacks, no Mover (0x44b530) */
+    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } }
+    Vec3 disp;
+    if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
+    else {
     /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking */
     int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind);
     /* input direction relative to the camera */
@@ -1020,7 +1205,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     else if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, allow && in->jump, p->on_ground, p->pos.y - p->floor_y, dt);
     if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
-    Vec3 disp = p->use_atk_disp ? p->atk_disp : (Vec3){ sinf(p->yaw) * p->speed * dt, p->jumper.dy, cosf(p->yaw) * p->speed * dt };
+    disp = p->use_atk_disp ? p->atk_disp : (Vec3){ sinf(p->yaw) * p->speed * dt, p->jumper.dy, cosf(p->yaw) * p->speed * dt };
     if (p->push_t > 0 || p->push_speed > 0) {                              /* RampC 0x45acb0: 500 u/s, 0.1 s up, 0.5 s out */
         if (p->push_t > 0) { p->push_t -= dt; p->push_speed += 500.0f / 0.1f * dt; if (p->push_speed > 500.0f) p->push_speed = 500.0f; }
         else { p->push_speed -= 500.0f / 0.5f * dt; if (p->push_speed < 0) p->push_speed = 0; }
@@ -1028,15 +1213,18 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (!p->use_atk_disp && p->slide_speed > 0) { disp.x += p->slide_dir.x * p->slide_speed * dt; disp.z += p->slide_dir.z * p->slide_speed * dt; }
     disp.y += dt * p->vy_corr;
+    }
     p->vel = (Vec3){ disp.x / dt, disp.y / dt, disp.z / dt };
     if (disp.y < 0) p->jumper.fallen -= disp.y;                                      /* 0x44b914: fallen height accumulates */
 
     /* Perso_MoveCollide 0x4624f0 -> SweepCylinder 0x437180 (docs/PERSO_MOVE.md 6.1/6.2): move in substeps of at
      * most 10 units; per substep one xz push-out vector (x0.9), landing clamp when falling, ground clinging when walking. */
     const Instance *hit_inst = NULL; const InsNode *hit_node = NULL; int found;
-    Vec3 np;
+    Vec3 np, old_pos = p->pos;
+    /* P+0x08 = 160 standing / 81 crouched for the race columns (0x462490), wall radius halved while crouched in state 1 (0x462517) */
+    const float body_h = p->race_char ? (p->race_crouch ? 81.0f : 160.0f) : P_BODY_H, radius = racing && p->race_crouch ? P_RADIUS * 0.5f : P_RADIUS;
     {
-        const float half = P_BODY_H * 0.5f;
+        const float half = body_h * 0.5f;
         Vec3 cur = { p->pos.x, p->pos.y + half, p->pos.z };
         Vec3 carry = attach_delta(p);                                 /* 0x436d20: the platform moved under the player */
         Vec3 d = { disp.x + carry.x, disp.y + carry.y, disp.z + carry.z };
@@ -1052,8 +1240,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         for (; n > 0; n--) {
             cur.x += d.x; cur.y += d.y; cur.z += d.z;
             float feet = cur.y - half;
-            Vec3 push = gel_push(p->gel, cur, P_RADIUS, feet + margin, feet + P_BODY_H);
-            { Vec3 ip = ins_push(p->ins, p->inst, cur, P_RADIUS, feet + margin, feet + P_BODY_H); push.x += ip.x; push.z += ip.z; }
+            Vec3 push = gel_push(p->gel, cur, radius, feet + margin, feet + body_h);
+            { Vec3 ip = ins_push(p->ins, p->inst, cur, radius, feet + margin, feet + body_h); push.x += ip.x; push.z += ip.z; }
             cur.x += push.x * 0.9f; cur.z += push.z * 0.9f;
             gy = world_ground(p, SWEEP_PROBE(cur), &found, &hit_inst, &hit_node);
             if (!found) continue;
@@ -1077,6 +1265,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; player_kill(p, 7); }     /* below the world: "disappear" death (the original leaves this to script volumes) */
     p->pos = np;
+    if (racing) race_check_crash(p, old_pos, disp, body_h);
     player_apply_transform(p);
     /* animations, Perso_AnimState 0x463e60 (docs/PERSO_MOVE.md 4.3, PERSO_JUMP.md 4): attack sub-state first, then
      * ground by Mover phase (0x463f40) or air by Jumper state (0x4642f0). Idle variations 0x59/0x5a are not done. */
@@ -1084,7 +1273,11 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         static const int atk_anim[12] = { -1, 0xb, 0xb, 0xc, 0xc, -1, 0xd, 0xe, 0xf, 0x10, 0x11, 0x12 };
         int js = p->jumper.state, want = p->lanim; float rate = 1.0f;
         int landing = (p->lanim == 8 || p->lanim == 0xa) && p->lanim_sub == 0;
-        if (p->dead_kind) {                                                /* 0x464790 */
+        if (p->dead_kind && p->race_char) {                                /* 0x464a00, table 0x464b48 (the board gets 0x76 for kind 1; it mirrors 0x75 here) */
+            int k = p->dead_kind; want = k == 8 ? 0x71 : k == 2 ? 0x72 : k == 6 ? 0x73 : k == 3 ? 0x74 : k == 1 ? 0x75 : k == 7 ? 0x77 : p->lanim;
+        }
+        else if (racing) want = -2;                                        /* 0x464c20 below */
+        else if (p->dead_kind) {                                           /* 0x464790 */
             int k = p->dead_kind; want = p->lanim;
             if (k == 1) want = p->dead_T <= anim_len(p, 0x2f, 0) ? 0x2f : 9;
             else if (k == 2 || k == 9) want = 0x30;
@@ -1108,7 +1301,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             else if (p->ramp_phase != 2) want = 8;
             if (p->ground_kind == 2) game_land_dust((Vec3){ p->pos.x, p->pos.y + 30.0f, p->pos.z }, p->ground_n);   /* 0x464486: 0x476140(&pos + (0,30,0), &normal, 3, 0.25, 1.5) */
         }
-        anim_request(p, want, rate);
+        if (want == -2) { race_anims(p, in, dt); if (p->lanim >= 0) anim_request(p, p->lanim, 1.0f); }   /* the controller Tick runs every frame (0x463e60): it walks the chain 0x5d -> anim 0 etc. */
+        else anim_request(p, want, rate);
         /* footsteps (docs/FOOTSTEPS.md): in the walk cycle (logical animation 3) 0x463f40 puts a foot down when the
          * fraction of the cycle passes 0.38 (0x4ab278) and 0.9 (0x4a94b8) and calls the effect 0x47cba0 for it. */
         {
@@ -1157,7 +1351,7 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
     int js = p->jumper.state, rising = js == 0 || js == 1 || js == 7, falling = js == 3 || js == 4;
     if (behind) {
         float k = dt * (quick ? 7.0f : 3.0f);
-        mv.x = (T.x - look.x * CAM_DIST_MAX - P.x) * k; mv.z = (T.z - look.z * CAM_DIST_MAX - P.z) * k;
+        mv.x = (T.x - look.x * p->cam_dist - P.x) * k; mv.z = (T.z - look.z * p->cam_dist - P.z) * k;
     } else {
         float vx = T.x - P.x, vz = T.z - P.z, d = sqrtf(vx * vx + vz * vz);
         if (d > 1e-3f) {
@@ -1169,7 +1363,7 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
         }
     }
     if (rising) mv.y = (P.y - T.y < 300.0f) ? T.y - p->cam_tprev.y : 0;
-    else mv.y = (T.y + CAM_HEIGHT - P.y) * 6.0f * dt;
+    else mv.y = (T.y + p->cam_height - P.y) * 6.0f * dt;
     Vec3 N = { P.x + mv.x, P.y + mv.y, P.z + mv.z };
     if (collide) {
         /* sphere r = 40 pushed out of walls (0x422e30 -> 0x439c50, here one push per frame), then the veto: a step
@@ -1201,7 +1395,7 @@ void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
     p->cam_behind_prev = behind_key; if (p->cam_quick_t > 0) p->cam_quick_t -= dt;
     /* 0x4591ec: Perso states 1, 4 (climbing) and 8 force behind mode at the slow rate; the target is the root position during the climb-over */
     Vec3 keep = p->pos; if (p->use_root) p->pos = p->root_pos;
-    camera_step(p, dt, behind_key || p->cam_quick_t > 0 || p->climb_sub || p->ride, p->cam_quick_t > 0, !p->ride);   /* port choice: no camera collision during the ride, the rocket flies through walls and the veto would strand the camera */
+    camera_step(p, dt, behind_key || p->cam_quick_t > 0 || p->climb_sub || p->ride || (p->race_char && !p->dead_kind), p->cam_quick_t > 0, !p->ride);   /* port choice: no camera collision during the ride, the rocket flies through walls and the veto would strand the camera */
     cam->pos = p->cam_pos; cam->fov_deg = CAM_FOV_Y;
     Vec3 to = { p->pos.x - cam->pos.x, p->pos.y + CAM_LOOK_Y - p->cam_drop - cam->pos.y, p->pos.z - cam->pos.z };
     float h = sqrtf(to.x * to.x + to.z * to.z);
