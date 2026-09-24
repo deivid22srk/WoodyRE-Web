@@ -501,7 +501,8 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex)
     p->gel = gel; p->ins = ins; p->tex = tex; p->cur_col = 0xffffffffu; p->step_u = -1.0f;
     player_bind(p, &ins->models[0].instances[0]);
     p->jumper.state = 2; p->jumper.armed = 1;                      /* 0x462c90 reset */
-    p->health = 3.0f; p->lives = 3; p->game_state = 2; p->fade = 1.0f; p->lanim = -1;
+    p->health = 3.0f; p->lives = 3; p->lanim = -1;
+    p->game_state = 1; p->iris_from = 0; p->iris_to = 1.0f; p->iris_dur = 1.0f; p->iris = 0;   /* Game ctor 0x445850: the level opens with the iris, 0 -> 1 in 1 s */
     p->cam_dist = 400.0f; p->cam_height = 180.0f; p->cam_zoom = 1.2f;
     /* volume table */
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) p->nvol += ins->models[mi].nvolume_nodes * ins->models[mi].ninstances;
@@ -854,20 +855,36 @@ static void player_reset(Player *p)                                     /* vt[17
      * and 0x445930 then calls 0x458f90 (hard cut back to the follow camera). Both live in the app (g_cam). */
     p->respawn_req = 1;
 }
-/* Game sequence 0x4459c0: 2 play -> (dead) 3 wait death_delay - 1 s -> 4 fade out 1 s -> lose a life -> 0 wait 0.25 s,
- * respawn -> 1 fade in 1 s -> 2. p->fade is the screen brightness (1 = normal). */
-static void game_sequence(Player *p, EkoVM *vm, float dt)
+/* The iris Game+4: 0x4776b0(from, to, dur) sets it, 0x477920(dt) advances it, draws it (0x4776d0, hud_iris: a black ring
+ * around the screen centre with the inner radius iris * 0.99 * 480) and says whether it has arrived. */
+static void iris_set(Player *p, float from, float to, float dur) { p->iris_from = from; p->iris_to = to; p->iris_dur = dur; p->iris_t = 0; }
+static int iris_tick(Player *p, float dt)
 {
+    p->iris_t += dt; float f = p->iris_t / p->iris_dur; if (f > 1.0f) f = 1.0f;
+    p->iris = p->iris_from - (p->iris_from - p->iris_to) * f; p->iris_on = 1;
+    return f >= 1.0f;
+}
+/* Game sequence 0x4459c0 (docs/PERSO_FRAME.md 4.1): 1 iris opens (the Game ctor starts here, 0 -> 1 in 1 s) -> 2 play ->
+ * (dead) 3 wait death_delay - 1 s -> 4 iris closes 1 -> 0 in 1 s -> lose a life -> 0 black for 0.25 s, respawn -> 1.
+ * It is not a brightness fade: the picture stays at full brightness inside a shrinking circle round the screen centre,
+ * which is where the follow camera keeps Woody. Ticked by the frame (step 33) whenever the world is not paused,
+ * cinematics included; the iris is drawn only in the states 0, 1 and 4. */
+void player_game_tick(Player *p, EkoVM *vm, float dt)
+{
+    p->iris_on = 0;
+    if (dt <= 0) return;
     switch (p->game_state) {
+    case 0: iris_tick(p, dt); p->game_t -= dt;
+            if (p->game_t <= 0) { player_reset(p); iris_set(p, 0, 0, 0.1f); iris_set(p, 0, 1.0f, 1.0f); p->game_state = 1; }   /* 0x445930, then 0x445a44 */
+            break;
+    case 1: if (iris_tick(p, dt)) p->game_state = 2; break;
     case 2: if (p->dead_kind) { p->game_state = 3; p->game_t = 0; } break;
-    case 3: p->game_t += dt; if (p->game_t >= p->death_delay - 1.0f) { p->game_state = 4; p->game_t = 0; } break;
-    case 4: p->game_t += dt; p->fade = 1.0f - p->game_t; if (p->fade <= 0) {
-                p->fade = 0; if (p->lives > 0) p->lives--;               /* 0x44c730: life lost, leave all volumes, msgmask 0x10 pulse */
+    case 3: p->game_t += dt; if (p->game_t >= p->death_delay - 1.0f) { iris_set(p, 1.0f, 0, 1.0f); p->game_state = 4; } break;   /* 0x445ac1 */
+    case 4: if (iris_tick(p, dt)) {
+                if (p->lives > 0) p->lives--;                            /* 0x44c730: life lost, leave all volumes, msgmask 0x10 pulse */
                 if (vm) { eko_actor_leave_all(vm, p->inst->id); eko_msgmask_set(vm, p->inst->id, 0x10); p->mask10_frames = 2; }
                 for (uint32_t v = 0; v < p->nvol; v++) p->inside[v] = 0;
                 p->game_state = 0; p->game_t = 0.25f; } break;
-    case 0: p->game_t -= dt; if (p->game_t <= 0) { player_reset(p); p->game_state = 1; p->game_t = 0; } break;
-    case 1: p->game_t += dt; p->fade = p->game_t; if (p->fade >= 1.0f) { p->fade = 1.0f; p->game_state = 2; } break;
     }
     if (p->mask10_frames > 0 && --p->mask10_frames == 0 && vm) eko_msgmask_clear(vm, p->inst->id, 0x10);
 }
@@ -1183,8 +1200,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->move_lock > 0) p->move_lock -= dt;
     if (p->invuln_respawn > 0) p->invuln_respawn -= dt;
     if (p->invuln_hit > 0) p->invuln_hit -= dt;
-    game_sequence(p, vm, dt);
-    if (p->game_state == 0) return;                                       /* waiting for the respawn */
+    if (p->game_state == 0) return;                                      /* waiting for the respawn */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
         p->health -= 1.0f; printf("  PLAYER fall damage, health %.0f\n", p->health);

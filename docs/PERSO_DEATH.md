@@ -167,7 +167,8 @@ de besturing terug) en de deurcamera stond er maar één frame.
 Toestand 2 → `0x463e8f`: `P+0x4d8 ? 0x464a00 : 0x464790`. `+0x4d8` is alleen 1 in de race-variant `0x44c4c0` (§3.3).
 Kill zet altijd (`0x44c443`): `health = 0`, **`+0x274 = 0` (doodsklok T)**, `+0x26c = soort`, `+0x4d8 = 0`, `+0x550 = 0`,
 toestand 2, `+0x268 = 1`. `0x464790` doet elk frame eerst `T += dt` (`0x464796`).
-Fade van het scherm: `0x4459c0` toestand 3 begint de fade-out (1.0 s) op `T ≥ P+0x288 − 1.0` (PERSO_FRAME §4.1).
+Iris: `0x4459c0` toestand 3 laat de iris dichtgaan (1.0 s, zwarte ring om het schermmidden, geen helderheidsfade) op
+`T ≥ P+0x288 − 1.0`; na de respawn gaat hij in 1.0 s weer open (PERSO_FRAME §4.1).
 Het model wordt **nergens verborgen of vervaagd**, behalve het aan/uit-flitsen bij soort 2/9 (§4.2).
 
 Animcontroller-regel (`0x436a50`): een verzoek vervangt de huidige als `prio_nieuw ≥ prio_huidig` of als de huidige in

@@ -40,7 +40,7 @@ static const char *k_levels[29] = { "House", "WWS", "W1A", "W1B", "W2A", "W2B", 
                                     "SWS", "S1A", "S1R", "S2A", "S2R", "S3A", "S3R", "BlackBox", "Credits", "BlackBox", "Lang" };
 static int g_level = 27, g_prev_level = 27;           /* app+0x68 / +0x6c (init 0x1b) */
 /* RequestLevel 0x404b60(fade_s, level, state, page): fade out, then the main loop swaps the level */
-static int g_next_level = -1; static float g_fade_len = 0.5f, g_switch_fade = 1.0f;
+static int g_next_level = -1; static float g_fade_len = 0.5f, g_switch_fade = 0.0f;   /* every level load fades in over 1 s (0x404332), the first one too */
 static void request_level(int index, float fade_s) { if (g_next_level < 0 && index >= 0 && index < 29) { g_next_level = index; g_fade_len = fade_s > 0.01f ? fade_s : 0.01f; audio_music_stop(g_fade_len * 0.9f); audio_rtc(-1); } }   /* 0x404b95 */
 static int level_index(const char *name) { for (int i = 0; i < 29; i++) if (!_stricmp(k_levels[i], name)) return i; return -1; }
 
@@ -2300,6 +2300,7 @@ int main(int argc, char **argv)
             rockets_update(dt, &L.player, L.have_player && !fly);
             L.player.idle_hold = g_res.on || g_level == 0 || (g_cam.mode == 4 && !fly);   /* Perso state 9 / title / frozen (0x459090): no idle count, no sleeping */
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
+            if (!fly) player_game_tick(&L.player, &L.vm, dt);                   /* 0x4459c0 (frame step 33), also during a cinematic: iris, death, respawn */
             player_sync_board(&L.player);
             if (L.player.race_cam_req) { L.player.race_cam_req = 0; g_cam.cut = 1; cam_set_mode(1); L.player.cam_init = 0; }   /* race sub-state 0: 0x41f9f0(2) + SetMode(0, 0) */
             if (L.player.fade_req) { fade_start(0.5f, L.player.fade_req == 1); L.player.fade_req = 0; }           /* door actions 17 / 18 */
@@ -2440,6 +2441,7 @@ int main(int argc, char **argv)
                 hud_draw(&hs, dt);
                 if (g_bossbar.on) { hud_boss_bar(g_bossbar.cur, g_bossbar.max, g_bossbar.t); if (!paused) g_bossbar.t += dt; }   /* hud+0x48: drawn by the HUD animator after the HUD */
             }
+            if (L.have_player && !fly && !paused && L.player.iris_on) hud_iris(L.player.iris);   /* the Game iris 0x477920, drawn by 0x4459c0 after the HUD (0x401e55) and before the text box */
             {   /* menu page 0x1e runs from 1140 until page 6 takes over in state 4 (docs/RESULTS.md) */
                 static int ticking;
                 int counting = 0;
@@ -2465,8 +2467,8 @@ int main(int argc, char **argv)
         }
         end_prev = win.keys[VK_END];
         if (next_name && now - t0 >= next_at) { request_level(level_index(next_name), 0.5f); next_name = NULL; }
-        if (g_next_level >= 0) { g_switch_fade -= dt / g_fade_len; if (g_switch_fade < 0) g_switch_fade = 0; } else if (g_switch_fade < 1) { g_switch_fade += dt / 0.5f; if (g_switch_fade > 1) g_switch_fade = 1; }
-        { float f = (L.have_player && !fly) ? L.player.fade : 1.0f; if (g_switch_fade < f) f = g_switch_fade;
+        if (g_next_level >= 0) { g_switch_fade -= dt / g_fade_len; if (g_switch_fade < 0) g_switch_fade = 0; } else if (g_switch_fade < 1) { g_switch_fade += dt / 1.0f; if (g_switch_fade > 1) g_switch_fade = 1; }   /* the level load fades in over 1.0 s (0x404332) */
+        { float f = g_switch_fade;
           if (g_sfade.rest > 0 && g_sfade.total > 0) { float k = g_sfade.rest / g_sfade.total, b = g_sfade.out ? k : 1.0f - k; if (b < f) f = b; g_sfade.rest -= dt; if (g_sfade.rest <= 0 && g_sfade.out && !g_sfade.script) g_sfade.hold = 1; }
           /* a finished fade-out keeps the 3D picture black until the next fade-in; that is drawn under the 2D layer (above) */
           if (f < 1.0f) rnd_fade(f); }

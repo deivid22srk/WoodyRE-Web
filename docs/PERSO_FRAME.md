@@ -434,17 +434,28 @@ typevlaggen-ptr, `[17]=0x44ab20` Reset, `[22]=0x44cda0` berichthandler, `[32]=0x
 
 ## 4. `0x4459c0(Game, dt)` en `0x451cc0(dt)`
 
-### 4.1 `0x4459c0` – dood/respawn-sequentie met fade (Game+0x14, tabel `0x445b80`)
-`Game+0x10 = dt`; eerst `0x451cc0(dt)` (§4.2). Fader `Game+4` (`0x4776b0(van, naar, duur)`:
+### 4.1 `0x4459c0` – dood/respawn-sequentie met iris (Game+0x14, tabel `0x445b80`)
+`Game+0x10 = dt`; eerst `0x451cc0(dt)` (§4.2). **Iris** `Game+4` (`0x4776b0(van, naar, duur)`:
 `+0=van, +4=naar, +8=duur, +0xc=t`; `0x477920(dt)`: `t += dt`, waarde = van − (van−naar)·min(t/duur,1)
-→ `0x4776d0(waarde)` (schermhelderheid), geeft klaar).
+→ `0x4776d0(waarde)`, geeft klaar). `0x4776d0` is **geen helderheid** maar dezelfde iris als in de menu's
+(MENU_NEWGAME.md §2.7): een dekkend zwarte ring van 50 segmenten om het schermmidden (320, 240)
+(`0x4ab5bc`/`0x4abd40`, de enige lezers van die constanten), binnenstraal `waarde·0.99·480`, buitenstraal 475. Het beeld
+blijft dus op volle helderheid binnen een krimpende/groeiende cirkel, en omdat de volgcamera Woody in het midden houdt,
+zie je hem in het gat. De iris wordt alleen getekend in toestand 0, 1 en 4 (de aanroepen van `0x477920`); de functie loopt in
+stap 33 van het frame, dus **ná de HUD** (stap 29) en ook tijdens een cinematic (alleen de pauze houdt hem stil).
+**Levelstart**: de Game-ctor `0x445850` doet `0x445930`, één iris-tick van 0.1 s en dan iris **0 → 1 in 1 s**, toestand 1:
+elk level (ook House achter het titelmenu) gaat open met de iris, gelijktijdig met de vlakke fade-in van 1 s uit de laadroutine
+(`0x404332`, `0x401440(1.0)`). De scriptfades 1150/1151/1152 zijn iets anders: zwarte 640×480-rechthoeken van de App-faders
+(`0x445bf0`, `0x4014c0`); het begin van het W1B-baasgevecht gebruikt alleen die (`1152` 0.3 s, dan `1150 [100]`).
+Andere schrijvers van `Game+0x14`/`+0xc` zijn er niet (buiten `0x445850`/`0x445930`/`0x4459c0`); `0x445930` komt verder
+alleen nog uit het pauzemenu (herstart, `0x40584d`: toestand 0 met timer 0.1 ⇒ nogmaals respawn, iris open).
 * state 0: `0x451bd0()` (onweer uit), fader-tick, `Game+0xc -= dt`; ≤ 0 ⇒ `0x445930(Game)`
   (fader (0,0,0.1), timer 0.1, `Perso->0x44a810(0)`, alle actoren `vtbl[28]()` via `0x40c040`,
-  `0x458f90(Game+8)`), fader (0 → 1.0 in 1.0 s), **state 1** (fade-in).
-* state 1: fader klaar ⇒ **state 2** (spel).
+  `0x458f90(Game+8)`), iris (0 → 1.0 in 1.0 s), **state 1** (iris gaat open).
+* state 1: iris klaar ⇒ **state 2** (spel).
 * state 2: `Perso->vtbl[36]()` (dood) ⇒ **state 3**, timer 0.
-* state 3: `0x451bd0()`; timer += dt; ≥ `Perso+0x288 − 1.0` ⇒ fader (1.0 → 0 in 1.0 s), **state 4**.
-* state 4: fader klaar ⇒ `Perso->0x44c730()` (leven eraf), **state 0**, timer 0.25.
+* state 3: `0x451bd0()`; timer += dt; ≥ `Perso+0x288 − 1.0` ⇒ iris (1.0 → 0 in 1.0 s), **state 4**.
+* state 4: iris dicht ⇒ `Perso->0x44c730()` (leven eraf), **state 0**, timer 0.25 (scherm zwart: de iris staat op 0).
 Daarna altijd: `0x44f0a0(Game+0x64, dt)` (modus-automaat 1..4 met timers `+0x118/+0x128` en
 `0x401440/0x4014c0(App, …)`); geeft true ⇒ **respawn**: `Perso.pos = Game+0x1b0`, `Perso->vtbl[17]()`
 (Reset `0x44ab20`), `0x459ff0(&Perso.mover, &Game+0x198)` (kijkrichting), `0x44a650(Perso, &Game+0x198)`,

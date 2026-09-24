@@ -30,6 +30,7 @@ static struct {
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
     GLuint sheet; int sheet_w, sheet_h;                   /* level bank image 0 (House and the three hubs carry the same one): the save-slot panel, ring and cross */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
+    float iris_kx, iris_ky;                               /* hud_iris: virtual units per round pixel on this window (1, 1 at 4:3) */
 } H;
 
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -499,6 +500,7 @@ static void hud_anim_tick(const HudState *s, float dt)
 void hud_begin(int win_w, int win_h)
 {
     glViewport(0, 0, win_w, win_h);
+    { float sx = win_w / 640.0f, sy = win_h / 480.0f, s = sx > sy ? sx : sy; H.iris_kx = sx > 0 ? s / sx : 1; H.iris_ky = sy > 0 ? s / sy : 1; }
     glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(0, 640, 480, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
     glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_LIGHTING); glDisable(GL_ALPHA_TEST); glDisable(GL_STENCIL_TEST); glDisable(GL_FOG);
@@ -693,16 +695,18 @@ void hud_logo(int grow, float dt)
 
 /* the iris 0x4776d0 (docs/MENU_NEWGAME.md 2.7): an opaque black ring of 50 segments around (320, 240), inner radius
  * 0.99 * 480 * v, outer 0.99 * 480 - the corners are 400 away, so v = 0.85 shows nothing and v = 0 is all black.
- * 0x482cf0 clips to the virtual screen; the viewport does that here. */
+ * 0x482cf0 clips to the virtual screen; the viewport does that here. The original ran at 4:3; on another window shape
+ * the stretched virtual screen would make an ellipse, so the ring stays round and takes the larger of the two scales
+ * (v = 1 still opens it completely). */
 void hud_iris(float v)
 {
     if (!H.ok) return;
-    const float r = 0.99f * 480.0f, ri = r * v;
+    const float r = 0.99f * 480.0f, ri = r * v, kx = H.iris_kx ? H.iris_kx : 1, ky = H.iris_ky ? H.iris_ky : 1;
     glDisable(GL_TEXTURE_2D); glColor4f(0, 0, 0, 1); glBegin(GL_QUADS);
     for (int k = 0; k < 50; k++) {
         float a0 = k * (6.2831853f / 50), a1 = (k + 1) * (6.2831853f / 50), c0 = cosf(a0), s0 = sinf(a0), c1 = cosf(a1), s1 = sinf(a1);
-        glVertex2f(320 + ri * c0, 240 + ri * s0); glVertex2f(320 + ri * c1, 240 + ri * s1);
-        glVertex2f(320 + r * c1, 240 + r * s1);   glVertex2f(320 + r * c0, 240 + r * s0);
+        glVertex2f(320 + ri * kx * c0, 240 + ri * ky * s0); glVertex2f(320 + ri * kx * c1, 240 + ri * ky * s1);
+        glVertex2f(320 + r * kx * c1, 240 + r * ky * s1);   glVertex2f(320 + r * kx * c0, 240 + r * ky * s0);
     }
     glEnd();
 }
