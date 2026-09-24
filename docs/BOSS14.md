@@ -430,7 +430,7 @@ een beweeg-actie duurt dus maar AnimLen(2) = 0.167 s) en door **TakeDamage** (`h
 
 * **Horizontaal**: de gewone gedragingen (ENEMY.md §5): Dwalen (400 u/s, draaien π/4 rad/s, leash 1000 rond het thuispunt), Achtervolgen (900 u/s,
   π rad/s), Stilstaan. Subtype ≥ 9 ⇒ de gemeenschappelijke verplaatsing `0x41b2c0` houdt y vast; `P+0x2c/0x30 = 15000` ⇒ geen rand-/opstaptest, alleen
-  de sweep tegen muren. Plus de directe schrijvingen in toestand 6 (schudden) en 7 (1 %-schuif). **Geen TRAJ/pad.**
+  de sweep tegen muren (§5.1). Plus de directe schrijvingen in toestand 6 (schudden) en 7 (1 %-schuif). **Geen TRAJ/pad.**
 * **Verticaal** `vtbl[43]` = `0x410900`:
 ```c
 void Boss14_Height(Boss14 *e) {
@@ -465,6 +465,38 @@ void Boss14_Height(Boss14 *e) {
   van `pos.y` tot `pos.y + 150` met straal 240. Het model wordt op `pos` getekend met de rotatie uit H (`vtbl[44]`); de wortelknoop komt uit de
   animatie. Blijft een port op **anim 0** staan (cinematic-spoor, wortel y ≈ 5826), dan zweeft het model ver boven de arena: in het origineel speelt
   de klasse vanaf de eerste Update in modus 1 alleen records 2..16 (anims 5..18). Vóór het commando (modus 0) is 405 door het script verborgen.
+
+### 5.1 De sweep `0x437580`: een BOL van straal 240 (de lantaarns van W1B)
+
+`0x41b2c0` roept `0x437580(&res, &from, &to, up, 30.0)` aan met `up = min(P+0x30, h/2) = 75` en `[0x4b3118] = P+4 = 240` (`0x41b489`):
+
+```c
+void Sweep(vec3 *res, vec3 *from, vec3 *to, float up, float sub /*30*/) {      /* 0x437580 */
+    float h = r + up + 1.0f;                                    /* 240 + 75 + 1 = 316: bolmiddelpunt boven pos */
+    vec3 c = *from + (0,h,0), d = *to - *from;
+    int n = (int)(floor(|d| / sub) + 1.0f + 0.5f);  d /= n;     /* substappen <= 30; bij |d| = 0 precies één */
+    for (; n > 0; n--) {
+        c += d;
+        SpherePush(&c, r, -1);                                  /* 0x407340: wereld (0x409ad0) + instanties vt[9] = 0x433ff0 */
+        if ([0x4c4bd0]) { c.x += push.x; c.z += push.z; }       /* de volle uitduw, alleen x/z */
+        GetHeight(&c);  if (c.y - h < groundY) c.y = groundY + h;
+        *res = c - (0,h,0);
+    }
+}
+```
+* `0x407340` = bol tegen alle wereldpolygonen van de geraakte cellen (voorkant, `0.001 < d < r`, randtests) en de statische + dynamische
+  instanties via `vt[9]` = **`0x433ff0`**, dat (net als de cilindertest `vt[8]` `0x433140` en de vloertest `vt[7]` `0x432480`) de lijst
+  **`S+0x58/0x5c` = de press-nodes (vlag 0x01)** doorloopt, **niet** de hull-nodes (`S+0x38`). Per as positief maximum + negatief minimum.
+* De bol loopt dus van `pos.y + 76` tot `pos.y + 556`. **Laag** (1634.8) raakt hij de koppen van de vier lantaarns in de hoeken van de arena
+  (W1B inst 235..238, model 6, press-nodes tot y 1972); **hoog** (2430) gaat hij erover, maar raakt hij de rotswanden achter de lantaarns.
+  Een speler die in een hoek achter een lantaarn staat is zo nooit binnen de 150 (xz) die toestand 3 nodig heeft om te schudden/stompen:
+  Buzz blijft er ≈ 200 vandaan in toestand 3 hangen (port gemeten: Woody (−7983, −7567), Buzz (−7855, 2430, −7717)). Dat is het "verstoppen
+  bij de lantaarns" uit het origineel.
+* De sweep loopt **elke frame**, ook met stap 0 (Stilstaan, schudden, de val in toestand 7): de bol duwt hem dan ter plekke uit wat hij raakt.
+* Na de sweep: subtype ≥ 9 ⇒ `res.y = from.y`; vrij als `[0x4b310c]` (grondnormaal-y van GetHeight) ≥ 0.8 en de afstap < `P+0x2c`, anders
+  alleen platformdelta + `OnBlocked`. Achtervolgen-haak `[2]` `0x41bdf0`: verplaatsing < 0.01 ⇒ ±16 willekeurig in x en z (loswrikken).
+* Het uitduwen per polygoon (dichtstbijzijnde punt, `r − afstand` langs die richting) is de lezing van de port van `0x409ad0`/`0x433ff0` op
+  aanroepniveau, niet instructie voor instructie nagelopen.
 
 ## 6. Schade
 
@@ -654,6 +686,10 @@ Volgorde van implementeren; getallen voor modus 1 / W1B.
   Update, TakeDamage en `11/4` door naar `boss.c`. Motor-haken in `main_engine.c`: `game_var_get/set` (brievenbus), `game_cam_shake` (`0x41fbd0`,
   nu in `cam_update`), `game_boss_bar` (`hud_boss_bar`), `game_explosion` (twee flitsrecords), `game_boss_smoke` (explosie + rookpluim op marker
   typecode 0 nr. n van de schotel).
+* Beweging: `boss_sweep` = de bol-sweep §5.1 met `player_sphere_push` (wereld + press-nodes van instanties, zonder de baas zelf, zijn schotel
+  en de speler), elke frame, ook bij stap 0. Daarvoor was het een dunne straal alleen tegen wereldpolygonen en werd er bij stap 0 niets getest:
+  Buzz vloog dwars door de lantaarns en bereikte de speler in de hoeken. Niet geport: de "vrij"-test `[0x4b310c] >= 0.8` (boven de arenavloer altijd waar).
+  Test hoek: `WOODY_POSAT="24 -7990 1360 -7560"` bij de test hieronder (Woody wordt niet meer geraakt; de oude build doodt hem).
 * De gekoppelde instantie wordt door `player_set_carried` uitgesloten van de grondtest van de baas; `player_ground_query` slaat nu ook de speler zelf
   over (de baas landde op Woodys eigen botsnode).
 * Gevonden bij het porten: de cinematic-start `0x44ecc0` roept `0x4077f0` aan op elke acteur, en die zet een verborgen instantie altijd weer in zijn
