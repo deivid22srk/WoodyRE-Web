@@ -842,6 +842,7 @@ static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int 
 static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass 0 = opaque, 1 = blended */
 {
     Model *m = inst->model;
+    if (inst->type == 60) return;                                /* a water volume draws its own surface (Draw 0x4738c0, water.c), never its box */
     const Material *mat;
     uint32_t evf[4]; event_frames(inst, evf);
     /* rigid node polygons: only mesh nodes, never those with typecode 2 (0x43b6c2) */
@@ -1156,6 +1157,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         T[3] += win_time() - a;
     }
     }
+    if (r->show_instances && r->post_models) { r->post_models(r->tex, cam->pos); set_blend(0); g_last_material = 0xffffffffu; }
     if (r->show_instances) {
         /* list +0x1c4 (0x428d00): depth = camera-space z of the .ins position (0x43b528, clamped at 0), bucket =
          * round(depth * 254 / max(1, deepest)), drawn from bucket 255 down to 0; per bucket all batches depth-only,

@@ -56,7 +56,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | 20 | berijdbare raket: geport (opstappen, draaien, ontsteking, rechte vlucht, rood knipperen, explosie r 600 = Kill(6), respawn met fade-in, geluiden 15/16/10/11/6). Vereenvoudigd: vlam als billboard i.p.v. drie gekruiste quads, explosie alleen de twee flitsen — die wel als de negen vlakke quads van `0x4762e0` (deeltjes `0x4767f0`/`0x4764f0` niet gedecompileerd), geen camerabotsing tijdens de rit (port-keuze), startoriëntatie niet tegen het origineel geverifieerd | grotendeels | ROCKET.md |
 | 21 | bomkanon (W2A/W2B/W2D): Woody rijdt mee op een afgeschoten bom; **geblokkeerd op het bommensysteem (type 40)** | analyse klaar | ROCKET.md §7 |
 | 90 | omgevingsvolume: modus 0 (1501/1504) geport - de vlinders van het titelscherm, met hun dwaalgedrag, landen en vleugelslag. Niet: modus 1 (`0x47e160`, langs de grondnormaal) en 2. Alleen House gebruikt klasse 90 | grotendeels | TITLE.md §3.1, OBJECTS.md §2.4 |
-| 60 | eigen handler (1503/1506) | niet geanalyseerd | OBJECTS.md §3 |
+| 60 | watervolume: rooster met twee golvende lagen, glimlijn, kielzog, Kill(7) geport (`src/water.c`); niet: de plons van bericht 1505 en van Kill(7) (`0x478660`) | grotendeels | WATER.md |
 | 50 / 51 / 52 | laser: kern, gloed, reizende puls, bliksemboog en inslag geport; de straal stopt nog alleen op wereldpolygonen, niet op instanties | grotendeels | OBJECTS.md §2.1 |
 | berichten 16/18/19 (textuurframe-override) geport; 15/17 (UV-scroll-override) niet | textuurframe-/UV-override per instantie | grotendeels | INSTANCE.md §2 |
 | 1201 / 1202 | typewoord-bit 0x400 (aanvalbaar doel) | analyse klaar | OBJECTS.md §3 |

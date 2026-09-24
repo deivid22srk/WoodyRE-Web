@@ -49,6 +49,9 @@ typedef struct {
     uint32_t *face_stamp, stamp_gen;                   /* the frame stamp of poly+4: one face is collected once */
     uint8_t *sec_vis, *sec_prev; int pvs_on, sec_dirty;/* per sector: visible now / last frame */
     uint32_t drawn_tris, total_tris; uint32_t nsec_vis;
+    /* drawn after the models and before the fade list: texture list 8 of the flush 0x4293f0 (docs/LIGHTING.md 1.5),
+     * where the water surfaces of class 60 go (water.c) */
+    void (*post_models)(const TexFile *tex, Vec3 eye);
 } Renderer;
 
 int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis);   /* lit / vis may be NULL */

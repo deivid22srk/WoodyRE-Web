@@ -50,7 +50,7 @@ keer, één keer per vijand erbij. `src/geltest.c` controleert die queries op sy
 `F4` zet de culling stap voor stap uit als er iets verdwijnt dat er hoort te zijn, `WOODY_PROF=1` toont per frame hoeveel driehoeken
 en sectoren er overblijven en `WOODY_NOKD=1` laat de queries weer het hele level aflopen.
 ```bash
-python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c src/main_engine.c src/player.c src/instance.c src/enemy.c src/boss.c src/ekovm.c src/audio.c src/hud.c -lopengl32 -lgdi32 -luser32 -lwinmm
+python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c src/main_engine.c src/player.c src/instance.c src/enemy.c src/boss.c src/water.c src/ekovm.c src/audio.c src/hud.c -lopengl32 -lgdi32 -luser32 -lwinmm
 ./out/woody.exe extract/Data                     # zonder level: het titelscherm (House, level 0); Enter start, daarna de hub
 ./out/woody.exe extract/Data W1A                 # pijltjes/WASD lopen (t.o.v. camera), spatie springen, F5 vrije camera (dan WASD + rechtermuisknop), [ ] animatie, Tab instantie, F1-F4 toggles (F4 = culling)
 ./out/woody.exe extract/Data W1A --shot out/s.ppm 3   # screenshot na 3 s en stoppen

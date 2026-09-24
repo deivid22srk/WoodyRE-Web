@@ -106,7 +106,7 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 1503 | inst, v | 18 | ✔ `inst+0x14c = v`, `vtable[0x1d]()` |
 | 1504 | inst, v | 14 | ✔ `inst+0x100 = v`, `+0x108 = 0` |
 | 1505 | inst, f | 0 | ✔ `0x478660(&pos, 1000.0, f·0.01)` |
-| 1506 | inst, a, b, c, d | 63 | ✔ `0x474690(inst, a·0.01, b·0.01, c·0.01, d)` |
+| 1506 | inst, a, b, c, d | 63 | ✔ SetWaterVolumeParameter (klasse 60): `0x474690(inst, a·0.01, b, c·0.01, d·0.01)` = cel, vakken (ongeschaald), amplitude, alfa; WATER.md §1 |
 | 1507 | inst | 0 | ✔ `0x4750e0(&pos)` |
 | 1508 | inst | 17 | ✔ registreer 20-byte node in lijst `0x5e8638`, `0x47cdf0` |
 | 1509 | a, inst, mode, x | 0 | ✔ mode 4/5: vector van inst → `0x477060(1, vec, 0)` |
