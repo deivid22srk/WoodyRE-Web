@@ -144,7 +144,7 @@ De speler leest dus **nooit** toetsen direct; alles gaat via `P+0x2f4` (= `[0x5e
 | 8 | LShift (cfg 7) | bukken-variant in toestand 1 (zie actie 5) | `0x465b65` |
 | 9 | Esc | pauze (niet door Perso gelezen) | `0x402940`, `0x401500`, `0x403334` |
 | 10 | Num0 | **camera achter de speler zetten** (0.5 s overgang; geluid 9 als het niet mag) | camera-controller `0x459163`, `0x45922d`, `0x45926a`, `0x4597a3` |
-| 11 | RCtrl | **speciale aanval met voorraad** `+0x254` (r, op de grond, toestand 0, `+0x750 == 0`): voorraad−1, anim 0x13, beweging geblokkeerd voor de animatieduur (`0x44cce0`), alle actoren in `0x4c5258[]` binnen bereik krijgen `vt[39]`(schade P+0x94 = 3.0) en evt. `vt[38](3)`; anders geluid 9 | `0x458c0c` in `0x458bf0` |
+| 11 | RCtrl | **speciale aanval met voorraad** `+0x254` (r, op de grond, toestand 0, `+0x750 == 0`): voorraad−1, anim 0x13, beweging geblokkeerd voor de animatieduur (`0x44cce0`), op 1.5 s krijgen **alle** actoren in `0x4c5258[]` (géén bereiktest) `vt[39]`(schade P+0x94 = 3.0, soort 2) en evt. `vt[38](3)` (= `ret 4`); anders geluid 9. Volledig: [PERSO_SPECIAL.md](PERSO_SPECIAL.md) | `0x458c0c` in `0x458bf0` |
 | 12 | = toets van 4 | menu-bevestiging (`0x4465c6`, p) – niet door Perso gelezen | |
 | 13 | – | nergens gezet of gelezen | |
 

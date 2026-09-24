@@ -903,6 +903,7 @@ static void player_reset(Player *p)                                     /* vt[17
     p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0; idle_reset(p);   /* 0x44abcf */
     p->duck = 0; p->duck_t = 0;                                          /* 0x44ad28 */
+    p->special_st = 0; p->special_t = 0;                                 /* 0x44ad5e / 0x44ad64 */
     if (p->race_char) race_enter(p);                                   /* 0x44ac33: SurfEnter + state 1 */
     player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
     /* 0x445930 -> 0x44a810 -> Reset 0x44ab20 clears Perso+0x4ec (0x44ad22): the side view's plane lock ends with the death,
@@ -1220,6 +1221,42 @@ static Vec3 race_ride(Player *p, const PlayerInput *in, float dt)
 }
 /* crouch 0x465b10 in state 1: action 8 (the attack key here), anims 0x68 / 0x69 / 0x6a; lowers the body to 81 and halves
  * the wall radius, the speed stays. The stand-up ray of the race columns is 2 units long and is left out. */
+/* ---- special attack 0x458bf0 (docs/PERSO_SPECIAL.md): action 11 on RELEASE, one charge Perso+0x254 ----------------
+ * On the ground in state 0 with a charge: anim 0x13 (.ins 86, 4.07 s) with move lock and invulnerability for its length,
+ * the streak/ring effect, and at 1.5 s the camera shake and vtbl[39](3.0, dir 0, Woody's feet, kind 2) on EVERY actor
+ * that thought last frame (max 32) - there is no range test at all. Otherwise SoundFx 9 (not for the race characters). */
+static void special_update(Player *p, const PlayerInput *in, float dt)
+{
+    int released = !in->special && p->special_prev; p->special_prev = in->special;   /* 0x467440(11) */
+    if (released) {
+        if (p->on_ground && player_state_free(p) && !p->race_char && p->special_st == 0 && p->special_charges > 0) {
+            float T = anim_len(p, 0x13, 0);
+            p->special_charges--; p->special_st = 1; p->special_t = 0;
+            if (p->move_lock < T) lock_move(p, T);                            /* 0x44cce0(T, 0) = max */
+            if (p->invuln_respawn < T) p->invuln_respawn = T;                 /* 0x44cd10: +0x270 = max (Hit and Kill 2..6, 8, 9; not pits, not water) */
+            p->atk = 0; p->charge = 0; p->lanim = -1;
+            game_special_fx();                                                /* 0x47ab90 */
+            puts("  PLAYER special attack");
+        } else if (!p->race_char) audio_fx(9, NULL, NULL);
+    }
+    if (p->special_st == 1) {
+        p->special_t += dt;
+        if (p->special_t >= 1.5f) {                                           /* [0x4aa184] */
+            game_cam_shake(2.0f); p->special_st = 2;                          /* rumble 0x44d1b0 not ported */
+            int n = 0;
+            for (int i = 0; p->enemies && i < p->enemies->n && n < 32; i++) {   /* 0x4c5258[], max 32 */
+                Enemy *e = &p->enemies->e[i];
+                if (e->removed || !e->attackable || !e->inst->visible || e->hp <= 0 || !game_enemy_thinks(e->inst)) continue;
+                n++;
+                int died = enemy_hit(e, 3.0f /* P+0x94 */, (Vec3){ 0, 0, 0 }, p->pos, 2);   /* vtbl[38](3) after it is an empty ret 4 */
+                printf("  SPECIAL hits enemy %u%s\n", e->inst->index, died ? " - dead" : "");
+            }
+        }
+    } else if (p->special_st == 2) {
+        p->special_t += dt;
+        if (anim_len(p, 0x13, 0) <= p->special_t) p->special_st = 0;
+    }
+}
 float player_body_height(const Player *p)                                 /* 0x462490 */
 {
     if (p->race_char) return p->race_crouch ? 81.0f : 160.0f;
@@ -1318,6 +1355,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->invuln_respawn > 0) p->invuln_respawn -= dt;
     if (p->invuln_hit > 0) p->invuln_hit -= dt;
     if (p->game_state == 0) return;                                      /* waiting for the respawn */
+    special_update(p, in, dt);                                            /* 0x458bf0 runs in every Perso state */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
         p->health -= 1.0f; printf("  PLAYER fall damage, health %.0f\n", p->health);
@@ -1509,6 +1547,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             else if (!(p->dead_ground && p->duck == 2) && p->dead_T >= anim_len(p, p->dead_ground ? 0x26 : 0x25, 0)) want = 0x29;
         }
         else if (p->hit_anim_t > 0) want = p->hit_anim;
+        else if (p->special_st) want = 0x13;                               /* priority 5500: only deaths and scripted actions (6000) beat it */
         else if (p->duck) want = p->duck_anim;                             /* 0x464630 does nothing while he ducks: no landing, idle or carry anims */
         else if (p->bomb) {                                                /* state 6: 0x4646b0 (docs/BOMB_CARRY.md 1.4) */
             if (js == 2 || p->on_ground) {

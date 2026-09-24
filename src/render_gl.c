@@ -18,8 +18,12 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_CLOSE: case WM_DESTROY: if (w) w->quit = 1; return 0;
     case WM_SIZE: if (w) { w->width = LOWORD(lp); w->height = HIWORD(lp); } return 0;
-    case WM_KEYDOWN: if (w && wp < 256) w->keys[wp] = 1; return 0;   /* Esc is a menu key now (docs/MENU_NEWGAME.md 1.3), not quit */
-    case WM_KEYUP: if (w && wp < 256) w->keys[wp] = 0; return 0;
+    case WM_KEYDOWN: case WM_KEYUP: {                                /* Esc is a menu key now (docs/MENU_NEWGAME.md 1.3), not quit */
+        int down = msg == WM_KEYDOWN;
+        if (w && wp < 256) w->keys[wp] = down;
+        if (w && wp == VK_CONTROL) w->keys[(lp >> 24) & 1 ? VK_RCONTROL : VK_LCONTROL] = down;   /* extended-key bit: right Ctrl (the special attack) */
+        return 0;
+    }
     case WM_RBUTTONDOWN: if (w) { w->mouse_right = 1; SetCapture(h); } return 0;
     case WM_RBUTTONUP: if (w) { w->mouse_right = 0; ReleaseCapture(); } return 0;
     case WM_MOUSEMOVE: {

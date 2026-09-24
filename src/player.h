@@ -17,7 +17,7 @@
 #include "ekovm.h"
 
 typedef struct {
-    int forward, back, left, right, jump, action, duck;   /* current key state; duck = action 5 (docs/PERSO_DUCK.md) */
+    int forward, back, left, right, jump, action, duck, special;   /* current key state; duck = action 5 (docs/PERSO_DUCK.md), special = action 11 (docs/PERSO_SPECIAL.md) */
     float cam_turn;                                  /* -1..1 manual camera orbit */
 } PlayerInput;
 
@@ -61,6 +61,7 @@ typedef struct Player {
     int atk; float atk_t; Vec3 atk_dir, atk_disp; int use_atk_disp; float air_win, charge, move_lock, vy_corr; int action_prev;
     struct EnemySet *enemies; void *target; Vec3 dash_start, aim; int has_target;   /* attack targets (Perso+0x5f0, +0x5e4, +0x5d0, +0x5dc) */
     int lanim, lanim_sub;           /* logical animation (table 0x4b6180) and position in its chain */
+    int special_st, special_prev; float special_t;   /* special attack 0x458bf0: +0x750 (0 free, 1 charging up to the hit at 1.5 s, 2 after the hit), key state, +0x74c */
     int duck, duck_anim; float duck_t;   /* ducking 0x465b10: sub-state +0x694 (0 up, 1 going down, 2 down, 3 getting up), its logical anim, timer +0x698 */
     float floor_y;                  /* last floor height found under the player */
     int floor_is_hull;              /* floor came from an instance node (press kind 1 or hull kind 4) */
@@ -140,6 +141,8 @@ int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 
 void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind);
 void game_land_dust(Vec3 pos, Vec3 normal);
 void game_splash(Vec3 c, float speed, float radius);   /* 0x478660, docs/SPLASH.md */
+void game_special_fx(void);                            /* 0x47ab90: the streaks and fire rings of the special attack (docs/PERSO_SPECIAL.md 3) */
+int  game_enemy_thinks(const Instance *inst);           /* is the actor in a sector drawn last frame, i.e. did its Think run (list 0x4c5258)? */
 /* the comic speech bubble 0x478980(inst, kind, duration, offY, offX, live) (docs/PERSO_DEATH.md 4.1): kind 0 "?!" (Kill 1),
  * 1 curse (hard landing), 2 "$", 3 "...", 4 "zzz"; with `live` it lasts while *live != 0 instead of `duration` */
 void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, const int *live);

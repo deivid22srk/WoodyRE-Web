@@ -69,6 +69,17 @@ int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
     return e->hp <= 0;
 }
 
+int enemy_hit(Enemy *e, float dmg, Vec3 dir, Vec3 pt, int kind)
+{
+    if (e->type == 14) return boss_take_damage(e);                  /* 0x40fe90 passes the kind on: no star for kind 2 (the special attack) */
+    (void)kind;                                                      /* types 4..9, 13 call Enemy_TakeDamage with kind 0, so they always get the star */
+    int shooter = e->type >= 7 && e->type <= 9;
+    if (e->removed || e->st == (shooter ? 10 : 12) || e->hit_t > 0 || e->knock_t > 0) return 0;
+    int died = enemy_take_damage(e, dmg, dir);
+    game_hit_star(pt);
+    return died;
+}
+
 /* bomb blast 0x44d650 -> vtbl[40] 0x41ae20 on every Npc of category 2: inside r (3D, to the instance origin) it dies at once,
  * through the hit state like a last peck (docs/BOMB.md 4.2); the boss takes its usual single point */
 void enemies_blast(EnemySet *s, Vec3 c, float r)

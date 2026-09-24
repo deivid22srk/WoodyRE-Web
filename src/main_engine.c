@@ -26,6 +26,7 @@
 static InsFile g_ins;
 static int g_log_msgs = 1;
 static Player *g_player;
+static const Renderer *g_rnd; static const GelFile *g_gel;              /* the current level's renderer and world, for game_enemy_thinks() */
 static EnemySet g_enemies;
 static float g_now; static double g_clock;           /* game time in seconds (VM time base): World+0x20 / +0x30 (0x401880), the sum of the CLAMPED frame times */
 /* messages 12/13 wait for the running animation to end: offered again every frame (max 32 in the original, 0x4012f0 clears) */
@@ -1539,7 +1540,8 @@ static const float k_fx_shape[12][3] = {                                     /* 
     { 1, 1, 1}, { 1, 1,-1}, { 1,-1, 1}, { 1,-1,-1}, {-1, 1, 1}, {-1, 1,-1}, {-1,-1, 1}, {-1,-1,-1},
     { 0, 0.5f, 0}, {-0.494f,-0.5f, 0.855f}, { 1,-0.5f, 0}, {-0.494f,-0.5f,-0.855f},
 };
-typedef struct { float age, life, acc; Vec3 pos; int kind, shape; Vec3 dir; float D, h, R, acc2; } FxRec;   /* kind 0 = shape burst (0x478f70), 1 = sparkle box (0x4792d0), 2 = the particle (0x4791f0);
+typedef struct { float age, life, acc; Vec3 pos; int kind, shape; Vec3 dir; float D, h, R, acc2; } FxRec;   /* the special attack (docs/PERSO_SPECIAL.md 3): 7 = its emitter (0x47a8d0), 8 = a streak (0x47a790), 9 = a fire ring (0x47a4c0);
+    the hit star 0x4750e0: 10 = the flash (0x475040), 11 = a spark (0x474e00, dir = its spoke, R = star size, shape = spin) */   /* kind 0 = shape burst (0x478f70), 1 = sparkle box (0x4792d0), 2 = the particle (0x4791f0);
     the water splash (docs/SPLASH.md): 3 = its emitter (0x478360), 4 = a drop (0x477fa0), 5 = the ripple where a drop lands (0x478290), 6 = a ring (0x4781b0) */
 static FxRec g_fx[2000]; static int g_nfx;
 static FxRec *fx_new(float life, Vec3 pos, int kind)
@@ -1571,13 +1573,40 @@ void game_splash(Vec3 c, float speed, float radius)
     e->h = speed * 0.001f; e->acc = 0; e->acc2 = 0.2f; e->R = fx_rnd() * 50.0f + radius;   /* accK starts at 0.2: the first ring comes in the first frame */
 }
 static float sin512(int i) { return sinf(6.2831853f * (i & 511) / 512.0f); }   /* -cos512[(i + 128) & 511] */
+static float cos512(int i) { return cosf(6.2831853f * (i & 511) / 512.0f); }
+void game_special_fx(void) { FxRec *e = fx_new(2.5f, (Vec3){ 0, 0, 0 }, 7); if (e) e->shape = 0; }   /* 0x47ab90: no position, the children read the Perso's */
+static Vec3 g_fx_eye;                                                        /* the camera of the last drawn frame (0x4750e0 builds the spark plane on it) */
+void game_hit_star(Vec3 pt)                                                  /* 0x4750e0 */
+{
+    fx_new(0.1f, pt, 10);
+    Vec3 n = { g_fx_eye.x - pt.x, g_fx_eye.y - pt.y, g_fx_eye.z - pt.z }; float l = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
+    n = l > 1e-3f ? (Vec3){ n.x / l, n.y / l, n.z / l } : (Vec3){ 0, 0, 1 };
+    Vec3 a = fabsf(n.y) < 0.9f ? (Vec3){ 0, 1, 0 } : (Vec3){ 1, 0, 0 };        /* 0x46d320: two unit vectors across the view direction */
+    Vec3 U = { a.y * n.z - a.z * n.y, a.z * n.x - a.x * n.z, a.x * n.y - a.y * n.x }; l = sqrtf(U.x * U.x + U.y * U.y + U.z * U.z); U = (Vec3){ U.x / l, U.y / l, U.z / l };
+    Vec3 V = { n.y * U.z - n.z * U.y, n.z * U.x - n.x * U.z, n.x * U.y - n.y * U.x };
+    for (int j = 0; j < 8; j++) {                                            /* 8 spokes 45 degrees apart, +-17.6 degrees */
+        FxRec *s = fx_new(0.4f, pt, 11); if (!s) continue;
+        int a1 = (int)(fx_rnd() * 50.0f + 64 * j - 25), a2 = (int)(fx_rnd() * 50.0f + 64 * j - 25);
+        Vec3 d = { U.x * cos512(a1) + V.x * sin512(a2), U.y * cos512(a1) + V.y * sin512(a2), U.z * cos512(a1) + V.z * sin512(a2) };
+        l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); s->dir = l > 1e-5f ? (Vec3){ d.x / l, d.y / l, d.z / l } : U;
+        s->shape = fx_rnd() * 2.0f > 1.0f; s->R = fx_rnd() * 20.0f - 5.0f + 25.0f;   /* spin; size 20..40 (half diagonal) */
+    }
+}
+int game_enemy_thinks(const Instance *inst)                                  /* Think runs for the instances of the drawn sectors (world+0x64, 0x42a980) */
+{
+    if (!g_rnd || !g_gel || !g_rnd->cull || !g_rnd->sec_vis || !g_gel->nsectors) return 1;   /* culling off (F4): sec_vis is not kept */
+    int32_t s = gel_sector(g_gel, inst->position);
+    return s < 0 || (uint32_t)s >= g_gel->nsectors || g_rnd->sec_vis[s];
+}
 static Vec3 drop_pt(const FxRec *e, float wx, float wy)                      /* a drop at fraction wx along its path; the height uses wy (fistp rounds) */
 {
     return (Vec3){ e->pos.x + e->dir.x * e->D * wx, e->pos.y + sin512((int)lrintf(255.0f * wy)) * e->h * 100.0f, e->pos.z + e->dir.z * e->D * wx };
 }
 static void fx_update(float dt, const float *eye)
 {
-    static const float grey05[3] = { 0.5f, 0.5f, 0.5f }, blue[3] = { 0.65f, 0.65f, 0.8f }, up[3] = { 0, 1, 0 };   /* additive: rgb x alpha, no x2 (docs/SPLASH.md 7) */
+    static const float grey05[3] = { 0.5f, 0.5f, 0.5f }, blue[3] = { 0.65f, 0.65f, 0.8f }, up[3] = { 0, 1, 0 }, one[3] = { 1, 1, 1 };   /* additive: rgb x alpha, no x2 (docs/SPLASH.md 7) */
+    if (eye) g_fx_eye = (Vec3){ eye[0], eye[1], eye[2] };
+    Vec3 feet = g_player ? g_player->pos : (Vec3){ 0, 0, 0 };
     static const float white[3] = { 1, 1, 1 };                               /* rgb 0.5 with the engine's x2 = full white; alpha is a constant 1 */
     for (int i = 0; i < g_nfx; i++) {                                        /* 0x470c70 re-reads the bound, so a particle born this frame also draws this frame */
         FxRec *e = &g_fx[i];
@@ -1607,6 +1636,38 @@ static void fx_update(float dt, const float *eye)
                 hud_world_fx_plane(0x3a, &e->pos.x, up, u * 25.0f + 5.0f, blue, (1.0f - u) * 0.3f);
             } else if (e->kind == 6) {                                       /* 0x4781b0 */
                 hud_world_fx_plane(0x3a, &e->pos.x, up, 2.0f * e->R + 600.0f * u, blue, (1.0f - u) * 0.3f);
+            } else if (e->kind == 7) {                                       /* 0x47a8d0: 250 streaks a second for 1.25 s, fire rings at u 0.7 / 0.8 / 0.9 */
+                e->acc += dt;
+                if (u < 0.5f) {
+                    int n = (int)(e->acc * 250.0f); e->acc -= n * 0.004f;
+                    while (n-- > 0) {
+                        FxRec *s = fx_new(0.5f, feet, 8); if (!s) continue;
+                        int a = (int)(fx_rnd() * 512.0f), b = (int)(fx_rnd() * 512.0f);
+                        s->dir = (Vec3){ 400.0f * cos512(a) * cos512(b), 400.0f * sin512(a), 400.0f * cos512(a) * sin512(b) };   /* a point on a sphere of 400 */
+                    }
+                }
+                int w = u >= 0.9f ? 4 : u >= 0.8f ? 2 : u >= 0.7f ? 1 : 0;
+                if (w && !(e->shape & w)) { fx_new(0.5f, feet, 9); e->shape |= w; }   /* centred on the feet NOW; the ring does not follow him */
+            } else if (e->kind == 8) {                                       /* 0x47a790: from the sphere into Perso+0x60 + 100 = feet + 143, re-read every frame */
+                Vec3 C = { feet.x, feet.y + 143.0f, feet.z }; float k = 1.0f - u * u;
+                Vec3 a = { C.x + e->dir.x, C.y + e->dir.y, C.z + e->dir.z }, b = { C.x + k * e->dir.x, C.y + k * e->dir.y, C.z + k * e->dir.z };
+                if (eye) hud_world_streak(0, &a.x, &b.x, eye, 2.0f, one, 0.0f, u <= 0.7f ? 1.0f : 1.0f - (u - 0.7f) * 3.33333f);
+            } else if (e->kind == 9) {                                       /* 0x47a4c0: a flat band 800 wide from radius 0 to 4000 in 0.5 s, submitted twice */
+                float r0 = 4000.0f * u, r1 = 4000.0f * (u + 0.2f), o = 2.0f * (1.0f - u);
+                const float uv[4][2] = { {0,0}, {1,0}, {1,1}, {0,1} }, rgb[4][3] = { {0,0,0}, {0.5f*o,0.5f*o,0.4f*o}, {0.5f*o,0.5f*o,0.4f*o}, {0,0,0} };
+                for (int i = 0; i < 16; i++) {
+                    int a0 = 32 * i, a1 = a0 + 32;
+                    float v[4][3] = { { e->pos.x + r0 * cos512(a0), e->pos.y, e->pos.z + r0 * sin512(a0) }, { e->pos.x + r1 * cos512(a0), e->pos.y, e->pos.z + r1 * sin512(a0) },
+                                      { e->pos.x + r1 * cos512(a1), e->pos.y, e->pos.z + r1 * sin512(a1) }, { e->pos.x + r0 * cos512(a1), e->pos.y, e->pos.z + r0 * sin512(a1) } };
+                    hud_world_quad(33, v, uv, rgb);
+                }
+            } else if (e->kind == 10) {                                      /* 0x475040: the flash of a hit */
+                hud_world_fx(9, &e->pos.x, 250.0f * u, 0, one, 0.4f);
+            } else if (e->kind == 11) {                                      /* 0x474e00: a speed line out to a spinning star */
+                int i = (int)(u * 128.0f); float r = 150.0f * sin512(i);
+                Vec3 h = { e->pos.x + e->dir.x * r, e->pos.y + e->dir.y * r, e->pos.z + e->dir.z * r };
+                if (eye) hud_world_streak(7, &e->pos.x, &h.x, eye, 10.0f, one, 0.0f, 0.1f);
+                hud_world_fx(8, &h.x, e->R, (float)(e->shape ? (int)(256.0f * u) : (int)(511.0f - 256.0f * u)) / 512.0f, one, 1.0f - u);
             } else if (e->kind == 2) {                                              /* 0x4791f0: the only thing that draws. The fade in and out is the size, not the alpha */
                 float size = 30.0f * sinf(3.14159265f * (int)(255.0f * u) / 256.0f);
                 hud_world_fx(4, &e->pos.x, size, (float)(int)(45.0f * u) / 512.0f, white, 1.0f);
@@ -2370,7 +2431,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL, L->have_vis ? &L->vis : NULL);
     water_reset(&L->tex); L->rnd.post_models = water_draw;   /* class 60 (water.c) */
     L->have_player = player_init(&L->player, &g_ins, &L->gel, &L->tex) == 0;
-    g_player = L->have_player ? &L->player : NULL;
+    g_player = L->have_player ? &L->player : NULL; g_rnd = &L->rnd; g_gel = &L->gel;
     for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
     if (L->have_player) { L->player.inst->scripted = 0; L->player.enemies = &g_enemies; }
 { static const char *chr[3] = { "Woody", "Knothead", "Splinter" }; static int bank0 = -1;
@@ -2401,7 +2462,7 @@ int main(int argc, char **argv)
     int have_cam = 0; float cam_args[5] = {0, 0, 0, 0, 0};                          /* --cam x y z yaw pitch (degrees) */
     double jump_at = -1; float max_y = -1e30f, start_y = 0;                       /* --jump T: hold jump from T s for 1 s (testing), reports the apex */
     double jump_len = 1.0, jump2_at = -1, jump2_len = getenv("WOODY_J2LEN") ? atof(getenv("WOODY_J2LEN")) : 0.15;                                         /* --jump2 LEN T2: first press lasts LEN s, second press (0.15 s) at T2 */
-    double peck_at = -1, peck_len = 0.1, duck_at = -1, duck_len = 0.1;   /* --peck / --duck T LEN: hold the attack / duck key (X) from T s for LEN s (testing) */
+    double peck_at = -1, peck_len = 0.1, duck_at = -1, duck_len = 0.1, special_at = -1;   /* --special T: release the special attack key (RCtrl / E) at T s */   /* --peck / --duck T LEN: hold the attack / duck key (X) from T s for LEN s (testing) */
     int have_pos = 0; float pos_args[3] = {0, 0, 0};                               /* --pos x y z: start the player there (testing) */
     int have_yaw = 0; float yaw_arg = 0;
     double enter_at = -1;                                                         /* --enter T: press Enter on the title after T s (testing) */
@@ -2417,6 +2478,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--jump2") && i + 2 < argc) { jump_len = atof(argv[i + 1]); jump2_at = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--peck") && i + 2 < argc) { peck_at = atof(argv[i + 1]); peck_len = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--duck") && i + 2 < argc) { duck_at = atof(argv[i + 1]); duck_len = atof(argv[i + 2]); i += 2; }
+        else if (!strcmp(argv[i], "--special") && i + 1 < argc) { special_at = atof(argv[i + 1]); i += 1; }
         else if (!strcmp(argv[i], "--pos") && i + 3 < argc) { for (int k = 0; k < 3; k++) pos_args[k] = (float)atof(argv[i + 1 + k]); have_pos = 1; i += 3; }
         else if (!strcmp(argv[i], "--fly")) fly = 1;
         else if (!strcmp(argv[i], "--enter") && i + 1 < argc) { enter_at = atof(argv[i + 1]); i += 1; }
@@ -2555,7 +2617,8 @@ int main(int argc, char **argv)
             }
             pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
             pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
-            pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_CONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
+            pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_LCONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
+            pin.special = win.keys[VK_RCONTROL] || (!fly && win.keys['E']) || (special_at >= 0 && now - t0 >= special_at - 0.1 && now - t0 < special_at);   /* action 11 (RCtrl in the original); it fires on the release */
             pin.duck = (!fly && win.keys['X']) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);   /* action 5 (Space in the original, which is jump here) */
             {   /* WOODY_PECKS="T1 T2 ...": more attack taps of 0.1 s (testing: dispenser, pick up, throw) */
                 static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = getenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
