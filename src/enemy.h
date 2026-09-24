@@ -52,6 +52,7 @@ void enemies_add(EnemySet *s, Instance *inst, int type);                      /*
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt);
 /* vtbl[39] 0x419480: returns 1 when the enemy died. dir = (0,0,0) for a peck (no knockback). */
 int  enemy_take_damage(Enemy *e, float dmg, Vec3 dir);
+void enemies_blast(EnemySet *s, Vec3 c, float r);                          /* bomb blast 0x44d650: every enemy within r dies (vtbl[40] 0x41ae20) */
 void enemies_msg11(EnemySet *s, Instance *inst, int n, int v);                /* Enemy::HandleMsg 0x41a740, id 11 */
 void enemy_warn_dive(Enemy *e, Vec3 d);                                       /* vtbl[37] 0x417ee0: the player starts an air dive at this enemy */
 void game_enemy_stars(Enemy *e);                                              /* vtbl[57] 0x41b000 -> 0x477610: five stars circle over the dying enemy (in main_engine.c) */

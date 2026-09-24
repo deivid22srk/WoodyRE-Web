@@ -761,10 +761,57 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
     default: return;
     }
 }
+/* ---- Perso state 6, carrying a bomb (docs/BOMB_CARRY.md) ---------------------------------------------------------
+ * 0x463c90: every way out of state 6 other than the throw lets go of the bomb where it is, straight down at speed 0 */
+static void bomb_drop(Player *p)
+{
+    if (!p->bomb) return;
+    game_bomb_launch(p->bomb, (Vec3){ 0, -1, 0 }, 0); p->bomb = NULL; p->carrying = 0; p->bsub = 0;
+}
+/* 0x463530, after the animation choice: part A holds the bomb on the track of Woody's top-level 0x80 node (the node the
+ * camera mode 0x80 reads) and lets go of it at a fixed moment of the throw animations; part B is the sub-state machine:
+ * 0 / 1 pick-up (1.2 s, no walking), 2 carrying, attack -> 3 / 4 ground throw (0.933 s, no walking) or 5 / 6 air throw (0.6 s).
+ * The room test before a ground throw (0x434830) is a stub in this build: always free. Sub-states 7 / 8 (putting it
+ * down) are never reached. */
+static void carry_frame(Player *p, float dt)
+{
+    if (!p->bomb) return;
+    int ins = p->inst->anim, rel = 0;
+    switch (ins) {                                                          /* jump table 0x463bfc */
+    case 61: rel = p->bt < 0.46667f; break;                                 /* ground throw (0x43) */
+    case 62: rel = p->bt < 0.3f; break;                                     /* air throw (0x44) */
+    case 66: rel = p->bt < 0.16667f; break;                                 /* long fall (0x4b): it drops out of his hands */
+    }
+    if (rel) {
+        Vec3 dir = { 0, -1, 0 }; float sp = 0; int thrown = p->bsub == 4 || p->bsub == 6;
+        if (thrown) { Vec3 f = { sinf(p->yaw), 1.0f, cosf(p->yaw) }; float l = sqrtf(vdot(f, f)); dir = (Vec3){ f.x / l, f.y / l, f.z / l }; sp = 1000.0f; }   /* 0x46380f: 45 degrees up */
+        game_bomb_launch(p->bomb, dir, sp); p->bomb = NULL; p->carrying = 0; p->bsub = 0;
+        p->throw_hold = thrown ? p->bt : 0;                                 /* state 0 at once; the throw plays on under its move lock */
+        if (getenv("WOODY_BOMBLOG")) printf("  BOMB leaves Woody's hands (%s)\n", thrown ? "thrown" : "dropped");
+        return;
+    }
+    const Model *m = p->inst->model; Vec3 hand, tgt;
+    float ph = (uint32_t)ins < m->nanims && m->anims[ins].duration_s > 0 ? p->inst->anim_time / m->anims[ins].duration_s : 0;
+    if (ins_camera_eval(p->inst, ins, ph, &hand, &tgt)) game_bomb_hold(p->bomb, hand, p->inst->quat);   /* no track: it stays where it was */
+    switch (p->bsub) {                                                      /* jump table 0x463c28 */
+    case 0: p->bt = anim_len(p, 0x45, 0); lock_move(p, p->bt); p->bsub = 1; /* fallthrough */
+    case 1: if ((p->bt -= dt) <= 0) p->bsub = 2; break;
+    case 2: if (p->carry_pressed) p->bsub = p->on_ground ? 3 : 5; break;   /* crouching (+0x694) would block it: not ported */
+    case 3: p->bt = anim_len(p, 0x43, 0); lock_move(p, p->bt); p->bsub = 4; break;
+    case 5: p->bt = anim_len(p, 0x44, 0); p->bsub = 6; break;
+    case 4: case 6: if ((p->bt -= dt) <= 0) bomb_drop(p); break;           /* no release moment reached (landed during an air throw): SetState(0) drops it */
+    }
+    p->carry_pressed = 0;
+}
 static void attack_trigger(Player *p, const PlayerInput *in, float dt)
 {
     int held = in->action, pressed = held && !p->action_prev, released = !held && p->action_prev;
     p->action_prev = held;
+    if (p->bomb) { if (pressed) p->carry_pressed = 1; return; }           /* state 6: 0x457330 wants state 0 */
+    if (pressed && p->on_ground && !p->atk) {             /* 0x44bae1 -> 0x463430 before the trigger: the same press picks up a bomb within 69 + 200 */
+        struct Bomb *b = game_bomb_pick(p->pos, 69.0f + 200.0f);
+        if (b) { p->bomb = b; p->carrying = 1; p->bsub = 0; p->charge = 0; p->carry_pressed = 0; p->throw_hold = 0; return; }
+    }
     if (p->jumper.state != 2 && p->jumper.state != 6) p->charge = 0;       /* no charge in the air */
     if (p->air_win > 0) p->air_win -= dt;
     if (p->atk == 5 && pressed && p->air_win > 0) { p->atk = 1; return; }  /* chained attack out of the recoil */
@@ -781,7 +828,7 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
  * The port keeps that state in the fields that stand for it - 2 = dead, 4 = hanging in a peckable wall, 5 = a
  * scripted action, 8 = riding a class-20 rocket - so the messages that only answer "when the Perso is free"
  * (1042, and 0x465740 when he steps onto a rocket) ask here. */
-int player_state_free(const Player *p) { return !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride; }
+int player_state_free(const Player *p) { return !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride && !p->bomb; }
 
 /* 0x458e40 Perso_BrakeCharge, the one brake that is called from outside the attack controller: the game code calls it
  * at 0x44542f, in the handler of message 1042, when the player is standing at a peck switch. Releasing the attack
@@ -820,7 +867,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
     else if (kind == 6) p->death_delay = 2.5f; else if (kind == 7) p->death_delay = 0.0f;
     if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else if (kind != 2 && kind != 9) jumper_force_fall(&p->jumper, 0);
     p->nograv_t = kind == 1 ? anim_len(p, 0x2f, 0) : (kind == 2 || kind == 9) ? anim_len(p, 0x30, 0) : 0;   /* +0x240: no fall while he hangs / is zapped */
-    p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL;
+    p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL; bomb_drop(p);   /* SetState(2) 0x44c9ad lets go of a bomb */
     p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;      /* state := 2 */
     if (kind == 1) game_bubble(p->inst, 0, 2.5f, 180.0f, 50.0f, NULL);  /* 0x44c2a9: "?!" over him as he drops into the pit */
     printf("  PLAYER killed (kind %d), lives %d\n", kind, p->lives);
@@ -836,6 +883,7 @@ int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39
     if (p->invuln_hit < 0.6f) p->invuln_hit = 0.6f;
     p->move_lock = 0; p->atk = 0;
     p->hit_anim = p->on_ground ? 0x1f : 0x20; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->lanim = -1;   /* 0x464b70: priority 5110, plays out over walking / jumping */
+    if (p->bomb) { p->hit_anim = p->on_ground ? 0x21 : 0x22; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->bsub = 2; }   /* with a bomb: he keeps it, a throw or pick-up is broken off */
     if (getenv("WOODY_ONEHIT")) damage = 99;                             /* testing: every hit kills */
     p->health -= damage; if (p->health < 0) p->health = 0;
     printf("  PLAYER hit, health %.0f\n", p->health);
@@ -847,6 +895,7 @@ static void player_reset(Player *p)                                     /* vt[17
     p->pos = p->spawn_pos; p->yaw = p->spawn_yaw; p->floor_y = p->pos.y;
     jumper_reset(&p->jumper); p->on_ground = 1; p->invuln_respawn = 1.0f; p->invuln_hit = 0; p->move_lock = 0;
     if (p->health <= 0) p->health = 3.0f;
+    bomb_drop(p); p->throw_hold = 0;                                     /* 0x44acb4 */
     p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0; idle_reset(p);   /* 0x44abcf */
     if (p->race_char) race_enter(p);                                   /* 0x44ac33: SurfEnter + state 1 */
@@ -891,6 +940,40 @@ void player_game_tick(Player *p, EkoVM *vm, float dt)
 
 /* ---- peck climbing: Perso state 4 (0x4651d0). A press node (kind 1) with typecode 4 is a peckable wall. ---- */
 static float g_climb_frac;   /* fraction of the last climb_ray hit */
+/* the instance half of the ray 0x4359b0: 0x497ed0 answering 4 is hit kind 2 with the node in [0x53a58c] and the instance in
+ * [0x53a560] (0x435a46); like every instance test of the original it walks the PRESS nodes (kind 1). Returns the first
+ * polygon of a visible, collidable instance on a->b as a fraction of the segment, with its normal turned towards a.
+ * `skip` (a bomb itself: flag 0x40 during its own ray, 0x449da2) and the player are left out. */
+int player_ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b, float *frac, Vec3 *n_out, const Instance **inst_out)
+{
+    float best = 2.0f; int hit = 0; Vec3 v[16];
+    float sb[6] = { fminf(a.x, b.x) - 1, fmaxf(a.x, b.x) + 1, fminf(a.y, b.y) - 1, fmaxf(a.y, b.y) + 1, fminf(a.z, b.z) - 1, fmaxf(a.z, b.z) + 1 };
+    for (uint32_t mi = 0; mi < p->ins->nmodels; mi++) {
+        const Model *m = &p->ins->models[mi];
+        for (uint32_t k = 0; k < m->ninstances; k++) {
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || in == p->inst || !in->node_world) continue;
+            if (inst_dist2_xz(in, a) > 4000.0f * 4000.0f) continue;
+            uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+            for (uint32_t ci = 0; ci < ncn; ci++) {
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys) continue;
+                float nb[6]; if (ins_node_world_box(in, ni, nb) && (nb[0] > sb[1] || nb[1] < sb[0] || nb[2] > sb[3] || nb[3] < sb[2] || nb[4] > sb[5] || nb[5] < sb[4])) continue;
+                for (uint32_t pi = 0; pi < nd->npolys; pi++) {
+                    const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 16) continue;
+                    for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
+                    Vec3 nrm = vcross(vsub(v[1], v[0]), vsub(v[2], v[0])); float l = sqrtf(vdot(nrm, nrm)); if (l < 1e-6f) continue;
+                    nrm.x /= l; nrm.y /= l; nrm.z /= l;
+                    float da = vdot(vsub(a, v[0]), nrm), db = vdot(vsub(b, v[0]), nrm); if ((da > 0) == (db > 0)) continue;
+                    float t = da / (da - db); if (t >= best) continue;
+                    Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
+                    if (!point_in_poly3(v, pl->nverts, nrm, q)) continue;
+                    if (da < 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }
+                    best = t; hit = 1; *n_out = nrm; if (inst_out) *inst_out = in;
+                }
+            }
+        }
+    }
+    *frac = best; return hit;
+}
 static int climb_ray(const Player *p, Vec3 from, Vec3 to, Vec3 *n_out, const Instance **inst_out, int *peckable)
 {
     float best = 2.0f; int hit = 0;
@@ -1031,6 +1114,7 @@ void player_sync_board(Player *p)
 
 void player_place(Player *p, Vec3 pos, float yaw)
 {
+    bomb_drop(p); p->throw_hold = 0;
     p->pos = pos; p->yaw = yaw; p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->atk = 0; p->move_lock = 0; p->lanim = -1; p->step_u = -1.0f;
     jumper_reset(&p->jumper); p->on_ground = 1; p->cam_init = 0; player_apply_transform(p);
 }
@@ -1390,6 +1474,21 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             else if (p->dead_T >= anim_len(p, p->dead_ground ? 0x26 : 0x25, 0)) want = 0x29;
         }
         else if (p->hit_anim_t > 0) want = p->hit_anim;
+        else if (p->bomb) {                                                /* state 6: 0x4646b0 (docs/BOMB_CARRY.md 1.4) */
+            if (js == 2 || p->on_ground) {
+                if (p->bsub <= 1) want = 0x45;                             /* pick-up */
+                else if (p->bsub == 4) want = 0x43;                        /* ground throw */
+                else if (p->bsub <= 3 && p->ramp_phase == 1) want = 0x41;
+                else if (p->bsub <= 3 && p->ramp_phase == 2) { want = 0x42; rate = p->speed / P_WALK_SPEED; if (rate < 0.5f) rate = 0.5f; if (rate > 1.0f) rate = 1.0f; }
+                else want = 0x40;
+            }
+            else if (p->bsub == 6) want = 0x44;                            /* air throw */
+            else if (js == 0 || js == 1 || js == 7) want = 0x47;
+            else if (js == 5) want = 0x4b;
+            else if (js == 3 || js == 4) want = p->jumper.fell_off ? 0x49 : 0x4a;
+            else if (js == 6) want = p->jumper.hard_fall ? 0x4c : 0x4a;
+        }
+        else if (p->throw_hold > 0) { p->throw_hold -= dt; want = p->lanim; }   /* after the release: 0x43 / 0x44 play out */
         else if (p->atk) { if (atk_anim[p->atk] >= 0) want = atk_anim[p->atk]; }
         else if (js == 2) {
             if (p->ramp_phase == 1) want = 2;
@@ -1407,6 +1506,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         }
         if (want == -2) { race_anims(p, in, dt); if (p->lanim >= 0) anim_request(p, p->lanim, 1.0f); }   /* the controller Tick runs every frame (0x463e60): it walks the chain 0x5d -> anim 0 etc. */
         else anim_request(p, want, rate);
+        carry_frame(p, dt);                                                /* 0x463530 (frame step 16) */
         /* 0x464630: not idle on the ground, or one of the actions 0,3,2,1,6,4,10,5 pressed (0x44cc30) -> 0x464620 */
         if (!p->idle_hold && (!idling || in->forward || in->back || in->left || in->right || in->jump || in->action)) idle_reset(p);
         /* footsteps (docs/FOOTSTEPS.md): in the walk cycle (logical animation 3) 0x463f40 puts a foot down when the
@@ -1530,6 +1630,7 @@ int player_mount(Player *p, Instance *obj)                              /* 0x465
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
 {
     if (p->dead_kind) return;                                       /* 0x44dda0 refuses state 2 (dead) */
+    bomb_drop(p); p->throw_hold = 0;                                /* SetState(5) */
     int lg = log_from_raw(act);                                     /* the action number is the raw .ins animation (docs/CINEMATIC.md 6) */
     if (lg < 0) { printf("  scripted action %d: no logical record, standing still", act), puts(""); player_script_hold(p, 2.0f); return; }
     p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
@@ -1554,6 +1655,7 @@ void player_ground_snap(Player *p)
 
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44ce11 -> 0x44a650: SetPos + ground snap 0x462990, anim controllers reset, camera cut 0x458f90 */
 {
+    bomb_drop(p);
     for (uint32_t v = 0; v < p->nvol; v++) p->inside[v] = 0;
     if (!p->script_act) {                                               /* 0x44a650 does nothing in state 5 */
         p->pos = pos; if (have_dir && dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z);
