@@ -449,6 +449,10 @@ elk level (ook House achter het titelmenu) gaat open met de iris, gelijktijdig m
 (`0x445bf0`, `0x4014c0`); het begin van het W1B-baasgevecht gebruikt alleen die (`1152` 0.3 s, dan `1150 [100]`).
 Andere schrijvers van `Game+0x14`/`+0xc` zijn er niet (buiten `0x445850`/`0x445930`/`0x4459c0`); `0x445930` komt verder
 alleen nog uit het pauzemenu (herstart, `0x40584d`: toestand 0 met timer 0.1 ⇒ nogmaals respawn, iris open).
+**Live geverifieerd** (`tools/wiris.py game --level W1B --pos -7191 1400 -8939 --at 8`: het origineel start in W1B, Woody wordt
+na 8 s in trigger-volume 94 gezet): levelstart iris 0 → 1 (`0x445908`), toestand 1 → 2 na 1.00 s; begin van het baasgevecht
+(vt 28.33..28.62) alleen `1152` ×44, `1150 [100]` en de railcamera, **geen iris**; Woody (zonder invoer) sterft op vt 38.54 ⇒
+toestand 3, iris 1 → 0 op 40.54 (doodsduur 3.0 − 1.0), leven eraf 41.54, respawn 41.79, iris 0 → 1, toestand 2 op 42.80.
 * state 0: `0x451bd0()` (onweer uit), fader-tick, `Game+0xc -= dt`; ≤ 0 ⇒ `0x445930(Game)`
   (fader (0,0,0.1), timer 0.1, `Perso->0x44a810(0)`, alle actoren `vtbl[28]()` via `0x40c040`,
   `0x458f90(Game+8)`), iris (0 → 1.0 in 1.0 s), **state 1** (iris gaat open).
