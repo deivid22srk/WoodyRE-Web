@@ -92,9 +92,9 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 1150 / 1151 | f | 0 | ✔ `0x401440` / `0x401480` (f·0.01) |
 | 1152 | – | 0 | ✔ `0x4014c0`: volledig scherm vullen (fade naar zwart) |
 | 1160 | var, obj | 1 | ✔ `app+0x8c = var`, `app+0x90 = script-object` van de House-intro (GAMEFLOW.md §5) |
-| 1170 / 1171 | – | 0 | ✔ `0x44c7a0(-1)` / `0x44c840(-1)` |
+| 1170 / 1171 | – | 0 | ✔ `0x44c7a0(-1)` / `0x44c840(-1)`: **leven −1** (min 1) / **$ −1** (unieke items, min 0); alleen de Jackpot in WWS (object 349) stuurt ze |
 | 1172 | – | 0 | ✔ `byte game+0x70 = 1` |
-| 1173 | var | 0 | ✔ als `world+0x260 > 0`: var = 1 anders var = 0 |
+| 1173 | var | 0 | ✔ als `perso+0x260 > 0` ($, unieke items): var = 1 anders var = 0; WWS-object 425 zet er de Jackpot mee aan |
 | 1180 | – | 0 | ✔ `0x404b60(0, 0x1a, 0, 0x20)` |
 
 ## Subsysteem `[0x5e823c]` (`0x46cca0`) – beweging/effecten op instanties

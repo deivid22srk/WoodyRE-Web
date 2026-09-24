@@ -98,6 +98,7 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | Toetsen uit `Woody.cfg`, joystick | niet geport | — |
 | Savegame: `woodyre.sav` heeft nu byte voor byte de indeling van `Woody.sav` (4 slots); een originele `Woody.sav` wordt geïmporteerd, nooit overschreven. De port schrijft na elk level automatisch in het slot waaruit gespeeld wordt (het origineel alleen via het menu) | bewust | MENU_LOAD.md §6-7 |
 | Unieke-itembits per level (`rec+0x05`) worden niet bijgehouden | niet geport | MENU_LOAD.md §6, BONUS.md |
+| Jackpot-gokkast in WWS (scriptobject 349): 1173 (heeft Woody een $?), 1171 ($ −1), 1170 (leven −1) geport en bericht 10 betaalt nu meermaals uit op dezelfde verborgen levensbonus 352 (er is geen "al gepakt"-test). Draaien = pik loslaten binnen volume 0x54 vóór marker 350; uitkomst 3× symbool 0 = +5 levens, 3× 1 = +3, 3× 2 = −5. Niet: de in-/uitschuif van de $-teller | geport | MESSAGES.md, BONUS.md §2.1 |
 
 ## Geluid
 
