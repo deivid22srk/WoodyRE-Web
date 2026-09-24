@@ -967,7 +967,7 @@ static int laser_segment(const Laser *z, uint32_t marker, const GelFile *gel, Ve
 /* hit test 0x450f80: segment against the player's cylinder (radius 69 * 0.85, centre at half height) */
 static int laser_hits_player(Vec3 a, Vec3 b, const Player *p)
 {
-    const float R = 69.0f * 0.85f, H = 193.0f;
+    const float R = 69.0f * 0.85f, H = player_body_height(p);             /* 61 while ducked: he ducks under the beam */
     Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float best = 1e30f;
     for (int i = 0; i <= 16; i++) {                                                 /* closest approach in xz, sampled (beams are short next to the player) */
         float t = i / 16.0f, x = a.x + d.x * t - p->pos.x, y = a.y + d.y * t - p->pos.y, zz = a.z + d.z * t - p->pos.z;
@@ -1417,7 +1417,7 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
         if (!end && player_ok) {                                                   /* swept sphere r 5 against the cylinder r 69: 74, feet - 5 .. feet + 198 */
             Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float l2 = d.x * d.x + d.z * d.z, t = l2 > 1e-6f ? ((pl->pos.x - a.x) * d.x + (pl->pos.z - a.z) * d.z) / l2 : 0; t = t < 0 ? 0 : t > 1 ? 1 : t;
             float x = a.x + d.x * t - pl->pos.x, y = a.y + d.y * t - pl->pos.y, z = a.z + d.z * t - pl->pos.z;
-            if (x * x + z * z <= 74.0f * 74.0f && y >= -5.0f && y <= 198.0f) { if (player_hit(pl, s->damage, s->dir)) { player_kill(pl, 3); enemy_player_killed(s->enemy); } b = (Vec3){ a.x + d.x * t, a.y + d.y * t, a.z + d.z * t }; end = 1; }
+            if (x * x + z * z <= 74.0f * 74.0f && y >= -5.0f && y <= player_body_height(pl) + 5.0f) { if (player_hit(pl, s->damage, s->dir)) { player_kill(pl, 3); enemy_player_killed(s->enemy); } b = (Vec3){ a.x + d.x * t, a.y + d.y * t, a.z + d.z * t }; end = 1; }
         }
         if (!end) { float f = gel_ray_frac(gel, a, b); if (f <= 1.0f) { b = (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }; end = 1; } }
         s->pos = b;
@@ -2401,7 +2401,7 @@ int main(int argc, char **argv)
     int have_cam = 0; float cam_args[5] = {0, 0, 0, 0, 0};                          /* --cam x y z yaw pitch (degrees) */
     double jump_at = -1; float max_y = -1e30f, start_y = 0;                       /* --jump T: hold jump from T s for 1 s (testing), reports the apex */
     double jump_len = 1.0, jump2_at = -1, jump2_len = getenv("WOODY_J2LEN") ? atof(getenv("WOODY_J2LEN")) : 0.15;                                         /* --jump2 LEN T2: first press lasts LEN s, second press (0.15 s) at T2 */
-    double peck_at = -1, peck_len = 0.1;                                          /* --peck T LEN: hold the attack key from T s for LEN s (testing) */
+    double peck_at = -1, peck_len = 0.1, duck_at = -1, duck_len = 0.1;   /* --peck / --duck T LEN: hold the attack / duck key (X) from T s for LEN s (testing) */
     int have_pos = 0; float pos_args[3] = {0, 0, 0};                               /* --pos x y z: start the player there (testing) */
     int have_yaw = 0; float yaw_arg = 0;
     double enter_at = -1;                                                         /* --enter T: press Enter on the title after T s (testing) */
@@ -2416,6 +2416,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--jump") && i + 1 < argc) { jump_at = atof(argv[i + 1]); i += 1; }
         else if (!strcmp(argv[i], "--jump2") && i + 2 < argc) { jump_len = atof(argv[i + 1]); jump2_at = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--peck") && i + 2 < argc) { peck_at = atof(argv[i + 1]); peck_len = atof(argv[i + 2]); i += 2; }
+        else if (!strcmp(argv[i], "--duck") && i + 2 < argc) { duck_at = atof(argv[i + 1]); duck_len = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--pos") && i + 3 < argc) { for (int k = 0; k < 3; k++) pos_args[k] = (float)atof(argv[i + 1 + k]); have_pos = 1; i += 3; }
         else if (!strcmp(argv[i], "--fly")) fly = 1;
         else if (!strcmp(argv[i], "--enter") && i + 1 < argc) { enter_at = atof(argv[i + 1]); i += 1; }
@@ -2555,6 +2556,7 @@ int main(int argc, char **argv)
             pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
             pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
             pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_CONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
+            pin.duck = (!fly && win.keys['X']) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);   /* action 5 (Space in the original, which is jump here) */
             {   /* WOODY_PECKS="T1 T2 ...": more attack taps of 0.1 s (testing: dispenser, pick up, throw) */
                 static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = getenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
                 for (int k = 0; k < npk; k++) if (now - t0 >= pk[k] && now - t0 < pk[k] + 0.1) pin.action = 1;
@@ -2605,7 +2607,7 @@ int main(int argc, char **argv)
                 Vec3 n = { -g_cam.plane_d.z, 0, g_cam.plane_d.x }; float off = (L.player.pos.x - g_cam.plane_a.x) * n.x + (L.player.pos.z - g_cam.plane_a.z) * n.z;
                 L.player.pos.x -= n.x * off; L.player.pos.z -= n.z * off;
             }
-            if (!fly) cam_update(&L.player, &cam, dt, g_cam.mode == 0x20 ? (pin.forward ? 2 : pin.back ? 3 : 0) : win.keys['C']); else cam.letterbox = 0;
+            if (!fly) cam_update(&L.player, &cam, dt, g_cam.mode == 0x20 ? (pin.forward ? 2 : (pin.back || pin.duck) ? 3 : 0) : win.keys['C']); else cam.letterbox = 0;
             if (g_level == 0 && !fly && g_cin.state < 2) {                           /* title orbit: camera mode 0x80 on the Perso's animation 73 (docs/TITLE.md 2): no letterbox, vfov 83.97, no smoothing */
                 Vec3 eye, tgt; float ph = fmodf(g_title_t / 10.0f, 1.0f);
                 if (ins_camera_eval(L.player.inst, 73, ph, &eye, &tgt)) {
