@@ -555,7 +555,7 @@ gedecompileerd. Model 47: behuizing groep 108, twee press-nodes, markers typecod
 | 17 | breekbaar object voor bommen (`vtbl[0xa0](&pos, r)`), rook op markers typecode 9 | ctor `0x40c3d0`, vtable `0x4a95dc`, Init `0x40c440`, handler `0x40c5e0` |
 | 50 / 52 | laser-varianten (oneindig tot muur / naar doelinstantie), §2.1 | `0x4510c0`, `0x451520`, bericht 53 `0x451622` |
 | 42 + projectielen | §2.2 en **PROJECTILES.md**; 200 projectielen `0x5d7d48` (0x104 B), sjablonen `0x5d7ba8` (0x68 B), Press/UnPress door landende projectielen | `0x4490a0`, `0x449130`, `0x4490f0`, `0x4493c0`; visuals `0x4700e0` (missile), `0x46f8a0`, `0x470af0` |
-| 60 | eigen handler (1503/1506), soort 2 in `inst+8` | vtable `0x4a9194`, handler `0x474a40` (`0x403ca3`) |
+| 60 | watervolume (bericht 1506): **WATER.md**, geport in `src/water.c` | vtable `0x4a9194`, handler `0x474a40` (`0x403ca3`) |
 | berichten 15..19 | textuurframe-/UV-override per instantie (INSTANCE.md §2); W1A: 16 12×, 18 10×; **niet in `src/instance.c`** | `0x42d9c3`, `0x42da32`, `0x42daae`, `0x42db0f`, `0x42db86`, lezer `0x47f290` |
 | 1201 / 1202 | typewoord-bit 0x400 (aanvalbaar doel) zetten/wissen | `0x403440` |
 
