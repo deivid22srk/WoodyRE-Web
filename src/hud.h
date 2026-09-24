@@ -98,6 +98,8 @@ void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw
 void hud_world_beam(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b);
 /* the same line quad without a texture (0x471a10 without flag 0x200): the lightning arc along a laser */
 void hud_world_line(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b);
+/* the same additive line with a bank 0 image along it, u from a (0) to b (1): the drops of the water splash (image 57, docs/SPLASH.md 4) */
+void hud_world_streak(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b);
 /* additive ring of half width hw around c, lying in the plane with normal n: the landing marker under Woody */
 void hud_world_ring(const float *c, const float *n, float radius, float hw, const float *rgb, float alpha);
 

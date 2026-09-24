@@ -97,7 +97,7 @@ rotatie `+0x224` willekeurig maar zonder vlag 4 ongebruikt.
 
 ## 6. Open
 
-* Bericht 1505 (`0x478660(&inst.pos, 1000, f·0.01)`, een plons op een instantie; W2A 10×) en de waterplons van Kill(7)
-  zelf (`0x478660`, PERSO_DEATH.md §4.3) zijn niet geport.
+* De waterplons `0x478660` (van Kill(7) en van bericht 1505 `[inst, f]` = `0x478660(&inst.pos, 1000, f·0.01)`; 45× in 7 levels,
+  W2A 17×) is volledig uitgewerkt in **SPLASH.md**, met port-recept; nog niet geport.
 * Wat `+0x14d` en `+0x150` (3.0) na het verdrinken doen: geen lezer gevonden in de klasse zelf.
 * Niet vergeleken met het draaiende origineel.
