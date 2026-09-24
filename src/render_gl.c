@@ -624,17 +624,24 @@ static int instance_visible(Renderer *r, Instance *inst, float aspect, float fy,
  * 0x00iiiiii with i = (int)(alpha * 0.5) (0x43d9a4) and alpha = (1 - inst->fade) * 255 (0x43b504), so i = 128 for an
  * instance that is not fading, and under MODULATE2X that is plain 1.0 x texture. A neon sign is therefore never dimmed
  * by the world light or by the angle its own plate makes with it - which is what "glowing" means here. */
+/* render colour hook vtbl[26] with [0x5ac850] = 1 (multiply) or 2 (add), clamped at 255 (0x43bdd3..0x43be20). c is the lit colour
+ * in units of 255 times the material base, so an added 128 is 128/255 of the base: the bomb's red flash (docs/BOMB.md 3.4) */
+static void tint_apply(const Instance *inst, float *c, const float base[3])
+{
+    if (inst->tint_mode == 1) for (int q = 0; q < 3; q++) c[q] *= inst->tint_rgb[q];
+    else if (inst->tint_mode == 2) for (int q = 0; q < 3; q++) { c[q] += inst->tint_rgb[q] * base[q]; if (c[q] > base[q]) c[q] = base[q]; }
+}
 static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat4 *M, const InsPoint *pt, const float base[3])
 {
     if (g_mat_blended) { float a = 1.0f - inst->fade; bt_color(base[0] * a, base[1] * a, base[2] * a); return; }
     float ts = inst->tint_scale > 0 ? inst->tint_scale : 1.0f;   /* 0x451a40: [0x5ac850] = 1, [0x5ac854..5c] = 0.1 times the lit colour (0x43bdfc) */
-    if (!r->lit || !r->show_light) { bt_color(ts * base[0] * pt->colour.x / 128.0f, ts * base[1] * pt->colour.y / 128.0f, ts * base[2] * pt->colour.z / 128.0f); return; }
+    if (!r->lit || !r->show_light) { float c[3] = { ts * base[0] * pt->colour.x / 128.0f, ts * base[1] * pt->colour.y / 128.0f, ts * base[2] * pt->colour.z / 128.0f }; tint_apply(inst, c, base); bt_color(c[0], c[1], c[2]); return; }
     const float *a = M->m; Vec3 n = pt->normal;
     Vec3 w = { a[0] * n.x + a[4] * n.y + a[8] * n.z, a[1] * n.x + a[5] * n.y + a[9] * n.z, a[2] * n.x + a[6] * n.y + a[10] * n.z };
     float l = sqrtf(w.x * w.x + w.y * w.y + w.z * w.z), ndl = l > 1e-6f ? (w.x * inst->ldir.x + w.y * inst->ldir.y + w.z * inst->ldir.z) / l : 0; if (ndl < 0) ndl = 0;
     float vc[3] = { pt->colour.x, pt->colour.y, pt->colour.z }, c[3];
     for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q] * ts; if (q && inst->tint_red) c[q] = 0; }
-    bt_color(c[0], c[1], c[2]);
+    tint_apply(inst, c, base); bt_color(c[0], c[1], c[2]);
 }
 
 /* ---- cast shadows (0x42e651-0x42ec3a, drawn by 0x4385f0): the caster's geometry projected from its light onto the

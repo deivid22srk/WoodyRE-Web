@@ -376,7 +376,8 @@ Zelfde automaat, met deze verschillen (alle takken op `+0x164`):
 * De bom ontploft zelf (klasse 40, `0x44d6e0`, straal 400: type-17-objecten, chests **en** alle Npc's categorie 1/2 uit `0x4c4e00` via `vtbl[40](pos, 400)` ⇒ ook de Perso ⇒
   `Kill(6)` als Woody er nog op zit). Dit is het mechanisme waarmee in W2x muren/kisten worden opgeblazen.
 
-Porten pas na het bomsysteem (TODO.md: klasse 40).
+Geport (BOMB.md §9): `Rocket.type == 21` in `src/main_engine.c`; de bom komt uit `bomb_start`, de zitpositie in toestand 5..7 is de bom, toestand 8 draait terug.
+Test W2A: `extract/Data W2A --pos 9887 160 -12700 --peck 0.7 0.1` (volume 95 = instantie 356), afvuren ≈ 4.0 s, explosie ≈ 7.2 s; `--jump T` om af te springen.
 
 ## 8. Scriptkant
 

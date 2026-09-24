@@ -69,6 +69,18 @@ int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
     return e->hp <= 0;
 }
 
+/* bomb blast 0x44d650 -> vtbl[40] 0x41ae20 on every Npc of category 2: inside r (3D, to the instance origin) it dies at once,
+ * through the hit state like a last peck (docs/BOMB.md 4.2); the boss takes its usual single point */
+void enemies_blast(EnemySet *s, Vec3 c, float r)
+{
+    for (int i = 0; i < s->n; i++) {
+        Enemy *e = &s->e[i]; if (e->removed || !e->inst->visible || e->hp <= 0) continue;
+        float dx = e->pos.x - c.x, dy = e->pos.y - c.y, dz = e->pos.z - c.z; if (dx * dx + dy * dy + dz * dz >= r * r) continue;
+        float l = sqrtf(dx * dx + dz * dz); Vec3 d = l > 1e-3f ? (Vec3){ dx / l, 0, dz / l } : (Vec3){ 0, 0, 1 };
+        e->hit_t = e->knock_t = 0; enemy_take_damage(e, e->type == 14 ? 1.0f : e->hp, d);
+    }
+}
+
 static float ang_diff(float a, float b) { float d = a - b; while (d > 3.14159265f) d -= 6.2831853f; while (d < -3.14159265f) d += 6.2831853f; return d; }
 static void steer(Enemy *e, float want, float rate, float dt) { float d = ang_diff(want, e->ang), m = rate * dt; if (d > m) d = m; if (d < -m) d = -m; e->ang += d; }
 

@@ -86,6 +86,10 @@ typedef struct Player {
     Vec3 race_dir, boost_target, race_upf;
     int race_cam_req;                                                   /* sub-state 0: hard cut to the follow camera (consumed by the app) */
     float cam_dist, cam_height, cam_zoom;                               /* follow camera C+0x7e0 (400), C+0x7d8 (180), zoom cam+0x678 (1.2) */
+    /* Perso state 6, carrying a bomb (docs/BOMB_CARRY.md 1): +0x590 the bomb, +0x594 in his hands, +0x58c sub-state, +0x598 its
+     * timer; carry_pressed = attack just pressed this frame (read by the sub-states), throw_hold = port: the throw animation
+     * keeps playing after the release (the original does that with animation priorities) */
+    struct Bomb *bomb; int carrying, bsub, carry_pressed; float bt, throw_hold;
     Instance *ride; int ride_state; Vec3 ride_seat, ride_p0; Quat ride_q, ride_q0, ride_cur; float ride_t; int ride_jprev, ride_aprev;
     /* statistics */
     float play_time;                /* Perso+0x710 accumulator (0x453ca0): seconds played in this level, one of the five result stats */
@@ -123,6 +127,7 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);
 int  player_segment_blocked(const Player *p, Vec3 a, Vec3 b);   /* world polygons only */
 Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r);   /* 0x407340: world + instance press nodes */
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b);   /* first world polygon hit on a->b as a fraction 0..1, or 2 when nothing is hit */                 /* Perso vt[38] */
+int  player_ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b, float *frac, Vec3 *n_out, const Instance **inst_out);   /* ray 0x4359b0, instance part (hit kind 2): press-node polygons */
 float gel_ray_hit(const GelFile *g, Vec3 a, Vec3 b, Vec3 *n_out);   /* the same, and the normal of that polygon, turned towards a */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
 
@@ -137,6 +142,12 @@ void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, co
 /* and the beak impact 0x479c80(kind, point, normal), on the same primitives (docs/OBJECTS.md 1.6):
  * kind 1 = a hit of the attack probe (no normal), 0 = the wall he is climbing */
 void game_peck_fx(int kind, Vec3 pos, const Vec3 *n);
+/* bombs (main_engine.c, docs/BOMB.md): pick one up (0x463430: in use, not ridden, within r of pos in 3D; it is held from now on),
+ * hold it in the hand (0x463530 part A), and start its projectile again from where it is (0x44d3a0: the throw and the drop) */
+struct Bomb;
+struct Bomb *game_bomb_pick(Vec3 pos, float r);
+void game_bomb_hold(struct Bomb *b, Vec3 pos, Quat q);
+void game_bomb_launch(struct Bomb *b, Vec3 dir, float speed);
 
 /* world queries (brute force over the .gel polygons) */
 float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, int *found);
