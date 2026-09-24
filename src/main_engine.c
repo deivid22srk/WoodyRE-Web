@@ -1805,7 +1805,9 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 55: if (in && rocket_of(in) && m->nargs > 2) { Rocket *rk = rocket_of(in); if (m->args[1] == 1) rk->fly_time = (float)(int32_t)m->args[2] * 0.01f; else if (m->args[1] == 2) rk->vmax = (float)(int32_t)m->args[2]; } break;
     case 7: if (in) { int k = 0; for (int i = 0; i < g_nretry; i++) if (slot_instance(g_retry[i].args[0]) != in) g_retry[k++] = g_retry[i]; g_nretry = k; } break;
     case 10:                                                                        /* Collect (docs/BONUS.md): the level script saw the player enter the bonus volume */
-        if (in && g_player && in->visible && player_collect(g_player, in->type, m->nargs > 1 ? (int)m->args[1] : 0)) {
+        /* no "already taken" test (0x44f350): a removed bonus simply gets no more volume events, and the Jackpot pays its
+         * prize by sending 10 up to five times to the same hidden life bonus */
+        if (in && g_player && player_collect(g_player, in->type, m->nargs > 1 ? (int)m->args[1] : 0)) {
             int t = in->type;
             Vec3 fp = in->position;
             if (t == 34 && in->node_world) { fp.x = in->node_world[0].m[12]; fp.y = in->node_world[0].m[13]; fp.z = in->node_world[0].m[14]; }   /* 0x44f630: the W sits on its animated volume node, not on inst.pos */
@@ -1945,6 +1947,13 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 50: case 52: case 53: if (in) { Laser *z = laser_of(in); if (z && m->nargs > 1) { if (m->id == 50) z->on = m->args[1] == 1; else if (m->id == 52) z->len = (float)(int)m->args[1]; else z->target = slot_instance(m->args[1]); } } break;
     case 1080: if (m->nargs > 3) { hud_text_open((int)m->args[0], (int)m->args[1], &m->args[3], (int)m->nargs - 3); g_text_var = m->args[2]; printf("  TEXT box at vm t=%d: strings %u %u %u\n", vm->time, m->args[3] & 0xffff, m->nargs > 4 ? m->args[4] & 0xffff : 0, m->nargs > 5 ? m->args[5] & 0xffff : 0); } break;   /* text box 0x456ed0: stays until the script sets var != 0 */
     case 1172: g_hud_ext = 1; break;
+    /* the WWS Jackpot machine (script object 349): 1173 arms it while Woody has a $, 1171 pays one per spin and the three
+     * Buzz faces take lives with 1170 (0x444904 / 0x444942 / 0x444934, confirmed on the switch table 0x44569c); the prizes
+     * are plain Collects (message 10) on the type-30 life bonus 352. The original copies both counters into the save
+     * block at once (0x44c7a0 / 0x44c840); the port's frame loop does that for every level. */
+    case 1173: if (m->nargs) eko_set_var(vm, m->args[0], g_player && g_player->unique_items > 0); break;
+    case 1171: if (g_player && --g_player->unique_items < 0) g_player->unique_items = 0; break;
+    case 1170: if (g_player && --g_player->lives < 1) g_player->lives = 1; break;
     case 1088: if (in && g_player) cam_side_start(in, m->nargs > 1 ? (int)m->args[1] : 0); break;
     case 1110: if (m->nargs > 1) { static const int fld[9] = { -1, 3, 2, 4, 1, 0, 6, 5, 7 }; int n = (int)m->args[0];   /* n -> sv_par index */
                    if (n == 9) memcpy(g_cam.sv_par, k_sv_defaults, sizeof k_sv_defaults); else if (n >= 1 && n <= 8) g_cam.sv_par[fld[n]] = (float)(int)m->args[1]; } break;                                                              /* credits */                       /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes */
