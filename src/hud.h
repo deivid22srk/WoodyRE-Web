@@ -72,6 +72,7 @@ int  hud_sky_images(uint32_t out[5]);                           /* level bank im
 void hud_world_sprites_begin(const float *right, const float *up);
 void hud_world_sprite(int n, const float *pos, float size);
 void hud_world_wing(int n, const float *c, const float *u, const float *v, float half);   /* bank 0 images 53..56: one wing of a butterfly */
+void hud_world_bubble(int image, const float *pos, float size, int mirror);   /* bank 0 images 44..52: the speech bubble 0x478980, alpha blended, mirrored in u */
 void hud_world_sprites_end(void);
 /* additive effect sprite (bank 0 image 0, 4 or 6), rotated by `turns` around the view axis; colour = rgb * alpha */
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha);

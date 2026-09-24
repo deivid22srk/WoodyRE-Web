@@ -71,6 +71,9 @@ typedef struct Player {
     /* death / hit animations, scripted door actions (docs/PERSO_DEATH.md) */
     float dead_T, nograv_t, hit_anim_t; int dead_ground, hit_anim, dead_cam_req;
     int script_act, script_log; float script_t, script_total; int script_faded, fade_req, cam_end_req;   /* fade_req: 1 = fade out 0.5 s, 2 = fade in 0.5 s; cam_end_req: 0x44e5a0, back to the follow camera (both consumed by the app) */
+    /* idle 0x464500: +0x230 seconds standing still, +0x530 which idle variation, +0x52c the zzz bubble is up (its live flag);
+     * idle_hold = Perso state != 0 (results, title, frozen by a cinematic camera): the timer neither runs nor resets (set by the app) */
+    float idle_t; int idle_var, sleep_bubble, idle_hold;
     int respawn_req;                                                    /* respawn 0x445930 happened: side view off + camera reset 0x458f90 (consumed by the app) */
     /* Perso state 8: riding a class-20 rocket (docs/ROCKET.md 6). The app fills ride_state / ride_seat / ride_q before the update */
     /* race levels (script types 18/19, docs/RACE.md): message 1120 hangs the board under the Perso (+0x4b4) and gives the track polyline (+0x4b0) */
@@ -126,6 +129,9 @@ int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 
  * dust 0x476140(pos + (0,30,0), &ground normal, 3, 0.25, 1.5) on ground type 2. */
 void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind);
 void game_land_dust(Vec3 pos, Vec3 normal);
+/* the comic speech bubble 0x478980(inst, kind, duration, offY, offX, live) (docs/PERSO_DEATH.md 4.1): kind 0 "?!" (Kill 1),
+ * 1 curse (hard landing), 2 "$", 3 "...", 4 "zzz"; with `live` it lasts while *live != 0 instead of `duration` */
+void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, const int *live);
 /* and the beak impact 0x479c80(kind, point, normal), on the same primitives (docs/OBJECTS.md 1.6):
  * kind 1 = a hit of the attack probe (no normal), 0 = the wall he is climbing */
 void game_peck_fx(int kind, Vec3 pos, const Vec3 *n);
