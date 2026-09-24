@@ -235,6 +235,32 @@ W2B (type 12) en de drie spoken van W3B (type 13). De port zette de bit vroeger 
 zonder lijn stond; dat was echter de afstandsfout hierboven (zijn geanimeerde wortel staat in W1B 3400 eenheden van
 `inst+0xc`), en die hack is weg. `WOODY_SHLOG=1` schrijft per seconde één regel voor elke getekende actor die géén
 contour krijgt, met de afstand en de reden (geen bit 0x20, of verder dan 1500).
+
+## 8. Vervagende instanties (`inst+0x6c`, berichten 56/57): de lijst `+0x1c4`
+
+Voorbeeld: de verdwijnende platforms aan het eind van W1B (type 70, model 1, slots 229/230/232, fade-snelheid
+57 = 0.6/s). Vóór deze ronde tekende de port alleen de gloeivlakken met `1 − fade`; al het andere bleef ondoorzichtig
+tot `fade > 0.98` en verdween dan in één frame.
+
+- `0x43b504`: `alpha = (1 − inst+0x6c) · 255` (`[0x4a900c] = 1`, `[0x4aa308] = 255`); **`alpha < 252`**
+  (`[0x4aa3dc]`) zet `[esp+0x2c] = 1` en berekent de sorteerdiepte `[0x5ac8d4]` = camera-z van de `.ins`-positie
+  `inst+0xc` (rij `+0x11c/+0x12c/+0x13c/+0x14c`), begrensd op ≥ 0 (`0x43b528..0x43b56a`).
+- `0x43bdc4`: elke vertex krijgt `v+0x30 = alpha`; `0x43d926` schrijft die als diffuse-byte 3. Het apparaat staat op
+  ALPHAOP MODULATE, ALPHAARG1 TEXTURE, ALPHAARG2 DIFFUSE (`0x47ed72..0x47ed91`), dus eindalfa = textuur × vertex.
+- `[esp+0x2c]` is de modus van de batch (4e arg van `0x43d790`, ook voor de contour `0x43ea30` via `0x43c59d`):
+  0 = lijst `+0x1c0` (opaak), 1 = lijst `+0x1c4` (vervagend); blendvlakken krijgen altijd modus 3 (`0x43d7c8`).
+- `0x428d00` (na de doorzichtige wereldemmers 11/8/3 in `0x4293f0`): diepste = max(1, alle batchdieptes van
+  `+0x1c4/+0x1c8/+0x1cc`); emmer = `round(diepte · 254 / diepste)` (`[0x4aa2f0] = 254`), batches van dezelfde
+  instantie (`batch+8`) blijven bij elkaar; getekend van emmer 255 naar 0 (ver naar dichtbij). Per emmer:
+  1. ZWRITE aan, SRCBLEND ZERO, DESTBLEND ONE (`0x428f10..0x428f45`): alleen diepte;
+  2. SRCBLEND SRCALPHA, DESTBLEND INVSRCALPHA (`0x428fdd..0x428fff`), ZWRITE blijft aan; ZFUNC is globaal
+     LESSEQUAL (`0x47ec44`), dus alleen het voorste oppervlak van het object mengt (geen binnenvlakken zichtbaar);
+  3. ALPHATESTENABLE per textuur = kleursleutelbit `tex+0x44 & 1` (`0x428f6b`): een gekleurde-sleuteltextuur
+     verdwijnt dus al bij alpha < 127, de rest vervaagt tot 0.98.
+- De modus-3-batches (`+0x1cc`) gaan door dezelfde emmers, maar met de diepte die de laatste vervagende instantie in
+  `[0x5ac8d4]` achterliet; hun volgorde t.o.v. de vervaaglijst is dus willekeurig. De port tekent ze in pass 1 zoals
+  voorheen en de vervaaglijst daarna (`render_gl.c`, `g_fading`).
+- Niet geport: de schaduw van een vervagende werper (`0x42e69a`/`0x42eb7a`, pad `0x4388e0`).
 ## Onzeker
 - Tekenvolgorde van de twee ooglagen: `0x43d790` tekent niet direct maar vult batches per (textuur, modus)
   (`renderer+0x1b8`, lijsten `+0x1c0`); een afgesloten batch wordt vooraan gelinkt, zodat de later afgesloten

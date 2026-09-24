@@ -440,11 +440,22 @@ void rnd_free(Renderer *r)
  * plates are white-on-black), byte 2 = intensity/alpha, byte 3 = ground type (0x46295f). */
 static int group_blended(const Renderer *r, uint32_t group) { return group < r->tex->ngroups && (r->tex->groups[group].flags & 2); }
 static int mat_blended(const Renderer *r, uint32_t material) { return !(material & 0x8000) && material < r->tex->nmaterials && group_blended(r, r->tex->materials[material].group); }
+/* Fading instances (0x43b504: alpha = (1 - inst+0x6c) * 255 < 252) do not go into the opaque batch list +0x1c0 but
+ * into list +0x1c4, which 0x428d00 draws after the transparent world buckets: back to front in 254 depth buckets, and
+ * every bucket twice with ZWRITE on - first SRC ZERO / DEST ONE (depth only, 0x428f10), then SRCALPHA / INVSRCALPHA
+ * (0x428fdd), under the device's ZFUNC LESSEQUAL (0x47ec44), so only the front-most surface of the object blends.
+ * The vertex alpha is that alpha (0x43bdc4 -> v+0x30 -> diffuse byte 3, 0x43d926), and ALPHAOP MODULATE (0x47ed82)
+ * multiplies it with the texture's. ALPHATESTENABLE follows the texture's colour key bit (tex+0x44 & 1, 0x428f6b):
+ * the port leaves the alpha test on everywhere else, which only differs once the vertex alpha drops.
+ * g_fading: 0 = normal, 1 = depth-only pass, 2 = blend pass. */
+static int g_fading; static float g_fade_alpha = 1.0f; static GLenum g_zfunc = GL_LESS;
 static void set_blend(int blended)
 {
     if (blended) { glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE); glDepthMask(GL_FALSE); }
+    else if (g_fading) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_TRUE); }
     else { glDisable(GL_BLEND); glDepthMask(GL_TRUE); }
 }
+static int inst_fading(const Instance *inst) { return (1.0f - inst->fade) * 255.0f < 252.0f; }
 static uint32_t g_last_material = 0xffffffffu, g_last_frame;
 static int g_mat_blended;                            /* [0x5ac8d8]: the material now bound has group flag bit 1 */
 
@@ -452,20 +463,21 @@ static int g_mat_blended;                            /* [0x5ac8d8]: the material
 /* ---- model vertex batching: the model code below is written like immediate mode (begin / colour / texcoord / vertex),
  * but the vertices are collected in one array per material state and sent with glDrawArrays. Immediate mode cost
  * 25 ms per frame in the hubs. Fans are turned into triangles; bt_flush() must run before any GL state change. */
-static struct { float *v; uint32_t n, cap; float col[3], uv[2], first[8], prev[8]; int fan, count; } g_bt;
+#define BT_STRIDE 9                                  /* x y z u v r g b a */
+static struct { float *v; uint32_t n, cap; float col[3], uv[2], first[BT_STRIDE], prev[BT_STRIDE]; int fan, count; } g_bt;
 static void bt_flush(void)
 {
     if (!g_bt.n) return;
     glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_TEXTURE_COORD_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
-    glVertexPointer(3, GL_FLOAT, 32, g_bt.v); glTexCoordPointer(2, GL_FLOAT, 32, g_bt.v + 3); glColorPointer(3, GL_FLOAT, 32, g_bt.v + 5);
+    glVertexPointer(3, GL_FLOAT, BT_STRIDE * 4, g_bt.v); glTexCoordPointer(2, GL_FLOAT, BT_STRIDE * 4, g_bt.v + 3); glColorPointer(4, GL_FLOAT, BT_STRIDE * 4, g_bt.v + 5);
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)g_bt.n);
     glDisableClientState(GL_VERTEX_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glDisableClientState(GL_COLOR_ARRAY);
     g_bt.n = 0;
 }
-static void bt_push(const float *v8)
+static void bt_push(const float *v9)
 {
-    if (g_bt.n + 1 > g_bt.cap) { g_bt.cap = g_bt.cap * 2 + 4096; g_bt.v = (float *)realloc(g_bt.v, (size_t)g_bt.cap * 8 * sizeof(float)); }
-    memcpy(g_bt.v + (size_t)g_bt.n * 8, v8, 8 * sizeof(float)); g_bt.n++;
+    if (g_bt.n + 1 > g_bt.cap) { g_bt.cap = g_bt.cap * 2 + 4096; g_bt.v = (float *)realloc(g_bt.v, (size_t)g_bt.cap * BT_STRIDE * sizeof(float)); }
+    memcpy(g_bt.v + (size_t)g_bt.n * BT_STRIDE, v9, BT_STRIDE * sizeof(float)); g_bt.n++;
 }
 static void bt_begin(int fan) { g_bt.fan = fan; g_bt.count = 0; }
 static void bt_end(void) { }
@@ -473,7 +485,7 @@ static void bt_color(float r, float g, float b) { g_bt.col[0] = r; g_bt.col[1] =
 static void bt_texcoord(float u, float v) { g_bt.uv[0] = u; g_bt.uv[1] = v; }
 static void bt_vertex(float x, float y, float z)
 {
-    float v[8] = { x, y, z, g_bt.uv[0], g_bt.uv[1], g_bt.col[0], g_bt.col[1], g_bt.col[2] };
+    float v[BT_STRIDE] = { x, y, z, g_bt.uv[0], g_bt.uv[1], g_bt.col[0], g_bt.col[1], g_bt.col[2], g_fade_alpha };
     if (!g_bt.fan) { bt_push(v); return; }
     if (g_bt.count == 0) memcpy(g_bt.first, v, sizeof v);
     else if (g_bt.count >= 2) { bt_push(g_bt.first); bt_push(g_bt.prev); bt_push(v); }
@@ -503,17 +515,19 @@ static void set_material(const Renderer *r, uint32_t material, const Material **
     /* GL state = (texture or none, blend mode). Every polygon has its own material record (a planar projection), so the
      * batch is keyed on the state, not on the material index: g_last_material holds texture id + 1 (0 = untextured) | blend << 31 */
     *mat_out = NULL; g_mat_blended = 0;
-    uint32_t tex = 0; int bl = 0; float col[3] = { 1, 0, 1 };
+    uint32_t tex = 0; int bl = 0, key_bit = 0; float col[3] = { 1, 0, 1 };
     if (material & 0x8000) argb1555_to_rgb(material, col);
     else if (material < r->tex->nmaterials) {
         const Material *m = &r->tex->materials[material]; *mat_out = m; const TexGroup *g = &r->tex->groups[m->group];
         bl = g_mat_blended = (g->flags & 2) != 0;        /* byte 2 of the flags looks like an intensity, but nothing in the engine reads tex+0x46 */
+        key_bit = g->flags & 1;
         if (!frame && inst && inst->tex_mode) frame = tex_frame(inst, g);
         tex = g->gl_frames[frame < g->frame_count ? frame : 0];
     }
     uint32_t key = (tex + 1) | (uint32_t)bl << 31;
     if (key != g_last_material) {
         bt_flush(); g_last_material = key; set_blend(bl);
+        if (g_fading) { if (key_bit) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST); }   /* 0x428f6b: the fade list tests the colour key bit */
         if (tex) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tex); } else glDisable(GL_TEXTURE_2D);
     }
     bt_color(col[0], col[1], col[2]);
@@ -836,7 +850,7 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
         int helper = node_helper(m, ni);
         uint32_t lid = (n->type_code >= 5 && n->type_code <= 8) ? evf[n->type_code - 5] : 0;
         draw_node_polys(r, inst, ni, pass, 0, helper);
-        if (lid) { bt_flush(); glDepthFunc(GL_LEQUAL); draw_node_polys(r, inst, ni, pass, lid, -1); bt_flush(); glDepthFunc(GL_LESS); }   /* eyelid layer on top of the eyeball */
+        if (lid) { bt_flush(); glDepthFunc(GL_LEQUAL); draw_node_polys(r, inst, ni, pass, lid, -1); bt_flush(); glDepthFunc(g_zfunc); }   /* eyelid layer on top of the eyeball */
     }
     /* skinned triangles */
     if (m->ntris) {
@@ -994,7 +1008,8 @@ static void draw_outline(const Renderer *r, Instance *inst)
     bt_flush();
     float a = 2.0f * (1.0f - inst->fade); if (a > 1) a = 1;                     /* 0x43ece9: twice the opacity, clamped */
     glDisable(GL_TEXTURE_2D); glDisable(GL_ALPHA_TEST); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    if (a < 0.999f) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); } else { glDisable(GL_BLEND); glDepthMask(GL_TRUE); }
+    if (g_fading) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_TRUE); }   /* a fading instance's contour is one more batch of its fade list (0x43c59d passes the same mode) */
+    else if (a < 0.999f) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); } else { glDisable(GL_BLEND); glDepthMask(GL_TRUE); }
     glColor4f(0, 0, 0, a);
     glEnableClientState(GL_VERTEX_ARRAY);                                      /* bt_flush() leaves it disabled */
     glVertexPointer(3, GL_FLOAT, 0, g_ol); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)g_ol_n * 3);
@@ -1133,13 +1148,45 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) {
             Model *m = &r->ins->models[mi];
             for (uint32_t k = 0; k < m->ninstances; k++) {
-                Instance *inst = &m->instances[k]; if (!inst->drawn) continue;
+                Instance *inst = &m->instances[k]; if (!inst->drawn || (pass == 0 && inst_fading(inst))) continue;   /* a fading instance's opaque parts go to the fade list below */
                 { static double mt[512]; static int mn; double b0 = win_time(); draw_instance(r, inst, pass); if (pass == 0) draw_outline(r, inst); if (mi < 512) mt[mi] += win_time() - b0; if (getenv("WOODY_PROF2") && pass == 1 && mi == r->ins->nmodels - 1 && k == m->ninstances - 1 && ++mn == 120) { for (uint32_t z = 0; z < r->ins->nmodels && z < 512; z++) if (mt[z] / 120 * 1000 > 0.3) { printf("   model %u: %.2f ms (%u nodes, %u tris, %u inst)", z, mt[z] / 120 * 1000, r->ins->models[z].nnodes, r->ins->models[z].ntris, r->ins->models[z].ninstances); puts(""); } } }
             }
         }
         bt_flush(); g_last_material = 0xffffffffu;
         T[3] += win_time() - a;
     }
+    }
+    if (r->show_instances) {
+        /* list +0x1c4 (0x428d00): depth = camera-space z of the .ins position (0x43b528, clamped at 0), bucket =
+         * round(depth * 254 / max(1, deepest)), drawn from bucket 255 down to 0; per bucket all batches depth-only,
+         * then all blended. The additive parts of these instances stay in pass 1 above (their RGB already carries
+         * 1 - fade); the original sorts those into the same buckets, but with a depth left over from the last fading
+         * instance, so their order against the fade list is arbitrary there too. */
+        static Instance **fl; static float *fd; static uint32_t fcap; uint32_t fn = 0; float dmax = 1.0f;
+        for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
+            Instance *inst = &m->instances[k]; if (!inst->drawn || !inst_fading(inst)) continue;
+            if (fn == fcap) { fcap = fcap * 2 + 16; fl = (Instance **)realloc(fl, fcap * sizeof *fl); fd = (float *)realloc(fd, fcap * sizeof *fd); }
+            float d = (inst->position.x - cam->pos.x) * fw.x + (inst->position.y - cam->pos.y) * fw.y + (inst->position.z - cam->pos.z) * fw.z;
+            if (d < 0) d = 0;
+            if (d > dmax) dmax = d;
+            fl[fn] = inst; fd[fn++] = d; } }
+        if (fn) {
+            g_zfunc = GL_LEQUAL; glDepthFunc(GL_LEQUAL);
+            for (int b = 255; b >= 0; b--) {
+                for (int sub = 1; sub <= 2; sub++) {
+                    int any = 0;
+                    for (uint32_t i = 0; i < fn; i++) {
+                        if ((int)lrintf(fd[i] * 254.0f / dmax) != b) continue;
+                        if (!any) { any = 1; g_fading = sub; g_last_material = 0xffffffffu; if (sub == 1) glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); }
+                        g_fade_alpha = 1.0f - fl[i]->fade;
+                        draw_instance(r, fl[i], 0); draw_outline(r, fl[i]);
+                    }
+                    if (!any) break;
+                    bt_flush(); glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                }
+            }
+            g_fading = 0; g_fade_alpha = 1.0f; g_zfunc = GL_LESS; glDepthFunc(GL_LESS); glEnable(GL_ALPHA_TEST); g_last_material = 0xffffffffu;
+        }
     }
     set_blend(0);
     T[4] += win_time() - q0;
