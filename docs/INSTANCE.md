@@ -404,7 +404,7 @@ typedef struct {
 ## 12. Open vragen
 1. `+0xd9`/`+0xda` (arg1 van 15..18, in W1A 0xffff): geen lezer gevonden in `0x47f290`; mogelijk een textuurfilter elders in `0x43b3f0`.
 2. SetFlags bit 2: geen lezer gevonden. Bit 1: is de extra pas een schaduw of een spiegeling (tabel `[0x4c4cac]+4`)? Bit 0x20: aard van de effectpas.
-3. Exacte kleurmenging in `0x4388e0` bij fade > 0.01 in de extra pas.
+3. Exacte kleurmenging in `0x4388e0` bij fade > 0.01 in de extra pas (de schaduw). Het tekenen van het model zelf bij fade is uitgewerkt in MODEL_RENDER.md §8.
 4. `+0x88 == 2`: betekenis van deze toestand in `0x42e2b0`.
 5. Afrondingsmodus van `0x499580` (ftol) bij de textuurframe-index en het fasemasker (afkappen of afronden).
 6. Klasse 20/21 (bericht 55), type 60 (`0x474a40`, 1503/1506) en vijandbericht 11 zijn hier niet uitgewerkt.
