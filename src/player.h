@@ -99,6 +99,7 @@ void player_boost(Player *p, Vec3 p0, Vec3 dir, float speed, float dur);   /* me
 void player_sync_board(Player *p);                    /* 0x44bf10 tail + 0x463e60: the race board takes the Perso's placement and animation */
 /* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
+void player_set_carried(const Instance *owner, const Instance *follower);   /* follower moves with owner: a query that skips owner skips it too */
 /* landing ring (docs/PERSO_JUMP.md 5): the floor point and its normal under an airborne Woody, 0 = draw nothing */
 int  player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal);
 int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34..38: message 10; returns 1 when the instance must disappear */

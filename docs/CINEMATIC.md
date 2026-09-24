@@ -118,7 +118,8 @@ m->rot = { cross(d,(0,1,0)), d, (0,1,0) };                 // rijen +0x28/+0x34/
 for (i = 0; i < c->nActors; i++) {                         // 0x44ecc0
     Instance *a = c->actor[i].inst;
     a->slot[0] = c->actor[i].anim;  a->start = now - t0;  Inst_SetSpeed(a, 3.0f);
-    a->center = a->pos;  Inst_Recell(a, 0);                // 0x4077f0(0): verbergen + opnieuw tonen in de juiste cel
+    a->center = a->pos;  Inst_Recell(a, 0);                // 0x4077f0(0): uit de cel halen en ALTIJD opnieuw in de cel zetten ⇒ een door het
+                                                           // script verborgen acteur (bericht 6 [a, 0]) wordt weer zichtbaar (W1B: Buzz 398 + schotel 399)
     a->slot[1] = a->slot[2] = a->slot[3] = -1;
 }                                                          // acteurs worden NIET verplaatst: ze staan waar het level ze zet
 if (!Inst_HasCameraTrack(m, c->anim)) {                    // 0x42feb0
@@ -335,7 +336,7 @@ void cin_update(float dt) {
         m->pos = P0; vec3 d = norm_xz(sub(P0, P1));                   // d = -(P1-P0)
         m->rot = rows(cross(d, UP), d, UP);
         inst_play_once(m, cin.anim, /*speed*/3.0f, now);              // slot1..3 = -1, klemt op het eind
-        for (each actor a) { inst_play_once(a.inst, a.anim, 3.0f, now); inst_recell(a.inst); }
+        for (each actor a) { inst_play_once(a.inst, a.anim, 3.0f, now); inst_recell(a.inst); }   // recell = zichtbaar maken
         cam.mode = 0x80; cam.animInst = m; cam.letterbox = 1; cam.cut = 1;
         cin.state = 2; break;
     case 2: if ((cin.remain -= dt) > 0.5f) break;

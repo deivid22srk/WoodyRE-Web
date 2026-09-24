@@ -57,10 +57,12 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     e->st = inst->traj.npoints > 1 ? 0 : (type >= 7 && type <= 9 ? 3 : 8); e->hand = rand() & 1;
     if (e->st == 0) { Vec3 a = inst->traj.points[0], b = inst->traj.points[1]; e->ang = atan2f(b.z - a.z, b.x - a.x); }
     inst->scripted = 0;
+    if (type == 14) boss_init(e);
 }
 
 int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 {
+    if (e->type == 14) return boss_take_damage(e);
     int shooter = e->type >= 7 && e->type <= 9;
     if (e->removed || e->st == (shooter ? 10 : 12) || e->hit_t > 0 || e->knock_t > 0) return 0;
     e->st = shooter ? 4 : 9; e->hit_t = e->knock_t = 0.25f; e->knock_dir = dir; e->hp -= dmg;
@@ -84,7 +86,7 @@ static int enemy_move(Enemy *e, struct Player *pl, Vec3 delta)
     e->pos.x = to.x; e->pos.z = to.z; return 1;
 }
 
-static void enemy_apply(Enemy *e)
+void enemy_place(Enemy *e)
 {
     Instance *in = e->inst;
     /* model faces along (cos, 0, sin) of ang; same construction as the player: yaw about y composed with rotx(-90) */
@@ -208,7 +210,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
       if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; } }
     ea_play(e, anim);
-    enemy_apply(e);
+    enemy_place(e);
 }
 
 /* ---- shooters, types 7/8/9 (docs/ENEMY.md 8): state machine 0x416fb0, animation table 0x4b26a8 -------------------- */
@@ -355,7 +357,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     /* the throw (priority 1000) plays out over the turn animations (priority 900) of the wait state */
     if (e->throw_hold) { const Model *m = in->model; int s = g_sa[SA_THROW].anim; if (e->st == S_WAIT && (uint32_t)s < m->nanims && in->anim == s && in->anim_time < m->anims[s].duration_s * 0.98f) { anim = SA_THROW; anim_speed = 0; } else if (e->st != S_FIRE) e->throw_hold = 0; }
     sa_play(e, anim, anim_speed);
-    enemy_apply(e);
+    enemy_place(e);
 }
 
 void enemy_warn_dive(Enemy *e, Vec3 d) { if (e->type == 9 && !e->removed && e->st != S_DEAD && e->st != S_HIT) { e->warn = d; e->st = S_DODGE0; } }
@@ -363,13 +365,14 @@ void enemy_player_killed(Enemy *e)
 {
     if (!e || e->removed) return;
     if (e->type == 13) { if (e->st != 12) { e->t = ea_len(e, EA_WIN); e->want_speed = e->P.walk; e->st = 11; } }
-    else if (e->type >= 7 && e->st != S_DEAD) { e->t = sa_len(e, SA_WIN); e->st = S_WIN; }
+    else if (e->type >= 7 && e->type <= 9 && e->st != S_DEAD) { e->t = sa_len(e, SA_WIN); e->st = S_WIN; }
 }
 
 void enemies_msg11(EnemySet *s, Instance *inst, int n, int v)
 {
     Enemy *e = NULL; for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst) e = &s->e[i];
     if (!e) return;
+    if (e->type == 14) { if (n == 4) boss_reset(e); return; }        /* Enemy::HandleMsg 11/4 = vtbl[17]; the rest writes P fields the boss sets itself */
     switch (n) {
     case 0: e->P.leash = (float)v; break;
     case 1: e->P.see = (float)v; break;
@@ -391,5 +394,9 @@ void enemies_msg11(EnemySet *s, Instance *inst, int n, int v)
 
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt)
 {
-    for (int i = 0; i < s->n; i++) if (s->e[i].type >= 7 && s->e[i].type <= 9) shooter_update(&s->e[i], pl, cam_pos, dt); else enemy_update(&s->e[i], pl, cam_pos, dt);
+    for (int i = 0; i < s->n; i++) {
+        Enemy *e = &s->e[i];
+        if (e->type == 14) { boss_update(e, pl, cam_pos, dt); boss_frame_end(e); }
+        else if (e->type >= 7 && e->type <= 9) shooter_update(e, pl, cam_pos, dt); else enemy_update(e, pl, cam_pos, dt);
+    }
 }

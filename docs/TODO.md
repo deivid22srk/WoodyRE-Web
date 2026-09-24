@@ -47,7 +47,8 @@ Bijwerken bij elke ronde. "Analyse klaar" = er staat een recept in de genoemde d
 | 13 | spook: geport (half doorzichtig, zweeft op spelerhoogte, schiet om en om, duikt). Niet: vuurbal-visual (nu de energiebol), patrouille-animaties | grotendeels | ENEMY2.md §3 |
 | 12 | stilstaande bommengooier (eindbaas W2B, 1×): **geblokkeerd op het bommensysteem (type 40)**; zonder hem is W2B niet uit te spelen | analyse klaar | ENEMY2.md §4 |
 | 10 / 11 | vliegende schutter / bommenwerper te voet: in geen enkel level gebruikt | op hoofdlijnen | ENEMY2.md §5-6 |
-| 14 / 15 / 16 | bazen (ctors `0x40eb50`, `0x40d850`, `0x40c730`): W1B, W2D, W3D, WWS. Geen gedrag; ze krijgen wel de zwarte contourlijn (zie Effecten) | niet geanalyseerd | ENEMY2.md §1 |
+| 14 | baas Buzz (`0x40eb50`, `src/boss.c`): brievenbus (60), gekoppelde schotel (59), modus 1 (W1B) volledig: hoog achtervolgen, schudden, stomp met kegel, laag kwetsbaar, 5 hp, rood knipperen, explosie + rookpluim op de schotel, HUD-baasbalk, camera-schok, einde ⇒ var 3 ⇒ outro + EndLevel. Vereenvoudigd: geen obstakelsensor, muren stoppen een stap (geen glijden), geen treffer-sterretje, kleur/alfa van de rook gereconstrueerd. Modus 2 (W2D/W3D/WWS, hupsen) zit in dezelfde code maar is **niet in die levels getest** | modus 1 geport, modus 2 ongetest | BOSS14.md |
+| 15 / 16 | bazen (ctors `0x40d850`, `0x40c730`): W2D, W3D. Geen gedrag; ze krijgen wel de zwarte contourlijn (zie Effecten) | niet geanalyseerd | ENEMY2.md §1 |
 | sterf-effect | 5 sterren/belletjes boven de stervende vijand (`0x477610`) | geport | PERSO_DEATH.md §7 |
 | 40 | bom (pool 16, oppakken, explosie r 400) | analyse op hoofdlijnen | BONUS.md §7, OBJECTS.md §3 |
 | 120 / 121 | kist die door een bom opengaat (msgmask 0x20) | analyse op hoofdlijnen | OBJECTS.md §3 |
