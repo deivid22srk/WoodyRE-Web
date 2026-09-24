@@ -349,6 +349,10 @@ health-balk: basis `X = 559 − 3 = 556` (`0x47acaa`), rij-y = 424 (`0x4b3a84`, 
 eindrect `0x80ff0000` van `X − 2` tot 640 (`0x47ae6e`), `cur` B-balletjes sprite 13 (16×16) op `x = X − 19·i`
 (`0x47b043`), en het Buzz-gezicht sprite 12 op (559, 400) (`0x47aee0`). Eerst schuift de balk van rechts binnen
 (timer `+0x20` tot duur `+0x24`, `0x47b0ee`); de precieze y van balletjes t.o.v. slots is **onzeker**.
+Ctor `0x47abe0`: duur `+0x24` = **2.0 s**, y `+4` = `[0x4b3a84]`, alfa-helling `+0x14` = 30 / `+0x1c` = 98 ⇒ slot i heeft links alfa
+`(x_i − X + W)·98/W + 30` (W = 19·max), dus van 30 tot 128 over de rij. Tijdens het inschuiven (`0x47ad10(max, x)`) schuiven slots én eindrect
+(`x − 2`, breedte `640 − X`, hoogte 15) mee van `X + W + 640 − X + 2` naar X; daarna laat `0x47bff0` het gezicht (sprite 12) in **0.2 s** groeien
+(`0x47bf70`: `+0x20 = 0.2`) en pas als dat klaar is volgen gezicht (`0x47aee0`) en balletjes (`0x47afb0`). Geport als `hud_boss_bar`.
 
 ### 4.5 Bericht 1172 en de tijdelijke tellers
 

@@ -54,7 +54,7 @@ komt dus terug via een scriptvariabele (watchers worden gewekt).
 | 55 | inst, a, b | 34 | ✔ parameters raket/kanon klasse 20/21 (ROCKET.md §2.1) |
 | 56 | inst, v | 606 | ✔ basis: float +0x6c = v·0.01; in `0x44e8f0` (meeste klassen) eerst `0x44e91b` |
 | 57 | inst, v | 643 | ~ `0x44e907` (klasse-gemeenschappelijk) |
-| 58..63 | inst, … | weinig | ? 59/60 in klassen 14-16 (`0x4100d2`, `0x40e7e3`: koppelt 8 instanties aan velden +0x1c8..+0x1e4 en zet vlag 0x40), 63 in klasse 17 |
+| 58..63 | inst, … | weinig | klasse 14 (baas Buzz, `0x410070`): **59** `[baas, inst]` koppelt **één** instantie (`+0x234`, vlag 0x20, eigen AnimCtrl), **60** `[baas, var]` = brievenbus-variabele (BOSS14.md §7); klasse 15 (`0x40e781`): 8 instanties in +0x1c8..+0x1e4, vlag 0x40; 63 in klasse 17 |
 | 650, 800 | inst | 11 / 2 | ? via vtable[22] van de klasse |
 
 ## Wereld (`0x403440`)

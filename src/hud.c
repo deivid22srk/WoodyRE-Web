@@ -549,6 +549,28 @@ void hud_draw(const HudState *s, float dt)
     hud_anim_tick(s, dt);                                                                                   /* 0x4480d0 runs after 0x447660, so the animations draw on top */
 }
 
+/* ---------------------------------------------------------------- boss bar (docs/HUD_TEXT.md 4.4): object ctor 0x47abe0, start 0x47aca0,
+ * drawer 0x47b0b0(cur, max). X = 559 - 3, row y 424; the max slots (sprite 14) with alpha 30..128 across the row and the red end
+ * rect slide in from the right edge in 2.0 s (+0x24), then the Buzz face (sprite 12) grows in 0.2 s (0x47bf70 / 0x47bff0) and
+ * only after that the cur balls (sprite 13) are drawn. t = seconds since the bar was switched on. */
+void hud_boss_bar(int cur, int max, float t)
+{
+    if (!H.ok || max <= 0) return;
+    const float X = 556, Y = 424, W = 19.0f * max, D = W + (640.0f - X) + 2.0f;   /* +0x10 */
+    float x = t < 2.0f ? X + D - t * D / 2.0f : X;
+    for (int i = 1; i <= max; i++) {                                                                           /* 0x47ad10 */
+        float xi = x - 19.0f * i - 2.0f; float al = (xi - X + W) * 98.0f / W + 30.0f, ar = (xi + 19.0f - X + W) * 98.0f / W + 30.0f;
+        if (al < 0) al = 0; if (al > 255) al = 255; if (ar < 0) ar = 0; if (ar > 255) ar = 255;
+        sprite_part(14, xi, Y, 1e9f, (uint32_t)al << 24 | 0x808080, (uint32_t)ar << 24 | 0x808080);
+    }
+    quad(x - 2.0f, Y, 640.0f - X, 15, 0, 0, 0, 0, 0, 0x80ff0000, 0x80ff0000, 0x80ff0000, 0x80ff0000);
+    if (t < 2.0f) return;
+    const float FX = 559, FY = 400; float g = (t - 2.0f) / 0.2f;
+    if (g < 1.0f) { sprite_rect(12, FX + 32.0f * (1 - g), FY + 32.0f * (1 - g), 64.0f * g, 64.0f * g); return; }   /* 0x47bff0 still running: no balls yet */
+    sprite(12, FX, FY);                                                                                        /* 0x47aee0 */
+    for (int i = 1; i <= cur && i <= max; i++) sprite(13, X - 19.0f * i, Y);                                   /* 0x47afb0 */
+}
+
 /* ---------------------------------------------------------------- text box: message 1080 (0x456ed0 / 0x4571c0) */
 void hud_text_reset(void) { H.box.state = 0; }
 

@@ -47,6 +47,7 @@ static int level_index(const char *name) { for (int i = 0; i < 29; i++) if (!_st
 static struct { int state, anim, nactors; Instance *main_inst, *vec; struct { Instance *inst; int anim; } actor[32]; uint32_t var; float remain, timer; int rtc; } g_cin;
 static int cin_running(void) { return g_cin.state == 2 || g_cin.state == 3; }               /* 0x44f2e0: Perso update skipped */
 
+static uint32_t msvc_rand(void *user);
 /* ---- camera manager: follow camera (mode 1, player.c) + the fixed script cameras (docs/CAMERA_SCRIPT.md, CAMERA.md 4 and 6.1)
  * mode 2 (message 510) / mode 4 (520, letterbox, player frozen): camera at the .ins camera position looking at
  * target origin + (0, f, 0). A mode change blends linearly from the frozen old camera unless the script asked for a cut. */
@@ -62,6 +63,7 @@ static struct {
     int death_cam;                                               /* engine use of mode 2 (0x41fb50 from 0x459030): the camera stops and watches the player fall */
     /* mode 0x80 (docs/CAMERA_SCRIPT.md 4.3): the camera comes from a camera track in the animation an instance plays */
     Instance *anim_inst; int anim_letterbox; Vec3 anim_eye, anim_tgt;   /* CamMgr+0x5d4, +0x618 & 2, +0x1d0, +0x5d8 */
+    float shake;                                                 /* +0x67c: remaining shake time (0x41fbb0), docs/CAMERA.md 6.3 */
 } g_cam = { 1 };
 static const float k_sv_defaults[8] = { 1000, 300, 340, 500, 0, 400, 700, 200 };
 static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
@@ -179,6 +181,12 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
         g_cam.t = g_cam.dur > 0 ? g_cam.elapsed / g_cam.dur : 1; if (g_cam.t > 1) g_cam.t = 1;
         g_cam.elapsed += dt; if (g_cam.elapsed > g_cam.dur) g_cam.active = 0;
     }
+    if (g_cam.shake > 0) {                                       /* 0x41fbd0 after the mode update, modes 1 2 4 8 0x10 0x20 (0x41ffb4): only the view direction trembles, +-5 min(t,3) per axis */
+        int m = g_cam.mode; if (m == 1 || m == 2 || m == 4 || m == 8 || m == 0x10 || m == 0x20) {
+            float a = g_cam.shake < 3.0f ? g_cam.shake : 3.0f;
+            look.x += (float)((int)(msvc_rand(NULL) % 1000) - 500) * 0.01f * a; look.y += (float)((int)(msvc_rand(NULL) % 1000) - 500) * 0.01f * a; look.z += (float)((int)(msvc_rand(NULL) % 1000) - 500) * 0.01f * a; }
+        g_cam.shake -= dt;
+    }
     Vec3 to = { look.x - P.x, look.y - P.y, look.z - P.z };
     cam->pos = P; cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z));
     cam->letterbox = g_cam.mode == 4; cam->fov_deg = g_cam.mode == 4 ? 68.04f : 83.97f;   /* tan(vfov/2) = 1.2 * 0.5625 resp. 1.2 * 0.75 */
@@ -206,7 +214,8 @@ static void cin_update(EkoVM *vm, float dt, float now)
             Vec3 P0 = ins_point_world(g_cin.vec, mo->nodes[node].point_base), P1 = ins_point_world(g_cin.vec, mo->nodes[node].point_base + 1);
             plane_release(); if (g_player && g_player->inst == m) player_place(g_player, P0, atan2f(P1.x - P0.x, P1.z - P0.z));
             m->scripted = 1; m->visible = 1; inst_play_once(m, g_cin.anim, 3.0f, now);
-            for (int i = 0; i < g_cin.nactors; i++) inst_play_once(g_cin.actor[i].inst, g_cin.actor[i].anim, 3.0f, now);
+            for (int i = 0; i < g_cin.nactors; i++) { inst_play_once(g_cin.actor[i].inst, g_cin.actor[i].anim, 3.0f, now);
+                g_cin.actor[i].inst->visible = 1; }                          /* 0x44ed03: 0x4077f0 puts the actor back into its cell even when the script hid it (W1B: Buzz 398 and his saucer 399) */
             g_cam.anim_inst = m; g_cam.anim_letterbox = 1;                  /* 0x44ed3f / 0x44ed53: CamMgr+0x5d4 = the main instance, +0x618 |= 2 */
             g_cam.cut = 1; cam_set_mode(0x80);
         }
@@ -1210,6 +1219,49 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
     }
     for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) { g_flashes[i].t += dt; if (g_flashes[i].t >= 0.4f) g_flashes[i].t = 0; }
 }
+/* ---- class 14, the Buzz boss (boss.c, docs/BOSS14.md): the engine side ------------------------------------------
+ * mailbox variable, camera shake, the HUD boss bar, the kind-1 explosion and the smoke plumes on the markers of the
+ * coupled machine. The plume 0x475f30 (300 particles a second over the way the marker moved, +-15 in x/z, 0.5 s, image 14,
+ * rising 50 t, size rand*10 + 20) is from the call sites; its colour and alpha curve are a reconstruction. */
+static EkoVM *g_vm;
+int  game_var_get(uint32_t var) { var &= 0xffffff; return g_vm && var < g_vm->nvars ? g_vm->varval[var] : 0; }
+void game_var_set(uint32_t var, int v) { if (g_vm) eko_set_var(g_vm, var, v); }
+void game_cam_shake(float t) { g_cam.shake = t; }
+static struct { int on, cur, max; float t; } g_bossbar;      /* hud+0x48, +0x4c, +0x50 and the bar's slide-in clock */
+void game_boss_bar(int on, int cur, int max) { if (on && !g_bossbar.on) g_bossbar.t = 0; g_bossbar.on = on; g_bossbar.cur = cur; g_bossbar.max = max; }   /* 0x4484d0: 0x462470 starts the slide-in */
+void game_explosion(Vec3 p) { blast_add(p, 1400.0f); blast_add(p, 400.0f); }
+static struct { Instance *link; int on, has_prev; Vec3 prev; float acc; } g_bplume[3];
+static struct { Vec3 pos; float t, size, rot; } g_bsmoke[512]; static int g_bsmoke_next;
+void game_boss_smoke(Instance *link, int n, int on)
+{
+    if (n < 0) { for (int i = 0; i < 3; i++) g_bplume[i].on = 0; return; }
+    if (!link || n > 2) return;
+    Vec3 p, d; if (!inst_vector_at(link, 0, (uint32_t)n, &p, &d)) p = link->position;
+    if (on) game_explosion(p);
+    g_bplume[n].link = link; g_bplume[n].on = on; g_bplume[n].has_prev = 0; g_bplume[n].acc = 0;
+}
+static void boss_fx_draw(float dt)
+{
+    static const float grey[3] = { 0.6f, 0.6f, 0.6f };
+    for (int n = 0; n < 3; n++) {
+        if (!g_bplume[n].on || !g_bplume[n].link || !g_bplume[n].link->visible) { g_bplume[n].has_prev = 0; continue; }
+        Vec3 p, d; if (!inst_vector_at(g_bplume[n].link, 0, (uint32_t)n, &p, &d)) continue;
+        if (g_bplume[n].has_prev && dt > 0) {
+            g_bplume[n].acc += dt * 300.0f; int k = (int)g_bplume[n].acc; g_bplume[n].acc -= k; if (k > 40) k = 40;
+            for (int i = 0; i < k; i++) { float u = (i + 0.5f) / k; Vec3 a = g_bplume[n].prev;
+                g_bsmoke[g_bsmoke_next % 512].pos = (Vec3){ a.x + (p.x - a.x) * u + (float)((int)(msvc_rand(NULL) % 31) - 15), a.y + (p.y - a.y) * u, a.z + (p.z - a.z) * u + (float)((int)(msvc_rand(NULL) % 31) - 15) };
+                g_bsmoke[g_bsmoke_next % 512].t = 1e-4f; g_bsmoke[g_bsmoke_next % 512].size = (float)(msvc_rand(NULL) % 1000) * 0.01f + 20.0f;
+                g_bsmoke[g_bsmoke_next % 512].rot = (float)(msvc_rand(NULL) % 1000) * 0.001f; g_bsmoke_next++; }
+        }
+        g_bplume[n].prev = p; g_bplume[n].has_prev = 1;
+    }
+    for (int i = 0; i < 512; i++) if (g_bsmoke[i].t > 0) {
+        float u = g_bsmoke[i].t / 0.5f, pos[3] = { g_bsmoke[i].pos.x, g_bsmoke[i].pos.y + 50.0f * g_bsmoke[i].t, g_bsmoke[i].pos.z };
+        hud_world_fx(14, pos, g_bsmoke[i].size * (1 + u), g_bsmoke[i].rot, grey, 0.5f * (1 - u));
+        if ((g_bsmoke[i].t += dt) >= 0.5f) g_bsmoke[i].t = 0;
+    }
+}
+
 /* death stars 0x477610 (docs/PERSO_DEATH.md 7): five sprites circle over the head of a dying enemy for 2.5 s, one turn, bobbing six times */
 static struct { Enemy *e; float age; int img; } g_stars[16];
 void game_enemy_stars(Enemy *e)
@@ -1782,11 +1834,14 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
      * authentic: Woody in Blackbox/Credits/Lang, the W2B end boss (type 12) and the W3B ghosts (type 13). The port used
      * to set the bit here on every actor class because Buzz came out without a rim, but that was the outline distance
      * being measured from the .ins position instead of the animated root inst+0x60 (issue #35, ins_anim_centre). */
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13 || in->type == 14) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1501: case 1504: {                                                         /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
         EnvInst *E = in ? env_of(in) : NULL;
         if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
         break; }
+    case 59: case 60:                                                               /* class 14 (the Buzz boss, 0x410070): 59 couples an instance, 60 names its mailbox var */
+        if (in && in->type == 14 && m->nargs > 1) enemies_boss_msg(&g_enemies, in, (int)m->id, m->args[1], m->id == 59 ? slot_instance(m->args[1]) : NULL);
+        break;
     case 16: case 18: case 19:                                                      /* texture frame override (docs/INSTANCE.md 2): the level-select doors turn their red
                                                                                      * cross into a green tick with it; 0x42db50 has no scripted test */
         if (in) inst_msg(in, m->id, m->args, m->nargs, g_now);
@@ -1980,7 +2035,7 @@ static void level_free(Level *L)
     g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     car_forget();
-    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); memset(g_pecks, 0, sizeof g_pecks); g_peck_next = 0; memset(g_chips, 0, sizeof g_chips); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); memset(g_pecks, 0, sizeof g_pecks); g_peck_next = 0; memset(g_chips, 0, sizeof g_chips); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -1995,7 +2050,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     snprintf(path, sizeof path, "%s/%s/code", dir, lvl);
     size_t codesz; L->code = read_all(path, &codesz);
     if (!L->code || eko_load(&L->vm, L->code, codesz)) { fprintf(stderr, "cannot load %s\n", path); free(L->code); ins_free(&g_ins); gel_free(&L->gel); tex_free(&L->tex); return -1; }
-    L->vm.on_msg = on_msg; L->vm.on_warn = on_warn; L->vm.rand_fn = msvc_rand;
+    L->vm.on_msg = on_msg; L->vm.on_warn = on_warn; L->vm.rand_fn = msvc_rand; g_vm = &L->vm;
     printf("%s: %u polys, %u verts, %u textures, %u models, %u slots, %u script objects\n", lvl, L->gel.npolys, L->gel.nverts, L->tex.ngroups, g_ins.nmodels, g_ins.nslots, L->vm.nobj);
     snprintf(path, sizeof path, "%s/%s/%s.lit", dir, lvl, lvl); L->have_lit = lit_load(&L->lit, path) == 0;
     snprintf(path, sizeof path, "%s/%s/%s.vis", dir, lvl, lvl); L->have_vis = vis_load(&L->vis, path, L->gel.nsectors) == 0;   /* 0x408260: what each sector can see */
@@ -2104,6 +2159,8 @@ int main(int argc, char **argv)
             }
             for (int k = 0; k < 256; k++) if (held_until[k] > 0 && wt >= held_until[k]) { win.keys[k] = 0; held_until[k] = 0; }
         }
+        { static double cap = -1; if (cap < 0) cap = getenv("WOODY_FPS") ? atof(getenv("WOODY_FPS")) : 0;   /* WOODY_FPS=N: testing, frame-rate dependent code at N fps */
+          if (cap > 0) while (win_time() - last < 1.0 / cap) Sleep(0); }
         double now = win_time(); float dt = (float)(now - last); last = now;
         if (dt > 0.1f) dt = 0.1f;
         g_clock += dt; g_now = (float)g_clock;         /* 0x401880: everything (Perso timers, animations, the script VM) runs on this one clock, so a hitch cannot make script delays
@@ -2306,7 +2363,7 @@ int main(int argc, char **argv)
                         laser_fx_draw(&z->fx[mk], a, b, kind, g, &cam.pos.x, paused ? 0 : dt);   /* pulse, lightning arc, impact */
                     }
                 }
-                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); peck_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
+                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); peck_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */
@@ -2340,6 +2397,7 @@ int main(int argc, char **argv)
                 HudState hs = { g_char, race, pl->lives, race ? pl->race_bonus : pl->bonus_count, race ? pl->race_bonus : pl->bonus_got, pl->bonus_total,
                                 g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, paused || g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };
                 hud_draw(&hs, dt);
+                if (g_bossbar.on) { hud_boss_bar(g_bossbar.cur, g_bossbar.max, g_bossbar.t); if (!paused) g_bossbar.t += dt; }   /* hud+0x48: drawn by the HUD animator after the HUD */
             }
             {   /* menu page 0x1e runs from 1140 until page 6 takes over in state 4 (docs/RESULTS.md) */
                 static int ticking;

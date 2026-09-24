@@ -117,7 +117,10 @@ static Vec3 g_ins_n;
 /* the race board (message 1120) moves with its rider, so it must never be the rider's floor or wall: standing on its
  * hull lifted the board, which lifted him again, every frame */
 static const Instance *g_rider, *g_rider_board;
-static int skip_inst(const Instance *in, const Instance *skip) { return in == skip || (skip && skip == g_rider && in == g_rider_board); }
+/* the same for the instance a boss carries along (message 59, docs/BOSS14.md 9.1): the boss must not land on its own machine */
+static const Instance *g_carrier, *g_carried, *g_skip_self;   /* g_skip_self: the player, while an actor asks for its own floor */
+void player_set_carried(const Instance *owner, const Instance *follower) { g_carrier = owner; g_carried = follower; }
+static int skip_inst(const Instance *in, const Instance *skip) { return in == skip || (skip && skip == g_rider && in == g_rider_board) || (skip && skip == g_carrier && in == g_carried) || in == g_skip_self; }
 static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float max_drop, int *found, const Instance *skip,
                              const Instance **hit_inst, const InsNode **hit_node)
 {
@@ -277,7 +280,7 @@ float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *f
 {
     const Instance *hi; const InsNode *hn; Vec3 keep = g_ground_n;
     int32_t keep_mat = g_ground_mat;
-    g_ground_skip = skip; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_ground_n = keep; g_ground_mat = keep_mat;
+    g_ground_skip = skip; g_skip_self = skip ? p->inst : NULL; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_skip_self = NULL; g_ground_n = keep; g_ground_mat = keep_mat;
     return y;
 }
 

@@ -8,10 +8,32 @@ struct Player;
 
 /* parameter block P (0x41d510); message 11 writes into it. shot_visual = P+0x74 (0/1 missile, 2 bolt, 3 fireball),
  * shot_fx = the SoundFx that 0x449130 plays for that visual */
-typedef struct { float radius, height, walk, run, dash, see, dy, turn, turn_fast, leash, hp, cool, bite, shot_dmg, reload, melee, dodge, steer, active_d; int shot_visual, shot_fx; } EnemyParams;
+typedef struct { float radius, height, walk, run, dash, see, dy, turn, turn_fast, leash, hp, cool, bite, shot_dmg, reload, melee, dodge, steer, active_d; int shot_visual, shot_fx;
+                 float fall_g; } EnemyParams;                                  /* P+0: gravity of the ground follower (200; the boss sets 400/800) */
+
+/* class 14, the Buzz boss (docs/BOSS14.md): fields beyond the Enemy base */
+typedef struct BossState {
+    int mode;                       /* +0x228: 0 off (only reads its mailbox), 1 W1B flying machine, 2 W2D/W3D/WWS hopping */
+    uint32_t mail_var;              /* +0x230: script variable of message 60, the command mailbox */
+    Instance *link;                 /* +0x234: the coupled instance of message 59 (W1B 404, type 17), carried along */
+    int st, high, behav;            /* +0x1c0 state 0..12, +0x224 high phase (invulnerable), active behaviour 0 wander 1 chase 2 still */
+    float t1d4, t1d8, t1e0, t1e4, acc;   /* shake / landing / cheer / high-wait timers, 60 Hz accumulator of the shake */
+    int shake_i;                    /* +0x1e8 */
+    float y_high, y_low; int y_low_ok;   /* +0x214 / +0x218 hover heights */
+    Vec3 pl_prev, pl_cur, home_save; float leash_save;
+    int bob_down; float bob, bob_max;    /* mode 2 hops */
+    int grav, on_ground; float fall_v;   /* flag 4 (falling) and flag 1 (on the ground), the base ground follower's per-frame speed */
+    float turn;                     /* H turn rate (rad/s) */
+    int w_act; float w_t;           /* Dwalen: current action (-1 none) and its remaining time */
+    int c_run; float c_turn_t;      /* Achtervolgen: running, turn-in-place timer */
+    float knock[3];                 /* each behaviour's own knockback timer (Behav+0x1c): a peck gives no direction, so it only freezes the step */
+    int rec, sub, lrec, lsub;       /* AnimCtrl +0x1c4 and the link's +0x1c8: record and position in its chain */
+    int blink, loop_on, active;     /* render-colour counter [0x4c5348], sound loop 39/44 playing, updated this frame */
+} BossState;
 
 typedef struct Enemy {
     EnemyParams P; float reload; Vec3 warn, dodge_dir; int throw_hold;   /* shooters */
+    BossState b;                                                         /* type 14 */
     int hand;                                                            /* ghost (type 13): fires from alternating hands */
     Instance *inst; int type;
     int st;                         /* state machine 0x418cf0: 0 patrol, 1 chase, 2 notice, 3 miss, 4 dash, 6 brake, 8 wander, 9 hit, 11 win, 12 dead */
@@ -26,7 +48,7 @@ typedef struct Enemy {
 #define MAX_ENEMIES 256
 typedef struct EnemySet { Enemy e[MAX_ENEMIES]; int n; } EnemySet;
 
-void enemies_add(EnemySet *s, Instance *inst, int type);                      /* on SetTypeInstance 4/5/6 */
+void enemies_add(EnemySet *s, Instance *inst, int type);                      /* on SetTypeInstance 4..9, 13, 14 */
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt);
 /* vtbl[39] 0x419480: returns 1 when the enemy died. dir = (0,0,0) for a peck (no knockback). */
 int  enemy_take_damage(Enemy *e, float dmg, Vec3 dir);
@@ -37,5 +59,21 @@ void enemy_player_killed(Enemy *e);                                           /*
 /* implemented by the engine: projectile 0x4490a0 from an enemy (template 1 with the P overrides) */
 void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, int visual, int sound_fx);
 float enemy_radius(const Enemy *e); float enemy_height(const Enemy *e);
+void enemy_place(Enemy *e);                                                   /* vtbl[44] 0x41a680: pos and the H angle into the instance placement */
+
+/* class 14, the Buzz boss (boss.c, docs/BOSS14.md) */
+void boss_init(Enemy *e);                                                     /* ctor 0x40eb50 + PostLoad 0x40ec50 + factory Reset */
+void boss_update(Enemy *e, struct Player *pl, Vec3 cam, float dt);            /* Think 0x41a320 -> Update 0x40eec0 */
+int  boss_take_damage(Enemy *e);                                              /* vtbl[39] 0x40fe90: always 1 hp, only in the low phase */
+void boss_reset(Enemy *e);                                                    /* vtbl[17] 0x40ed90 */
+void boss_frame_end(Enemy *e);                                                /* sound source 0x468e50: the loop stops on the first frame without an update */
+void enemies_boss_msg(EnemySet *s, Instance *inst, int id, uint32_t arg, Instance *linked);   /* vtbl[22] 0x410070: 59 couple, 60 mailbox */
+/* implemented by the engine */
+int  game_var_get(uint32_t var);
+void game_var_set(uint32_t var, int v);                                       /* SetVar 0x443ca0: wakes the watchers */
+void game_cam_shake(float t);                                                 /* 0x41fbb0 */
+void game_boss_bar(int on, int cur, int max);                                 /* 0x4484d0 */
+void game_explosion(Vec3 p);                                                  /* 0x477060 kind 1 (two flash records) */
+void game_boss_smoke(Instance *link, int n, int on);                          /* on: explosion 0x477060 + smoke plume 0x475f30 on marker typecode 0 nr n; n = -1, on = 0: all plumes off */
 
 #endif
