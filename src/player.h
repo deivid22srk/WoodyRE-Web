@@ -116,6 +116,7 @@ void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir);   /* message 
  * 10..16, 19 and 72..78 (the results animations) run with the root motion of 0x44e290. */
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);
 int  player_segment_blocked(const Player *p, Vec3 a, Vec3 b);   /* world polygons only */
+Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r);   /* 0x407340: world + instance press nodes */
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b);   /* first world polygon hit on a->b as a fraction 0..1, or 2 when nothing is hit */                 /* Perso vt[38] */
 float gel_ray_hit(const GelFile *g, Vec3 a, Vec3 b, Vec3 *n_out);   /* the same, and the normal of that polygon, turned towards a */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */

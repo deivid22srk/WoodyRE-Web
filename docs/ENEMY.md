@@ -784,7 +784,9 @@ bool enemy_take_damage(Enemy *e, void *att, float dmg, vec3 *dir, vec3 *pt, int 
   benoemd; `vtbl[56]` = `0x41b030` (verplaatsing met `0x4359b0`/`0x436dc0`) is niet gelezen – het wordt in type 4 niet aangeroepen.
 * `Enemy+0x14c`, `+0x154` (bericht 11/18, ×0.01): geen lezer gevonden in type 4. `+0x170` (1.0) = toonhoogtefactor van de animatiegeluiden (`vtbl[27]` = `0x40d830`, §8.7).
 * Vlag 0x20 van `+0x174` (PostLoad zet, bericht 11/30 schakelt) en vlag 8: geen lezer/zetter gevonden in de gelezen code.
-* `0x437580` (sweep), `0x437040` (push-out t.o.v. andere actoren?) en `[0x4b310c]` (fractie ≥ 0.8 = "vrij") zijn alleen aan de
+* `0x437580` (sweep) is inmiddels gelezen: een **bol** van straal `P+4`, middelpunt `r + up + 1` boven de voeten, substappen van 30, uitduwen tegen
+  wereld + press-nodes van instanties (BOSS14.md §5.1). `[0x4b310c]` is geen fractie maar de grondnormaal-y van GetHeight (≥ 0.8 = vlak genoeg).
+  `0x437040` (push-out t.o.v. andere actoren?) is alleen aan de
   aanroepkant bekeken; `0x436d20/0x436d80` (platform) idem.
 * De obstakelsensor (§5.6) is niet op instructieniveau gevolgd. Type 7/8/9: `vtbl[42]` (`0x417ff0`) heeft geen gevonden aanroeper; `P+0x48` en `P+0x6c`
   hebben geen lezer in de klasse; animatierecord 22 (sub 20) wordt nergens aangevraagd (§8).

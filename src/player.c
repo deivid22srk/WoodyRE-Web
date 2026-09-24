@@ -253,6 +253,71 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
     Vec3 out = { acc[0] + acc[1], 0, acc[2] + acc[3] }; return out;
 }
 
+/* Sphere push-out 0x407340(c, r, cell -1), used by the actors' sweep 0x437580: every world polygon the sphere touches
+ * (0x409ad0) and the PRESS nodes (S+0x58/0x5c, kind 1) of every instance (inst->vt[9] = 0x433ff0: skipped without a
+ * cell, when flag +8 & 0x40 is set or the collision mask does not match). Each polygon adds (r - dist) along the
+ * direction from its closest point to the centre, front side only; per axis the positive maximum plus the negative
+ * minimum is the result, of which the sweep uses x and z. The closest-point form is the port's reading of 0x409ad0 /
+ * 0x433ff0 (plane distance 0.001 < d < r, then edge tests), not a line-by-line port. */
+static void sphere_accum(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 c, float r, float acc[6])
+{
+    float d = vdot(nrm, vsub(c, v[0])); if (d <= 0.001f || d >= r) return;
+    Vec3 cp = { c.x - nrm.x * d, c.y - nrm.y * d, c.z - nrm.z * d };
+    if (!point_in_poly3(v, n, nrm, cp)) {
+        float best = 1e30f; Vec3 bc = cp;
+        for (uint32_t i = 0; i < n; i++) {
+            Vec3 a = v[i], e = vsub(v[(i + 1) % n], a); float el = vdot(e, e), t = el > 1e-9f ? vdot(vsub(c, a), e) / el : 0;
+            if (t < 0) t = 0; if (t > 1) t = 1;
+            Vec3 q = { a.x + e.x * t, a.y + e.y * t, a.z + e.z * t }, w = vsub(c, q); float dd = vdot(w, w);
+            if (dd < best) { best = dd; bc = q; }
+        }
+        cp = bc;
+    }
+    Vec3 w = vsub(c, cp); float dist = sqrtf(vdot(w, w)); if (dist >= r || dist < 1e-4f) return;
+    float k = (r - dist) / dist, px[3] = { w.x * k, w.y * k, w.z * k };
+    for (int a = 0; a < 3; a++) { if (px[a] > acc[a]) acc[a] = px[a]; if (px[a] < acc[3 + a]) acc[3 + a] = px[a]; }
+}
+Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r)
+{
+    float acc[6] = { 0, 0, 0, 0, 0, 0 }, box[6]; Vec3 v[32];
+    const GelFile *g = p->gel;
+    query_box(g, c, r, c.y - r, c.y + r, box);
+    GelPolySet ps = gel_polys_in_box(g, box);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3 || pl->nverts > 32) continue;
+        float d0 = pl->plane[0] * c.x + pl->plane[1] * c.y + pl->plane[2] * c.z + pl->plane[3]; if (d0 <= 0.001f || d0 >= r) continue;
+        for (uint32_t t = 0; t < pl->nverts; t++) { const GelVert *gv = &g->verts[pl->indices[t]]; v[t] = (Vec3){ gv->x, gv->y, gv->z }; }
+        sphere_accum(v, pl->nverts, (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }, c, r, acc);
+    }
+    const InsFile *ins = p->ins;
+    for (uint32_t mi = 0; ins && mi < ins->nmodels; mi++) {
+        const Model *m = &ins->models[mi];
+        for (uint32_t k = 0; k < m->ninstances; k++) {
+            const Instance *in = &m->instances[k];
+            if (!in->visible || in->noncollide || in == p->inst || skip_inst(in, skip) || !in->node_world) continue;
+            if (inst_dist2_xz(in, c) > 4000.0f * 4000.0f) continue;
+            uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+            for (uint32_t ci = 0; ci < ncn; ci++) {
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->npoints) continue;
+                float nb[6];
+                if (ins_node_world_box(in, ni, nb) && (nb[0] > c.x + r || nb[1] < c.x - r || nb[2] > c.y + r || nb[3] < c.y - r || nb[4] > c.z + r || nb[5] < c.z - r)) continue;
+                Vec3 cen = { 0, 0, 0 };
+                for (uint32_t t = 0; t < nd->npoints; t++) { Vec3 w = ins_point_world(in, nd->point_base + t); cen.x += w.x; cen.y += w.y; cen.z += w.z; }
+                cen.x /= nd->npoints; cen.y /= nd->npoints; cen.z /= nd->npoints;
+                for (uint32_t f = 0; f < nd->npolys; f++) {
+                    const InsPoly *pl = &nd->polys[f]; if (pl->nverts < 3 || pl->nverts > 32) continue;
+                    for (uint32_t t = 0; t < pl->nverts; t++) v[t] = ins_point_world(in, pl->indices[t]);
+                    Vec3 nrm = vcross(vsub(v[1], v[0]), vsub(v[2], v[0])); float nl = sqrtf(vdot(nrm, nrm)); if (nl < 1e-6f) continue;
+                    nrm.x /= nl; nrm.y /= nl; nrm.z /= nl;
+                    if (vdot(nrm, vsub(cen, v[0])) > 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }   /* outward = away from the node's centroid (as ins_push) */
+                    sphere_accum(v, pl->nverts, nrm, c, r, acc);
+                }
+            }
+        }
+    }
+    return (Vec3){ acc[0] + acc[3], acc[1] + acc[4], acc[2] + acc[5] };
+}
+
 /* GetHeight 0x435650 -> 0x498520: nearest surface below the point: world polygons with n.y > 1e-5 (any slope) that
  * contain the point in xz, and the press / hull nodes of instances (hit_node != NULL then). */
 static const Instance *g_ground_skip;      /* set by player_ground_query(): instance to ignore instead of the player */

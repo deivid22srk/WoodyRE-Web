@@ -7,8 +7,8 @@
  * it exactly 1 of its 5 hp; after a hit, or after it touched the player, it goes up again. The coupled instance
  * (message 59, W1B 404 = its machine) gets its position, rotation and animation record every frame.
  *
- * Simplified: the behaviours have no obstacle sensor (no free-direction search, no actor avoidance) and walls only stop
- * a step instead of sliding along; the hit star 0x40c2d0 is not drawn; mode 2 (W2D/W3D/WWS) is ported with the same
+ * Simplified: the behaviours have no obstacle sensor (no free-direction search, no actor avoidance); the hit star
+ * 0x40c2d0 is not drawn; mode 2 (W2D/W3D/WWS) is ported with the same
  * state machine but its dust is the landing dust of the player's footsteps and it is not verified in those levels. */
 #include <math.h>
 #include <stdlib.h>
@@ -125,15 +125,46 @@ static void h_speed(Enemy *e, float dt)
     if (e->speed < e->want_speed) { e->speed += B_ACC * dt; if (e->speed > e->want_speed) e->speed = e->want_speed; }
     else if (e->speed > e->want_speed) { e->speed -= B_ACC * dt; if (e->speed < e->want_speed) e->speed = e->want_speed; }
 }
-/* common move 0x41b2c0 for subtype >= 9: y is kept, no ledge or step test (P+0x2c/0x30 = 15000); walls stop the step */
+/* sweep 0x437580(res, from, to, up, 30): a SPHERE of radius P+4 (240) whose centre sits r + up + 1 above the feet
+ * (up = min(P+0x30, h/2) = 75, so 316 over pos: it spans pos.y + 76 .. pos.y + 556) moves in substeps of at most 30;
+ * after each one it is pushed out of the world polygons and the instance press nodes (0x407340, xz only, the full push)
+ * and lifted so the feet never end below GetHeight. This is what keeps Buzz out of the four lanterns of the W1B arena
+ * (model 6, press nodes up to y 1972) and away from the rock walls behind them: in the low phase (pos.y 1635) the sphere
+ * meets the lantern heads, in the high phase (2430) it passes over them but meets the walls, so he never gets within the
+ * 150 (xz) he needs to stomp a player who hides in the corner behind a lantern (docs/BOSS14.md 5.1). */
+static Vec3 boss_sweep(Enemy *e, Player *pl, Vec3 from, Vec3 to)
+{
+    float r = e->P.radius, up = e->P.height * 0.5f, h = r + up + 1.0f;
+    Vec3 d = { to.x - from.x, to.y - from.y, to.z - from.z };
+    int n = (int)(floorf(sqrtf(d.x * d.x + d.y * d.y + d.z * d.z) / 30.0f) + 1.0f + 0.5f); if (n < 1) return from;
+    d.x /= n; d.y /= n; d.z /= n;
+    Vec3 c = { from.x, from.y + h, from.z }, res = from;
+    for (; n > 0; n--) {
+        c.x += d.x; c.y += d.y; c.z += d.z;
+        Vec3 push = player_sphere_push(pl, e->inst, c, r); c.x += push.x; c.z += push.z;
+        int found; float gy = player_ground_query(pl, e->inst, c, &found);
+        if (found && c.y - h < gy) c.y = gy + h;
+        res = (Vec3){ c.x, c.y - h, c.z };
+    }
+    return res;
+}
+/* common move 0x41b2c0 for subtype >= 9: y is kept, no ledge or step test (P+0x2c/0x30 = 15000); the sweep slides the
+ * sphere along whatever it touches. The "free" test ([0x4b310c] = ground normal y >= 0.8) always holds over the arena
+ * floor and is not ported. */
 static void behav_move(Enemy *e, Player *pl, float step, float dt)
 {
     BossState *b = &e->b;
-    if (b->knock[b->behav] > 0) { b->knock[b->behav] -= dt; if (b->knock[b->behav] < 0) b->knock[b->behav] = 0; return; }   /* a peck knocks with dir 0: no step at all */
-    if (step <= 0) return;
-    Vec3 d = { cosf(e->ang), 0, sinf(e->ang) }, c = { e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z };
-    if (player_segment_blocked(pl, c, (Vec3){ c.x + d.x * (step + 30.0f), c.y, c.z + d.z * (step + 30.0f) })) return;   /* sweep 0x437580 with its 30 */
-    e->pos.x += d.x * step; e->pos.z += d.z * step;
+    /* the sweep runs EVERY frame, also with a zero step (Stilstaan, the shake, the stomp fall): 0x437580 then does one
+     * substep in place, so the sphere keeps pushing him off a lantern head while he drops next to it */
+    if (b->knock[b->behav] > 0) { b->knock[b->behav] -= dt; if (b->knock[b->behav] < 0) b->knock[b->behav] = 0; step = 0; }   /* a peck knocks with dir 0: no step */
+    if (step < 0) step = 0;
+    Vec3 d = { cosf(e->ang), 0, sinf(e->ang) };
+    Vec3 res = boss_sweep(e, pl, e->pos, (Vec3){ e->pos.x + d.x * step, e->pos.y, e->pos.z + d.z * step });
+    if (b->behav == 1 && step > 0) {                                /* Achtervolgen hook [2] 0x41bdf0: stuck (< 0.01) => wriggle -16..15 */
+        float mx = res.x - e->pos.x, mz = res.z - e->pos.z;
+        if (sqrtf(mx * mx + mz * mz) < 0.01f) { res.x += (float)(rand() % 32 - 16); res.z += (float)(rand() % 32 - 16); }
+    }
+    e->pos.x = res.x; e->pos.z = res.z;                              /* subtype >= 9: res.y = from.y */
 }
 static void behav_tick(Enemy *e, Player *pl, float dt)
 {
