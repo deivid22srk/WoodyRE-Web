@@ -1287,6 +1287,41 @@ static void stars_draw(float dt)
         }
     }
 }
+/* speech bubble 0x478980 / callback 0x4786f0 (docs/PERSO_DEATH.md 4.1): a comic balloon beside and above an instance,
+ * "?!" when Woody falls to his death (kind 0), a curse after a hard landing (1), "zzz" while he sleeps (4, lives as long
+ * as *live != 0), and whatever the script asks for with message 1500. The side is chosen once: an instance on the right
+ * half of the screen (camera-space x >= 0, 0x4789e3) gets the balloon on its left, mirrored, so the tail points at it. */
+typedef struct { Instance *inst; float age, dur, offy, offx; int img[4], n, side; const int *live; } Bubble;
+static Bubble g_bubbles[8];
+void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, const int *live)
+{
+    static const int k_img[5][4] = { { 0x2d }, { 0x33, 0x34 }, { 0x2e }, { 0x32 }, { 0x2f, 0x30, 0x31, 0 } }, k_n[5] = { 1, 2, 1, 1, 4 };   /* 0x478a8c */
+    if (!inst || kind < 0 || kind > 4) return;                            /* other kinds leave the record without images */
+    for (int i = 0; i < 8; i++) if (!g_bubbles[i].inst) {
+        g_bubbles[i].inst = inst; g_bubbles[i].age = 0; g_bubbles[i].dur = dur; g_bubbles[i].offy = offy; g_bubbles[i].offx = offx;
+        memcpy(g_bubbles[i].img, k_img[kind], sizeof g_bubbles[i].img); g_bubbles[i].n = k_n[kind]; g_bubbles[i].side = -1; g_bubbles[i].live = live;
+        if (getenv("WOODY_BUBLOG")) printf("  BUBBLE kind %d dur %.2f off %.0f/%.0f%s\n", kind, dur, offy, offx, live ? " (live)" : "");
+        return;
+    }
+}
+static void bubbles_draw(const FreeCamera *cam, float dt)
+{
+    for (int i = 0; i < 8; i++) {
+        Bubble *b = &g_bubbles[i]; if (!b->inst) continue;
+        float u = (b->age += dt) / b->dur;
+        if (b->live ? *b->live == 0 : u >= 1) { b->inst = NULL; continue; }
+        Vec3 T = ins_anim_centre(b->inst);                               /* inst+0x60: the animated root, it falls with him */
+        if (b->side < 0) { Vec3 r = cam_right(cam); b->side = (T.x - cam->pos.x) * r.x + (T.y - cam->pos.y) * r.y + (T.z - cam->pos.z) * r.z >= 0; }
+        float s = b->live ? (b->age < 0.5f ? 2 * b->age : 1) : u < 0.04f ? 25 * u : u > 0.96f ? 25 * (1 - u) : 1;   /* pops in and out */
+        float dx = cam->pos.x - T.x, dz = cam->pos.z - T.z, l = sqrtf(dx * dx + dz * dz);
+        if (l > 0) { dx /= l; dz /= l; }
+        float size = 90 * s + 30, h = size * 0.5f, X = b->side ? -(b->offx + h) : b->offx + h, Y = b->offy + h;   /* R = (d.z, 0, -d.x) (0x46d320), U = +y */
+        float pos[3] = { T.x + dz * X, T.y + Y, T.z - dx * X };
+        hud_world_bubble(0x2c, pos, size, b->side);
+        int img = b->img[(int)(u * 8) % b->n];
+        if (img) hud_world_bubble(img, pos, 55 * s + 10, 0);
+    }
+}
 /* ---- pickup effects (docs/BONUS.md 2.4, 0x4793d0) --------------------------------------------------------------
  * One emitter record per pickup. Neither emitter draws: both spawn the same particle (0x4791f0), a camera facing
  * additive quad of bank 0 image 4 whose size swells 0 -> 30 -> 0 over its life. One pool as in the original
@@ -1837,6 +1872,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
      * being measured from the .ins position instead of the animated root inst+0x60 (issue #35, ins_anim_centre). */
     case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13 || in->type == 14) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if (in->type == 20 && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890 */ if (in->type == 21) printf("type 21 (bomb cannon) instance %u: not ported", in->index), puts(""); if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1506: if (in && m->nargs > 4) water_param(in, (int32_t)m->args[1], (int32_t)m->args[2], (int32_t)m->args[3], (int32_t)m->args[4]); break;   /* SetWaterVolumeParameter 0x46ce38 */
+    case 1500: if (in && m->nargs > 4) game_bubble(in, (int32_t)m->args[1], (int32_t)m->args[2] * 0.01f, (float)(int32_t)m->args[3], (float)(int32_t)m->args[4], NULL); break;   /* speech bubble 0x46ccc0: [inst, kind, duration cs, offY, offX] (K2R, S2R) */
     case 1501: case 1504: {                                                         /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
         EnvInst *E = in ? env_of(in) : NULL;
         if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
@@ -2037,7 +2073,7 @@ static void level_free(Level *L)
     g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     car_forget();
-    memset(g_stars, 0, sizeof g_stars); g_nrockets = 0; g_nenv = 0; g_nflies = 0; water_reset(NULL); g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); memset(g_pecks, 0, sizeof g_pecks); g_peck_next = 0; memset(g_chips, 0, sizeof g_chips); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nenv = 0; g_nflies = 0; water_reset(NULL); g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); memset(g_pecks, 0, sizeof g_pecks); g_peck_next = 0; memset(g_chips, 0, sizeof g_chips); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -2262,6 +2298,7 @@ int main(int argc, char **argv)
             if (g_cam.mode == 4 && !fly) memset(&pin, 0, sizeof pin);              /* cinematic camera: the player is frozen (0x459090) */
             cin_update(&L.vm, dt, g_now);
             rockets_update(dt, &L.player, L.have_player && !fly);
+            L.player.idle_hold = g_res.on || g_level == 0 || (g_cam.mode == 4 && !fly);   /* Perso state 9 / title / frozen (0x459090): no idle count, no sleeping */
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             player_sync_board(&L.player);
             if (L.player.race_cam_req) { L.player.race_cam_req = 0; g_cam.cut = 1; cam_set_mode(1); L.player.cam_init = 0; }   /* race sub-state 0: 0x41f9f0(2) + SetMode(0, 0) */
@@ -2367,7 +2404,7 @@ int main(int argc, char **argv)
                         laser_fx_draw(&z->fx[mk], a, b, kind, g, &cam.pos.x, paused ? 0 : dt);   /* pulse, lightning arc, impact */
                     }
                 }
-                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); rockets_draw(paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); peck_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
+                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); bubbles_draw(&cam, paused ? 0 : dt); rockets_draw(paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); peck_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */

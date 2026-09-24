@@ -284,7 +284,7 @@ Als cameramodus `cam+0x138 == 2`: altijd anim 1 (`0x463ec8`).
 **anim 3 = loopcyclus** met duur `len3 / max(0.5, clamp(M+0x44 / M+0x48, 0, 1))` (`0x436c20`; `len3 = P+0x49c`): de cyclus loopt dus
 op halve snelheid bij ≤ 50 % van de max. snelheid. Voetstap-effect `0x47cba0(pos, normaal, richting, links/rechts, grondsoort 2|3)` wanneer de
 cyclusfractie 0.38 (`0x4ab278`) resp. 0.9 (`0x4a94b8`) passeert. Fase 3..6 → animatie blijft; fase 0 → **idle** `0x464500`:
-timer `+0x230 += dt`; < 10 s (`0x4a9750`) → **anim 0**; bij 10 s willekeurig (`0x43ff20(0,7)`) **anim 0x59** of (1 op 8) **0x5a**; reset
+timer `+0x230 += dt`; < 10 s (`0x4a9750`) → **anim 0**; bij 10 s willekeurig (`0x43ff20(0,7)` = `rand() % 7`, dus **1 op 7**) **0x5a** (.ins 89, tot `T ≥ 2·L(0x5a) + 10`, dan reset), anders **anim 0x59** (.ins 0 → 88 → 87 = slapen); zodra `.ins`-anim 87 (`P+0xb0 == 0x57`) speelt en `T > 10.5` (`0x4ab7c8`) en `P+0x52c == 0`: `P+0x52c = 1` en zzz-ballon `0x478980(P, 4, 2.5, 130, 50, &P+0x52c)` (leeft tot de reset); reset
 (`0x464620`) zodra een actietoets ingedrukt is (`0x44cc30`).
 
 **Lucht (`0x4642f0`)**, op J-fase (tabel `0x4644dc`): 0/1 stijgen → **anim 4**; 7 top → **anim 5**; 3 begin val → anim **7** als zonder sprong

@@ -619,6 +619,25 @@ static void anim_request(Player *p, int n, float rate)                     /* 0x
  * auto-steer (9,10), brake (11), hit loop against the enemies. Not ported: peckable surfaces (8), the steep-edge test,
  * rumble. The dash additionally ends on landing, which the original leaves to its ray probe. */
 static void lock_move(Player *p, float t) { p->move_lock = t; p->ramp_phase = 0; p->speed = 0; }   /* 0x44cce0 */
+
+/* ---- standing still, 0x464500 (docs/PERSO_MOVE.md 4.3) ---------------------------------------------------------
+ * +0x230 counts the seconds he stands idle. Up to 10 s he plays idle anim 0; when the count passes 10 he picks a
+ * variation, 0x43ff20(0, 7) = rand() % 7 == 0 (one in SEVEN, not eight): 0x5a (.ins 89) for twice its length and then
+ * the count starts over, otherwise 0x59 = .ins 0 -> 88 (sits down) -> 87 (asleep, loops). Once .ins 87 plays and the
+ * count is past 10.5 s he gets the zzz bubble, whose live flag is +0x52c: it lasts until the count is reset. */
+static void idle_reset(Player *p) { p->idle_t = 0; p->sleep_bubble = 0; }   /* 0x464620 */
+static int idle_anim(Player *p, float dt)
+{
+    if (p->idle_hold) return 0;                                             /* Perso state != 0: 0x464630 neither calls it nor resets */
+    int first = p->idle_t <= 10.0f;
+    p->idle_t += dt;
+    if (p->idle_t <= 10.0f) return 0;
+    if (first) p->idle_var = rand() % 7 == 0;
+    int want = p->idle_var ? 0x5a : 0x59;
+    if (p->idle_var && anim_len(p, 0x5a, 0) * 2.0f + 10.0f <= p->idle_t) idle_reset(p);
+    if (p->inst->anim == 0x57 && p->idle_t > 10.5f && !p->sleep_bubble) { p->sleep_bubble = 1; game_bubble(p->inst, 4, 2.5f, 130.0f, 50.0f, &p->sleep_bubble); }
+    return want;
+}
 /* did the fraction of a looping animation pass `t` between the previous frame and this one? */
 static int phase_passed(float prev, float cur, float t) { return cur >= prev ? (t > prev && t <= cur) : (t > prev || t <= cur); }
 static void jumper_reset(Jumper *j) { memset(j, 0, sizeof *j); j->state = 2; j->armed = 1; }       /* 0x462c90 */
@@ -786,7 +805,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
         if (kind == 2 && p->invuln_respawn > 0) return;                   /* no invulnerability test for the other kinds */
         p->death_delay = kind == 2 || kind == 8 ? 1.5f : kind == 3 || kind == 6 ? 2.5f : kind == 7 ? 4.0f : 3.5f;
         p->cam_dist = 200.0f;
-        if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else if (kind == 1) jumper_force_fall(&p->jumper, 0);
+        if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else if (kind == 1) { jumper_force_fall(&p->jumper, 0); game_bubble(p->inst, 0, 2.5f, 180.0f, 50.0f, NULL); }
         p->nograv_t = kind == 1 ? anim_len(p, 0x75, 0) : kind == 2 ? anim_len(p, 0x72, 0) : 0;   /* +0x240 */
         p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL; p->race_crouch = 0;
         p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;  /* +0x4d8 = 1, state := 2 */
@@ -802,6 +821,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
     p->nograv_t = kind == 1 ? anim_len(p, 0x2f, 0) : (kind == 2 || kind == 9) ? anim_len(p, 0x30, 0) : 0;   /* +0x240: no fall while he hangs / is zapped */
     p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL;
     p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;      /* state := 2 */
+    if (kind == 1) game_bubble(p->inst, 0, 2.5f, 180.0f, 50.0f, NULL);  /* 0x44c2a9: "?!" over him as he drops into the pit */
     printf("  PLAYER killed (kind %d), lives %d\n", kind, p->lives);
 }
 int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39] Hit 0x44ca00: returns 1 when health ran out */
@@ -827,7 +847,7 @@ static void player_reset(Player *p)                                     /* vt[17
     jumper_reset(&p->jumper); p->on_ground = 1; p->invuln_respawn = 1.0f; p->invuln_hit = 0; p->move_lock = 0;
     if (p->health <= 0) p->health = 3.0f;
     p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
-    p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0;
+    p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0; idle_reset(p);   /* 0x44abcf */
     if (p->race_char) race_enter(p);                                   /* 0x44ac33: SurfEnter + state 1 */
     player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
     /* 0x445930 -> 0x44a810 -> Reset 0x44ab20 clears Perso+0x4ec (0x44ad22): the side view's plane lock ends with the death,
@@ -1336,10 +1356,10 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (racing) race_check_crash(p, old_pos, disp, body_h);
     player_apply_transform(p);
     /* animations, Perso_AnimState 0x463e60 (docs/PERSO_MOVE.md 4.3, PERSO_JUMP.md 4): attack sub-state first, then
-     * ground by Mover phase (0x463f40) or air by Jumper state (0x4642f0). Idle variations 0x59/0x5a are not done. */
+     * ground by Mover phase (0x463f40) or air by Jumper state (0x4642f0), the idle variations 0x59/0x5a by 0x464500. */
     {
         static const int atk_anim[12] = { -1, 0xb, 0xb, 0xc, 0xc, -1, 0xd, 0xe, 0xf, 0x10, 0x11, 0x12 };
-        int js = p->jumper.state, want = p->lanim; float rate = 1.0f;
+        int js = p->jumper.state, want = p->lanim, idling = 0; float rate = 1.0f;
         int landing = (p->lanim == 8 || p->lanim == 0xa) && p->lanim_sub == 0;
         if (p->dead_kind && p->race_char) {                                /* 0x464a00, table 0x464b48 (the board gets 0x76 for kind 1; it mirrors 0x75 here) */
             int k = p->dead_kind; want = k == 8 ? 0x71 : k == 2 ? 0x72 : k == 6 ? 0x73 : k == 3 ? 0x74 : k == 1 ? 0x75 : k == 7 ? 0x77 : p->lanim;
@@ -1358,19 +1378,21 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         else if (js == 2) {
             if (p->ramp_phase == 1) want = 2;
             else if (p->ramp_phase == 2) { want = 3; rate = p->speed / P_WALK_SPEED; if (rate < 0.5f) rate = 0.5f; if (rate > 1.0f) rate = 1.0f; }   /* 0x436c20 */
-            else if (p->ramp_phase == 0 && !landing) want = 0;
+            else if (p->ramp_phase == 0) { int w = idle_anim(p, dt); idling = 1; if (!landing) want = w; }   /* the landing (prio 1500) outranks idle (1100) */
         }
         else if (js == 0 || js == 1) want = 4;
         else if (js == 7) want = 5;
         else if (js == 3 || js == 4) { if (p->jumper.fell_off) want = 7; else if (p->jumper.short_hop) want = 6; }
         else if (js == 5) want = 9;
         else if (js == 6) {
-            if (p->jumper.hard_fall) { want = 0xa; lock_move(p, anim_len(p, 0xa, 0)); }     /* hard landing blocks movement */
+            if (p->jumper.hard_fall) { want = 0xa; lock_move(p, anim_len(p, 0xa, 0)); game_bubble(p->inst, 1, 2.0f, 180.0f, 50.0f, NULL); }   /* hard landing blocks movement; 0x464470: he curses */
             else if (p->ramp_phase != 2) want = 8;
             if (p->ground_kind == 2) game_land_dust((Vec3){ p->pos.x, p->pos.y + 30.0f, p->pos.z }, p->ground_n);   /* 0x464486: 0x476140(&pos + (0,30,0), &normal, 3, 0.25, 1.5) */
         }
         if (want == -2) { race_anims(p, in, dt); if (p->lanim >= 0) anim_request(p, p->lanim, 1.0f); }   /* the controller Tick runs every frame (0x463e60): it walks the chain 0x5d -> anim 0 etc. */
         else anim_request(p, want, rate);
+        /* 0x464630: not idle on the ground, or one of the actions 0,3,2,1,6,4,10,5 pressed (0x44cc30) -> 0x464620 */
+        if (!p->idle_hold && (!idling || in->forward || in->back || in->left || in->right || in->jump || in->action)) idle_reset(p);
         /* footsteps (docs/FOOTSTEPS.md): in the walk cycle (logical animation 3) 0x463f40 puts a foot down when the
          * fraction of the cycle passes 0.38 (0x4ab278) and 0.9 (0x4a94b8) and calls the effect 0x47cba0 for it. */
         {

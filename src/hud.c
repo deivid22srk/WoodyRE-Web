@@ -26,6 +26,7 @@ static struct {
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint env[4];                                        /* bank 0 images 53..56: the butterflies of the environment instances (0x47e050 picks one of the four) */
+    GLuint bub[9];                                        /* bank 0 images 44..52: the speech bubble and its contents (0x478980); 46 is bonus[3] */
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
     GLuint sheet; int sheet_w, sheet_h;                   /* level bank image 0 (House and the three hubs carry the same one): the save-slot panel, ring and cross */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
@@ -75,6 +76,7 @@ static void common_item(int type, int index, const uint8_t *d, uint32_t size)
     if (type == 1 && (index == 0 || index == 4 || index == 6 || index == 0x3a) && getenv("WOODY_FXLOG") && size >= 8) { int w = d[0] | d[1] << 8, h = d[2] | d[3] << 8; unsigned long sum = 0, sa = 0; for (int i = 0; i < w * h; i++) { sum += d[8 + i * 4] + d[9 + i * 4] + d[10 + i * 4]; sa += d[11 + i * 4]; } printf("fx image %d: %dx%d bpp %d mean rgb %.1f mean a %.1f", index, w, h, d[4], sum / (3.0 * w * h), sa / (1.0 * w * h)), puts(""); }
     if (type == 1 && fx_slot(index) >= 0) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.fx[fx_slot(index)] = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1 && index == 1) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.beam = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
+    if (type == 1 && index >= 44 && index <= 52 && index != 46) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.bub[index - 44] = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1 && index >= 53 && index <= 56) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.env[index - 53] = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1) for (int b = 0; b < 5; b++) if (index == bonus_img[b]) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.bonus[b] = H.img[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
     if (type == 1 && index >= 61 && index <= 64 && size >= 8) {      /* i16 w, h; u16 bpp, alpha; BGRA, bottom row first (0x480780) */
@@ -133,6 +135,7 @@ void hud_free(void)
     for (int i = 0; i < 5; i++) if (H.sky[i]) glDeleteTextures(1, &H.sky[i]);
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
     for (int i = 0; i < 4; i++) if (H.env[i]) glDeleteTextures(1, &H.env[i]);
+    for (int i = 0; i < 9; i++) if (H.bub[i]) glDeleteTextures(1, &H.bub[i]);
     if (H.beam) glDeleteTextures(1, &H.beam);
     for (int i = 0; i < 12; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
@@ -988,6 +991,23 @@ void hud_world_wing(int n, const float *c, const float *u, const float *v, float
     glTexCoord2f(1, 1); glVertex3f(c[0] + (-v[0] + u[0]) * half, c[1] + (-v[1] + u[1]) * half, c[2] + (-v[2] + u[2]) * half);
     glTexCoord2f(0, 1); glVertex3f(c[0] - (v[0] + u[0]) * half, c[1] - (v[1] + u[1]) * half, c[2] - (v[2] + u[2]) * half);
     glTexCoord2f(0, 0); glVertex3f(c[0] + (v[0] - u[0]) * half, c[1] + (v[1] - u[1]) * half, c[2] + (v[2] - u[2]) * half);
+    glEnd();
+}
+/* the comic speech bubble 0x478980 (docs/PERSO_DEATH.md 4.1): bank 0 image 44 = the balloon, 45..52 = what is in it.
+ * Sprite flags 0x49: camera facing (bit 0), alpha blended instead of additive (bit 3), mirror flags applied (bit 6);
+ * mirror value 2 (0x470d80 case 2) swaps u, so the tail points the other way. Standard colour (bit 1 off) = white.
+ * `size` is the half diagonal, as for every sprite (0x470fee). Between hud_world_sprites_begin/end. */
+void hud_world_bubble(int image, const float *pos, float size, int mirror)
+{
+    GLuint t = image == 46 ? H.bonus[3] : image >= 44 && image <= 52 ? H.bub[image - 44] : 0;
+    if (!H.ok || !t || size <= 0) return;
+    float h = size * 0.70710678f, u0 = mirror ? 1.0f : 0.0f, u1 = 1.0f - u0;
+    glBindTexture(GL_TEXTURE_2D, t); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glColor4f(1, 1, 1, 1);
+    glBegin(GL_QUADS);
+    glTexCoord2f(u0, 0); glVertex3f(pos[0] - H.sr[0] * h + H.su[0] * h, pos[1] - H.sr[1] * h + H.su[1] * h, pos[2] - H.sr[2] * h + H.su[2] * h);
+    glTexCoord2f(u0, 1); glVertex3f(pos[0] - H.sr[0] * h - H.su[0] * h, pos[1] - H.sr[1] * h - H.su[1] * h, pos[2] - H.sr[2] * h - H.su[2] * h);
+    glTexCoord2f(u1, 1); glVertex3f(pos[0] + H.sr[0] * h - H.su[0] * h, pos[1] + H.sr[1] * h - H.su[1] * h, pos[2] + H.sr[2] * h - H.su[2] * h);
+    glTexCoord2f(u1, 0); glVertex3f(pos[0] + H.sr[0] * h + H.su[0] * h, pos[1] + H.sr[1] * h + H.su[1] * h, pos[2] + H.sr[2] * h + H.su[2] * h);
     glEnd();
 }
 void hud_world_sprites_end(void) { glDisable(GL_ALPHA_TEST); glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDisable(GL_TEXTURE_2D); }

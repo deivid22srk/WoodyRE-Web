@@ -278,6 +278,7 @@ sprite(img 0x2c, pos, size, mode 0x12, flags 0x49, mirror = kant ? 2 : 0);      
 img = beelden[(int)(u * 8) % aantal];
 if (img) sprite(img, pos, size = 55*s + 10, flags 0x49, mirror 0);               /* inhoud */
 ```
+Nagelopen tegen de disassembly (2026-09-24): constanten 0.04/0.96/25/90/30/0.5/55/10/8 kloppen, `0x46d320` geeft voor `d = (dx,0,dz)` `R = (dz, 0, −dx)` (= schermrechts) en `U = (0,1,0)`; spiegelwaarde 2 (`0x470d80` geval 2) wisselt u. `size` is `S+0x264`, de halve diagonaal. Camera-ruimte x ≥ 0 = rechterhelft van het scherm ⇒ ballon links van de instantie, gespiegeld, staart naar hem toe. Beelden (bank 0): 0x2c ballon, 0x2d "?!", 0x2e "$", 0x2f..0x31 z/zz/zzz, 0x32 "...", 0x33/0x34 zwarte/rode vloek. Aanroepers: Kill(1) `0x44c2a9` (soort 0), race-Kill(1) `0x44c5d8`, harde landing `0x464470` (soort 1, 2.0 s), slapen `0x464601` (soort 4, 2.5 s, 130/50, levend = `P+0x52c`), bericht 1500 `0x46ccf6` `[inst, soort, duur·100, offY, offX]` (alleen K2R en S2R). Port: `game_bubble` / `bubbles_draw` in main_engine.c, `hud_world_bubble` in hud.c; test `WOODY_KILLAT=2` (dood), 12 s stilstaan (zzz), `WOODY_POSAT="1 537 200 -2148"` in W1A (harde landing), log `WOODY_BUBLOG=1`.
 
 ### 4.2 Skelet-effect `0x477e40(&pos)` (callback `0x477980`) — soort 2/9
 Aanmaken: levensduur **1.5 s**; `+8 = &speler.pos (inst+0xc)`; `+0x10 =` oude `speler+0x6c`; `+0x14 =` beeldtabel
