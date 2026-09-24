@@ -52,6 +52,8 @@ void enemies_add(EnemySet *s, Instance *inst, int type);                      /*
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt);
 /* vtbl[39] 0x419480: returns 1 when the enemy died. dir = (0,0,0) for a peck (no knockback). */
 int  enemy_take_damage(Enemy *e, float dmg, Vec3 dir);
+int  enemy_hit(Enemy *e, float dmg, Vec3 dir, Vec3 pt, int kind);              /* vtbl[39] with the hit point: Enemy_TakeDamage 0x41adc0 puts the hit star 0x4750e0 on pt (not for Buzz on kind 2) */
+void game_hit_star(Vec3 pt);                                                  /* 0x4750e0: flash + 8 sparks with stars (in main_engine.c) */
 void enemies_blast(EnemySet *s, Vec3 c, float r);                          /* bomb blast 0x44d650: every enemy within r dies (vtbl[40] 0x41ae20) */
 void enemies_msg11(EnemySet *s, Instance *inst, int n, int v);                /* Enemy::HandleMsg 0x41a740, id 11 */
 void enemy_warn_dive(Enemy *e, Vec3 d);                                       /* vtbl[37] 0x417ee0: the player starts an air dive at this enemy */

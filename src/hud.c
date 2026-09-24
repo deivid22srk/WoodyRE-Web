@@ -22,7 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
-    GLuint fx[14];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow, shared by the rocket (docs/ROCKET.md 5) and the missiles (docs/PROJECTILES.md 5.3); slot 10 = the footstep mark (docs/FOOTSTEPS.md); slot 11 = image 58, the wake on the water (docs/WATER.md 4.1); 12 = image 18, the spark of a bomb's fuse, 13 = image 24, the smoke of the bomb blast (docs/BOMB.md 3.4, 4.3) */
+    GLuint fx[20];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow, shared by the rocket (docs/ROCKET.md 5) and the missiles (docs/PROJECTILES.md 5.3); slot 10 = the footstep mark (docs/FOOTSTEPS.md); slot 11 = image 58, the wake on the water (docs/WATER.md 4.1); 12 = image 18, the spark of a bomb's fuse, 13 = image 24, the smoke of the bomb blast (docs/BOMB.md 3.4, 4.3); 14 = image 57, the drop of the water splash (docs/SPLASH.md 4); 15..17 = images 7, 8, 9, the hit star (0x4750e0), 18 = image 33, the fire ring of the special attack (docs/PERSO_SPECIAL.md 3) */
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint env[4];                                        /* bank 0 images 53..56: the butterflies of the environment instances (0x47e050 picks one of the four) */
@@ -70,7 +70,7 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
 /* which bank 0 image the footstep mark uses. 0x47cba0 is not decompiled, so its image is unknown: the port takes
  * the soft cloud (image 14) and WOODY_STEPIMG=<n> tries another one (docs/FOOTSTEPS.md 4). */
 int hud_step_image(void) { static int v = -1; if (v < 0) { const char *e = getenv("WOODY_STEPIMG"); v = e ? atoi(e) : 14; if (v < 0) v = 14; } return v; }
-static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : image == hud_step_image() ? 10 : image == 0x3a ? 11 : image == 18 ? 12 : image == 24 ? 13 : -1; }
+static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : image == hud_step_image() ? 10 : image == 0x3a ? 11 : image == 18 ? 12 : image == 24 ? 13 : image == 57 ? 14 : image == 7 ? 15 : image == 8 ? 16 : image == 9 ? 17 : image == 33 ? 18 : -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
@@ -138,7 +138,7 @@ void hud_free(void)
     for (int i = 0; i < 4; i++) if (H.env[i]) glDeleteTextures(1, &H.env[i]);
     for (int i = 0; i < 9; i++) if (H.bub[i]) glDeleteTextures(1, &H.bub[i]);
     if (H.beam) glDeleteTextures(1, &H.beam);
-    for (int i = 0; i < 14; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
+    for (int i = 0; i < 20; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }
@@ -233,7 +233,8 @@ static struct {
     int stage[3]; float hold[3];                                              /* kinds 2 and 3 run a 3-stage sequence with a 1.5 s hold */
     int latch;                                                                /* hud+0x10: the reward waits until the W pickup flight has landed */
     int mlives;                                                               /* hud+0x40: a life was lost (0x4622e0) */
-    int prev_ok, prev_lives, prev_bonus; float prev_health;
+    int mcharge; float mcharge_t;                                             /* hud+0x41: a charge was spent (0x462380 / 0x462020), its phase and hold timer */
+    int prev_ok, prev_lives, prev_bonus, prev_charges; float prev_health;
 } A;
 
 void hud_anim_reset(void) { memset(&A, 0, sizeof A); }
@@ -488,13 +489,33 @@ static void hud_anim_tick(const HudState *s, float dt)
             if (!slide_tick(k, dt)) A.stage[k] = 0;
         }
     }
+    if (A.mcharge && !A.stage[2] && !A.fly[3].on) {                   /* 0x462020: only while the pickup sequence of the charge does not run; shows the OLD value */
+        int old = s->charges + 1; const float *si = k_slot[4], *sp = k_slot[5];
+        switch (A.mcharge) {
+        case 1: if (!slide_tick(2, dt)) A.mcharge = 2; break;                                               /* the icon slides in */
+        case 2: sprite(6, si[0], si[1]); if (!plate_tick(2, dt)) A.mcharge = 3; break;                      /* the round plate grows */
+        case 3: sprite(6, si[0], si[1]); sprite(8, sp[0], sp[1]); if (!pop_tick(2, old, dt)) A.mcharge = 4; break;   /* 17 -> 37 -> 17 */
+        case 4: sprite(6, si[0], si[1]); sprite(8, sp[0], sp[1]); number_centred(k_anchor[2][0], k_anchor[2][1], old);
+                pop_start(2, 1, 17.0f, 0.0f, 0.2f); slide_start(2, 6, si[0], si[1], -k_spr[6].w, si[1]); plate_start(2, sp[0], sp[1], 34.0f, 34.0f, 0, 0);
+                A.mcharge = 5; A.mcharge_t = 0; break;
+        case 5: sprite(6, si[0], si[1]); sprite(8, sp[0], sp[1]); number_sized(k_anchor[2][0], k_anchor[2][1], old, 17.0f);
+                if ((A.mcharge_t += dt) > 1.0f) A.mcharge = 6; break;
+        case 6: sprite(6, si[0], si[1]); sprite(8, sp[0], sp[1]); if (!pop_tick(2, old, dt)) A.mcharge = 7; break;   /* the number shrinks away */
+        case 7: sprite(6, si[0], si[1]); if (!plate_tick(2, dt)) A.mcharge = 8; break;
+        default: if (!slide_tick(2, dt)) A.mcharge = 0; break;
+        }
+    }
     ghosts_draw(dt);
     /* the setters 0x448380 / 0x4482c0 watch the values themselves; the port does the same by comparing frames */
     if (A.prev_ok && !s->race) {
         if (s->bonus < A.prev_bonus && !A.sw.on) hud_anim_reward(!(A.prev_health < 5.0f), A.prev_health);
         if (s->lives < A.prev_lives && !A.mlives) { A.mlives = 1; pop_start(3, 2, 17.0f, 37.0f, 0.2f); }
+        if (s->charges < A.prev_charges && !A.mcharge) {               /* 0x448300 -> 0x462380 */
+            slide_start(2, 6, -k_spr[6].w, k_slot[4][1], k_slot[4][0], k_slot[4][1]); plate_start(2, k_slot[5][0], k_slot[5][1], 0, 0, 34.0f, 34.0f);
+            pop_start(2, 2, 17.0f, 37.0f, 0.2f); A.mcharge = 1;
+        }
     }
-    A.prev_ok = 1; A.prev_lives = s->lives; A.prev_bonus = s->bonus; A.prev_health = s->health;
+    A.prev_ok = 1; A.prev_lives = s->lives; A.prev_bonus = s->bonus; A.prev_health = s->health; A.prev_charges = s->charges;
 }
 
 void hud_begin(int win_w, int win_h)
@@ -1078,6 +1099,16 @@ static void world_line(const float *a, const float *b, const float *eye, float h
 }
 void hud_world_beam(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b) { world_line(a, b, eye, hw, rgb, alpha_a, alpha_b, H.beam); }
 void hud_world_line(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b) { world_line(a, b, eye, hw, rgb, alpha_a, alpha_b, 0); }
+void hud_world_quad(int image, const float v[4][3], const float uv[4][2], const float rgb[4][3])
+{
+    int k = fx_slot(image); if (!H.ok || k < 0 || !H.fx[k]) return;
+    glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[k]); glBlendFunc(GL_ONE, GL_ONE);
+    glBegin(GL_QUADS);
+    for (int i = 0; i < 4; i++) { glColor3f(rgb[i][0], rgb[i][1], rgb[i][2]); glTexCoord2f(uv[i][0], uv[i][1]); glVertex3f(v[i][0], v[i][1], v[i][2]); }
+    glEnd();
+    glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
+}
+void hud_world_streak(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b) { int k = fx_slot(image); if (k >= 0 && H.fx[k]) world_line(a, b, eye, hw, rgb, alpha_a, alpha_b, H.fx[k]); }
 
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha)
 {

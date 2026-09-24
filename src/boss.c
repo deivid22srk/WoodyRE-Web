@@ -217,8 +217,9 @@ static void height_tick(Enemy *e, Player *pl, float dt)
 static int cone_touch(const Enemy *e, const Player *pl)
 {
     Vec3 A = pl->pos, S = e->pos; float bot = S.y - B_CONE_H;
-    if (A.y + B_PL_H < bot || S.y < A.y) return 0;
-    float o = A.y - bot + B_PL_H, r = B_PL_R + (o < B_CONE_H ? o * B_CONE_R / B_CONE_H : B_CONE_R);
+    float ph = player_body_height(pl);                                    /* vtbl[33]: 61 while ducked */
+    if (A.y + ph < bot || S.y < A.y) return 0;
+    float o = A.y - bot + ph, r = B_PL_R + (o < B_CONE_H ? o * B_CONE_R / B_CONE_H : B_CONE_R);
     return (A.x - S.x) * (A.x - S.x) + (A.z - S.z) * (A.z - S.z) <= r * r;
 }
 /* the player takes the bite; 1 = he died of it (the caller of the Perso's vtbl[39] kills him, like the other enemies) */

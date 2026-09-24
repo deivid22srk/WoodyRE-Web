@@ -30,6 +30,7 @@
 #define P_STEP         40.0f      /* 0x437180 step argument: clinging distance, wall test skips the lowest step+1 */
 #define P_SUBSTEP      10.0f      /* 0x437180 substep length */
 #define P_BODY_H       193.0f     /* P+0x0c: body height (61 when ducking) */
+#define P_DUCK_H       61.0f      /* P+0x10: body height while ducked (docs/PERSO_DUCK.md 3.1) */
 #define P_PROBE_Y      43.0f      /* P+0x00: ground probe / collision centre above the feet */
 #define P_RADIUS       69.0f      /* P+0x04: horizontal collision radius (0x434820 in 0x4624f0) */
 #define P_RACE_SPEED   1250.0f    /* P+0x1c of the race columns 3/4: the constant ride speed (docs/RACE.md 6) */
@@ -796,7 +797,7 @@ static void carry_frame(Player *p, float dt)
     switch (p->bsub) {                                                      /* jump table 0x463c28 */
     case 0: p->bt = anim_len(p, 0x45, 0); lock_move(p, p->bt); p->bsub = 1; /* fallthrough */
     case 1: if ((p->bt -= dt) <= 0) p->bsub = 2; break;
-    case 2: if (p->carry_pressed) p->bsub = p->on_ground ? 3 : 5; break;   /* crouching (+0x694) would block it: not ported */
+    case 2: if (p->carry_pressed && !p->duck) p->bsub = p->on_ground ? 3 : 5; break;   /* 0x463963: no throw while ducking */
     case 3: p->bt = anim_len(p, 0x43, 0); lock_move(p, p->bt); p->bsub = 4; break;
     case 5: p->bt = anim_len(p, 0x44, 0); p->bsub = 6; break;
     case 4: case 6: if ((p->bt -= dt) <= 0) bomb_drop(p); break;           /* no release moment reached (landed during an air throw): SetState(0) drops it */
@@ -814,6 +815,7 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
     }
     if (p->jumper.state != 2 && p->jumper.state != 6) p->charge = 0;       /* no charge in the air */
     if (p->air_win > 0) p->air_win -= dt;
+    if (p->duck) return;                                                   /* 0x457388: no attack while ducking */
     if (p->atk == 5 && pressed && p->air_win > 0) { p->atk = 1; return; }  /* chained attack out of the recoil */
     if (p->move_lock > 0 || p->atk != 0) return;
     if (p->on_ground) {
@@ -853,7 +855,8 @@ void player_kill(Player *p, int kind)                                   /* vt[38
         if (kind == 2 && p->invuln_respawn > 0) return;                   /* no invulnerability test for the other kinds */
         p->death_delay = kind == 2 || kind == 8 ? 1.5f : kind == 3 || kind == 6 ? 2.5f : kind == 7 ? 4.0f : 3.5f;
         p->cam_dist = 200.0f;
-        if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else if (kind == 1) { jumper_force_fall(&p->jumper, 0); game_bubble(p->inst, 0, 2.5f, 180.0f, 50.0f, NULL); }
+        if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; game_splash((Vec3){ p->pos.x, p->pos.y + 110.0f, p->pos.z }, sqrtf(vdot(p->vel, p->vel)), 50.0f); }   /* 0x44c65e */
+        else if (kind == 1) { jumper_force_fall(&p->jumper, 0); game_bubble(p->inst, 0, 2.5f, 180.0f, 50.0f, NULL); }
         p->nograv_t = kind == 1 ? anim_len(p, 0x75, 0) : kind == 2 ? anim_len(p, 0x72, 0) : 0;   /* +0x240 */
         p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL; p->race_crouch = 0;
         p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;  /* +0x4d8 = 1, state := 2 */
@@ -865,7 +868,8 @@ void player_kill(Player *p, int kind)                                   /* vt[38
     p->death_delay = 3.5f;                                              /* +0x288: time until the fade */
     if (kind == 2 || kind == 9) p->death_delay = 1.5f; else if (kind == 3 || kind == 8) p->death_delay = 3.0f;
     else if (kind == 6) p->death_delay = 2.5f; else if (kind == 7) p->death_delay = 0.0f;
-    if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; } else if (kind != 2 && kind != 9) jumper_force_fall(&p->jumper, 0);
+    if (kind == 7) { jumper_reset(&p->jumper); p->att_inst = NULL; game_splash((Vec3){ p->pos.x, p->pos.y + 110.0f, p->pos.z }, sqrtf(vdot(p->vel, p->vel)), 50.0f); }   /* 0x44c33e: the splash, speed = this frame's displacement / dt (0x44d170) */
+    else if (kind != 2 && kind != 9) jumper_force_fall(&p->jumper, 0);
     p->nograv_t = kind == 1 ? anim_len(p, 0x2f, 0) : (kind == 2 || kind == 9) ? anim_len(p, 0x30, 0) : 0;   /* +0x240: no fall while he hangs / is zapped */
     p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL; bomb_drop(p);   /* SetState(2) 0x44c9ad lets go of a bomb */
     p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;      /* state := 2 */
@@ -882,8 +886,8 @@ int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39
     if (l > 0.01f) p->yaw = atan2f(-dir.x, -dir.z);
     if (p->invuln_hit < 0.6f) p->invuln_hit = 0.6f;
     p->move_lock = 0; p->atk = 0;
-    p->hit_anim = p->on_ground ? 0x1f : 0x20; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->lanim = -1;   /* 0x464b70: priority 5110, plays out over walking / jumping */
-    if (p->bomb) { p->hit_anim = p->on_ground ? 0x21 : 0x22; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->bsub = 2; }   /* with a bomb: he keeps it, a throw or pick-up is broken off */
+    p->hit_anim = p->on_ground ? (p->duck ? 0x23 : 0x1f) : 0x20; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->lanim = -1;   /* 0x464b70: priority 5110, plays out over walking / jumping; 0x23 lying down (he stays down) */
+    if (p->bomb) { p->hit_anim = p->on_ground ? (p->duck ? 0x24 : 0x21) : 0x22; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->bsub = 2; }   /* with a bomb: he keeps it, a throw or pick-up is broken off */
     if (getenv("WOODY_ONEHIT")) damage = 99;                             /* testing: every hit kills */
     p->health -= damage; if (p->health < 0) p->health = 0;
     printf("  PLAYER hit, health %.0f\n", p->health);
@@ -898,6 +902,8 @@ static void player_reset(Player *p)                                     /* vt[17
     bomb_drop(p); p->throw_hold = 0;                                     /* 0x44acb4 */
     p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0; idle_reset(p);   /* 0x44abcf */
+    p->duck = 0; p->duck_t = 0;                                          /* 0x44ad28 */
+    p->special_st = 0; p->special_t = 0;                                 /* 0x44ad5e / 0x44ad64 */
     if (p->race_char) race_enter(p);                                   /* 0x44ac33: SurfEnter + state 1 */
     player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
     /* 0x445930 -> 0x44a810 -> Reset 0x44ab20 clears Perso+0x4ec (0x44ad22): the side view's plane lock ends with the death,
@@ -1215,6 +1221,70 @@ static Vec3 race_ride(Player *p, const PlayerInput *in, float dt)
 }
 /* crouch 0x465b10 in state 1: action 8 (the attack key here), anims 0x68 / 0x69 / 0x6a; lowers the body to 81 and halves
  * the wall radius, the speed stays. The stand-up ray of the race columns is 2 units long and is left out. */
+/* ---- special attack 0x458bf0 (docs/PERSO_SPECIAL.md): action 11 on RELEASE, one charge Perso+0x254 ----------------
+ * On the ground in state 0 with a charge: anim 0x13 (.ins 86, 4.07 s) with move lock and invulnerability for its length,
+ * the streak/ring effect, and at 1.5 s the camera shake and vtbl[39](3.0, dir 0, Woody's feet, kind 2) on EVERY actor
+ * that thought last frame (max 32) - there is no range test at all. Otherwise SoundFx 9 (not for the race characters). */
+static void special_update(Player *p, const PlayerInput *in, float dt)
+{
+    int released = !in->special && p->special_prev; p->special_prev = in->special;   /* 0x467440(11) */
+    if (released) {
+        if (p->on_ground && player_state_free(p) && !p->race_char && p->special_st == 0 && p->special_charges > 0) {
+            float T = anim_len(p, 0x13, 0);
+            p->special_charges--; p->special_st = 1; p->special_t = 0;
+            if (p->move_lock < T) lock_move(p, T);                            /* 0x44cce0(T, 0) = max */
+            if (p->invuln_respawn < T) p->invuln_respawn = T;                 /* 0x44cd10: +0x270 = max (Hit and Kill 2..6, 8, 9; not pits, not water) */
+            p->atk = 0; p->charge = 0; p->lanim = -1;
+            game_special_fx();                                                /* 0x47ab90 */
+            puts("  PLAYER special attack");
+        } else if (!p->race_char) audio_fx(9, NULL, NULL);
+    }
+    if (p->special_st == 1) {
+        p->special_t += dt;
+        if (p->special_t >= 1.5f) {                                           /* [0x4aa184] */
+            game_cam_shake(2.0f); p->special_st = 2;                          /* rumble 0x44d1b0 not ported */
+            int n = 0;
+            for (int i = 0; p->enemies && i < p->enemies->n && n < 32; i++) {   /* 0x4c5258[], max 32 */
+                Enemy *e = &p->enemies->e[i];
+                if (e->removed || !e->attackable || !e->inst->visible || e->hp <= 0 || !game_enemy_thinks(e->inst)) continue;
+                n++;
+                int died = enemy_hit(e, 3.0f /* P+0x94 */, (Vec3){ 0, 0, 0 }, p->pos, 2);   /* vtbl[38](3) after it is an empty ret 4 */
+                printf("  SPECIAL hits enemy %u%s\n", e->inst->index, died ? " - dead" : "");
+            }
+        }
+    } else if (p->special_st == 2) {
+        p->special_t += dt;
+        if (anim_len(p, 0x13, 0) <= p->special_t) p->special_st = 0;
+    }
+}
+float player_body_height(const Player *p)                                 /* 0x462490 */
+{
+    if (p->race_char) return p->race_crouch ? 81.0f : 160.0f;
+    return p->duck ? P_DUCK_H : P_BODY_H;
+}
+/* ducking 0x465b10 (docs/PERSO_DUCK.md 1.2): hold action 5 on the ground -> 0x31 (down, 0.375 s), 0x32 (lying, every frame),
+ * released and the segment feet+61 .. feet+132 free -> 0x33 (up, 0.2 s). Sub-states 1 and 3 end on their timer only.
+ * With a bomb 0x4e/0x4f/0x50. Every frame he is down, LockMove(dt, 0) = max: no walking, turning, jumping or attacking. */
+static void duck_update(Player *p, const PlayerInput *in, float dt)
+{
+    if (p->dead_kind || p->atk) return;                                     /* state 2 / +0x5b4: nothing, no LockMove either */
+    int b = p->bomb != NULL;
+    switch (p->duck) {
+    case 0: if (in->duck && p->on_ground) { p->duck = 1; p->duck_anim = b ? 0x4e : 0x31; p->duck_t = anim_len(p, p->duck_anim, 0); p->lanim = -1; } break;
+    case 1: if ((p->duck_t -= dt) <= 0) p->duck = 2; break;
+    case 2: p->duck_anim = b ? 0x4f : 0x32;
+            if (!in->duck) {                                                /* 0x4359b0 from feet + P+0x10 to feet + P+0x0c - P+0x10: any hit keeps him down */
+                Vec3 a = { p->pos.x, p->pos.y + P_DUCK_H, p->pos.z }, e = { p->pos.x, p->pos.y + (P_BODY_H - P_DUCK_H), p->pos.z }, n; float f;
+                int blocked = gel_ray_frac(p->gel, a, e) <= 1.0f || (player_ray_instances(p, p->inst, a, e, &f, &n, NULL) && f <= 1.0f);
+                if (getenv("WOODY_DUCKLOG") && blocked) { const Instance *hi = NULL; float gw = gel_ray_frac(p->gel, a, e); int ih = player_ray_instances(p, p->inst, a, e, &f, &n, &hi); printf("  DUCK blocked: world %.3f inst %d (%u) f %.3f\n", gw, ih, hi ? hi->index : 0u, f); }
+                if (!blocked) { p->duck_anim = b ? 0x50 : 0x33; p->duck_t = anim_len(p, p->duck_anim, 0); p->duck = 3; p->lanim = -1; }
+            }
+            break;
+    case 3: if ((p->duck_t -= dt) <= 0) p->duck = 0; break;
+    }
+    if (p->duck && p->move_lock < dt) p->move_lock = dt;                     /* 0x44cce0(dt, 0): keeps a longer lock */
+    if (getenv("WOODY_DUCKLOG")) { static int prev = -1; if (p->duck != prev) printf("  DUCK %d -> %d (t %.2f, key %d, lock %.3f, ramp %d)\n", prev, p->duck, p->play_time, in->duck, p->move_lock, p->ramp_phase); prev = p->duck; }
+}
 static void race_crouch(Player *p, const PlayerInput *in, float dt)
 {
     if (p->race_start_t > 0) return;
@@ -1285,6 +1355,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->invuln_respawn > 0) p->invuln_respawn -= dt;
     if (p->invuln_hit > 0) p->invuln_hit -= dt;
     if (p->game_state == 0) return;                                      /* waiting for the respawn */
+    special_update(p, in, dt);                                            /* 0x458bf0 runs in every Perso state */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
         p->health -= 1.0f; printf("  PLAYER fall damage, health %.0f\n", p->health);
@@ -1347,7 +1418,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); if (p->climb_sub) p->on_ground = 0; player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return; }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     int racing = p->race_char && !p->dead_kind;                           /* Perso state 1: no attacks, no Mover (0x44b530) */
-    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } }
+    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } duck_update(p, in, dt); }
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
     else {
@@ -1394,12 +1465,14 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
     disp = p->use_atk_disp ? p->atk_disp : (Vec3){ sinf(p->yaw) * p->speed * dt, p->jumper.dy, cosf(p->yaw) * p->speed * dt };
+    int hlock = p->duck != 0;                                              /* 0x44bc16: +0x238 > 0 zeroes the horizontal vector (walk, slide, knockback); the port only applies that while ducked */
+    if (hlock && !p->use_atk_disp) disp.x = disp.z = 0;
     if (p->push_t > 0 || p->push_speed > 0) {                              /* RampC 0x45acb0: 500 u/s, 0.1 s up, 0.5 s out */
         if (p->push_t > 0) { p->push_t -= dt; p->push_speed += 500.0f / 0.1f * dt; if (p->push_speed > 500.0f) p->push_speed = 500.0f; }
         else { p->push_speed -= 500.0f / 0.5f * dt; if (p->push_speed < 0) p->push_speed = 0; }
-        if (!p->use_atk_disp) { disp.x += p->push_dir.x * p->push_speed * dt; disp.z += p->push_dir.z * p->push_speed * dt; }
+        if (!p->use_atk_disp && !hlock) { disp.x += p->push_dir.x * p->push_speed * dt; disp.z += p->push_dir.z * p->push_speed * dt; }
     }
-    if (!p->use_atk_disp && p->slide_speed > 0) { disp.x += p->slide_dir.x * p->slide_speed * dt; disp.z += p->slide_dir.z * p->slide_speed * dt; }
+    if (!p->use_atk_disp && !hlock && p->slide_speed > 0) { disp.x += p->slide_dir.x * p->slide_speed * dt; disp.z += p->slide_dir.z * p->slide_speed * dt; }
     disp.y += dt * p->vy_corr;
     }
     p->vel = (Vec3){ disp.x / dt, disp.y / dt, disp.z / dt };
@@ -1410,7 +1483,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     const Instance *hit_inst = NULL; const InsNode *hit_node = NULL; int found;
     Vec3 np, old_pos = p->pos;
     /* P+0x08 = 160 standing / 81 crouched for the race columns (0x462490), wall radius halved while crouched in state 1 (0x462517) */
-    const float body_h = p->race_char ? (p->race_crouch ? 81.0f : 160.0f) : P_BODY_H, radius = racing && p->race_crouch ? P_RADIUS * 0.5f : P_RADIUS;
+    const float body_h = player_body_height(p), radius = racing && p->race_crouch ? P_RADIUS * 0.5f : P_RADIUS;
     {
         const float half = body_h * 0.5f;
         Vec3 cur = { p->pos.x, p->pos.y + half, p->pos.z };
@@ -1470,10 +1543,12 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             if (k == 1) want = p->dead_T <= anim_len(p, 0x2f, 0) ? 0x2f : 9;
             else if (k == 2 || k == 9) want = 0x30;
             else if (k == 6) want = 0x2b; else if (k == 7) want = 0x2a; else if (k == 8) want = 0x2e;
-            else if (p->dead_T <= dt) { p->dead_ground = p->on_ground; want = p->on_ground ? 0x26 : 0x25; }
-            else if (p->dead_T >= anim_len(p, p->dead_ground ? 0x26 : 0x25, 0)) want = 0x29;
+            else if (p->dead_T <= dt) { p->dead_ground = p->on_ground; want = p->on_ground ? (p->duck == 2 ? 0x2c : 0x26) : 0x25; }   /* 0x4647e7: lying down -> 0x2c, once */
+            else if (!(p->dead_ground && p->duck == 2) && p->dead_T >= anim_len(p, p->dead_ground ? 0x26 : 0x25, 0)) want = 0x29;
         }
         else if (p->hit_anim_t > 0) want = p->hit_anim;
+        else if (p->special_st) want = 0x13;                               /* priority 5500: only deaths and scripted actions (6000) beat it */
+        else if (p->duck) want = p->duck_anim;                             /* 0x464630 does nothing while he ducks: no landing, idle or carry anims */
         else if (p->bomb) {                                                /* state 6: 0x4646b0 (docs/BOMB_CARRY.md 1.4) */
             if (js == 2 || p->on_ground) {
                 if (p->bsub <= 1) want = 0x45;                             /* pick-up */
@@ -1508,7 +1583,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         else anim_request(p, want, rate);
         carry_frame(p, dt);                                                /* 0x463530 (frame step 16) */
         /* 0x464630: not idle on the ground, or one of the actions 0,3,2,1,6,4,10,5 pressed (0x44cc30) -> 0x464620 */
-        if (!p->idle_hold && (!idling || in->forward || in->back || in->left || in->right || in->jump || in->action)) idle_reset(p);
+        if (!p->idle_hold && !p->duck && (!idling || in->forward || in->back || in->left || in->right || in->jump || in->action)) idle_reset(p);
         /* footsteps (docs/FOOTSTEPS.md): in the walk cycle (logical animation 3) 0x463f40 puts a foot down when the
          * fraction of the cycle passes 0.38 (0x4ab278) and 0.9 (0x4a94b8) and calls the effect 0x47cba0 for it. */
         {
