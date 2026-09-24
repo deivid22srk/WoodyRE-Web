@@ -46,7 +46,8 @@ typedef struct Player {
     float health; int lives;        /* Perso+0x24c (hearts, max 5), +0x250 */
     int dead_kind; float death_delay, invuln_respawn, invuln_hit;   /* +0x26c, +0x288, +0x270, +0x280 */
     Vec3 push_dir; float push_t, push_speed;                         /* knockback (Mover RampC) */
-    int game_state; float game_t, fade; int mask10_frames;           /* Game sequence 0x4459c0; fade = screen brightness */
+    int game_state; float game_t; int mask10_frames;                 /* Game sequence 0x4459c0 */
+    float iris_from, iris_to, iris_dur, iris_t, iris; int iris_on;  /* its iris Game+4 (0x4776b0); iris_on = drawn this tick, iris = its value */
     Vec3 spawn_pos; float spawn_yaw;
     int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus, race_total;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264, [0x5e54f4] */
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
@@ -94,6 +95,7 @@ typedef struct Player {
 int  player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex);
 void player_bind(Player *p, Instance *inst);           /* SetTypeInstance 1/2/3/18/19: this instance is the player */
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
+void player_game_tick(Player *p, EkoVM *vm, float dt); /* 0x4459c0: level-start iris, death -> iris closes -> respawn -> iris opens */
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_camera_reset(Player *p);                   /* SetMode(0, 0) / message 500: put the camera behind the player now */
 int  volume_contains(const Instance *inst, uint32_t node, Vec3 p);   /* 0x4300c0: is the point inside this volume node of the instance? */
