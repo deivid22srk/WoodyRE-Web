@@ -5,11 +5,9 @@
  * ground clinging and the feet+43 ground probe, animations per state, follow camera (mode 1), and the engine->VM
  * events (trigger volumes, world_collision press nodes, msgmask 0x200).
  * Attacks (0x457a50): peck dash, rebounds, charge run and brake; logical animation chains (table 0x4b6180).
- * Ducking (action 5, 0x465b10, docs/PERSO_DUCK.md) is ported.
- * Not ported yet: attack targets/hits/recoil (no actors yet), peckable surfaces, look-around, sliding on
- * steep slopes, platform carry, damage/death, camera breadcrumb path, cfg key mapping. The ground type of the floor
- * (Perso+0x308) is read, but only the footstep effect uses it: the slippery turn ramp of type 1 is not ported.
- * Geometry queries are brute force over the .gel polygons instead of the original kd-tree cells. */
+ * Ducking (action 5, 0x465b10, docs/PERSO_DUCK.md) is ported, and so is the follow camera's breadcrumb trail (0x423ab0).
+ * Not ported yet: look-around, cfg key mapping. The ground type of the floor (Perso+0x308) is read, but only the
+ * footstep effect uses it: the slippery turn ramp of type 1 is not ported. */
 #ifndef WOODY_PLAYER_H
 #define WOODY_PLAYER_H
 #include "level.h"
@@ -72,6 +70,7 @@ typedef struct Player {
     /* follow camera state */
     float cam_yaw; Vec3 cam_pos; int cam_init;
     Vec3 cam_tprev; float cam_drop, cam_quick_t; int cam_behind_prev;   /* previous target, look-point drop while airborne, action 0xa */
+    int cam_state, cam_n, cam_seg; float cam_u; Vec3 cam_pad[100];     /* C+0x2a4 (2 = target hidden, follow the breadcrumbs), C+0x7a0/+0x7a4/+0x7a8, trail C+0x2f0 */
     /* death / hit animations, scripted door actions (docs/PERSO_DEATH.md) */
     float dead_T, nograv_t, hit_anim_t; int dead_ground, hit_anim, dead_cam_req;
     int script_act, script_log; float script_t, script_total; int script_faded, fade_req, cam_end_req;   /* fade_req: 1 = fade out 0.5 s, 2 = fade in 0.5 s; cam_end_req: 0x44e5a0, back to the follow camera (both consumed by the app) */
