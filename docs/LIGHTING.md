@@ -269,12 +269,110 @@ outside their polygon's plane; (3) 0 C polygons without a coplanar B face, A ∩
 (C field `+8` = material word of that B face in 1538 of 1654 cases); (4) 0 A faces with the light behind
 the plane or out of range; (5) BSP query: C centroids 1653/1654 lit, A 5385/5385.
 
+## 7. Dynamic point lights `0x498790` — registered, never drawn
+
+**Result: the original has no visible dynamic lights.** The registration function exists and seven places call it, but
+the table it fills is never freed and never read by any draw path. After the first 16 registrations of a level every
+further call fails. Verified statically (every load of `[0x4c4cac]` and every access to `lightsys+0x14/+0x18` enumerated)
+and by a live trace of the original (§7.4).
+
+### 7.1 The light system object (`0x2c` bytes, `[0x4c4cac]`, ctor `0x40ac30`)
+
+Created in the level loader at `0x4044fa` (`new(0x2c)`, `0x40ac30(name, 0x10, 0x400)`), destroyed at `0x404a99` (`0x40abd0`), so
+**once per level load**.
+
+| Offset | Content | Written | Read |
+|---|---|---|---|
+| +0x00 / +0x04 | static light count / records (0x40 B, §1.2) | `.lit` | light pass, model light choice |
+| +0x08 / +0x0c | extra vertices (§2) | `.lit` | `0x42c3a2`, `0x498923` |
+| +0x10 | light list per sector (§3) | `.lit` | `0x42e409` |
+| **+0x14** | **dynamic light capacity = 16** (ctor arg 2, `push 0x10` at `0x404517`) | `0x40b375` | `0x498791`, `0x42f068` |
+| **+0x18** | **dynamic light records**, `16 × 0x2c` B, all `+0x00 = 0` (`0x40b3a3` loop) | `0x40b37f` | `0x49879b`, `0x42f075` |
+| +0x1c / +0x20 / +0x24 | capacity 1024 (ctor arg 3), count 0, `int[1024]` | ctor only | **nobody** (a planned list, never used) |
+| +0x28 | per world face flag 0/2 (§1.1) | `0x42abf6`, `0x42b5a1`, … | `0x42ba3c` |
+
+Dynamic record (`0x2c` B): `+0x00` in use (0/1), `+0x04` kind, `+0x08..+0x10` position, `+0x14..+0x1c` colour (floats,
+0..255), `+0x20` radius, `+0x24..+0x2b` never written or read.
+
+### 7.2 `0x498790(this = lightsys, int kind, const vec3 *pos, const vec3 *rgb, float radius)`, `ret 0x10`
+
+```c
+int DynLight_Add(LightSys *ls, int kind, vec3 *pos, vec3 *rgb, float radius) {
+    int i;
+    for (i = 0; i < ls->dynMax /*+0x14 = 16*/; i++)          /* 0x4987a0: first record with +0 == 0 */
+        if (ls->dyn[i].used == 0) { ls->dyn[i].used = 1; break; }   /* 0x4987b5 */
+    if (i == ls->dynMax) return 0;                            /* 0x4987bc: table full */
+    ls->dyn[i].kind = kind;  ls->dyn[i].radius = radius;  ls->dyn[i].pos = *pos;  ls->dyn[i].rgb = *rgb;
+    return 1;
+}
+```
+
+**Nothing ever sets `used` back to 0**: the only other writer of a record is the ctor. There is no per-frame reset, no
+removal function, no expiry. No caller looks at the return value.
+
+### 7.3 The only reader: `0x42f05c` in the instance draw function `0x42e374` — a dead end
+
+Every time a model is drawn with arg bit 4, after its bounding sphere (centre `c`, radius `r`; cached in
+`inst+0x88..+0x98` for instances that do not move, `0x42eec9..0x42f038`) is known:
+
+```c
+for (i = 0; i < ls->dynMax; i++)                              /* 0x42f075 */
+    if (ls->dyn[i].used == 1 && |c - dyn[i].pos|^2 < dyn[i].radius^2 + r^2)   /* 0x42f07e..0x42f0bd; note R^2 + r^2, not (R + r)^2 */
+        ctx.dynList[ctx.dynCount++] = i;                      /* 0x42f0bf: [esp+0x1b738] count, [esp+0x1b73c] list */
+Model_Draw(&ctx, flags, ...);                                 /* 0x43b3f0 */
+```
+
+The list lives in the draw context `ctx = esp+0x330` handed to `0x43b3f0`, at `ctx+0x1b408` (count) / `ctx+0x1b40c`
+(indices). **No instruction in the exe reads `ctx+0x1b408..+0x1b47b`**: the model renderer reads only `ctx+0x1b404` (the
+vertex buffer), `ctx+0x1b47c` (a static light was chosen) and `ctx+0x1b480` (its index). The per-vertex colour of
+`0x43bce4..0x43be20` (§3) has no loop over further lights. The world light pass `0x42b4e0` loops over the static lights
+only (`lightsys+0`, `+4`); `0x42c320` is only called from it and `0x498830` only from it and from the cast shadow
+(`0x42ebaf`, with the chosen static light). So a registered light changes nothing:
+not the world, not the models, not the cast shadows.
+
+### 7.4 Live check (original, W3D class 16)
+
+`python tools/wdynlight.py game out/trace/dyn_w3d.txt` (ISO mounted; breakpoints `0x498790`, `0x4987bc`, `0x42f0bf`; SetVar 316 = 433, 315 = 9, Woody teleported
+to the arena): the first 16 calls, all from class 16's appear state (`0x40cce7`) at (6791, −2385, −19918), white,
+radius 400, took slots 0..15 within 0.04 s; **every later call (1542 of 1558 in ~8 s: appear, taunt, throw, vanish and the
+wave records `0x40c6dc` with radius 15..400) returned 0 "full"**, and the table stayed `1111111111111111` until the end of
+the run. `0x42f0bf` appended ~28000 entries in that time — into the list nobody reads.
+
+### 7.5 Callers (all pass kind 0 and white (255, 255, 255))
+
+| Call | Function | Position | Radius | Port |
+|---|---|---|---|---|
+| `0x40c6dc` | class 16 wave record `0x40c610` (BOSS15_16.md §5) | the column | `(1 − t/0.9) · 400` | `boss.c` `wave_tick` |
+| `0x40cce7` | class 16 state 2, appear | his column | 400 | `boss.c` |
+| `0x40cd9d` | class 16 state 3, taunt | his column | 400 | `boss.c` |
+| `0x40cea4` | class 16 state 4, throw | his column | 400 | `boss.c` |
+| `0x40d1da` | class 16 state 5, vanish | his column | `(1 − t/1.5) · 400` | `boss.c` |
+| `0x4766ee` | explosion kind 0 record `0x4765f0` (bomb, BOMB.md §4.3), while `u = t/0.25 < 1` | the explosion | sprite size + 100 = `500·sin³(2πu) + 100` (signed: −400..600) | `main_engine.c` `bombs_draw` (one frame late: registered in the effect draw after `rnd_frame`) |
+| `0x477dc6` | Woody's skeleton effect `0x477980` (PERSO_DEATH.md §4.2), every frame | the last sprite drawn | `rnd · 100 + 200` | not ported (the effect itself is not) |
+
+### 7.6 Port
+
+`rnd_light_add(kind, pos, rgb, radius)` in `src/render_gl.c` (declared in `render_gl.h`) keeps a 16-slot table like the
+original, but **emptied after every drawn frame**, so the callers above (which all register every frame) always get a
+slot; `WOODY_DYNLOG=1` logs each registration and, when drawn, the faces each light touches. By default nothing is drawn —
+that is the original's picture. `WOODY_DYNLIGHT=1` is a **port extra** that draws them the way the engine's own static
+lighting would have, had the list of §7.3 been wired up:
+
+* world: every face drawn this frame with the light in front of it (`0 < n·L + d < R`), not back-facing the camera,
+  not in an additive group, gets one more additive pass (ONE/ONE, depth LEQUAL, no z-write): face texture × vertex colour
+  (unit 0) × radial light texture `15 − round(k·15.49)` placed by the sphere projection of `0x498830` (unit 1), vertex
+  colour `min(1, 2 · vcol · C/255 · k)`, `k = 1 − (n·L + d)/R`. That adds `2 · tex · vcol · C/255 · max(0, 1 − |P − L|/R)`,
+  the term of the recipe's formula, also on single-pass (unlit) faces, but without the `min(1, …)` of the framebuffer sum
+  and without a shadow test (a dynamic light shines through walls within its radius).
+* models: per drawn instance, each light within `R` of its reference point (animated centre + 20, as §3) adds
+  `2 · max(0, N·Ldyn) · C` to the vertex colour before the clamp, `Ldyn = normalize(L − p) · (1 − |L − p|/R)` (the static
+  light vector of `0x43b912` without the 0.85 smoothing).
+
+Cost measured in the class-16 fight: +0.1 ms per frame.
+
 ## Uncertain
 
-- **Dynamic lights**: `0x498790(lightsys, kind, &pos, &colour, radius)` sets a record
-  (0x2c B) in `lightsys+0x18` (count `+0x14`); callers `0x40c6dc`, `0x40cce7`,
-  `0x40cd9d`, `0x40cea4`, `0x40d1da`, `0x4766ee`, `0x477dc6` (effects/projectiles). The
-  *reader* of that table was not found; unknown whether and how they light the world or models.
+- ~~Dynamic lights~~: resolved in §7 — registered, never drawn.
 - `light+0x28` (2, once 3) and the type byte of `object_id`: no reader found in the
   light pass.
 - C field `+0x08`: 7% deviates by a few units from the material word of the parent

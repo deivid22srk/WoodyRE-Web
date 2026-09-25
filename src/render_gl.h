@@ -65,6 +65,9 @@ Vec3 cam_forward(const FreeCamera *c);
 Vec3 cam_right(const FreeCamera *c);
 /* the projection inlined in 0x47b230: a world point into the 640x480 HUD space. 0 = outside the four side planes
  * (the original then skips the animation that wanted it), 1 = sx/sy filled in. */
+/* 0x498790(lightsys, kind, &pos, &rgb 0..255, radius): register a dynamic point light for the next drawn frame.
+ * 1 = stored, 0 = table full (16). Drawn only with WOODY_DYNLIGHT=1: the original never draws them (docs/LIGHTING.md 7). */
+int  rnd_light_add(int kind, Vec3 pos, const float rgb[3], float radius);
 int  rnd_project(const Window *w, const FreeCamera *cam, Vec3 p, float *sx, float *sy);
 
 #endif

@@ -637,6 +637,42 @@ static int instance_visible(Renderer *r, Instance *inst, float aspect, float fy,
     return 1;
 }
 
+/* ---- dynamic point lights (0x498790, docs/LIGHTING.md 7). The original registers them into a 16-slot table
+ * (lightsys+0x14/+0x18, 0x2c bytes a record) that nothing ever frees and nothing ever draws: the one reader (0x42f05c)
+ * collects the lights overlapping a model into a list that the model renderer never looks at, and after the first 16
+ * registrations of a level every further call fails. So by default the port only keeps the table, exactly as
+ * invisible as in the original. WOODY_DYNLIGHT=1 draws them the way the engine's own static-light code would have
+ * (an extra light term C/255 * max(0, 1 - |P - L|/R) on world faces and models) - a port extra, not the original.
+ * The port's table is emptied after every drawn frame, so a caller registers its light every frame (as all seven
+ * callers do). */
+typedef struct { Vec3 pos; float rgb[3], radius; int kind; } DynLight;
+static DynLight g_dyn[16]; static int g_ndyn, g_dyn_draw = -1;
+static int dyn_draw(void) { if (g_dyn_draw < 0) { const char *e = getenv("WOODY_DYNLIGHT"); g_dyn_draw = e && atoi(e) > 0; } return g_dyn_draw; }
+int rnd_light_add(int kind, Vec3 pos, const float rgb[3], float radius)
+{
+    if (g_ndyn >= 16 || !(radius > 0)) return 0;                    /* 0x4987bc: table full -> 0; a radius <= 0 lights nothing */
+    DynLight *d = &g_dyn[g_ndyn++]; d->pos = pos; d->radius = radius; d->kind = kind;
+    for (int q = 0; q < 3; q++) d->rgb[q] = rgb[q];
+    if (getenv("WOODY_DYNLOG")) printf("  DYNLIGHT %d kind %d at %.0f %.0f %.0f rgb %.0f %.0f %.0f r %.1f", g_ndyn - 1, kind, pos.x, pos.y, pos.z, rgb[0], rgb[1], rgb[2], radius), puts("");
+    return 1;
+}
+/* per drawn instance: the dynamic lights in range of its reference point, as light vectors scaled by the linear
+ * falloff, like the static Ldir of 0x43b912 without the 0.85 smoothing */
+static int g_idyn_n; static float g_idyn_dir[16][3], g_idyn_col[16][3];
+static void instance_dyn(const Renderer *r, const Instance *inst)
+{
+    g_idyn_n = 0; if (!g_ndyn || !r->lit || !r->show_light || !dyn_draw()) return;
+    Vec3 p = ins_anim_centre(inst); p.y += 20.0f;
+    for (int i = 0; i < g_ndyn; i++) {
+        const DynLight *L = &g_dyn[i]; float dx = L->pos.x - p.x, dy = L->pos.y - p.y, dz = L->pos.z - p.z, d = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (d >= L->radius) continue;
+        float k = (1.0f - d / L->radius) / (d > 1e-3f ? d : 1.0f);
+        g_idyn_dir[g_idyn_n][0] = dx * k; g_idyn_dir[g_idyn_n][1] = dy * k; g_idyn_dir[g_idyn_n][2] = dz * k;
+        for (int q = 0; q < 3; q++) g_idyn_col[g_idyn_n][q] = L->rgb[q];
+        g_idyn_n++;
+    }
+}
+
 /* vertex colour: vcol * 0.3 + max(0, N.Ldir) * C, drawn MODULATE2X.
  * Except on a blended face: 0x43d91d tests the flag 0x43d7cf raises for polygon flags 0x20/0x40 (group flag bit 1,
  * copied into the polygon at load by 0x428020) and jumps straight past the lit RGB at v+0x24..0x2c. It writes
@@ -658,8 +694,12 @@ static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat
     const float *a = M->m; Vec3 n = pt->normal;
     Vec3 w = { a[0] * n.x + a[4] * n.y + a[8] * n.z, a[1] * n.x + a[5] * n.y + a[9] * n.z, a[2] * n.x + a[6] * n.y + a[10] * n.z };
     float l = sqrtf(w.x * w.x + w.y * w.y + w.z * w.z), ndl = l > 1e-6f ? (w.x * inst->ldir.x + w.y * inst->ldir.y + w.z * inst->ldir.z) / l : 0; if (ndl < 0) ndl = 0;
-    float vc[3] = { pt->colour.x, pt->colour.y, pt->colour.z }, c[3];
-    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q] * ts; if (q && inst->tint_red) c[q] = 0; }
+    float vc[3] = { pt->colour.x, pt->colour.y, pt->colour.z }, c[3], dyn[3] = { 0, 0, 0 };
+    for (int i = 0; i < g_idyn_n && l > 1e-6f; i++) {                            /* WOODY_DYNLIGHT: the same N.L term per dynamic light */
+        float nd = (w.x * g_idyn_dir[i][0] + w.y * g_idyn_dir[i][1] + w.z * g_idyn_dir[i][2]) / l;
+        if (nd > 0) for (int q = 0; q < 3; q++) dyn[q] += 2.0f * nd * g_idyn_col[i][q];
+    }
+    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q] + dyn[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q] * ts; if (q && inst->tint_red) c[q] = 0; }
     tint_apply(inst, c, base); bt_color(c[0], c[1], c[2]);
 }
 
@@ -872,6 +912,7 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
     if (inst->type == 60) return;                                /* a water volume draws its own surface (Draw 0x4738c0, water.c), never its box */
     const Material *mat;
     uint32_t evf[4]; event_frames(inst, evf);
+    instance_dyn(r, inst);
     /* rigid node polygons: only mesh nodes, never those with typecode 2 (0x43b6c2) */
     for (uint32_t ni = 0; ni < m->nnodes; ni++) {
         InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || n->type_code == 2) continue;
@@ -1065,6 +1106,72 @@ int rnd_project(const Window *w, const FreeCamera *cam, Vec3 p, float *sx, float
     return 1;
 }
 
+/* WOODY_DYNLIGHT: the dynamic lights on the world. Every drawn opaque face in front of the light and within its radius
+ * gets one more additive pass: its own texture x vertex colour (unit 0) x the radial light texture 15 - round(k * 15.49)
+ * placed by the sphere projection of 0x498830 (unit 1), colour 2 * vcol * C * k. That adds exactly
+ * 2 * tex * vcol * C/255 * max(0, 1 - |P - L|/R) to the pixel, the term a static light adds in the multipass (recipe 4),
+ * but on unlit single-pass faces too and without the min(1, ...) of the framebuffer sum. */
+typedef void (APIENTRY *PFN_ActiveTex)(GLenum);
+typedef void (APIENTRY *PFN_MultiTC2f)(GLenum, GLfloat, GLfloat);
+static void draw_dyn_world(Renderer *r)
+{
+    static int init; static PFN_ActiveTex act; static PFN_MultiTC2f mtc; static uint32_t *stamp, nstamp, gen;
+    if (!init) { init = 1;
+        act = (PFN_ActiveTex)wglGetProcAddress("glActiveTexture"); if (!act) act = (PFN_ActiveTex)wglGetProcAddress("glActiveTextureARB");
+        mtc = (PFN_MultiTC2f)wglGetProcAddress("glMultiTexCoord2f"); if (!mtc) mtc = (PFN_MultiTC2f)wglGetProcAddress("glMultiTexCoord2fARB"); }
+    if (!act || !mtc || !r->light_tex[0]) return;
+    const GelFile *g = r->gel; const TexFile *tx = r->tex;
+    if (nstamp < g->npolys) { free(stamp); nstamp = g->npolys; stamp = (uint32_t *)calloc(nstamp, 4); gen = 0; }
+    enum { GL_TEX0 = 0x84C0, GL_TEX1 = 0x84C1 };
+    glDepthMask(GL_FALSE); glDepthFunc(GL_LEQUAL); glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE);
+    glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -1.0f); glEnable(GL_ALPHA_TEST);
+    act(GL_TEX1); glEnable(GL_TEXTURE_2D); glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    act(GL_TEX0); glEnable(GL_TEXTURE_2D);
+    uint32_t bound0 = 0, bound1 = 0;
+    for (int li = 0; li < g_ndyn; li++) {
+        const DynLight *L = &g_dyn[li]; float R = L->radius;
+        float box[6] = { L->pos.x - R, L->pos.x + R, L->pos.y - R, L->pos.y + R, L->pos.z - R, L->pos.z + R };
+        GelPolySet set = gel_polys_in_box(g, box); int ndbg[4] = { 0 };   /* WOODY_DYNLOG counts */
+        if (++gen == 0) { memset(stamp, 0, (size_t)nstamp * 4); gen = 1; }
+        for (uint32_t k = 0; k < set.n; k++) {
+            uint32_t f = set.polys[k]; if (f >= g->npolys || stamp[f] == gen) continue; stamp[f] = gen;
+            const struct FaceBatch *fb = &r->face_batch[f]; if (!fb->ntris) continue;           /* invisible, sky or degenerate */
+            ndbg[1]++; if (r->cull && r->face_stamp[f] != r->stamp_gen) continue;                           /* not drawn this frame */
+            ndbg[2]++;
+            const GelPoly *p = &g->polys[f]; const float *pl = p->plane;
+            if (tx->groups[fb->group].flags & 2) continue;                                       /* additive groups stay as they are */
+            float dist = pl[0] * L->pos.x + pl[1] * L->pos.y + pl[2] * L->pos.z + pl[3];
+            if (dist <= 0 || dist >= R) continue;                                                /* the light must be in front of the face */
+            if (pl[0] * g_cam_pos.x + pl[1] * g_cam_pos.y + pl[2] * g_cam_pos.z + pl[3] <= 0) continue;   /* 0x42c33c: back face */
+            if (r->face_bound) { const float *b = &r->face_bound[4 * f]; float dx = b[0] - L->pos.x, dy = b[1] - L->pos.y, dz = b[2] - L->pos.z;
+                                 if (dx * dx + dy * dy + dz * dz > (R + b[3]) * (R + b[3])) continue; }
+            float kk = 1.0f - dist / R; int ti = 15 - (int)(kk * 15.49f + 0.5f); if (ti < 0) ti = 0; if (ti > 15) ti = 15;
+            float s = 0.5f / sqrtf(R * R - dist * dist), F[3] = { L->pos.x - pl[0] * dist, L->pos.y - pl[1] * dist, L->pos.z - pl[2] * dist };
+            const GelVert *v2 = &g->verts[p->indices[2]];                                        /* 0x498890: U towards the third vertex */
+            float U[3] = { v2->x - F[0], v2->y - F[1], v2->z - F[2] }, ul = sqrtf(U[0] * U[0] + U[1] * U[1] + U[2] * U[2]);
+            if (ul < 1e-4f) continue;
+            for (int q = 0; q < 3; q++) U[q] /= ul;
+            float W[3] = { pl[1] * U[2] - pl[2] * U[1], pl[2] * U[0] - pl[0] * U[2], pl[0] * U[1] - pl[1] * U[0] };
+            const Material *m = &tx->materials[p->material & 0x7fff]; uint32_t t0 = tx->groups[fb->group].gl_tex, t1 = r->light_tex[ti];
+            if (t0 != bound0) { bound0 = t0; glBindTexture(GL_TEXTURE_2D, t0); }
+            if (t1 != bound1) { bound1 = t1; act(GL_TEX1); glBindTexture(GL_TEXTURE_2D, t1); act(GL_TEX0); }
+            ndbg[3]++; glBegin(GL_POLYGON);
+            for (uint32_t c = 0; c < p->nverts; c++) {
+                const GelVert *v = &g->verts[p->indices[c]]; float u0, v0, d[3] = { v->x - F[0], v->y - F[1], v->z - F[2] }, col[3];
+                for (int q = 0; q < 3; q++) { col[q] = 2.0f * (float)((v->colour >> (8 * q)) & 0xff) / 255.0f * L->rgb[q] / 255.0f * kk; if (col[q] > 1) col[q] = 1; }
+                material_uv(m, v->x, v->y, v->z, &u0, &v0);
+                glColor3f(col[0], col[1], col[2]); glTexCoord2f(u0, v0);
+                mtc(GL_TEX1, 0.5f + s * (d[0] * W[0] + d[1] * W[1] + d[2] * W[2]), 0.5f + s * (d[0] * U[0] + d[1] * U[1] + d[2] * U[2]));
+                glVertex3f(v->x, v->y, v->z);
+            }
+            glEnd();
+        }
+        if (getenv("WOODY_DYNLOG")) printf("  DYNWORLD light %d: %u faces in its box, %d drawable, %d drawn this frame, %d lit", li, set.n, ndbg[1], ndbg[2], ndbg[3]), puts("");
+    }
+    act(GL_TEX1); glDisable(GL_TEXTURE_2D); act(GL_TEX0);
+    glDisable(GL_POLYGON_OFFSET_FILL); glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDepthFunc(GL_LESS);
+}
+
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s)
 {
     glViewport(0, 0, w->width, w->height);
@@ -1170,6 +1277,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDepthFunc(GL_LESS); glEnable(GL_ALPHA_TEST);
         }
         glDisableClientState(GL_VERTEX_ARRAY); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        if (pass == 0 && g_ndyn && r->show_light && dyn_draw()) draw_dyn_world(r);   /* WOODY_DYNLIGHT only (port extra) */
     }
     if (r->show_instances) {
         double a = win_time(); g_last_material = 0xffffffffu;
@@ -1218,6 +1326,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         }
     }
     set_blend(0);
+    g_ndyn = 0; g_idyn_n = 0;                                      /* the dynamic lights of this frame are used up */
     T[4] += win_time() - q0;
     if (getenv("WOODY_PROF") && ++TN == 60) { printf("  RND ms: pose %.2f cull %.2f shadows %.2f instances %.2f total %.2f | world %u/%u tris, %u/%u sectors%s", T[0] / 60 * 1000, T[5] / 60 * 1000, T[2] / 60 * 1000, T[3] / 60 * 1000, T[4] / 60 * 1000, r->drawn_tris, r->total_tris, r->nsec_vis, r->gel->nsectors, r->pvs_on ? " (.vis)" : ""); puts(""); T[0] = T[2] = T[3] = T[4] = T[5] = 0; TN = 0; }
     (void)time_s;

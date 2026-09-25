@@ -302,7 +302,8 @@ for (i = 0; i < [0x5e58b0]; i++) chest[0x5e581c + i]->vtbl[28](&b->pos, 400.0f);
 Kind 0 read in detail (`0x4771dd..0x477349`, `0x4765f0`, `0x476710`):
 - `0x4765f0` (0.25 s, `u = t/0.25`): sprite at pos, **yellow** (1, 1, 0), alpha 1, frame **4** (`0x10004`), mode 0x12, flags 3 (additive);
   size `−500·c³` with `c = costab[(128 + trunc(511u)) & 511] ≈ −sin(2πu)` → `≈ 500·sin³(2πu)` (negative in the second half: how the primitive draws a
-  negative size is uncertain). Plus `0x498790(…, pos, colour (255,255,255), size + 100)` (`0x4a9010` = 100): presumably a dynamic light (uncertain).
+  negative size is uncertain). Plus `0x498790(…, pos, colour (255,255,255), size + 100)` (`0x4a9010` = 100): a dynamic light that the original registers but never draws
+  (LIGHTING.md §7); the port registers it (`bombs_draw`) and draws it only with `WOODY_DYNLIGHT=1`.
 - `0x476710` (0.3 s): **flat ring on the ground**: quad with normal `n` (`S+0x230`), grey 0.8, alpha `cos(u·π/2)`, size **`1300·u`** (`0x4a9860`),
   frame **24** (`0x10018`), flag 0xa (flat, non-additive).
 - `0x476cd0` (particle emitter) and `0x476140` (shrapnel): not read (uncertain).
@@ -639,7 +640,7 @@ nothing. In the volumes near (2318, 1346, −2989), 68 fires every second.
 ## 11. Uncertain / not traced
 
 1. Visual result of the render colour (× 0 = truly fully black?) and of sprite sizes < 0 in `0x4765f0`.
-2. `0x476cd0` (particles) and `0x476140` (shrapnel) of explosion kind 0; `0x498790` (light?).
+2. `0x476cd0` (particles) and `0x476140` (shrapnel) of explosion kind 0; `0x498790`: resolved, a dynamic light that is never drawn (LIGHTING.md §7).
 3. `vtbl[23]` `0x44d990` (1/8): no caller found.
 4. Which of the two typecode-0 markers of model 26 `GetVector(…, 0, …, 0)` picks (they sit at the same spot, so it has no consequence).
 5. The actual firing angle of the model-5 launchers (node 4 is animated) and thus the throw distance (§6 is an estimate).
