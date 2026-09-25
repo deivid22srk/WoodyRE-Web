@@ -1,306 +1,307 @@
-# PERSO_DUCK.md — bukken / plat liggen (Perso `+0x694`, `0x465b10`), hitbox, camera, geluid en port-recept
+# PERSO_DUCK.md — ducking / lying flat (Perso `+0x694`, `0x465b10`), hitbox, camera, sound and port recipe
 
-Statische analyse van `game/Woody.exe` (image base 0x400000; `out/disasm_full.txt`). Alle adressen zijn VA's; floats en tabellen zijn met een
-PE-lezer uit de exe gehaald, animatieduren uit `extract/Data/W1A/W1A.ins` model 0 (Woody; W2A model 21 en K1A model 45 geven dezelfde duren).
-Naamgeving als in PERSO_MOVE.md / PERSO_FRAME.md: `p` = Perso, `P` = parameterblok `p+0x110`, `M` = Mover `p+0x388`, `J` = springer `p+0x334`,
-`dt` = `p+0x2f8`, `A` = animcontroller `p+0x494`, `B` = tweede controller `p+0x498` (bord, alleen toestand 1).
-`AnimLen(n)` = `0x436b90(n, 0)` = `.ins-duur(rec[n].sub[0]) / rec[n].speed` (PERSO_DEATH.md kop).
+Static analysis of `game/Woody.exe` (image base 0x400000; `out/disasm_full.txt`). All addresses are VAs; floats and tables were pulled from the
+exe with a PE reader, animation durations from `extract/Data/W1A/W1A.ins` model 0 (Woody; W2A model 21 and K1A model 45 give the same durations).
+Naming as in PERSO_MOVE.md / PERSO_FRAME.md: `p` = Perso, `P` = parameter block `p+0x110`, `M` = Mover `p+0x388`, `J` = jumper `p+0x334`,
+`dt` = `p+0x2f8`, `A` = anim controller `p+0x494`, `B` = second controller `p+0x498` (surfboard, state 1 only).
+`AnimLen(n)` = `0x436b90(n, 0)` = `.ins duration(rec[n].sub[0]) / rec[n].speed` (PERSO_DEATH.md heading).
 
-Zekerheid: **zeker** = instructie voor instructie gelezen; **afgeleid** = volgt uit de gelezen code en de volgorde van de frame-stappen, maar niet in
-het origineel nagespeeld; **onzeker** = niet (volledig) gelezen of niet nagemeten.
+Confidence: **certain** = read instruction by instruction; **derived** = follows from the code read and the order of the frame steps, but not
+replayed in the original; **uncertain** = not (fully) read or not measured.
 
-## 0. Samenvatting (wat de port moet weten)
+## 0. Summary (what the port needs to know)
 
-- "Plat liggen" = **bukken**: actie 5 (standaard Spatie; in toestand 1 = race actie 8). Eén functie `0x465b10`, elke frame als voorstap van
-  Perso::Update, met een sub-automaat `+0x694` (0 staan, 1 gaat liggen, 2 ligt, 3 staat op) en een timer `+0x698`.
-- Start alleen **op de grond** met de toets **ingedrukt gehouden** (niet "net ingedrukt"), niet tijdens een aanval (`+0x5b4 ≠ 0`) en niet dood.
-  Liggen duurt minstens `AnimLen(0x31)` = **0.375 s**, opstaan `AnimLen(0x33)` = **0.19995 s**; de toets loslaten telt pas in sub 2.
-- Zolang `+0x694 ≠ 0`: elke frame `LockMove(dt)` ⇒ `Perso_Move` krijgt geen invoer en de **hele horizontale verplaatsing** (lopen, glijden,
-  knockback) wordt 0. Niet draaien, niet springen, niet pikken; wel vallen, meegedragen worden door een platform en weggeduwd door actoren.
-- Lichaamshoogte `+0x118` = **61** i.p.v. 193 (Woody): de botscilinder voor wanden, **projectielen**, **lasers**, de kegel van Boss14, verpletteren
-  en actor-duwen wordt 61 hoog. Woody kan dus **onder schoten (> voeten+66) en lasers (> voeten+61) door bukken**. Vijand-aanvallen (Touch,
-  3D-afstand van de voeten) en ontploffingen (3D-straal) houden geen rekening met de hoogte.
-- Opstaan alleen als het verticale segment **voeten+61 → voeten+132** (niet +193) vrij is van wereld- en instantiepolygonen; anders blijft hij liggen.
-- Camera: de volgcamera verandert **niet**; alleen het zij-aanzicht (mode 0x20) zakt naar "hoogte bij ↓" zolang de **toets** 5 is ingedrukt.
-- Geluid alleen via animatie-events (ref 32 bij liggen, 33 bij opstaan). Geen code-geluid.
-- Port: `PlayerInput.duck` (voorstel toets **X**), `duck_update()` na `attack_trigger()`, `player_body_height()` voor alle hoogtetesten (§5).
+- "Lying flat" = **ducking**: action 5 (default Space; in state 1 = race action 8). One function `0x465b10`, run each frame as a pre-step of
+  Perso::Update, with a sub state machine `+0x694` (0 standing, 1 going down, 2 lying, 3 getting up) and a timer `+0x698`.
+- Only starts **on the ground** with the key **held down** (not "just pressed"), not during an attack (`+0x5b4 ≠ 0`) and not dead. Lying lasts at
+  least `AnimLen(0x31)` = **0.375 s**, getting up `AnimLen(0x33)` = **0.19995 s**; releasing the key only matters starting in sub 2.
+- As long as `+0x694 ≠ 0`: every frame `LockMove(dt)` ⇒ `Perso_Move` gets no input and **all horizontal movement** (walking, sliding,
+  knockback) is zeroed. No turning, no jumping, no pecking; but falling, being carried by a platform, and being pushed by actors still work.
+- Body height `+0x118` = **61** instead of 193 (Woody): the collision cylinder for walls, **projectiles**, **lasers**, Boss14's cone, crushing
+  and actor-pushing becomes 61 tall. So Woody can **duck under shots (> feet+66) and lasers (> feet+61)**. Enemy attacks (Touch,
+  3D distance from the feet) and explosions (3D radius) do not take the height into account.
+- Standing back up only happens if the vertical segment **feet+61 → feet+132** (not +193) is free of world and instance polygons; otherwise he
+  keeps lying.
+- Camera: the follow camera does **not** change; only the side view (mode 0x20) drops to "height on ↓" as long as the **key** 5 is held.
+- Sound only via animation events (ref 32 when lying down, 33 when getting up). No code-driven sound.
+- Port: `PlayerInput.duck` (proposed key **X**), `duck_update()` after `attack_trigger()`, `player_body_height()` for all height tests (§5).
 
-## 1. De automaat `0x465b10`
+## 1. The state machine `0x465b10`
 
-### 1.1 Aanroep en volgorde (zeker)
+### 1.1 Call site and order (certain)
 
-Enige aanroeper: `0x44b797` in Perso::Update `0x44b530` (PERSO_FRAME §2.1). Volgorde binnen een frame (elke stap alleen als `+0x690 == 0`):
+Only caller: `0x44b797` in Perso::Update `0x44b530` (PERSO_FRAME §2.1). Order within a frame (each step only if `+0x690 == 0`):
 
-1. `0x44b620..0x44b644`: als `+0x238 > 0` ⇒ `+0x238 -= dt` (zonder ondergrens; kan licht negatief worden).
-2. Voorstappen: `0x464ef0` (klimwand vastpikken) → `0x465e50` → `0x457a50` (aanvalscontroller) → `0x44ba70` (in toestand 0 `0x463430`
-   bom oppakken, dan `0x457330` aanvaltrigger) → **`0x465b10` bukken** → `0x44b980` (actie 7, rondkijken) → `0x458bf0` (actie 11, speciale aanval).
-3. `0x459c70` (zij-aanzicht, als `+0x4ec`), `0x45b0a0`, dispatch op toestand: 0/6 ⇒ `Perso_Move(p, 1)` `0x44bb20`; 2/3 ⇒ `Perso_Move(p, 0)`; …
-4. `Perso_MoveCollide` `0x4624f0` (begint met `0x462490` = lichaamshoogte, §3.1), …, `Perso_AnimState` `0x463e60`.
+1. `0x44b620..0x44b644`: if `+0x238 > 0` ⇒ `+0x238 -= dt` (no lower bound; can become slightly negative).
+2. Pre-steps: `0x464ef0` (grab climbing wall) → `0x465e50` → `0x457a50` (attack controller) → `0x44ba70` (in state 0 `0x463430`
+   pick up bomb, then `0x457330` attack trigger) → **`0x465b10` ducking** → `0x44b980` (action 7, look around) → `0x458bf0` (action 11, special attack).
+3. `0x459c70` (side view, if `+0x4ec`), `0x45b0a0`, dispatch on state: 0/6 ⇒ `Perso_Move(p, 1)` `0x44bb20`; 2/3 ⇒ `Perso_Move(p, 0)`; …
+4. `Perso_MoveCollide` `0x4624f0` (starts with `0x462490` = body height, §3.1), …, `Perso_AnimState` `0x463e60`.
 
-Het bukken ziet dus de aanval-toestand van **dit** frame (trigger liep net), en zijn LockMove geldt al voor de `Perso_Move` van **hetzelfde** frame.
+So ducking sees **this** frame's attack state (trigger just ran), and its LockMove already applies to the `Perso_Move` of the **same** frame.
 
-### 1.2 Pseudo-C (zeker; jumptabel `0x465de4` = `{0x465b8e, 0x465c11, 0x465c43, 0x465d8d}`)
+### 1.2 Pseudo-C (certain; jump table `0x465de4` = `{0x465b8e, 0x465c11, 0x465c43, 0x465d8d}`)
 
 ```c
 void Perso_Duck(Perso *p)                                            /* 0x465b10 */
 {
-    if (p->state /*+0x21c*/ == 2 || p->atk /*+0x5b4*/ != 0) return;  /* 0x465b35, 0x465b43: dood of aanval ⇒ niets, ook geen LockMove */
+    if (p->state /*+0x21c*/ == 2 || p->atk /*+0x5b4*/ != 0) return;  /* 0x465b35, 0x465b43: dead or attacking ⇒ nothing, no LockMove either */
     int key;
-    if (p->state == 1) { if (p->raceStartT /*+0x4e4*/ > 0) return;   /* 0x465b4e: tijdens de startanimatie van de race */
+    if (p->state == 1) { if (p->raceStartT /*+0x4e4*/ > 0) return;   /* 0x465b4e: during the race start animation */
                          key = Held(8); }                            /* 0x465b65 */
-    else                 key = Held(5);                              /* 0x465b69; Held = 0x467400 (ingedrukt, niet "net ingedrukt") */
+    else                 key = Held(5);                              /* 0x465b69; Held = 0x467400 (held down, not "just pressed") */
     switch (p->duck /*+0x694*/) {
     case 0:                                                          /* 0x465b8e */
         if (!key || !p->onGround /*+0x22c via 0x44bcf0*/) break;
         p->duck = 1;
-        if      (p->state == 6) { A->Request(0x4e); p->duckT = AnimLen(0x4e); }                  /* met bom */
+        if      (p->state == 6) { A->Request(0x4e); p->duckT = AnimLen(0x4e); }                  /* carrying a bomb */
         else if (p->state == 1) { A->Request(0x68); B->Request(0x68); p->duckT = AnimLen(0x68); } /* race */
-        else                    { A->Request(0x31); p->duckT = AnimLen(0x31); }                  /* 0x465c06: alle andere toestanden */
+        else                    { A->Request(0x31); p->duckT = AnimLen(0x31); }                  /* 0x465c06: all other states */
         break;
     case 1:                                                          /* 0x465c11 */
-        if ((p->duckT -= dt) <= 0) p->duck = 2;                      /* toets wordt hier NIET gelezen */
+        if ((p->duckT -= dt) <= 0) p->duck = 2;                      /* the key is NOT read here */
         break;
     case 2:                                                          /* 0x465c43 */
         if      (p->state == 6) A->Request(0x4f);
-        else if (p->state == 1) { A->Request(0x69); B->Request(0x69); p->duckT = AnimLen(0x69); } /* timer ongebruikt */
-        else                    A->Request(0x32);                    /* elk frame opnieuw aangevraagd */
+        else if (p->state == 1) { A->Request(0x69); B->Request(0x69); p->duckT = AnimLen(0x69); } /* timer unused */
+        else                    A->Request(0x32);                    /* requested again every frame */
         if (key) break;                                              /* 0x465c98 */
         vec3 a = p->pos /*+0x1f4*/, b = p->pos;
         a.y += P[0x10];                   /* 61 (Woody) */           /* 0x465cd8..0x465cf5 */
         b.y += P[0x0c] - P[0x10];         /* 193 − 61 = 132 */       /* 0x465cf9..0x465d05 */
         Ray(&a, &b, -1);                                             /* 0x4359b0, §4.3 */
-        if (g_hitKind /*[0x53a554]*/ != 0) break;                    /* geblokkeerd: blijft liggen, volgend frame opnieuw testen */
+        if (g_hitKind /*[0x53a554]*/ != 0) break;                    /* blocked: stays down, tested again next frame */
         if      (p->state == 6) { A->Request(0x50); p->duckT = AnimLen(0x50); }
         else if (p->state == 1) { A->Request(0x6a); B->Request(0x6a); p->duckT = AnimLen(0x6a); }
         else                    { A->Request(0x33); p->duckT = AnimLen(0x33); }
         p->duck = 3;
         break;
     case 3:                                                          /* 0x465d8d */
-        if ((p->duckT -= dt) <= 0) p->duck = 0;                      /* toets wordt hier NIET gelezen */
+        if ((p->duckT -= dt) <= 0) p->duck = 0;                      /* the key is NOT read here */
         break;
     }
     if (p->duck != 0) LockMove(p, dt, 0);                            /* 0x465db6: 0x44cce0(+0x2f8, 0) */
 }
 ```
 
-Bijzonderheden (zeker):
-* De switch gebruikt de waarde bij binnenkomst: de overgang 0→1 en de eerste aftel-stap vallen nooit in hetzelfde frame; de LockMove-test
-  onderaan leest de **nieuwe** waarde (dus al LockMove in het startframe, en niet meer in het frame waarin 3→0 gaat).
-* Sub 1 en 3 eindigen **alleen op de timer** (= duur van het eerste `.ins`-deel van de keten), niet op het einde van de animatie of op de toets.
-  Sub 2 eindigt op **toets los + segment vrij**. Bij geblokkeerd segment wordt elk frame opnieuw getest zolang de toets los is.
-* Timers: aftellen met `fsub dt; fcomp 0.0 (0x4a9004); test ah,0x41` ⇒ overgang bij `T ≤ 0`.
-* De toestand-6-keuze gebeurt per frame: wisselt de toestand tijdens het liggen (bom opgepakt, zie §2.6), dan wisselt de set mee.
+Notable points (certain):
+* The switch uses the value on entry: the 0→1 transition and the first countdown step never fall in the same frame; the LockMove test at the
+  bottom reads the **new** value (so LockMove already applies in the start frame, and no longer in the frame where 3→0 happens).
+* Sub 1 and 3 only end **on the timer** (= duration of the first `.ins` segment of the chain), not on the end of the animation or the key.
+  Sub 2 ends on **key released + segment clear**. If the segment is blocked, it is retested every frame as long as the key is released.
+* Timers: counted down with `fsub dt; fcomp 0.0 (0x4a9004); test ah,0x41` ⇒ transition when `T ≤ 0`.
+* The state-6 choice is made per frame: if the state changes during lying down (bomb picked up, see §2.6), the set changes along with it.
 
-### 1.3 Ingangsvoorwaarden per situatie
+### 1.3 Entry conditions per situation
 
-| situatie | kan hij gaan liggen? | waarom |
+| situation | can he go down? | why |
 |---|---|---|
-| stilstaan / lopen / rennen (toestand 0) | **ja**, direct; hij staat **in één frame stil** (geen uitloop) | `onGround`, en LockMove nult de horizontale verplaatsing (§2.2) |
-| in de lucht (springen, vallen) | nee | `+0x22c == 0`. Blijft de toets ingedrukt, dan gaat hij liggen in het eerste frame met `onGround` (landing) |
-| aanval / pik-dash / stormloop / terugslag (`+0x5b4 ≠ 0`) | nee (functie wordt overgeslagen) | `0x465b43` |
-| aanval opladen (toets 6 vast, `+0x5b4 == 0`) | ja; de lading loopt daarna weg (−dt in `0x457a50`) en loslaten doet niets (`0x457388`) | |
-| met bom (toestand 6) | ja, anims 0x4e/0x4f/0x50 (ook tijdens oppakken/grondworp: niets test `+0x58c`) | |
-| rondkijken (toestand 3), klimwand (4), scripted (5), 7, raket (8), resultaten (9) | niet uitgesloten: de automaat loopt, met de 0x31-set; alleen de toets en `onGround` beslissen. In 3 wordt `Perso_Move(p,0)` gebruikt, in 4/5/7/8/9 geen `Perso_Move` | randgeval, **afgeleid** (niet nagespeeld) |
-| dood (toestand 2) | nee; `+0x694` **bevriest** op zijn waarde | `0x465b35` |
-| race (toestand 1) | ja met actie 8, niet tijdens `+0x4e4 > 0` | RACE.md §4.8 (al geport) |
+| standing / walking / running (state 0) | **yes**, immediately; he stops **in one frame** (no run-out) | `onGround`, and LockMove zeroes horizontal movement (§2.2) |
+| in the air (jumping, falling) | no | `+0x22c == 0`. If the key stays held, he goes down on the first frame with `onGround` (landing) |
+| attack / peck-dash / charge run / knockback (`+0x5b4 ≠ 0`) | no (the function is skipped) | `0x465b43` |
+| charging an attack (key 6 held, `+0x5b4 == 0`) | yes; the charge then drains (−dt in `0x457a50`) and releasing does nothing (`0x457388`) | |
+| carrying a bomb (state 6) | yes, anims 0x4e/0x4f/0x50 (also during pick-up/ground throw: nothing tests `+0x58c`) | |
+| looking around (state 3), climbing wall (4), scripted (5), 7, rocket (8), results (9) | not excluded: the state machine runs, with the 0x31 set; only the key and `onGround` decide. In 3, `Perso_Move(p,0)` is used, in 4/5/7/8/9 no `Perso_Move` | edge case, **derived** (not replayed) |
+| dead (state 2) | no; `+0x694` **freezes** at its value | `0x465b35` |
+| race (state 1) | yes with action 8, not while `+0x4e4 > 0` | RACE.md §4.8 (already ported) |
 
-### 1.4 Animaties (tabel `0x4b6180`, record `{sub[4], prio, speed, restart}`; zeker)
+### 1.4 Animations (table `0x4b6180`, record `{sub[4], prio, speed, restart}`; certain)
 
-| log. | keten (.ins) | prio | speed | restart | duur deel 0 | lus | gebruik | event-geluid (§4.2) |
+| log. | chain (.ins) | prio | speed | restart | duration part 0 | loop | use | event sound (§4.2) |
 |---|---|---|---|---|---|---|---|---|
-| **0x31** | 24 → 25 lus | 1750 | 4.0 | 1 | 1.5/4 = **0.375 s** | 25: 5.0/4 = 1.25 s | gaan liggen (sub 0→1) | .ins 24: ref 32 |
-| **0x32** | 25 lus | 1750 | 3.0 | 0 | – | 5.0/3 = 1.667 s | liggen (sub 2, elk frame) | – |
-| **0x33** | 23 → 0 | 1750 | 4.0 | 1 | 0.8/4 = **0.19995 s** | (0 = idle) | opstaan (sub 2→3) | .ins 23: ref 33 |
-| 0x4e | 58 → 60 lus | 1750 | 4.0 | 1 | 1.5/4 = 0.375 s | 60: 5.0 s | liggen met bom | .ins 58: ref 32 |
-| 0x4f | 60 lus | 1750 | 3.0 | 0 | – | 1.667 s | liggen met bom | – |
-| 0x50 | 59 → 47 | 1750 | 4.0 | 1 | 0.8/4 = 0.19995 s | 47 = draag-idle | opstaan met bom | .ins 59: ref 33 |
-| 0x68/0x69/0x6a | 5→6 / 6 / 7→0 (race-model) | 1750 | 5/3/5 | 1 | modelafhankelijk | | race (RACE.md) | |
-| 0x23 | 26 → 25 lus | 5110 | 3.0 | 1 | 0.8/3 = 0.267 s | | geraakt terwijl gebukt (`0x464bfd`) | .ins 26: 55/56/57 |
-| 0x24 | 64 → 60 lus | 5110 | 3.0 | 1 | 0.267 s | | geraakt gebukt met bom (`0x464ba3`) | .ins 64: 55/56/57 |
-| 0x2c | 36, eenmalig | 6000 | 3.0 | 1 | 5.1/3 = 1.7 s | | dood 3/4/5 op de grond met `+0x694 == 2` (`0x4647f9`) | .ins 36: ref 34 |
+| **0x31** | 24 → 25 loop | 1750 | 4.0 | 1 | 1.5/4 = **0.375 s** | 25: 5.0/4 = 1.25 s | going down (sub 0→1) | .ins 24: ref 32 |
+| **0x32** | 25 loop | 1750 | 3.0 | 0 | – | 5.0/3 = 1.667 s | lying down (sub 2, every frame) | – |
+| **0x33** | 23 → 0 | 1750 | 4.0 | 1 | 0.8/4 = **0.19995 s** | (0 = idle) | getting up (sub 2→3) | .ins 23: ref 33 |
+| 0x4e | 58 → 60 loop | 1750 | 4.0 | 1 | 1.5/4 = 0.375 s | 60: 5.0 s | lying down with bomb | .ins 58: ref 32 |
+| 0x4f | 60 loop | 1750 | 3.0 | 0 | – | 1.667 s | lying down with bomb | – |
+| 0x50 | 59 → 47 | 1750 | 4.0 | 1 | 0.8/4 = 0.19995 s | 47 = carry idle | getting up with bomb | .ins 59: ref 33 |
+| 0x68/0x69/0x6a | 5→6 / 6 / 7→0 (race model) | 1750 | 5/3/5 | 1 | model-dependent | | race (RACE.md) | |
+| 0x23 | 26 → 25 loop | 5110 | 3.0 | 1 | 0.8/3 = 0.267 s | | hit while ducking (`0x464bfd`) | .ins 26: 55/56/57 |
+| 0x24 | 64 → 60 loop | 5110 | 3.0 | 1 | 0.267 s | | hit while ducking with bomb (`0x464ba3`) | .ins 64: 55/56/57 |
+| 0x2c | 36, one-shot | 6000 | 3.0 | 1 | 5.1/3 = 1.7 s | | died 3/4/5 on the ground with `+0x694 == 2` (`0x4647f9`) | .ins 36: ref 34 |
 
-(`.ins`-duren in 1/4096 s: 23 = 3276, 24 = 6144, 25 = 20480, 26 = 3276, 36 = 20889, 58 = 6144, 59 = 3276, 60 = 20480, 64 = 3276.)
+(`.ins` durations in 1/4096 s: 23 = 3276, 24 = 6144, 25 = 20480, 26 = 3276, 36 = 20889, 58 = 6144, 59 = 3276, 60 = 20480, 64 = 3276.)
 
-Prioriteit/controller (Tick `0x436a50`, zeker): het verzoek met de hoogste prio wint; is de huidige prio hoger dan de nieuwe, dan wordt pas
-gewisseld als `inst+0xc0 == 1` = de keten zit in zijn laatste (lus)deel (`0x43f246`: slot0 == slot1, INSTANCE.md). Gevolgen:
-* 0x31 (24) kan door niets met prio < 1750 onderbroken worden; na 0.375 s zit hij in lus 25 en neemt 0x32 (zelfde prio, restart 0) naadloos over.
-* Na 0x33 speelt .ins 0 als lus-deel ⇒ de gewone grondanims (idle 0 prio 1100, aanlopen 2 prio 1501, loop 3) nemen direct over zodra sub 3 eindigt.
-* Tijdens het liggen doet `Perso_AnimState` in toestand 0/9 **niets** (`0x464630`: `+0x694 ≠ 0` ⇒ return, ook geen idle-teller, geen idle-reset).
-  In toestand 6 vraagt `0x4646b0` wél zijn draaganims aan (0x40..0x45, prio ≤ 1501): die verliezen van 0x4e/0x4f/0x50 (1750). In toestand 1
-  zet `0x464c74` alleen `+0x4bc = 0` (geen leunen).
+Priority/controller (Tick `0x436a50`, certain): the request with the highest priority wins; if the current priority is higher than the new one,
+the switch only happens once `inst+0xc0 == 1` = the chain is in its last (loop) part (`0x43f246`: slot0 == slot1, INSTANCE.md). Consequences:
+* 0x31 (24) cannot be interrupted by anything with prio < 1750; after 0.375 s it is in loop 25 and 0x32 (same prio, restart 0) takes over seamlessly.
+* After 0x33, .ins 0 plays as the loop part ⇒ the normal ground anims (idle 0 prio 1100, start-walk 2 prio 1501, walk 3) take over immediately once sub 3 ends.
+* While lying down, `Perso_AnimState` in state 0/9 does **nothing** (`0x464630`: `+0x694 ≠ 0` ⇒ return, no idle counter either, no idle reset).
+  In state 6, `0x4646b0` still requests its carry anims (0x40..0x45, prio ≤ 1501): those lose to 0x4e/0x4f/0x50 (1750). In state 1
+  `0x464c74` only sets `+0x4bc = 0` (no leaning).
 
-### 1.5 Tijdlijn bij 60 fps (afgeleid uit §1.2)
+### 1.5 Timeline at 60 fps (derived from §1.2)
 
-| frame | gebeurt |
+| frame | happens |
 |---|---|
-| 0 | toets vast en op de grond: sub 1, anim 0x31, `T = 0.375`, LockMove, hoogte 61 (MoveCollide van dit frame) |
-| 1..23 | `T -= 1/60`; in frame 23 wordt `T ≤ 0` ⇒ sub 2 |
-| 24.. | sub 2: 0x32 elk frame; toets los ⇒ segmenttest |
-| F | toets los en vrij: 0x33, `T = 0.19995`, sub 3 |
-| F+1..F+12 | aftellen; in F+12 ⇒ sub 0, **geen LockMove meer in F+12**: bewegen kan in datzelfde frame (en `+0x238 = dt_vorig − dt ≈ 0`) |
+| 0 | key held and on the ground: sub 1, anim 0x31, `T = 0.375`, LockMove, height 61 (this frame's MoveCollide) |
+| 1..23 | `T -= 1/60`; in frame 23, `T ≤ 0` ⇒ sub 2 |
+| 24.. | sub 2: 0x32 every frame; key released ⇒ segment test |
+| F | key released and clear: 0x33, `T = 0.19995`, sub 3 |
+| F+1..F+12 | counting down; in F+12 ⇒ sub 0, **no more LockMove in F+12**: movement can happen in that same frame (and `+0x238 = dt_prev − dt ≈ 0`) |
 
-Minimaal (tik op de toets): 36 frames = 0.6 s geblokkeerd. Hoogte 61 geldt van frame 0 t/m F+11.
+Minimum (a tap on the key): 36 frames = 0.6 s blocked. Height 61 applies from frame 0 through F+11.
 
-## 2. Bewegen, draaien, springen, aanvallen tijdens het liggen
+## 2. Moving, turning, jumping, attacking while lying down
 
-### 2.1 `0x44cce0(t, force)` LockMove (zeker)
-`if (t > p->t238 || force) p->t238 = t;` (ret 8). Bukken roept `(dt, 0)` aan: een langere lopende blokkade (harde landing, speciale aanval)
-blijft staan. De port-functie `lock_move()` overschrijft altijd en zet snelheid 0 – voor het bukken dus `max` gebruiken (§5.3).
+### 2.1 `0x44cce0(t, force)` LockMove (certain)
+`if (t > p->t238 || force) p->t238 = t;` (ret 8). Ducking calls `(dt, 0)`: a longer-running block (hard landing, special attack)
+stays in effect. The port function `lock_move()` always overwrites and sets speed 0 – so for ducking, use `max` (§5.3).
 
-### 2.2 `Perso_Move` `0x44bb20` met `+0x238 > 0` (zeker; **correctie op PERSO_MOVE §4**)
+### 2.2 `Perso_Move` `0x44bb20` with `+0x238 > 0` (certain; **correction to PERSO_MOVE §4**)
 ```c
 if (p->M.pushT /*+0x474*/ > 0 || p->t238 > 0 || p->atk != 0) input = false;   /* 0x44bb48..0x44bb78 */
 Mover_Update(&p->M, input);                     /* 0x45b110 */
 vec3 h = M.velDir * M.dist;                     /* 0x44d1e0 → [esp+0x10] */
 vec3 v = 0;                                     /* 0x43ff80 → [esp+4] */
 if (p->t240 > 0) p->t240 -= dt; else { Jumper_Update(&J, Held(4), input); v = J.disp; }
-if (p->t238 > 0) h = 0;                         /* 0x44bc16..0x44bc2f: 0x43ffa0 op [esp+0x10] = h (NIET v) */
+if (p->t238 > 0) h = 0;                         /* 0x44bc16..0x44bc2f: 0x43ffa0 on [esp+0x10] = h (NOT v) */
 p->disp = (use5bc ? v5bc : use69c ? v69c : h + v);  p->disp.y += dt * p->vy244;
 ```
-PERSO_MOVE.md §4 schrijft `if (p->t238 > 0) v = 0;` – dat is fout: de stackslot na `pop edi; pop ebp` is de **horizontale** vector
-(PERSO_FRAME §2.4 "d = 0" klopt). Dus tijdens het liggen:
-* **geen** loop-, glij- (RampB, steile helling) of knockback-verplaatsing (RampC): alles zit in `h`;
-* **wel** verticaal: de springer levert `v` gewoon (vallen als de grond wegvalt);
-* **wel** alles wat ná `Perso_Move` bij `disp` komt: actor-duwen `0x4627d0` en de platformbeweging `0x436d20` in `Perso_MoveCollide`.
+PERSO_MOVE.md §4 writes `if (p->t238 > 0) v = 0;` – that is wrong: the stack slot after `pop edi; pop ebp` is the **horizontal**
+vector (PERSO_FRAME §2.4 "d = 0" is correct). So while lying down:
+* **no** walking, sliding (RampB, steep slope) or knockback movement (RampC): it's all in `h`;
+* **but** vertical still works: the jumper still supplies `v` as normal (falling if the ground disappears);
+* **but** everything added to `disp` **after** `Perso_Move` still applies: actor-pushing `0x4627d0` and platform movement `0x436d20` in `Perso_MoveCollide`.
 
-### 2.3 Mover zonder invoer (zeker)
-`0x45b110` met arg 0: vlag 2 uit ⇒ `0x45a1f0` (vlaggen 8/0x10/0x20 wissen) en fase `M+0xc = 0` (`0x45b2bf`). `0x45a4b0` (invoer, draaien)
-loopt niet ⇒ **kijkrichting `M+0x10` verandert niet: hij draait niet** (uitzonderingen: het volgdoel `+0x68c`, `0x45b1b4..0x45b26a`, en
-`Hit`, die de richting direct zet). RampA wordt niet vertraagd (geen `0x467180`), maar telt zonder vlag 2 niet mee in `0x45ae80`; RampB/RampC
-tikken door maar worden via `h = 0` weggegooid. Een restant knockback (`M+0xec` 0.2 s + 0.5 s uitlopen) kan dus ná het opstaan nog doorwerken
-(afgeleid). Snelheid na het opstaan: fase 0 → 1 via `0x467130` (start versnellen) zodra een richting ingedrukt is; of RampA daarbij van zijn
-oude waarde of van 0 vertrekt is **onzeker** (niet gelezen).
+### 2.3 Mover with no input (certain)
+`0x45b110` with arg 0: flag 2 off ⇒ `0x45a1f0` (clears flags 8/0x10/0x20) and phase `M+0xc = 0` (`0x45b2bf`). `0x45a4b0` (input, turning)
+does not run ⇒ **facing direction `M+0x10` does not change: he does not turn** (exceptions: the follow target `+0x68c`, `0x45b1b4..0x45b26a`, and
+`Hit`, which sets the direction directly). RampA is not decelerated (no `0x467180`), but without flag 2 it doesn't count in `0x45ae80`;
+RampB/RampC still tick but are discarded via `h = 0`. A leftover knockback (`M+0xec` 0.2 s + 0.5 s run-out) can therefore still take effect
+after getting up (derived). Speed after getting up: phase 0 → 1 via `0x467130` (start accelerating) as soon as a direction is held; whether
+RampA starts from its old value or from 0 there is **uncertain** (not read).
 
-### 2.4 Springen (zeker)
-`Jumper_Update(J, Held(4), input = 0)`: `pressed := false` en geen herbewapening (`input` vereist). Geen sprong, geen coyote-sprong. Omdat de
-springer **Held(4)** leest (niet "net ingedrukt"): wie de springtoets vasthoudt tijdens het opstaan, springt in het eerste vrije frame (F+12,
-§1.5) — afgeleid.
+### 2.4 Jumping (certain)
+`Jumper_Update(J, Held(4), input = 0)`: `pressed := false` and no re-arming (`input` is required). No jump, no coyote jump. Since the
+jumper reads **Held(4)** (not "just pressed"): anyone holding the jump key while getting up jumps on the first free frame (F+12,
+§1.5) — derived.
 
-### 2.5 Wat gebeurt er als de grond wegvalt / bij een helling / op een platform (afgeleid)
-* Hij kan niet van een rand lopen (geen horizontale verplaatsing). Valt de grond weg (bewegend platform, uitgeduwd door een actor): Jumper fase 2
-  → 3 (`J_StartFall`), hij **valt gebukt** (anim blijft 0x32; `0x4642f0` wordt niet aangeroepen). Loslaten in de lucht mag: sub 2 test alleen
-  toets + segment, niet de grond ⇒ opstaan in de lucht, daarna weer de lucht-anims.
-* Steile helling (`n.y < 0.71`): hij glijdt **niet** zolang hij ligt (RampB zit in `h`).
-* Landing met de toets vast: hij gaat liggen in het eerste frame met `onGround`; in dat frame of het volgende kan Jumper fase 6 vallen, maar
-  `0x464630` wordt overgeslagen ⇒ **geen** landingsanim 8/0xa, **geen** LockMove(len 0xa), **geen** schok/ballon `0x478980`. Valschade
-  (`0x44b220`, fase 6 en `fallen ≥ 1500`) blijft (die leest geen `+0x694`).
+### 2.5 What happens if the ground disappears / on a slope / on a platform (derived)
+* He can't walk off an edge (no horizontal movement). If the ground disappears (moving platform, pushed out by an actor): Jumper phase 2
+  → 3 (`J_StartFall`), he **falls while ducking** (anim stays 0x32; `0x4642f0` is not called). Releasing in the air is allowed: sub 2 only
+  tests key + segment, not the ground ⇒ he stands up in mid-air, then the air anims take over again.
+* Steep slope (`n.y < 0.71`): he does **not** slide while lying down (RampB is inside `h`).
+* Landing with the key held: he goes down on the first frame with `onGround`; on that frame or the next, Jumper phase 6 could apply falling,
+  but `0x464630` is skipped ⇒ **no** landing anim 8/0xa, **no** LockMove(len 0xa), **no** shock/bounce `0x478980`. Fall damage
+  (`0x44b220`, phase 6 and `fallen ≥ 1500`) still applies (it does not read `+0x694`).
 
-### 2.6 Aanvallen en andere acties (zeker, per leesplaats)
-| actie | tijdens liggen | adres |
+### 2.6 Attacks and other actions (certain, per code location)
+| action | while lying down | address |
 |---|---|---|
-| pikken / stormloop / luchtaanval / ketting uit terugslag | **geblokkeerd** (`+0x694 ≠ 0` ⇒ return, vóór alles) | `0x457388` in `0x457330` |
-| bom gooien (toestand 6, sub 2) | **geblokkeerd** | `0x463963` |
-| bom oppakken | **niet** geblokkeerd: `0x463430` test geen `+0x694`/`+0x238` ⇒ toestand 6, hij blijft liggen (set 0x4f), de oppak-anim 0x45 (1500) verliest van 0x4f (1750) | `0x46344e` |
-| vastpikken aan klimwand | niet geblokkeerd (`0x464f42..0x464f72` testen alleen `+0x5b4 ∈ {0,10}` en `+0x50c`) | `0x464ef0` |
-| speciale aanval (actie 11) | niet geblokkeerd (test op de grond, toestand 0, `+0x750`, voorraad): anim 0x13 (prio 5500) en LockMove(len 0x13) | `0x458c0c..0x458c80` |
-| rondkijken (actie 7) | niet geblokkeerd ⇒ toestand 3; het bukken loopt door; ooghoogte `0x44c080` = voeten + 0.9·H = **54.9** gebukt | `0x44b980`, `0x44c0a4` |
+| pecking / charge run / air attack / chain out of knockback | **blocked** (`+0x694 ≠ 0` ⇒ return, before anything else) | `0x457388` in `0x457330` |
+| throwing a bomb (state 6, sub 2) | **blocked** | `0x463963` |
+| picking up a bomb | **not** blocked: `0x463430` does not test `+0x694`/`+0x238` ⇒ state 6, he stays down (set 0x4f), the pick-up anim 0x45 (1500) loses to 0x4f (1750) | `0x46344e` |
+| grabbing the climbing wall | not blocked (`0x464f42..0x464f72` only test `+0x5b4 ∈ {0,10}` and `+0x50c`) | `0x464ef0` |
+| special attack (action 11) | not blocked (tests on the ground, state 0, `+0x750`, supply): anim 0x13 (prio 5500) and LockMove(len 0x13) | `0x458c0c..0x458c80` |
+| looking around (action 7) | not blocked ⇒ state 3; ducking keeps running; eye height `0x44c080` = feet + 0.9·H = **54.9** while ducking | `0x44b980`, `0x44c0a4` |
 
-Randgevallen in de "niet geblokkeerd"-rijen zijn afgeleid, niet nagespeeld.
+Edge cases in the "not blocked" rows are derived, not replayed.
 
-### 2.7 Geraakt worden terwijl hij ligt (zeker voor de code, volgorde afgeleid)
-`Hit 0x44ca00` (PERSO_MOVE §4.4): knockback-richting, **kijkrichting naar de aanvaller** (M+0x10/M+0x1c/RampA.dir), `0x463170(J,0)`,
-`+0x280 = 0.6 s`, `+0x238 = 0` (`0x44cce0(0, 1)`), `+0x5b4 = 0`, hit-anim `0x464b70`: grond + `+0x694 ≠ 0` (1, 2 of 3) ⇒ **0x23** (toestand 6 met
-bom: **0x24**, en `+0x58c = 2`). `+0x694` wordt niet veranderd. Schoten (stap 32), vijanden en bommen lopen ná de Perso-update, dus het volgende
-frame zet het bukken `+0x238` weer op dt vóór `Perso_Move` ⇒ **geen knockback-verplaatsing** zolang hij ligt; hij blijft liggen. Na 0x23
-(0.267 s) staat de keten in lus 25, waar 0x32 naadloos op aansluit.
+### 2.7 Being hit while lying down (certain for the code, order derived)
+`Hit 0x44ca00` (PERSO_MOVE §4.4): knockback direction, **facing turned toward the attacker** (M+0x10/M+0x1c/RampA.dir), `0x463170(J,0)`,
+`+0x280 = 0.6 s`, `+0x238 = 0` (`0x44cce0(0, 1)`), `+0x5b4 = 0`, hit anim `0x464b70`: on the ground + `+0x694 ≠ 0` (1, 2 or 3) ⇒ **0x23** (state 6 with
+bomb: **0x24**, and `+0x58c = 2`). `+0x694` is not changed. Shots (step 32), enemies and bombs run after the Perso update, so the next
+frame sets ducking's `+0x238` back to dt before `Perso_Move` ⇒ **no knockback movement** while lying down; he stays down. After 0x23
+(0.267 s) the chain is in loop 25, which 0x32 continues seamlessly.
 
-### 2.8 Dood terwijl hij ligt (zeker)
-`Kill` zet toestand 2 en laat `+0x694` staan; `0x465b10` loopt niet meer (bevroren), `+0x238` wordt niet ververst (na één frame ≤ 0 ⇒ de
-doodsbeweging van toestand 2 geldt normaal) en de lichaamshoogte blijft 61. Animatie (`0x4647c7`, PERSO_DEATH §3.2): soort 3/4/5 op de grond met
-`+0x694 == 2` ⇒ **0x2c** (.ins 36, 1.7 s, eenmalig) en **geen** 0x29 erna (`0x46486e`); met 1 of 3 ⇒ de gewone 0x26 → 0x29; in de lucht 0x25.
-Andere soorten (1, 2/9, 6, 7, 8) negeren `+0x694`. Reset `0x44ab20` zet `+0x694 = 0` (`0x44ad28`); `+0x698` wordt niet gewist (onschadelijk).
+### 2.8 Dying while lying down (certain)
+`Kill` sets state 2 and leaves `+0x694` as is; `0x465b10` no longer runs (frozen), `+0x238` is not refreshed (after one frame ≤ 0 ⇒ the
+death movement of state 2 applies normally) and the body height stays 61. Animation (`0x4647c7`, PERSO_DEATH §3.2): kind 3/4/5 on the ground with
+`+0x694 == 2` ⇒ **0x2c** (.ins 36, 1.7 s, one-shot) and **no** 0x29 after it (`0x46486e`); with 1 or 3 ⇒ the normal 0x26 → 0x29; in the air 0x25.
+Other kinds (1, 2/9, 6, 7, 8) ignore `+0x694`. Reset `0x44ab20` sets `+0x694 = 0` (`0x44ad28`); `+0x698` is not cleared (harmless).
 
-## 3. Botsing en hitbox
+## 3. Collision and hitbox
 
-### 3.1 Lichaamshoogte `0x462490` (zeker)
-Eerste aanroep in `Perso_MoveCollide 0x4624f0` (toestanden 0/1/2/3/4/6): `p+0x118 (P+0x08) = p->duck ? P+0x10 : P+0x0c`. Tabel `0x4b5f14`:
+### 3.1 Body height `0x462490` (certain)
+First called in `Perso_MoveCollide 0x4624f0` (states 0/1/2/3/4/6): `p+0x118 (P+0x08) = p->duck ? P+0x10 : P+0x0c`. Table `0x4b5f14`:
 
-| P+ | kolom 0 (Woody, type 1) | kolom 1/2 (type 3/2) | kolom 3/4 (race) | betekenis |
+| P+ | column 0 (Woody, type 1) | column 1/2 (type 3/2) | column 3/4 (race) | meaning |
 |---|---|---|---|---|
-| 0x0c | **193** | 143 | 160 | staande hoogte |
-| 0x10 | **61** | 61 | 81 | gebukte hoogte |
-| 0x14 / 0x18 | 193 / 61 | 143 / 61 | 143 / 81 | geen lezer gevonden in `0x44a000..0x466fff` (onzeker waarvoor) |
-| 0x00 | 43 | 43 | 43 | grondpeil boven de voeten – **ongewijzigd** bij bukken |
-| 0x04 | 69 | 69 | 69 | straal – ongewijzigd (alleen toestand 1 halveert, `0x462517`) |
+| 0x0c | **193** | 143 | 160 | standing height |
+| 0x10 | **61** | 61 | 81 | ducking height |
+| 0x14 / 0x18 | 193 / 61 | 143 / 61 | 143 / 81 | no reader found in `0x44a000..0x466fff` (uncertain what it's for) |
+| 0x00 | 43 | 43 | 43 | ground level above the feet – **unchanged** while ducking |
+| 0x04 | 69 | 69 | 69 | radius – unchanged (only state 1 halves it, `0x462517`) |
 
-Overal wordt de hoogte via **`0x4624c0` = `p+0x118 · inst+0x54`** (z-schaal van het model, normaal 1; de pletter-schaal `+0x2e8`) gelezen,
-of als Perso-vtable slot 33 (`0x4624e0` → `0x4624c0`). `P+0x0c` rechtstreeks: alleen het effect van Kill 2/9 (`0x44c40e`, `0x44c58c`: bliksem op
-voeten + 193, ook gebukt).
+The height is always read via **`0x4624c0` = `p+0x118 · inst+0x54`** (z-scale of the model, normally 1; the crusher scale `+0x2e8`),
+or as Perso vtable slot 33 (`0x4624e0` → `0x4624c0`). `P+0x0c` directly: only the effect of Kill 2/9 (`0x44c40e`, `0x44c58c`: lightning on
+feet + 193, even while ducking).
 
-### 3.2 Wat er met de hoogte verandert (zeker, alle aanroepers van `0x4624c0` en van vtable-slots 24/33 nagelopen)
+### 3.2 What changes with the height (certain, all callers of `0x4624c0` and of vtable slots 24/33 traced)
 
-| gebruiker | test | effect van bukken |
+| consumer | test | effect of ducking |
 |---|---|---|
-| wandsweep `0x437180` (`0x462663`) | cilinderband `[voeten+marge, voeten+H]`, marge 41 op de grond / 5 in de lucht; middelpunt voeten+H/2 | band 41..61 op de grond: plafonds en overhangen boven 61 raken hem niet. Grondtest met peil +43 (`0x436f00`) en volumetest op +71 (`0x462760`) ongewijzigd |
-| **projectielen** `0x44a0a0` (`0x44a102`: `vtbl[24]` = `0x44cd60`) | gesweepte bol r (5) tegen cilinder `{pos + (0,H/2,0), r = 69, halve hoogte H/2}` ⇒ y-bereik `[voeten − 5, voeten + H + 5]` | **raakt alleen onder voeten + 66** (staand 198) |
-| **lasers** 50/51/52 `0x450f80` (`vtbl[24]`, `0x433de0`) | segment tegen cilinder straal 69·0.85 = 58.65, y-bereik `[voeten + 0.1, voeten + H − 0.1]` (`0x433f84..0x433fb2`, `0x4a9008` = 0.1) | **raakt alleen onder voeten + 60.9** (staand 192.9) |
-| Boss14-kegel `0x410cf0` (`vtbl[33]` op `0x410d95/0x410dce`) | kegel 250 hoog onder de baas; `o = A.y − bot + H` | kleiner `o` ⇒ kleinere straal; wie diep genoeg ligt valt eronder door (BOSS14 §6.1) |
-| actor-duwen `0x4627d0` (`vtbl[33]` van beide) | `0x433d40` met beide hoogtes | duwen alleen bij verticale overlap met de 61-cilinder (vorm van `0x433d40` onzeker) |
-| verpletteren `0x462a40` (`0x462aa8`) | straal voeten+1 → voeten+H−1; schaal = vrij/H, < 0.3 ⇒ `Kill(4)` | gebukt pas dood bij vrije hoogte < 18.3 (staand < 57.9) |
-| eerste persoon `0x44c080` (toestand 3) | oog = voeten + 0.9·H | 54.9 i.p.v. 173.7 |
-| bom-worp ruimtetest `0x463a26` | bol op voeten + H | n.v.t.: gooien gebukt is geblokkeerd |
-| **niet** hoogte-afhankelijk | vijand-Touch `0x40c1e0` (3D-afstand voeten–positie < r+r), dus stormloop/beet/duik van alle vijandtypes; bom-/raketexplosie `vtbl[40]` `0x44d040` (3D-afstand tot `inst.pos` < 400); Boss2 | bukken helpt **niet** |
+| wall sweep `0x437180` (`0x462663`) | cylinder band `[feet+margin, feet+H]`, margin 41 on the ground / 5 in the air; midpoint feet+H/2 | band 41..61 on the ground: ceilings and overhangs above 61 don't touch him. Ground test with level +43 (`0x436f00`) and volume test at +71 (`0x462760`) unchanged |
+| **projectiles** `0x44a0a0` (`0x44a102`: `vtbl[24]` = `0x44cd60`) | swept sphere r (5) against cylinder `{pos + (0,H/2,0), r = 69, half height H/2}` ⇒ y range `[feet − 5, feet + H + 5]` | **only hits below feet + 66** (standing 198) |
+| **lasers** 50/51/52 `0x450f80` (`vtbl[24]`, `0x433de0`) | segment against cylinder radius 69·0.85 = 58.65, y range `[feet + 0.1, feet + H − 0.1]` (`0x433f84..0x433fb2`, `0x4a9008` = 0.1) | **only hits below feet + 60.9** (standing 192.9) |
+| Boss14 cone `0x410cf0` (`vtbl[33]` on `0x410d95/0x410dce`) | cone 250 tall under the boss; `o = A.y − bot + H` | smaller `o` ⇒ smaller radius; anyone lying low enough falls under it (BOSS14 §6.1) |
+| actor pushing `0x4627d0` (`vtbl[33]` of both) | `0x433d40` with both heights | pushing only on vertical overlap with the 61 cylinder (shape of `0x433d40` uncertain) |
+| crushing `0x462a40` (`0x462aa8`) | radius feet+1 → feet+H−1; scale = free/H, < 0.3 ⇒ `Kill(4)` | while ducking, only dies at free height < 18.3 (standing < 57.9) |
+| first person `0x44c080` (state 3) | eye = feet + 0.9·H | 54.9 instead of 173.7 |
+| bomb throw space test `0x463a26` | sphere at feet + H | n/a: throwing while ducking is blocked |
+| **not** height-dependent | enemy Touch `0x40c1e0` (3D distance feet–position < r+r), so charge/bite/dive of all enemy types; bomb/rocket explosion `vtbl[40]` `0x44d040` (3D distance to `inst.pos` < 400); Boss2 | ducking does **not** help |
 
-Conclusie: **ja, Woody kan onder schoten en lasers door bukken**, zolang die hoger dan 66 resp. 61 boven zijn voeten gaan. Schutter-vijanden
-schieten horizontaal vanaf hun mondingshoogte (PROJECTILES §6, richthoogte 0), lanceerders langs hun marker; of een bepaald schot hoog genoeg
-vliegt hangt van het level af (niet per level nagemeten).
+Conclusion: **yes, Woody can duck under shots and lasers**, as long as they pass higher than 66 resp. 61 above his feet. Shooter enemies
+fire horizontally from their muzzle height (PROJECTILES §6, aim height 0), launchers along their marker; whether a given shot flies high
+enough depends on the level (not measured per level).
 
-### 3.3 Alle lezers en schrijvers van Perso `+0x694` (volledige grep op `0x694]`; zeker)
+### 3.3 All readers and writers of Perso `+0x694` (full grep of `0x694]`; certain)
 
-| adres | functie | wat |
+| address | function | what |
 |---|---|---|
 | `0x44ad28` | Reset `0x44ab20` | `= 0` |
-| `0x45656d` | race `0x456210` | draaisnelheid 1.2 i.p.v. 1.8 rad/s (`0x4aa39c` / `0x4ab290`) |
-| `0x457388` | aanvaltrigger `0x457330` | `≠ 0` ⇒ return |
-| `0x462490` | lichaamshoogte | 61 / 193 |
-| `0x462520` | `0x4624f0` | toestand 1: wandstraal ×0.5 (`0x4a9014`) |
-| `0x463963` | bom sub 2 `0x46394e` | geen worp |
-| `0x46463d` | anims toestand 0/9 `0x464630` | `≠ 0` ⇒ niets |
-| `0x4647e7`, `0x46486e` | doodsanim `0x464790` | `== 2` ⇒ 0x2c, geen 0x29 |
-| `0x464b93`, `0x464bed` | hit-anim `0x464b70` | `≠ 0` ⇒ 0x24 / 0x23 |
-| `0x464c74` | race-anims `0x464c20` | `≠ 0` ⇒ `+0x4bc = 0` |
-| `0x465b78..0x465dbc` | `0x465b10` | de automaat (schrijft 1, 2, 3, 0) |
-| (`0x41dfc5`, `0x41fbb4`) | camera-manager | **ander object** (CamMgr+0x694, CAMERA.md) |
+| `0x45656d` | race `0x456210` | turn speed 1.2 instead of 1.8 rad/s (`0x4aa39c` / `0x4ab290`) |
+| `0x457388` | attack trigger `0x457330` | `≠ 0` ⇒ return |
+| `0x462490` | body height | 61 / 193 |
+| `0x462520` | `0x4624f0` | state 1: wall radius ×0.5 (`0x4a9014`) |
+| `0x463963` | bomb sub 2 `0x46394e` | no throw |
+| `0x46463d` | anims state 0/9 `0x464630` | `≠ 0` ⇒ nothing |
+| `0x4647e7`, `0x46486e` | death anim `0x464790` | `== 2` ⇒ 0x2c, no 0x29 |
+| `0x464b93`, `0x464bed` | hit anim `0x464b70` | `≠ 0` ⇒ 0x24 / 0x23 |
+| `0x464c74` | race anims `0x464c20` | `≠ 0` ⇒ `+0x4bc = 0` |
+| `0x465b78..0x465dbc` | `0x465b10` | the state machine (writes 1, 2, 3, 0) |
+| (`0x41dfc5`, `0x41fbb4`) | camera manager | **different object** (CamMgr+0x694, CAMERA.md) |
 
-`+0x698` wordt alleen in `0x465b10` gelezen en geschreven.
+`+0x698` is only read and written in `0x465b10`.
 
-## 4. Camera, geluid, de opstaan-test
+## 4. Camera, sound, the stand-up test
 
-### 4.1 Camera (zeker voor de leesplaatsen)
-* **Volgcamera** (mode 0/1, `0x459090`/CAMERA.md): geen lezing van `+0x694`, `+0x118` of vtable-slot 33; het kijkdoel blijft speler + 140. Geen verandering.
-* **Zij-aanzicht** (mode 0x20, `0x459c70` → `CamMgr+0x61c`): `0x459d51..0x459dbe`: ↑ (actie 2) ⇒ index 0 (`h_up`, 500); anders ↓ (actie 3) **of
-  actie 5 ingedrukt** ⇒ index 2 (`h_down`, standaard 0); anders 1 (340). Het leest de **toets**, niet `+0x694` (ook in de lucht of geblokkeerd).
-  Hoogte loopt lineair met 400 e/s (CAMERA_SCRIPT §4.2).
-* **Eerste persoon** (toestand 3): oog op 0.9·H (§3.2).
+### 4.1 Camera (certain for the read locations)
+* **Follow camera** (mode 0/1, `0x459090`/CAMERA.md): no read of `+0x694`, `+0x118` or vtable slot 33; the look target stays player + 140. No change.
+* **Side view** (mode 0x20, `0x459c70` → `CamMgr+0x61c`): `0x459d51..0x459dbe`: ↑ (action 2) ⇒ index 0 (`h_up`, 500); otherwise ↓ (action 3) **or
+  action 5 held** ⇒ index 2 (`h_down`, default 0); otherwise 1 (340). It reads the **key**, not `+0x694` (also while airborne or blocked).
+  Height moves linearly at 400 u/s (CAMERA_SCRIPT §4.2).
+* **First person** (state 3): eye at 0.9·H (§3.2).
 
-### 4.2 Geluid (zeker)
-`0x465b10` roept geen geluid aan. Alles komt uit type-4-events op de wortelknoop (SOUND.md §3), W1A model 0:
-.ins 24 en 58: `t = 0`, ref **32** (bank 0 = `Common/<karakter>.rck`), kans [0,100), volume 50, toonhoogte 100 %, dmin 200;
-.ins 23 en 59: idem ref **33**; .ins 26 en 64 (geraakt gebukt): refs 55 [0,30) / 56 [30,60) / 57 [60,100); .ins 36 (dood gebukt): ref 34.
-De Perso speelt ze 2D. In de port speelt `src/main_engine.c` (r. 2060, "animation events of type 4") ze al automatisch af.
+### 4.2 Sound (certain)
+`0x465b10` does not trigger any sound. Everything comes from type-4 events on the root node (SOUND.md §3), W1A model 0:
+.ins 24 and 58: `t = 0`, ref **32** (bank 0 = `Common/<character>.rck`), chance [0,100), volume 50, pitch 100 %, dmin 200;
+.ins 23 and 59: same but ref **33**; .ins 26 and 64 (hit while ducking): refs 55 [0,30) / 56 [30,60) / 57 [60,100); .ins 36 (died while ducking): ref 34.
+The Perso plays them 2D. In the port, `src/main_engine.c` (line 2060, "animation events of type 4") already plays them automatically.
 
-### 4.3 De opstaan-test `0x4359b0(&a, &b, −1)` (zeker)
-* `a = pos + (0, P+0x10, 0)`, `b = pos + (0, P+0x0c − P+0x10, 0)`; `pos` = `+0x1f4` (voeten, vóór de verplaatsing van dit frame).
-  Woody: **voeten+61 → voeten+132** (lengte 71); kolom 1/2: +61 → +82; race: +81 → +79 (2 eenheden, RACE §4.8). PERSO_MOVE §3.4 noemde
-  "y+61 … y+193": fout (FPU-stack `0x465cd8..0x465d09` regel voor regel: `fld P10; fld y; fadd st1` ⇒ a.y; `fld P0c; fsub st1; fadd y` ⇒ b.y).
-* `0x4359b0` wist `[0x53a554]`, `[0x53a560]`, `[0x53a55c]` en roept `0x497ed0(a, b, −1)`; ruw antwoord `[0x4c4bd0]`: 3 (wereldpolygoon) ⇒
-  `[0x53a554] = 1`; 4 (instantiepolygoon, knoop `[0x4c4be0]`: de press-knopen, BOMB.md §5.2-correctie) ⇒ 2; 2 ⇒ 3; anders 0. `[0x53a558]` = t.
-  **Elke** waarde ≠ 0 blokkeert het opstaan. Id −1 = geen instantie overslaan.
-* Onzeker: of `0x497ed0` polygonen van beide kanten raakt (de straal gaat omhoog en treft dus de onderkant van een plafond); de port-functies
-  `gel_ray_frac` en `player_ray_instances` zijn tweezijdig, wat voor deze test het verwachte gedrag geeft.
-* Een plafond tussen 132 en 193 blokkeert niet: hij staat dan op "in" het plafond (de wandsweep duwt alleen in xz). Afgeleid.
+### 4.3 The stand-up test `0x4359b0(&a, &b, −1)` (certain)
+* `a = pos + (0, P+0x10, 0)`, `b = pos + (0, P+0x0c − P+0x10, 0)`; `pos` = `+0x1f4` (feet, before this frame's movement).
+  Woody: **feet+61 → feet+132** (length 71); column 1/2: +61 → +82; race: +81 → +79 (2 units, RACE §4.8). PERSO_MOVE §3.4 said
+  "y+61 … y+193": wrong (FPU stack `0x465cd8..0x465d09` line by line: `fld P10; fld y; fadd st1` ⇒ a.y; `fld P0c; fsub st1; fadd y` ⇒ b.y).
+* `0x4359b0` clears `[0x53a554]`, `[0x53a560]`, `[0x53a55c]` and calls `0x497ed0(a, b, −1)`; raw result `[0x4c4bd0]`: 3 (world polygon) ⇒
+  `[0x53a554] = 1`; 4 (instance polygon, node `[0x4c4be0]`: the press nodes, BOMB.md §5.2 correction) ⇒ 2; 2 ⇒ 3; otherwise 0. `[0x53a558]` = t.
+  **Any** value ≠ 0 blocks standing up. Id −1 = no instance to skip.
+* Uncertain: whether `0x497ed0` hits polygons from both sides (the ray goes upward and so would hit the underside of a ceiling); the port
+  functions `gel_ray_frac` and `player_ray_instances` are two-sided, which gives the expected behavior for this test.
+* A ceiling between 132 and 193 does not block: he then ends up standing "inside" the ceiling (the wall sweep only pushes in xz). Derived.
 
-## 5. Port-recept (`src/`; niets hiervan is al gebouwd)
+## 5. Port recipe (`src/`; none of this is built yet)
 
 ### 5.1 `src/player.h`
-* `PlayerInput`: `int forward, back, left, right, jump, action, duck;` (duck = actie 5, huidige toetsstand).
-* `Player`: `int duck, duck_anim; float duck_t;` (= `+0x694`, de aangevraagde log. anim, `+0x698`).
+* `PlayerInput`: `int forward, back, left, right, jump, action, duck;` (duck = action 5, current key state).
+* `Player`: `int duck, duck_anim; float duck_t;` (= `+0x694`, the requested logical anim, `+0x698`).
 * `float player_body_height(const Player *p);   /* 0x462490 → P+0x08: 193/61 (Woody), race 160/81 */`
-* Kopcommentaar "Not ported yet: … ducking" bijwerken.
+* Update the header comment "Not ported yet: … ducking".
 
 ### 5.2 `src/player.c`
-1. Constanten: `#define P_DUCK_H 61.0f  /* P+0x10 */`.
-2. Hoogte:
+1. Constants: `#define P_DUCK_H 61.0f  /* P+0x10 */`.
+2. Height:
    ```c
    float player_body_height(const Player *p)                   /* 0x462490 */
    {
@@ -308,73 +309,76 @@ De Perso speelt ze 2D. In de port speelt `src/main_engine.c` (r. 2060, "animatio
        return p->duck ? P_DUCK_H : P_BODY_H;
    }
    ```
-   en in `player_update` (r. 1413): `const float body_h = player_body_height(p), radius = …;` (straal ongewijzigd).
-3. De automaat (naast `race_crouch`):
+   and in `player_update` (l. 1413): `const float body_h = player_body_height(p), radius = …;` (radius unchanged).
+3. The state machine (next to `race_crouch`):
    ```c
-   /* bukken 0x465b10 (docs/PERSO_DUCK.md): duck = +0x694, duck_t = +0x698 */
+   /* ducking 0x465b10 (docs/PERSO_DUCK.md): duck = +0x694, duck_t = +0x698 */
    static void duck_update(Player *p, const PlayerInput *in, float dt)
    {
-       if (p->dead_kind || p->atk) return;                         /* toestand 2 / +0x5b4: niets, ook geen LockMove */
-       int b = p->bomb != NULL;                                    /* toestand 6: 0x4e/0x4f/0x50 */
+       if (p->dead_kind || p->atk) return;                         /* state 2 / +0x5b4: nothing, no LockMove either */
+       int b = p->bomb != NULL;                                    /* state 6: 0x4e/0x4f/0x50 */
        switch (p->duck) {
        case 0: if (in->duck && p->on_ground) { p->duck = 1; p->duck_anim = b ? 0x4e : 0x31; p->duck_t = anim_len(p, p->duck_anim, 0); } break;
        case 1: if ((p->duck_t -= dt) <= 0) p->duck = 2; break;
        case 2: p->duck_anim = b ? 0x4f : 0x32;
                if (!in->duck) {
                    Vec3 a = { p->pos.x, p->pos.y + P_DUCK_H, p->pos.z }, e = { p->pos.x, p->pos.y + (P_BODY_H - P_DUCK_H), p->pos.z }, n; float f;
-                   int blocked = gel_ray_frac(p->gel, a, e) <= 1.0f || (player_ray_instances(p, NULL, a, e, &f, &n, NULL) && f <= 1.0f);   /* n_out mag niet NULL zijn */
+                   int blocked = gel_ray_frac(p->gel, a, e) <= 1.0f || (player_ray_instances(p, NULL, a, e, &f, &n, NULL) && f <= 1.0f);   /* n_out must not be NULL */
                    if (!blocked) { p->duck_anim = b ? 0x50 : 0x33; p->duck_t = anim_len(p, p->duck_anim, 0); p->duck = 3; }
                }
                break;
        case 3: if ((p->duck_t -= dt) <= 0) p->duck = 0; break;
        }
-       if (p->duck && p->move_lock < dt) p->move_lock = dt;        /* 0x44cce0(dt, 0) = max; snelheid wordt al 0 via !allow */
+       if (p->duck && p->move_lock < dt) p->move_lock = dt;        /* 0x44cce0(dt, 0) = max; speed already zeroed via !allow */
    }
    ```
-   `anim_len(0x31)` = 0.375 en `anim_len(0x33)` = 0.19995 komen vanzelf uit het model (§1.4).
-4. Aanroep in `player_update` (r. 1350), in de tak `if (!p->dead_kind && !racing) { … }` **ná** `attack_trigger()` en de `climb_try`-return:
-   `duck_update(p, in, dt);`. Racen houdt `race_crouch` (actie 8). De vroege returns (scripted actie, raket, klimwand) slaan het bukken over:
-   bewuste port-afwijking (het origineel laat de automaat daar doorlopen, §1.3); zet bij hun start `p->duck = 0` als dat netter oogt.
-   `move_lock` wordt aan het begin van `player_update` al met dt afgeteld: de volgorde klopt met §1.1.
-5. Horizontale verplaatsing nul bij een blokkade (§2.2): in het `disp`-blok de knockback- en glijbijdragen alleen toepassen als `p->move_lock <= 0`
-   (origineel: `h = 0` bij élke `+0x238 > 0`, dus ook bij harde landing/bom oppakken/gooien). Conservatief alternatief: alleen `!p->duck`.
-   De push-timers laten doortikken (restant na het opstaan, §2.3). Verticaal (`jumper.dy`) niet aanraken.
-6. Animatiekeuze (r. 1476): na `else if (p->hit_anim_t > 0) want = p->hit_anim;` invoegen
-   `else if (p->duck) want = p->duck_anim;` — vóór de bom-tak (0x4e..0x50 winnen van de draaganims) en vóór de grond/lucht-takken (dus ook geen
-   harde-landingsanim/`lock_move`/ballon tijdens het liggen, §2.5). De keten 24→25, 23→0, 58→60, 59→47 loopt `anim_request` zelf af.
-   Idle (r. 1511): `if (!p->idle_hold && !p->duck && (…)) idle_reset(p);` (`0x464630` raakt de teller niet aan tijdens het liggen).
-7. `player_hit` (r. 885/886): `p->hit_anim = p->on_ground ? (p->duck ? 0x23 : 0x1f) : 0x20;` en met bom `p->on_ground ? (p->duck ? 0x24 : 0x21) : 0x22`.
-   `p->duck` niet wijzigen (hij blijft liggen; de yaw-draai naar de aanvaller blijft).
-8. Doodsanim (r. 1473/1474, soort 3/4/5):
-   `want = p->on_ground ? (p->duck == 2 ? 0x2c : 0x26) : 0x25;` bij `dead_T <= dt`, en de 0x29-stap alleen `if (!(p->dead_ground && p->duck == 2))`.
-   `player_kill` laat `duck` staan; `player_reset` zet `p->duck = 0; p->duck_t = 0;`.
-9. `attack_trigger`: na de `air_win`-aftelling (r. 816) `if (p->duck) return;` (vóór de `atk == 5`-ketting; het oppakken erboven blijft toegestaan, §2.6).
-   `carry_frame` case 2: `if (p->carry_pressed && !p->duck)` (`0x463963`).
+   `anim_len(0x31)` = 0.375 and `anim_len(0x33)` = 0.19995 come out of the model automatically (§1.4).
+4. Call in `player_update` (l. 1350), in the branch `if (!p->dead_kind && !racing) { … }` **after** `attack_trigger()` and the
+   `climb_try` return: `duck_update(p, in, dt);`. Racing keeps `race_crouch` (action 8). The early returns (scripted action, rocket,
+   climbing wall) skip ducking: deliberate port deviation (the original lets the state machine keep running there, §1.3); set
+   `p->duck = 0` at their start if that looks cleaner. `move_lock` is already counted down by dt at the start of `player_update`:
+   the order matches §1.1.
+5. Horizontal movement zero on a block (§2.2): in the `disp` block, only apply the knockback and sliding contributions if `p->move_lock <= 0`
+   (original: `h = 0` on **any** `+0x238 > 0`, so also during hard landing/bomb pick-up/throw). Conservative alternative: only `!p->duck`.
+   Let the push timers keep ticking (leftover after getting up, §2.3). Don't touch vertical (`jumper.dy`).
+6. Animation choice (l. 1476): after `else if (p->hit_anim_t > 0) want = p->hit_anim;` insert
+   `else if (p->duck) want = p->duck_anim;` — before the bomb branch (0x4e..0x50 win over the carry anims) and before the ground/air
+   branches (so also no hard-landing anim/`lock_move`/bounce while lying down, §2.5). The chain 24→25, 23→0, 58→60, 59→47 plays itself
+   out via `anim_request`.
+   Idle (l. 1511): `if (!p->idle_hold && !p->duck && (…)) idle_reset(p);` (`0x464630` doesn't touch the counter while lying down).
+7. `player_hit` (l. 885/886): `p->hit_anim = p->on_ground ? (p->duck ? 0x23 : 0x1f) : 0x20;` and with bomb `p->on_ground ? (p->duck ? 0x24 : 0x21) : 0x22`.
+   Don't change `p->duck` (he stays down; the yaw turn toward the attacker stays).
+8. Death anim (l. 1473/1474, kind 3/4/5):
+   `want = p->on_ground ? (p->duck == 2 ? 0x2c : 0x26) : 0x25;` on `dead_T <= dt`, and the 0x29 step only `if (!(p->dead_ground && p->duck == 2))`.
+   `player_kill` leaves `duck` as is; `player_reset` sets `p->duck = 0; p->duck_t = 0;`.
+9. `attack_trigger`: after the `air_win` countdown (l. 816) `if (p->duck) return;` (before the `atk == 5` chain; the pick-up above stays
+   allowed, §2.6). `carry_frame` case 2: `if (p->carry_pressed && !p->duck)` (`0x463963`).
 
 ### 5.3 `src/main_engine.c`
-1. Invoer (r. 2518): `pin.duck = (!fly && win.keys['X']) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);`
-   met een testoptie `--duck T LEN` naast `--peck` (r. 2365/2379). **X** is vrij (in gebruik: W A S D C P, en E/Q/Spatie alleen in vliegmodus);
-   Spatie (= origineel bukken) blijft springen en Ctrl/Shift aanval, zoals nu. De bestaande `memset(&pin, 0, …)` (resultaten, titel, cinematic)
-   wissen `duck` automatisch.
-2. Zij-aanzicht (r. 2569): `g_cam.mode == 0x20 ? (pin.forward ? 2 : (pin.back || pin.duck) ? 3 : 0) : win.keys['C']` (↑ heeft voorrang, `0x459db3`).
-3. `laser_hits_player` (r. 968): `H = player_body_height(p)` i.p.v. 193.
-4. Schoten (r. 1420): `y <= player_body_height(pl) + 5.0f` i.p.v. 198.
-5. Bom-/raketexplosie, vijand-beten (`src/enemy.c`): **niet** aanpassen (3D-afstand, geen hoogte).
+1. Input (l. 2518): `pin.duck = (!fly && win.keys['X']) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);`
+   with a test option `--duck T LEN` next to `--peck` (l. 2365/2379). **X** is free (in use: W A S D C P, and E/Q/Space only in fly mode);
+   Space (= original ducking) stays jump and Ctrl/Shift attack, as now. The existing `memset(&pin, 0, …)` (results, title, cinematic)
+   clears `duck` automatically.
+2. Side view (l. 2569): `g_cam.mode == 0x20 ? (pin.forward ? 2 : (pin.back || pin.duck) ? 3 : 0) : win.keys['C']` (↑ takes priority, `0x459db3`).
+3. `laser_hits_player` (l. 968): `H = player_body_height(p)` instead of 193.
+4. Shots (l. 1420): `y <= player_body_height(pl) + 5.0f` instead of 198.
+5. Bomb/rocket explosion, enemy bites (`src/enemy.c`): **do not** adjust (3D distance, no height).
 
 ### 5.4 `src/boss.c`
-`cone_touch` (r. 220): `B_PL_H` vervangen door `player_body_height(pl)` (`0x410cf0` leest `vtbl[33]`).
+`cone_touch` (l. 220): replace `B_PL_H` with `player_body_height(pl)` (`0x410cf0` reads `vtbl[33]`).
 
-### 5.5 Testen
-* W1A-start, `--duck 2 1.5`: 0.375 s gaan liggen, blijft liggen, 0.2 s opstaan; tijdens het liggen geen beweging/draaien met pijltjes, Spatie doet niets.
-* Met WOODY_ANIMLOG de keten `lanim 0x31 → 0x32 → 0x33 → 0` controleren; gebukt voor een W1A-lanceerder of -laser gaan liggen en nagaan dat
-  een schot/straal hoger dan 66 resp. 61 boven de voeten hem mist (welke dat zijn: §6.6).
-* Onder een laag plafond loslaten: blijft liggen tot hij eronder uit is geduwd (kan alleen door een platform/actor, want lopen kan niet).
+### 5.5 Testing
+* W1A start, `--duck 2 1.5`: 0.375 s going down, stays down, 0.2 s getting up; while lying down, no movement/turning with arrow keys,
+  Space does nothing.
+* With WOODY_ANIMLOG, check the chain `lanim 0x31 → 0x32 → 0x33 → 0`; while ducking in front of a W1A launcher or laser, verify that
+  a shot/beam higher than 66 resp. 61 above the feet misses him (which ones those are: §6.6).
+* Releasing under a low ceiling: stays down until pushed out from under it (only possible via a platform/actor, since walking isn't possible).
 
-## 6. Open vragen
+## 6. Open questions
 
-1. Of RampA na het opstaan vanaf 0 of vanaf zijn oude snelheid versnelt (`0x467130` niet gelezen); de port begint bij 0.
-2. `0x497ed0`: eenzijdig of tweezijdig tegen polygonen (§4.3); antwoord 2 (trefsoort 3) is niet uitgezocht.
-3. `0x433d40` (actor-duwen): exacte hoogtevoorwaarde.
-4. De randgevallen van §1.3/§2.6 (bukken in toestand 3/4/5/7/8/9, oppakken of vastpikken terwijl hij ligt) zijn alleen uit de code afgeleid.
-5. `P+0x14/P+0x18` (193/61): geen lezer gevonden.
-6. In welke levels schoten of lasers daadwerkelijk tussen 66 en 198 boven de grond vliegen (dus ontwijkbaar zijn door te bukken): niet nagemeten.
+1. Whether RampA accelerates from 0 or from its old speed after standing up (`0x467130` not read); the port starts at 0.
+2. `0x497ed0`: one-sided or two-sided against polygons (§4.3); answer 2 (hit kind 3) not investigated.
+3. `0x433d40` (actor pushing): exact height condition.
+4. The edge cases of §1.3/§2.6 (ducking in state 3/4/5/7/8/9, picking up or grabbing while lying down) are only derived from the code.
+5. `P+0x14/P+0x18` (193/61): no reader found.
+6. In which levels shots or lasers actually fly between 66 and 198 above the ground (i.e. are dodgeable by ducking): not measured.

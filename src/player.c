@@ -527,21 +527,6 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex)
     return 0;
 }
 
-/* segment a->b blocked by a world polygon? (line-of-sight veto 0x423a40; instances are not tested yet) */
-static int gel_ray_blocked(const GelFile *g, Vec3 a, Vec3 b)
-{
-    GelPolySet ps = gel_polys_on_seg(g, a, b);
-    for (uint32_t k = 0; k < ps.n; k++) {
-        const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3) continue;
-        float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
-        float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
-        if ((da > 0) == (db > 0)) continue;
-        float t = da / (da - db); Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
-        if (poly_contains(g, pl, q)) return 1;
-    }
-    return 0;
-}
-
 float gel_ray_hit(const GelFile *g, Vec3 a, Vec3 b, Vec3 *n_out)
 {
     float best = 2.0f;
@@ -1624,12 +1609,59 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
 }
 
 /* ---- follow camera, mode 1 (docs/CAMERA.md 0.1 / 3: 0x424760 -> 0x422790 -> 0x4231e0) ------------------- */
+/* the camera's line of sight: ray 0x4359b0 (world polygons, then instance press nodes) filtered by 0x422140, which lets
+ * the nearest hit through when it is an instance of category 7 (type word 0x27 = class 80, the storm with shelter
+ * zones, 0x451b28) */
+static int cam_ray_blocked(const Player *p, Vec3 a, Vec3 b)
+{
+    float fw = gel_ray_frac(p->gel, a, b), fi; Vec3 n; const Instance *hi = NULL;
+    if (!player_ray_instances(p, NULL, a, b, &fi, &n, &hi) || fi > 1.0f) return fw <= 1.0f;
+    return fw < fi || !hi || hi->type != 80;
+}
+/* state 2 "FIND" (0x423ab0): the target went out of sight, so the camera walks the trail the target left behind.
+ * The trail starts as {P, Tprev, T} (0x4229de); whenever the last crumb loses sight of T, the point where the target was a
+ * frame ago becomes a new crumb, so the crumbs sit at the corners the player went round. The tip always follows T.
+ * The camera moves along it at 0.04 of a segment per frame (not dt-scaled in the original; normalised to 60 fps here),
+ * whatever the segment's length, and goes back to the normal state as soon as it sees T again. */
+static Vec3 camera_breadcrumbs(Player *p, Vec3 T, float dt)
+{
+    Vec3 *pad = p->cam_pad;
+    if (cam_ray_blocked(p, pad[p->cam_n - 1], T)) {
+        /* 0x423b62: the target cannot even see its own previous position. The original gives up (state 0, P = T + (1,1,100))
+         * but carries on below and overwrites P, so the only effect is that the next frame starts a fresh trail. */
+        if (cam_ray_blocked(p, p->cam_tprev, T)) p->cam_state = 0;
+        if (p->cam_n < 99) pad[p->cam_n++] = p->cam_tprev;          /* no bound in the original: 100 crumbs end at the counter +0x7a0 */
+    }
+    pad[p->cam_n] = T;
+    if (p->cam_u >= 1.0f) { p->cam_u = 0; p->cam_seg++; }
+    p->cam_u += 0.04f * dt * P_REF_FPS; if (p->cam_u > 1.0f) p->cam_u = 1.0f;   /* 0x4aa1cc */
+    if (p->cam_seg >= p->cam_n) { p->cam_seg = p->cam_n - 1; p->cam_u = 1.0f; }
+    Vec3 a = pad[p->cam_seg], b = pad[p->cam_seg + 1], P = { a.x + (b.x - a.x) * p->cam_u, a.y + (b.y - a.y) * p->cam_u, a.z + (b.z - a.z) * p->cam_u };
+    if (!cam_ray_blocked(p, P, T)) p->cam_state = 0;
+    return P;
+}
 static void camera_step(Player *p, float dt, int behind, int quick, int collide)
 {
     Vec3 look = { sinf(p->yaw), 0, cosf(p->yaw) };
     Vec3 T = { p->pos.x, p->pos.y + CAM_TARGET_Y, p->pos.z }, L = { p->pos.x, p->pos.y + CAM_LOOK_Y, p->pos.z };
     Vec3 P = p->cam_pos, mv = { 0, 0, 0 };
     int js = p->jumper.state, rising = js == 0 || js == 1 || js == 7, falling = js == 3 || js == 4;
+    if (!collide) p->cam_state = 0;
+    else if (p->cam_state != 2 && cam_ray_blocked(p, P, T)) {           /* 0x4229b8: the target is hidden at the start of the frame */
+        p->cam_state = 2; p->cam_n = 2; p->cam_seg = 0; p->cam_u = 0;
+        p->cam_pad[0] = P; p->cam_pad[1] = p->cam_tprev; p->cam_pad[2] = T;
+        if (getenv("WOODY_CAMLOG")) {
+            float fi = 2.0f; Vec3 n; const Instance *hi = NULL; player_ray_instances(p, NULL, P, T, &fi, &n, &hi);
+            printf("  CAM target hidden: breadcrumbs from %.0f %.0f %.0f (world %.2f, instance %d model %d type %d at %.2f)\n", P.x, P.y, P.z, gel_ray_frac(p->gel, P, T),
+                   hi ? (int)hi->index : -1, hi ? (int)(hi->model - p->ins->models) : -1, hi ? hi->type : -1, fi);
+        }
+    }
+    if (p->cam_state == 2) {                                            /* no distance, height or collision step in this state */
+        int n0 = p->cam_n;
+        p->cam_pos = camera_breadcrumbs(p, T, dt); p->cam_tprev = T;
+        if (getenv("WOODY_CAMLOG") && (p->cam_n != n0 || p->cam_state != 2)) printf("  CAM crumbs %d seg %d u %.2f%s\n", p->cam_n, p->cam_seg, p->cam_u, p->cam_state != 2 ? " -> target in sight" : "");
+        goto drop;
+    }
     if (behind) {
         float k = dt * (quick ? 7.0f : 3.0f);
         mv.x = (T.x - look.x * p->cam_dist - P.x) * k; mv.z = (T.z - look.z * p->cam_dist - P.z) * k;
@@ -1647,14 +1679,15 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
     else mv.y = (T.y + p->cam_height - P.y) * 6.0f * dt;
     Vec3 N = { P.x + mv.x, P.y + mv.y, P.z + mv.z };
     if (collide) {
-        /* sphere r = 40 pushed out of walls (0x422e30 -> 0x439c50, here one push per frame), then the veto: a step
-         * after which the camera no longer sees T is refused. The breadcrumb path (0x423ab0) is not ported. */
+        /* sphere r = 40 pushed out of walls (0x422e30 -> 0x439c50, here one push per frame), then the veto 0x423a40: a
+         * step after which the camera no longer sees T is refused (P itself saw T, or the breadcrumbs would have run) */
         Vec3 push = gel_push(p->gel, N, CAM_RADIUS, N.y - CAM_RADIUS, N.y + CAM_RADIUS);
         N.x += push.x; N.z += push.z;
         { Vec3 ip = ins_push(p->ins, p->inst, N, CAM_RADIUS, N.y - CAM_RADIUS, N.y + CAM_RADIUS); N.x += ip.x; N.z += ip.z; }
-        if (gel_ray_blocked(p->gel, N, T) && !gel_ray_blocked(p->gel, P, T)) N = P;
+        if (cam_ray_blocked(p, N, T)) N = P;
     }
     p->cam_pos = N; p->cam_tprev = T;
+drop:                                                                   /* the look point (0x4223b0) runs in every state */
     if (rising || falling) { p->cam_drop += 450.0f * dt; if (p->cam_drop > 150.0f) p->cam_drop = 150.0f; }
     else p->cam_drop *= powf(0.94f, dt * P_REF_FPS);
 }
@@ -1663,7 +1696,7 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
  * one step of 0.1 s and 100 of 0.04 s in behind mode, so the camera settles on its resting point straight away. */
 void player_camera_reset(Player *p)
 {
-    p->cam_init = 1; p->cam_tprev = (Vec3){ p->pos.x, p->pos.y + CAM_TARGET_Y, p->pos.z };
+    p->cam_init = 1; p->cam_state = 0; p->cam_tprev = (Vec3){ p->pos.x, p->pos.y + CAM_TARGET_Y, p->pos.z };   /* 0x422350: state 0 */
     p->cam_pos = (Vec3){ p->pos.x - sinf(p->yaw), p->pos.y + 100.0f, p->pos.z - cosf(p->yaw) };
     camera_step(p, 0.1f, 1, 0, 1); for (int i = 0; i < 100; i++) camera_step(p, 0.04f, 1, 0, 1);   /* Center_Step collides during the pre-simulation too */
 }

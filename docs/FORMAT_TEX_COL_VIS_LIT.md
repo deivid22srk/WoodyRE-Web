@@ -1,237 +1,238 @@
-# Levelformaten .tex / .col / .vis / .lit
+# Level formats .tex / .col / .vis / .lit
 
-Afgeleid uit de disassembly van `Woody.exe` (`out/disasm_full.txt`). Alle waarden zijn
+Derived from the disassembly of `Woody.exe` (`out/disasm_full.txt`). All values are
 little-endian; `u32` = 32-bit unsigned, `i32` = signed, `f32` = IEEE single. Parser:
-`tools/levelparse.py` (valideert alle 28 levels byte-exact, zie onderaan).
+`tools/levelparse.py` (validates all 28 levels byte-exact, see bottom).
 
-Context: de level-loader `0x426bd0` (level-object 0x78 bytes, globaal in `0x50944c` en
-`0x4c4c0c`; het "wereld"-object en het level-object zijn hetzelfde object) laadt in deze
-volgorde `.gel` (via `0x407ae0`), `.tex` (inline), `.ins` (`0x427290`), `.col` (`0x4271e0`).
-Daarna laadt `0x4043d0` nog `.vis` (`0x408260`) en `.lit` (`0x40ac30`). Stream-klasse:
+Context: the level loader `0x426bd0` (level object 0x78 bytes, global at `0x50944c` and
+`0x4c4c0c`; the "world" object and the level object are the same object) loads in this
+order `.gel` (via `0x407ae0`), `.tex` (inline), `.ins` (`0x427290`), `.col` (`0x4271e0`).
+Afterwards `0x4043d0` also loads `.vis` (`0x408260`) and `.lit` (`0x40ac30`). Stream class:
 `[vt+8]` = read(buf, nbytes), `0x43fdb0` = fread(buf, size, count), `0x43fd90` =
-fread(buf, 1, n) met returnwaarde (gebruikt voor de optionele `.lit`-trailer),
-`[vt+0x18]` = totale bestandsgrootte (gebruikt door de `.col`-loader voor de allocatie).
+fread(buf, 1, n) with a return value (used for the optional `.lit` trailer),
+`[vt+0x18]` = total file size (used by the `.col` loader for the allocation).
 
-Relevante tellingen uit `.gel` (loader `0x407ae0`, veldnamen = offsets in het wereld-object):
+Relevant counts from `.gel` (loader `0x407ae0`, field names = offsets in the world object):
 
-| Veld | Inhoud | Gebruikt door |
+| Field | Content | Used by |
 |---|---|---|
-| `world+0x0c/+0x10` | aantal faces / array van face-polygonen | `.lit` (face-indices) |
-| `world+0x04/+0x08` | aantal vertices / array (stride 0x30) | `.lit` polygonen |
-| `world+0x18/+0x1c` | aantal "sector"-objecten (bladeren van de ruimtelijke boom, 0x4c bytes, vtable `0x4a94f4`) | `.col` (een record per sector) |
-| `world+0x14` | `objects-1` splitsingsvlakken (16 B) van die boom | – |
-| `world+0x20/+0x24` | aantal zichtbaarheidscellen / array (zelfde 0x4c-klasse) | `.vis`, `.lit`-trailer |
-| `world+0x40` | objecttabel: pointers naar de `.ins`-objecten, index = object-id | `.col`, `.lit` (`object_id`) |
+| `world+0x0c/+0x10` | number of faces / array of face polygons | `.lit` (face indices) |
+| `world+0x04/+0x08` | number of vertices / array (stride 0x30) | `.lit` polygons |
+| `world+0x18/+0x1c` | number of "sector" objects (leaves of the spatial tree, 0x4c bytes, vtable `0x4a94f4`) | `.col` (one record per sector) |
+| `world+0x14` | `objects-1` split planes (16 B) of that tree | – |
+| `world+0x20/+0x24` | number of visibility cells / array (same 0x4c class) | `.vis`, `.lit` trailer |
+| `world+0x40` | object table: pointers to the `.ins` objects, index = object id | `.col`, `.lit` (`object_id`) |
 
-De `.gel`-loop die `tools/levelparse.py::parse_gel_counts` implementeert klopt byte-exact op
-alle levels.
+The `.gel` loop implemented by `tools/levelparse.py::parse_gel_counts` matches byte-exact on
+all levels.
 
 ---
 
-## 1. `.tex` – textures + materialen
+## 1. `.tex` – textures + materials
 
-Loader: inline in `0x426bd0`, bereik `0x426c90`–`0x427066`. Pixeldata wordt per frame door
+Loader: inline in `0x426bd0`, range `0x426c90`–`0x427066`. Pixel data is read per frame by
 `0x47f7f0(this=texture, stream, w, h, 3, alpha, 0)` → `0x47fa60(this=tex+0x70, stream, w, h,
-mipmaps=3, alpha, srcformat=0, tex)` gelezen: `w*h` keer 2 bytes, per pixel via `0x47f090(v, 0)`
-(case 0 = **RGB565** → ARGB8888) en terug naar het schermformaat via `0x47f170`. Er staan
-**geen mipmaps** in het bestand (de engine genereert er 3 met een 2×2-boxfilter). Als de
-alpha-vlag aan staat wordt elke pixel met `(argb & 0xF0F0F0) == 0xF000F0` (magenta) volledig
-transparant, alle andere krijgen alpha 0xFF.
+mipmaps=3, alpha, srcformat=0, tex)`: `w*h` times 2 bytes, per pixel via `0x47f090(v, 0)`
+(case 0 = **RGB565** → ARGB8888) and back to the screen format via `0x47f170`. There are
+**no mipmaps** stored in the file (the engine generates 3 with a 2×2 box filter). If the
+alpha flag is on, every pixel with `(argb & 0xF0F0F0) == 0xF000F0` (magenta) becomes fully
+transparent; all others get alpha 0xFF.
 
-### Bestandslayout
+### File layout
 
-| Offset | Grootte | Type | Betekenis |
+| Offset | Size | Type | Meaning |
 |---|---|---|---|
-| 0x00 | 4 | u32 | `group_count` – aantal texture-groepen (`[esp+0x1c]`) |
-| 0x04 | 4 | u32 | `texture_count` – totaal aantal frames; engine alloceert `(texture_count+19)` texture-structs van 0x74 bytes (19 extra: 2×32×32, 1 speciale, 16 voor RCK-plaatjes) |
-| 0x08 | … | | `group_count` × **groep**: |
-| +0x00 | 4 | u32 | breedte (→ `tex+0x38`) – in de data 16/32/64/128/256 |
-| +0x04 | 4 | u32 | hoogte (→ `tex+0x3c`), altijd = breedte |
-| +0x08 | 4 | u32 | vlaggen (→ `tex+0x44`): bit 0 = colour-key alpha (wordt aan `0x47f7f0` meegegeven en in bit 0 van `tex+0x44` gezet); bits 1–2 (`&6`) worden in de `.ins`-loader (`0x42801a`) `<<4` in de face-flags gekopieerd; byte 1 (`tex+0x45`) `== 2` wordt in `0x42acea` getest (aparte rendermodus); byte 2 = intensiteit/alpha (0xFF = ondoorzichtig; 0x7f/0x99/0xb2/0xcc/0xe5 komen alleen samen met bit 1 voor); byte 3 (`tex+0x47`) = **grondtype** van de speler (`m_nGroundType`, `0x46295f`). Bit 1 = geblend renderen: de gloeitexturen (wit op zwart, bv. W1A g77 `0x00cc0002`) en de ventilatorwaas (g66 `0x007f0002`) kloppen met het origineel als ze additief (`ONE/ONE`, geen z-write) met intensiteit byte 2 worden getekend; `0x428ee0` kent drie doorgangen (ZERO/ONE, SRCALPHA/INVSRCALPHA, ONE/ONE); **welke lijst bij welk bit hoort is nu uitgezocht**: bit 1 én bit 2 worden allebei polygoonvlag 0x20/0x40 (`0x42801a`) en sturen het vlak naar **modus 3** (lijst `renderer+0x1cc`, `ONE/ONE` op `0x429182`/`0x429198`, z-write uit op `0x42908d`, MODULATE 2×). Bit 2 komt in de data niet voor. De **intensiteitsbyte 2 heeft geen enkele lezer** – de lader (`0x426e2f`) bewaart het vlaggenwoord ongewijzigd en alleen bit 0, bits 1-2, byte 1 en byte 3 worden ooit teruggelezen; een geblend modelvlak wordt op `1.0 × textuur` getekend, zie LIGHTING.md §"Recept" punt 5 |
-| +0x0c | 4 | f32 | `scroll_u`? (→ `tex+0x48`); vrijwel altijd 0.0, 3 groepen 0.05 |
-| +0x10 | 4 | f32 | `scroll_v`? (→ `tex+0x4c`); idem |
-| +0x14 | 4 | f32 | animatieduur (→ `tex+0x54`); in `0x47f290` als `duur * snelheid` gebruikt om het frame uit de tijd te berekenen (modes 1–6: eenmalig, omgekeerd, ping-pong, herhalend …). Meestal 1.0; bij niet-geanimeerde groepen soms rest-integers (32/64/128) |
-| +0x18 | 4 | u32 | `frame_count` (→ `tex+0x58`); 1, 2, 4, 5, 8 of 17 |
-| +0x1c | 4 | u32 | dword 8 (→ `tex+0x5c`); 0, 1 of ~9647 – geen gebruiker gevonden |
-| +0x20 | 4 | u32 | dword 9 (→ `tex+0x50`); 1.0f, 0 of pointer-achtige waarden (0x0141xxxx) – geen gebruiker gevonden, vermoedelijk editor-restdata |
-| +0x24 | `frame_count × w×h×2` | u16[] | frames, **RGB565**, rij voor rij, geen padding |
-| … | 4 | u32 | `material_count` (na alle groepen) |
-| … | `material_count × 0x34` | | **materiaal** (→ `level+0x5c`, records van 0x24 bytes in geheugen): |
-| +0x00 | 4 | u32 | groepindex; engine slaat de pointer naar het eerste frame van die groep op in `mat+0x20` |
-| +0x04 | 48 | f32[12] | `f[0..11]`: 4 rijen van 3 floats (3×3-matrix + translatierij, wereld→UV). De loader (`0x426fc2`–`0x427058`) bewaart alleen kolom 0 (`f0,f3,f6,f9` → `mat+0x00..0x0c`) en kolom 1 (`f1,f4,f7,f10` → `mat+0x10..0x1c`); kolom 2 (`f2,f5,f8,f11`) wordt weggegooid |
+| 0x00 | 4 | u32 | `group_count` – number of texture groups (`[esp+0x1c]`) |
+| 0x04 | 4 | u32 | `texture_count` – total number of frames; the engine allocates `(texture_count+19)` texture structs of 0x74 bytes (19 extra: 2×32×32, 1 special, 16 for RCK images) |
+| 0x08 | … | | `group_count` × **group**: |
+| +0x00 | 4 | u32 | width (→ `tex+0x38`) – in the data 16/32/64/128/256 |
+| +0x04 | 4 | u32 | height (→ `tex+0x3c`), always = width |
+| +0x08 | 4 | u32 | flags (→ `tex+0x44`): bit 0 = colour-key alpha (passed on to `0x47f7f0` and set in bit 0 of `tex+0x44`); bits 1–2 (`&6`) get copied `<<4` into the face flags by the `.ins` loader (`0x42801a`); byte 1 (`tex+0x45`) `== 2` is tested in `0x42acea` (separate render mode); byte 2 = intensity/alpha (0xFF = opaque; 0x7f/0x99/0xb2/0xcc/0xe5 only occur together with bit 1); byte 3 (`tex+0x47`) = player's **ground type** (`m_nGroundType`, `0x46295f`). Bit 1 = blended rendering: the glow textures (white on black, e.g. W1A g77 `0x00cc0002`) and the fan haze (g66 `0x007f0002`) match the original when rendered additively (`ONE/ONE`, no z-write) with intensity byte 2. `0x428ee0` knows three passes (ZERO/ONE, SRCALPHA/INVSRCALPHA, ONE/ONE); **which list belongs to which bit is now worked out**: both bit 1 and bit 2 become polygon flag 0x20/0x40 (`0x42801a`) and send the face to **mode 3** (list `renderer+0x1cc`, `ONE/ONE` at `0x429182`/`0x429198`, z-write off at `0x42908d`, MODULATE 2×). Bit 2 does not occur in the data. **Intensity byte 2 has no reader at all** – the loader (`0x426e2f`) keeps the flags word unchanged and only bit 0, bits 1-2, byte 1 and byte 3 are ever read back; a blended model face is thus drawn as `1.0 × texture`, see LIGHTING.md §"Recipe" item 5 |
+| +0x0c | 4 | f32 | `scroll_u`? (→ `tex+0x48`); almost always 0.0, 3 groups have 0.05 |
+| +0x10 | 4 | f32 | `scroll_v`? (→ `tex+0x4c`); same |
+| +0x14 | 4 | f32 | animation duration (→ `tex+0x54`); used in `0x47f290` as `duration * speed` to compute the frame from time (modes 1–6: once, reversed, ping-pong, looping, …). Usually 1.0; non-animated groups sometimes have leftover integers (32/64/128) |
+| +0x18 | 4 | u32 | `frame_count` (→ `tex+0x58`); 1, 2, 4, 5, 8 or 17 |
+| +0x1c | 4 | u32 | dword 8 (→ `tex+0x5c`); 0, 1 or ~9647 – no reader found |
+| +0x20 | 4 | u32 | dword 9 (→ `tex+0x50`); 1.0f, 0 or pointer-like values (0x0141xxxx) – no reader found, presumably editor leftover data |
+| +0x24 | `frame_count × w×h×2` | u16[] | frames, **RGB565**, row by row, no padding |
+| … | 4 | u32 | `material_count` (after all groups) |
+| … | `material_count × 0x34` | | **material** (→ `level+0x5c`, records of 0x24 bytes in memory): |
+| +0x00 | 4 | u32 | group index; the engine stores the pointer to the first frame of that group in `mat+0x20` |
+| +0x04 | 48 | f32[12] | `f[0..11]`: 4 rows of 3 floats (3×3 matrix + translation row, world→UV). The loader (`0x426fc2`–`0x427058`) keeps only column 0 (`f0,f3,f6,f9` → `mat+0x00..0x0c`) and column 1 (`f1,f4,f7,f10` → `mat+0x10..0x1c`); column 2 (`f2,f5,f8,f11`) is discarded |
 
-**UV-berekening** (`.ins`-loader, `0x4280c2`–`0x428110`): per face staat in `.ins` een u16
-materiaalindex (`face+0x00`, `0x42800a`) en een u16 vertex-aantal (`face+0x02`) gevolgd door
-u16 vertex-indices (vanaf `face+0x18`) in de vertex-array van het bijbehorende mesh (stride
-0x28, positie op +0/+4/+8). Voor elke vertex `(x,y,z)` in **objectruimte**:
+**UV computation** (`.ins` loader, `0x4280c2`–`0x428110`): every face in `.ins` has a u16
+material index (`face+0x00`, `0x42800a`) and a u16 vertex count (`face+0x02`) followed by
+u16 vertex indices (starting at `face+0x18`) into the vertex array of the corresponding mesh
+(stride 0x28, position at +0/+4/+8). For every vertex `(x,y,z)` in **object space**:
 
 ```
 u = f0*x + f3*y + f6*z + f9        (mat+0x00..0x0c)
 v = f1*x + f4*y + f7*z + f10       (mat+0x10..0x1c)
 ```
 
-De uitkomst is direct de texturecoördinaat in herhalingen (1.0 = één keer de texture), er
-wordt niet door de texturegrootte gedeeld. De face-vlag bit 0 of `face+1 & 0x80` (`0x427ff8`)
-slaat de materiaalkoppeling over. `tools/levelparse.py::material_uv(material, x, y, z)`
-implementeert dit.
+The result is directly the texture coordinate in repeats (1.0 = the texture once); it is
+not divided by the texture size. Face flag bit 0, or `face+1 & 0x80` (`0x427ff8`), skips
+the material linkage. `tools/levelparse.py::material_uv(material, x, y, z)`
+implements this.
 
-Statische groep-test in de loader (`0x426e5a`): `tex+0x00 = 0` als `frame_count == 1` én
-beide floats `+0x0c/+0x10 == 0.0`, anders `1` ("heeft update nodig"). Daarom is de duiding
-van `+0x0c/+0x10` als UV-scrollsnelheid aannemelijk maar niet door rendercode bevestigd.
+Static-group test in the loader (`0x426e5a`): `tex+0x00 = 0` if `frame_count == 1` and
+both floats `+0x0c/+0x10 == 0.0`, otherwise `1` ("needs updating"). Hence the interpretation
+of `+0x0c/+0x10` as UV scroll speed is plausible but not confirmed by render code.
 
-Faces in `.ins` verwijzen met een u16 naar deze materiaaltabel (`level+0x5c + idx*0x24`);
-de renderer (`0x43b3f0`) kiest per face het frame `min(frame, frame_count-1)` uit de groep.
+Faces in `.ins` reference this material table (`level+0x5c + idx*0x24`) with a u16;
+the renderer (`0x43b3f0`) picks the frame `min(frame, frame_count-1)` from the group per face.
 
-### Texture-struct (0x74 bytes, ctor `0x47f250`)
+### Texture struct (0x74 bytes, ctor `0x47f250`)
 
-| Offset | Betekenis |
+| Offset | Meaning |
 |---|---|
-| +0x00 | 0 = statisch, 1 = geanimeerd/scrollend |
+| +0x00 | 0 = static, 1 = animated/scrolling |
 | +0x04 | -1 (ctor) |
-| +0x08..+0x34 | runtime (genuld) |
-| +0x38 / +0x3c | breedte / hoogte |
-| +0x44 | vlaggen (header dword 3, bit 0 door loader overschreven met alpha-arg) |
+| +0x08..+0x34 | runtime (zeroed) |
+| +0x38 / +0x3c | width / height |
+| +0x44 | flags (header dword 3, bit 0 overwritten by the loader with the alpha arg) |
 | +0x48 / +0x4c | header float 4 / 5 |
 | +0x50 | header dword 9 |
-| +0x54 | animatieduur (header dword 6) |
+| +0x54 | animation duration (header dword 6) |
 | +0x58 | frame_count |
 | +0x5c | header dword 8 |
 | +0x60 | this (ctor) |
 | +0x6c | -1 (ctor) |
-| +0x70 | `IDirectDrawSurface7*` (gevuld door `0x47fa60`) |
+| +0x70 | `IDirectDrawSurface7*` (filled by `0x47fa60`) |
 
-Frames van één groep liggen aaneengesloten in de array (stride 0x74); de groeptabel op de
-stack (`esp+0x3a0`) bevat de pointer naar frame 0 van elke groep.
+Frames of one group lie contiguously in the array (stride 0x74); the group table on the
+stack (`esp+0x3a0`) holds the pointer to frame 0 of each group.
 
-### Onzeker
-- Betekenis van dword 8 (`+0x5c`) en dword 9 (`+0x50`): geen lezer in de code gevonden.
-- `+0x0c/+0x10` als UV-scroll: alleen indirect (statisch-test) onderbouwd.
-- Vlaggen-bytes 1–3 slechts gedeeltelijk geduid.
+### Uncertain
+- Meaning of dword 8 (`+0x5c`) and dword 9 (`+0x50`): no reader found in the code.
+- `+0x0c/+0x10` as UV scroll: only indirectly (static test) substantiated.
+- Flag bytes 1–3 only partly understood.
 
 ---
 
-## 2. `.col` – objectlijsten per sector
+## 2. `.col` – object lists per sector
 
-Loader `0x4271e0(this=level, stream)`. Alloceert één pool ter grootte van het bestand
-(`[vt+0x18]/4` dwords + marge) en vult voor elk object `i` in `level+0x1c[i]` (aantal
-`level+0x18`, de sector-objecten uit `.gel`) `obj+0x40` = aantal en `obj+0x44` = pointer in de
-pool.
+Loader `0x4271e0(this=level, stream)`. Allocates a single pool the size of the file
+(`[vt+0x18]/4` dwords + margin) and, for each object `i`, fills `level+0x1c[i]` (count
+`level+0x18`, the sector objects from `.gel`) with `obj+0x40` = count and `obj+0x44` = pointer
+into the pool.
 
-| Offset | Grootte | Type | Betekenis |
+| Offset | Size | Type | Meaning |
 |---|---|---|---|
-| 0x00 | … | | `world+0x18` × **sector-record** (volgorde = `.gel` objectvolgorde): |
+| 0x00 | … | | `world+0x18` × **sector record** (order = `.gel` object order): |
 | +0x00 | 4 | u32 | `n` (→ `sector+0x40`) |
-| +0x04 | `4n` | u32[] | verwijzingen (→ `sector+0x44`): `(mask << 16) \| object_index` |
+| +0x04 | `4n` | u32[] | references (→ `sector+0x44`): `(mask << 16) \| object_index` |
 
-Gebruik (`0x4071ae`, `0x407502`, `0x42aa0b`, `0x434771`, `0x497a9c`, …): `object_index =
-v & 0xFFFF` indexeert de objecttabel `world+0x40` (de `.ins`-objecten; `[obj+8] & 0x1f` =
-objecttype), de volledige u32 wordt als argument aan de collision-methode `vtable+0x20` van dat
-object doorgegeven; `0x407282` maakt zelf zulke waarden met `id | 0xFFFF0000`. De hoge 16 bits
-zijn dus een masker (0xFFFF = "alles"; in de data ook 0x7FFF, 0x03C0, 0x0780, …), vermoedelijk
-welke sub-delen van het object in deze sector liggen.
+Usage (`0x4071ae`, `0x407502`, `0x42aa0b`, `0x434771`, `0x497a9c`, …): `object_index =
+v & 0xFFFF` indexes the object table `world+0x40` (the `.ins` objects; `[obj+8] & 0x1f` =
+object type), the full u32 is passed as an argument to the collision method `vtable+0x20` of
+that object; `0x407282` itself constructs such values with `id | 0xFFFF0000`. The high 16 bits
+are thus a mask (0xFFFF = "everything"; also 0x7FFF, 0x03C0, 0x0780, … in the data), presumably
+which sub-parts of the object lie in this sector.
 
-Validatie: recordaantal == `.gel` objects op alle levels; `object_index` < aantal
-`.ins`-objecten (1e u32 van `.ins`) op alle levels.
+Validation: record count == `.gel` objects on all levels; `object_index` < number of
+`.ins` objects (1st u32 of `.ins`) on all levels.
 
-### Onzeker
-- Exacte semantiek van het 16-bit masker.
+### Uncertain
+- Exact semantics of the 16-bit mask.
 
 ---
 
-## 3. `.vis` – zichtbaarheid per cel
+## 3. `.vis` – visibility per cell
 
-Loader `0x408260(this=world, path)`. `world+0x28` = array van `world+0x20` pointers; per cel
-wordt `(entry_count + total_pairs)*8 + 4` bytes gealloceerd en gevuld als
+Loader `0x408260(this=world, path)`. `world+0x28` = array of `world+0x20` pointers; per cell
+`(entry_count + total_pairs)*8 + 4` bytes are allocated and filled as
 `{u32 entry_count, entries…}`.
 
-| Offset | Grootte | Type | Betekenis |
+| Offset | Size | Type | Meaning |
 |---|---|---|---|
-| 0x00 | … | | `world+0x20` × **cel**: |
-| +0x00 | 4 | u32 | `entry_count` (A) – in de data 1 of 2 |
-| +0x04 | 4 | u32 | `total_pairs` (B) = som van alle `pair_count` (alleen voor allocatie) |
+| 0x00 | … | | `world+0x20` × **cell**: |
+| +0x00 | 4 | u32 | `entry_count` (A) – 1 or 2 in the data |
+| +0x04 | 4 | u32 | `total_pairs` (B) = sum of all `pair_count` (allocation only) |
 | +0x08 | … | | A × **entry**: |
-| ++0x00 | 4 | u32 | `id` – in de data 0 of 1 |
+| ++0x00 | 4 | u32 | `id` – 0 or 1 in the data |
 | ++0x04 | 4 | u32 | `pair_count` |
-| ++0x08 | `8·pair_count` | (u32,u32)[] | `(cel-index, vlag)`; cel-index < `world+0x20`, vlag 0/1 |
+| ++0x08 | `8·pair_count` | (u32,u32)[] | `(cell-index, flag)`; cell index < `world+0x20`, flag 0/1 |
 
-Interpretatie: per cel één of twee lijsten van vanuit die cel zichtbare cellen (PVS) met een
-vlag per cel. Validatie: celaantal == `.gel` cells op alle levels.
+Interpretation: per cell, one or two lists of cells visible from that cell (PVS) with a
+flag per cell. Validation: cell count == `.gel` cells on all levels.
 
-### Gebruik in de port
-`src/level.c::vis_load` leest het bestand met `world+0x20` uit de `.gel` als aantal en controleert dat elk
-eerste woord van een paar een geldige sectorindex is en dat `total_pairs` klopt; anders wordt het bestand
-genegeerd en valt de renderer terug op alleen frustum-culling. Per frame zoekt `world_visibility`
-(`src/render_gl.c`) met `gel_sector` (`0x4081c0`) de sector van de camera op, neemt de **vereniging** van al zijn
-lijsten (1 of 2, de betekenis van `id` is immers niet bevestigd — een vereniging kan alleen te véél tonen),
-voegt de eigen sector toe en gooit daarna elke sector weg waarvan de bbox buiten het beeldfrustum valt. Van de
-overgebleven sectoren worden de polygoonlijsten (`.gel` sectie 7) gestempeld zoals `0x42ac10` dat doet, zodat
-een vlak dat in meerdere sectoren staat één keer getekend wordt. `vis_load` print bij het laden min/gemiddeld/max
-aantal zichtbare sectoren en hoeveel sectoren zichzelf noemen, zodat meteen te zien is of de lezing klopt;
-**F4** zet de culling stap voor stap uit (frustum + `.vis` → alleen frustum → hele level).
+### Use in the port
+`src/level.c::vis_load` reads the file with `world+0x20` from the `.gel` as the count and checks
+that every first word of a pair is a valid sector index and that `total_pairs` matches; otherwise
+the file is ignored and the renderer falls back to frustum culling only. Every frame,
+`world_visibility` (`src/render_gl.c`) looks up the camera's sector with `gel_sector`
+(`0x4081c0`), takes the **union** of all its lists (1 or 2 — since the meaning of `id` is not
+confirmed, a union can at most show too much), adds the sector itself, and then discards every
+sector whose bbox falls outside the view frustum. The polygon lists (`.gel` section 7) of the
+remaining sectors are stamped the way `0x42ac10` does it, so that a face belonging to multiple
+sectors is drawn once. `vis_load` prints the min/average/max number of visible sectors when
+loading and how many sectors list themselves, so it is immediately visible whether the reading is
+correct; **F4** steps the culling down one stage at a time: frustum + `.vis` → frustum only → whole level.
 
-De port gebruikt de sector-polygoonlijst en niet de groep uit het tweede woord van een paar: 22 van de 28 levels
-hebben één groep over alle polygonen, dus daarmee zou er niets wegvallen. De vlag/groep wordt daarom (nog) niet
-gelezen.
+The port uses the sector polygon list, not the group from the second word of a pair: 22 of the 28
+levels have a single group covering all polygons, so nothing would be lost by that. The
+flag/group is therefore not (yet) read.
 
-### Onzeker
-- Buiten loader en destructor (`0x407a80`) is geen code gevonden die `world+0x28` leest; de
-  betekenis van `id` (0/1) en de vlag is dus niet uit code bevestigd.
+### Uncertain
+- No code other than the loader and destructor (`0x407a80`) has been found reading
+  `world+0x28`; the meaning of `id` (0/1) and the flag is thus not confirmed from code.
 
 ---
 
-## 4. `.lit` – lichtsysteem (voorberekende verlichting en schaduw-BSP's)
+## 4. `.lit` – lighting system (precomputed lighting and shadow BSPs)
 
-Loader `0x40ac30(this=lightsys (0x2c bytes), path, 0x10, 0x400)`, object in globaal
-`0x4c4cac`. Bij een verkeerde magic blijft `0x4c4cac` 0 en meldt `0x404536`
+Loader `0x40ac30(this=lightsys (0x2c bytes), path, 0x10, 0x400)`, object in global
+`0x4c4cac`. On a wrong magic, `0x4c4cac` stays 0 and `0x404536` reports
 "Can't load lightsystem : please rebuild lights !!!".
 
-| Offset | Grootte | Type | Betekenis |
+| Offset | Size | Type | Meaning |
 |---|---|---|---|
-| 0x00 | 4 | u32 | magic `0x20010822` (datum 22-08-2001) |
-| 0x04 | 4 | u32 | `light_count` (→ `lightsys+0x00`; lichten zijn 0x40-byte objecten, ctor `0x40b450`, array `lightsys+0x04`) |
-| 0x08 | … | | `light_count` × **licht**: |
-| +0x00 | 4 | u32 | `object_id` (→ `light+0x04`); `id & 0xFFFFFF` = index in `world+0x40`, hoogste byte = type (altijd 1). Als `world+0x40` bestaat: `world+0x40[idx] = light` |
-| +0x04 | 4 | u32 | → `light+0x28` (2, één keer 3) |
-| +0x08 | 12 | f32[3] | positie (→ `light+0x0c..0x14`) |
-| +0x14 | 12 | f32[3] | kleur R,G,B als 0..255 (→ `light+0x30..0x38`) |
-| +0x20 | 4 | f32 | bereik/radius (→ `light+0x2c`; bv. 6000, 50000) |
-| | | | daarna sub-struct **S** (`light+0x3c`, 0x28 bytes, malloc): |
+| 0x00 | 4 | u32 | magic `0x20010822` (date 22-08-2001) |
+| 0x04 | 4 | u32 | `light_count` (→ `lightsys+0x00`; lights are 0x40-byte objects, ctor `0x40b450`, array `lightsys+0x04`) |
+| 0x08 | … | | `light_count` × **light**: |
+| +0x00 | 4 | u32 | `object_id` (→ `light+0x04`); `id & 0xFFFFFF` = index into `world+0x40`, high byte = type (always 1). If `world+0x40` exists: `world+0x40[idx] = light` |
+| +0x04 | 4 | u32 | → `light+0x28` (2, once 3) |
+| +0x08 | 12 | f32[3] | position (→ `light+0x0c..0x14`) |
+| +0x14 | 12 | f32[3] | colour R,G,B as 0..255 (→ `light+0x30..0x38`) |
+| +0x20 | 4 | f32 | range/radius (→ `light+0x2c`; e.g. 6000, 50000) |
+| | | | followed by sub-struct **S** (`light+0x3c`, 0x28 bytes, malloc'd): |
 | +0x24 | 4 | u32 | `nA` (→ `S+0x08`) |
-| | `4·nA` | u32[] | lijst A (→ `S+0x0c`): oplopend gesorteerde **face-indices** (`world+0x10`), de door dit licht beschenen faces (`0x497c2c` loopt ze af en test het facevlak) |
+| | `4·nA` | u32[] | list A (→ `S+0x0c`): ascending sorted **face indices** (`world+0x10`), the faces lit by this light (`0x497c2c` walks them and tests the face plane) |
 | | 4 | u32 | `nB` (→ `S+0x10`) |
-| | `4·nB` | u32[] | lijst B (→ `S+0x14`): oplopend gesorteerde face-indices (geen deelverzameling van A) |
+| | `4·nB` | u32[] | list B (→ `S+0x14`): ascending sorted face indices (not a subset of A) |
 | | 4 | u32 | `nC` (→ `S+0x18`) |
-| | 4 | u32 | `total_indices` = som van alle `n` hieronder (voor de pool-allocatie `(7·nC + total)*4`) |
-| | … | | nC × **polygoon** (zelfde formaat als `.gel`-faces): `u32 n`, `f32[4]` vlak (nx,ny,nz,d) → `P+0x0c`, `u32 face` → `P+0x08`, `i32[n]` vertex-indices → `P+0x1c` (positief = `.gel`-vertex, negatief = extra vertex uit clipping; `P+0x04` wordt op -1 gezet) |
+| | 4 | u32 | `total_indices` = sum of all `n` below (for the pool allocation `(7·nC + total)*4`) |
+| | … | | nC × **polygon** (same format as `.gel` faces): `u32 n`, `f32[4]` plane (nx,ny,nz,d) → `P+0x0c`, `u32 face` → `P+0x08`, `i32[n]` vertex indices → `P+0x1c` (positive = `.gel` vertex, negative = extra vertex from clipping; `P+0x04` is set to -1) |
 | | 4 | u32 | `nD` (→ `S+0x00`) |
-| | `16·nD` | u32[4] | **bereik per cel** (→ `S+0x04`, records van 0x1c): `{cel, nA_i, nB_i, nC_i}`; de engine berekent cumulatieve offsets in `+0x08/+0x10/+0x18` – de lijsten A/B/C zijn dus per cel gegroepeerd |
-| | 4 | u32 | `nE` (aantal wordt niet bewaard) |
-| | `12·nE` | u32[3] | **BSP-knopen** (→ `S+0x20`): `{vlakindex, front, back}`; kind = `(v & 0xF)`: 0 → knoop `v>>4`, 1 → blad met face `v>>4`, anders leeg. `0x40b540(S, punt)` doorloopt de boom (vlak·p + d ≥ 0 → front) en geeft de face terug |
-| | 4 | u32 | `nF` (aantal wordt niet bewaard) |
-| | `16·nF` | f32[4] | **BSP-vlakken** (→ `S+0x24`), genormaliseerde (nx,ny,nz,d) |
+| | `16·nD` | u32[4] | **range per cell** (→ `S+0x04`, records of 0x1c): `{cell, nA_i, nB_i, nC_i}`; the engine computes cumulative offsets in `+0x08/+0x10/+0x18` – lists A/B/C are thus grouped per cell |
+| | 4 | u32 | `nE` (count not stored) |
+| | `12·nE` | u32[3] | **BSP nodes** (→ `S+0x20`): `{plane_index, front, back}`; child = `(v & 0xF)`: 0 → node `v>>4`, 1 → leaf with face `v>>4`, otherwise empty. `0x40b540(S, point)` walks the tree (plane·p + d ≥ 0 → front) and returns the face |
+| | 4 | u32 | `nF` (count not stored) |
+| | `16·nF` | f32[4] | **BSP planes** (→ `S+0x24`), normalized (nx,ny,nz,d) |
 | … | 4 | u32 | `probe_count` (→ `lightsys+0x08`) |
-| … | `16·probe_count` | | **probe** (→ `lightsys+0x0c`, records van 0x30): `f32[3]` positie, `u32` kleur 0x00RRGGBB (→ `+0x28`); `+0x2c` = -1 (runtime). Gebruikt in `0x42c320`/`0x498890` (afstand tot een punt) |
-| … | 4 | u32 | *(optioneel, via `0x43fd90`)* `total` – aantal dwords van de trailer |
-| … | `4·total` | u32[] | trailer: `world+0x20` × `{u32 n, u32 light_index[n]}` – lichten per **sector** (→ `lightsys+0x10`). Ontbreekt de trailer, dan `lightsys+0x10 = 0`. Gemeten: het aantal lijsten is in alle levels exact het aantal `.gel`-sectoren (House 33, de rest 128), niet het aantal cellen (2530–7691) – zie LIGHTING.md §3 |
+| … | `16·probe_count` | | **probe** (→ `lightsys+0x0c`, records of 0x30): `f32[3]` position, `u32` colour 0x00RRGGBB (→ `+0x28`); `+0x2c` = -1 (runtime). Used in `0x42c320`/`0x498890` (distance to a point) |
+| … | 4 | u32 | *(optional, via `0x43fd90`)* `total` – number of dwords in the trailer |
+| … | `4·total` | u32[] | trailer: `world+0x20` × `{u32 n, u32 light_index[n]}` – lights per **sector** (→ `lightsys+0x10`). If the trailer is missing, `lightsys+0x10 = 0`. Measured: the number of lists equals exactly the number of `.gel` sectors on every level (House 33, the rest 128), not the number of cells (2530–7691) – see LIGHTING.md §3 |
 
-Overige lightsys-velden (`+0x14..+0x28`) worden na het laden gealloceerd (afhankelijk van de
-argumenten 0x10/0x400 en `world+0x0c`).
+The remaining lightsys fields (`+0x14..+0x28`) are allocated after loading (depending on the
+arguments 0x10/0x400 and `world+0x0c`).
 
-### Onzeker
-- Onderscheid tussen lijst A en B (beiden face-indices); B is mogelijk de schaduwwerpende
+### Uncertain
+- Distinction between list A and B (both face indices); B is possibly the shadow-casting
   faces.
-- Betekenis van `light+0x28` (2/3) en van het typebyte in `object_id`.
-- Wat de probes (0x30-records) precies zijn (lichtsamples / ambient-punten).
-- Wat het `cel`-veld in de bereik-records exact is (waarden < `world+0x20`, consistent met cel).
+- Meaning of `light+0x28` (2/3) and of the type byte in `object_id`.
+- What the probes (0x30 records) exactly are (light samples / ambient points).
+- What the `cel` field in the range records exactly is (values < `world+0x20`, consistent with a cell).
 
 ---
 
-## Validatie
+## Validation
 
-`python tools/levelparse.py` parseert alle vier bestanden van alle 28 levels, controleert dat
-elke parser het bestand volledig consumeert en kruist met `.gel`: `.col`-records ==
-objecten, `.vis`-cellen == cellen, `.lit`-trailer-lijsten == cellen, alle face-indices <
-faceaantal. Resultaat: 28/28 OK.
+`python tools/levelparse.py` parses all four files of all 28 levels, checks that every
+parser fully consumes the file, and cross-checks against `.gel`: `.col` records ==
+objects, `.vis` cells == cells, `.lit` trailer lists == cells, all face indices <
+face count. Result: 28/28 OK.
 
-`python tools/levelparse.py --dump-tex W1A out/tex_W1A` schrijft van elke groep het eerste
-frame als PNG (RGBA; magenta-key toegepast als vlag-bit 0 gezet is).
+`python tools/levelparse.py --dump-tex W1A out/tex_W1A` writes the first frame of every
+group as a PNG (RGBA; magenta key applied if the flag bit 0 is set).

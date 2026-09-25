@@ -2554,18 +2554,19 @@ int main(int argc, char **argv)
     double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, l_prev = 0; static int key_prev[256]; int paused = 0, dbg_paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[4] = {0, 0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
-        {   /* WOODY_KEYS="T:KEY T:KEY ...": each entry holds KEY (RET ESC UP DOWN LEFT RIGHT SPACE CTRL BACK or a VK
-             * number) for 0.08 s, once, as soon as the level that is running has been up for T seconds - the clock of
-             * --shot, so a sequence that spans a level change stays in step (testing: drives the menu pages) */
+        {   /* WOODY_KEYS="T:KEY T:KEY:D ...": each entry holds KEY (RET ESC UP DOWN LEFT RIGHT SPACE CTRL BACK or a VK
+             * number) for 0.08 s (or D seconds), once, as soon as the level that is running has been up for T seconds - the
+             * clock of --shot, so a sequence that spans a level change stays in step (testing: drives the menu pages and walks) */
             static const char *keys; static double held_until[256]; static unsigned char fired[64]; if (!keys) keys = getenv("WOODY_KEYS") ? getenv("WOODY_KEYS") : "";
             static const struct { const char *n; int vk; } kn[] = { {"RET",VK_RETURN}, {"ESC",VK_ESCAPE}, {"UP",VK_UP}, {"DOWN",VK_DOWN}, {"LEFT",VK_LEFT}, {"RIGHT",VK_RIGHT}, {"SPACE",VK_SPACE}, {"CTRL",VK_CONTROL}, {"BACK",VK_BACK} };
             double wt = win_time(), tn = wt - t0; int e = 0;
             for (const char *s = keys; *s && e < 64; e++) {
                 char name[16] = ""; double t = 0; int used = 0;
                 if (sscanf(s, " %lf:%15[A-Z0-9]%n", &t, name, &used) < 2 || !used) break;
-                s += used; int vk = atoi(name);
+                s += used; int vk = atoi(name); double hold = 0.08;
+                if (*s == ':' && sscanf(s, ":%lf%n", &hold, &used) == 1) s += used;
                 for (unsigned i = 0; i < sizeof kn / sizeof kn[0]; i++) if (!strcmp(name, kn[i].n)) vk = kn[i].vk;
-                if (!fired[e] && vk > 0 && vk < 256 && tn >= t) { fired[e] = 1; win.keys[vk] = 1; held_until[vk] = wt + 0.08; }
+                if (!fired[e] && vk > 0 && vk < 256 && tn >= t) { fired[e] = 1; win.keys[vk] = 1; held_until[vk] = wt + hold; }
             }
             for (int k = 0; k < 256; k++) if (held_until[k] > 0 && wt >= held_until[k]) { win.keys[k] = 0; held_until[k] = 0; }
         }

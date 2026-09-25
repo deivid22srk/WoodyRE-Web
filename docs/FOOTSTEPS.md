@@ -1,99 +1,99 @@
-# Voetstappen: het stap-effect `0x47cba0` en het landingsstof `0x476140`
+# Footsteps: the step effect `0x47cba0` and the landing dust `0x476140`
 
-Status: **de aanroepkant is uit de disassembly bekend, de twee effectfuncties zelf zijn niet gelezen.** In de
-werkomgeving waarin dit geport is stond `game/Woody.exe` niet, dus `0x47cba0` en `0x476140` konden niet
-gedecompileerd worden. Wat de port *wanneer* en *waarmee* tekent is daarom gesplitst: de trigger en de
-argumenten komen uit de disassembly (PERSO_MOVE.md §4.3 en §6.4, PERSO_JUMP.md §4), het beeld zelf is een
-reconstructie met de sprite-primitieven die de port al heeft. §5 zegt per punt wat nog nagemeten moet worden.
+Status: **the call side is known from the disassembly, the two effect functions themselves have not been read.** In the
+work environment where this was ported, `game/Woody.exe` was not present, so `0x47cba0` and `0x476140` could not
+be decompiled. What the port draws, *when* and *with what*, is therefore split: the trigger and the
+arguments come from the disassembly (PERSO_MOVE.md §4.3 and §6.4, PERSO_JUMP.md §4), the visual itself is a
+reconstruction using the sprite primitives the port already has. §5 states, per point, what still needs to be measured.
 
-## 1. Wanneer vuurt het origineel een voetstap af?
+## 1. When does the original fire off a footstep?
 
-In de grond-animatiefunctie `0x463f40` (Perso-animatietoestand, `0x463e60` → tabel `0x463f14`), tak
-Mover-fase 2 = "op snelheid", dus tijdens de **loopcyclus** (logische animatie 3, `.ins`-animatie 2). De
-cyclusduur is `len3 / max(0.5, clamp(M+0x44 / M+0x48, 0, 1))` (`0x436c20`), de cyclus loopt dus op halve
-snelheid bij ≤ 50 % van de maximumsnelheid — de stappen volgen daardoor vanzelf het looptempo.
+In the ground animation function `0x463f40` (Perso animation state, `0x463e60` → table `0x463f14`), branch
+Mover phase 2 = "at speed", i.e. during the **run cycle** (logical animation 3, `.ins` animation 2). The
+cycle duration is `len3 / max(0.5, clamp(M+0x44 / M+0x48, 0, 1))` (`0x436c20`), so the cycle runs at half
+speed at ≤ 50% of max speed — the steps therefore automatically follow the running tempo.
 
-| gebeurtenis | constante | aanroep |
+| event | constant | call |
 |---|---|---|
-| cyclusfractie passeert **0.38** | `0x4ab278` | `0x47cba0(pos, normaal, richting, voet, soort)` |
-| cyclusfractie passeert **0.90** | `0x4a94b8` | idem, andere voet |
+| cycle fraction passes **0.38** | `0x4ab278` | `0x47cba0(pos, normal, direction, foot, kind)` |
+| cycle fraction passes **0.90** | `0x4a94b8` | same, other foot |
 
-Argumenten van `0x47cba0`: positie, grondnormaal, looprichting, links/rechts-vlag en de **soort 2 of 3**;
-soort 3 als de grondsoort `P+0x308 == 2` (`0x464231`), anders 2.
+Arguments of `0x47cba0`: position, ground normal, run direction, left/right flag, and the **kind 2 or 3**;
+kind 3 if the ground kind `P+0x308 == 2` (`0x464231`), otherwise 2.
 
-Het **geluid** van een stap komt hier niet vandaan: dat zijn de type-4 events op de root-node van de
-animatie (`0x42f5e0` → `0x43a8f0` → `0x4695f0`, docs/SOUND.md §3, in de port `anim_sounds` in
-`src/main_engine.c`). Die staan los van dit effect en werkten al.
+The **sound** of a step does not come from here: that's the type-4 events on the root node of the
+animation (`0x42f5e0` → `0x43a8f0` → `0x4695f0`, docs/SOUND.md §3, in the port `anim_sounds` in
+`src/main_engine.c`). Those are independent of this effect and already worked.
 
-## 2. Grondsoort `P+0x308` (`0x4628e0`, lezer `0x46295f` = `m_nGroundType`)
+## 2. Ground kind `P+0x308` (`0x4628e0`, reader `0x46295f` = `m_nGroundType`)
 
-Bij elke grondmeting: 0, behalve als de vloer een **wereldpolygoon** is (`[0x53a554] == 1`) waarvan het
-materiaalveld `poly+8` bit 15 niet gezet heeft. Dan is de soort byte 3 van het vlaggenwoord van de
-textuurgroep achter dat materiaal (`level+0x5c`, records van 0x24 B, `+0x20` = textuurobject → `tex+0x47`,
+On every ground measurement: 0, except when the floor is a **world polygon** (`[0x53a554] == 1`) whose
+material field `poly+8` bit 15 is not set. Then the kind is byte 3 of the flag word of the
+texture group behind that material (`level+0x5c`, records of 0x24 B, `+0x20` = texture object → `tex+0x47`,
 docs/FORMAT_TEX_COL_VIS_LIT.md §1):
 
-| soort | betekenis | gebruik in het origineel |
+| kind | meaning | use in the original |
 |---|---|---|
-| 0 | gewoon | – |
-| 1 | glad / ijs | trage bijdraai-ramp in `0x45a850` (0.75 s / 1.0 s i.p.v. 0.25 / 0.1) — **niet geport** |
-| 2 | stof / zand / sneeuw | voetstap-soort 3 i.p.v. 2 (`0x464231`), stofwolk bij landen (`0x464486`) |
+| 0 | normal | – |
+| 1 | slippery / ice | slow turn-in ramp in `0x45a850` (0.75 s / 1.0 s instead of 0.25 / 0.1) — **not ported** |
+| 2 | dust / sand / snow | footstep kind 3 instead of 2 (`0x464231`), dust cloud on landing (`0x464486`) |
 
-Een vloer die van een instantie-node komt (lift, platform, kist) heeft geen grondsoort: die hoort bij de
-wereldgeometrie.
+A floor that comes from an instance node (lift, platform, crate) has no ground kind: that applies to
+world geometry.
 
-## 3. Landingsstof
+## 3. Landing dust
 
-Springer-toestand 6 (`geland`, één frame, PERSO_JUMP.md §1.1) in `0x4642f0`: als `P+0x308 == 2` volgt
-`0x476140(&pos + (0,30,0), &P+0x458, 3, 0.25, 1.5)` en **geen** animatie. `P+0x458` is de vloernormaal
-(PERSO_MOVE.md §2, veldtabel). Hetzelfde `0x476140` maakt ook de scherven van een raketexplosie (PROJECTILES.md §5.3: explosie soort 0, "met normaal"),
-het is dus een algemene deeltjesuitbarsting; alleen het eerste argumentpaar (punt, normaal) en het aantal 3
-zijn hier met zekerheid te duiden, `0.25` en `1.5` niet.
+Jumper state 6 (`landed`, one frame, PERSO_JUMP.md §1.1) in `0x4642f0`: if `P+0x308 == 2`, then
+`0x476140(&pos + (0,30,0), &P+0x458, 3, 0.25, 1.5)` follows, and **no** animation. `P+0x458` is the floor normal
+(PERSO_MOVE.md §2, field table). The same `0x476140` also creates the shards of a rocket explosion (PROJECTILES.md §5.3: explosion kind 0, "with normal"),
+so it's a general particle burst; only the first argument pair (point, normal) and the count 3
+can be interpreted with certainty here, `0.25` and `1.5` cannot.
 
-## 4. Wat de port doet (`src/player.c`, `src/main_engine.c`, `src/hud.c`)
+## 4. What the port does (`src/player.c`, `src/main_engine.c`, `src/hud.c`)
 
-**Trigger — overgenomen uit de disassembly.** `player_update` kijkt na `anim_request` naar de fractie van de
-loopcyclus (alleen bij logische animatie 3 en op de grond) en roept bij het passeren van 0.38 en 0.9
-`game_footstep(pos, grondnormaal, kijkrichting, voet, soort)` aan; `phase_passed` vangt de omloop, zodat er
-precies twee stappen per cyclus komen, ook bij lage framesnelheden. De grondsoort komt uit `ground_type()`,
-die de materiaalindex van de laatst geraakte **wereld**polygoon (`g_ground_mat`, gezet in `world_ground`)
-via `TexFile.materials[i].group` naar `TexGroup.flags >> 24` volgt. Landen op soort 2 roept
-`game_land_dust(pos + (0,30,0), grondnormaal)` aan, precies waar het origineel `0x476140` aanroept.
+**Trigger — taken from the disassembly.** After `anim_request`, `player_update` checks the fraction of the
+run cycle (only for logical animation 3 and on the ground) and, on passing 0.38 and 0.9, calls
+`game_footstep(pos, ground_normal, look_direction, foot, kind)`; `phase_passed` catches the wraparound, so there are
+exactly two steps per cycle, even at low frame rates. The ground kind comes from `ground_type()`,
+which follows the material index of the last-hit **world** polygon (`g_ground_mat`, set in `world_ground`)
+via `TexFile.materials[i].group` to `TexGroup.flags >> 24`. Landing on kind 2 calls
+`game_land_dust(pos + (0,30,0), ground_normal)`, exactly where the original calls `0x476140`.
 
-**Beeld — reconstructie.** `game_footstep` legt een afdruk in het grondvlak (`hud_world_decal`, een sprite
-zonder vlagbit 0: de quad ligt in het vlak met de meegegeven normaal, gedraaid op de looprichting en in u
-gespiegeld voor de andere voet — vlag 0x40, zie de spritevlaggen in PERSO_DEATH.md) naast de Perso-positie,
-22 eenheden opzij:
+**Visual — reconstruction.** `game_footstep` places an imprint in the ground plane (`hud_world_decal`, a sprite
+without flag bit 0: the quad lies in the plane with the given normal, rotated to the run direction and
+mirrored in u for the other foot — flag 0x40, see the sprite flags in PERSO_DEATH.md) next to the Perso position,
+22 units to the side:
 
-| | soort 2 (gewone grond) | soort 3 (stof/zand/sneeuw) |
+| | kind 2 (normal ground) | kind 3 (dust/sand/snow) |
 |---|---|---|
-| afdruk | grootte 30, sterkte 0.22, 0.6 s | grootte 36, sterkte 0.6, 4 s |
-| stof | geen | één wolkje (beeld 14) schuin achteruit, 0.45 s |
+| imprint | size 30, strength 0.22, 0.6 s | size 36, strength 0.6, 4 s |
+| dust | none | one puff (image 14) diagonally backward, 0.45 s |
 
-De afdruk staat de eerste helft van zijn leven stil en vervaagt daarna. Er zijn 48 afdrukken en 64
-stofdeeltjes; de oudste afdruk maakt plaats als de ring vol is. Landen spuwt 3 wolkjes rondom (het aantal
-uit de aanroep), 0.5 s, naar buiten en omhoog.
+The imprint stays still for the first half of its life and then fades. There are 48 imprints and 64
+dust particles; the oldest imprint is replaced once the ring is full. Landing spits out 3 puffs around it (the count
+from the call), 0.5 s, outward and upward.
 
-Twee bewuste keuzes, omdat het origineel hier niet gelezen kon worden:
+Two deliberate choices, because the original could not be read here:
 
-1. **Welke afbeelding.** Onbekend. De port pakt bank 0 beeld 14 (het zachte wolkje van de raketrook) en
-   tekent de afdruk **vermenigvuldigend**: `dst · (1 − rgb·sterkte)`. Dat beeld is wit op zwart met alfa 1,
-   dus een gewone alfablend zou een donkere *vierkant* op de grond zetten; zo blijft alleen de wolkvorm over
-   als donkere veeg. `WOODY_STEPIMG=<n>` kiest een ander bank-0-beeld (het wordt dan als fx-slot 10 geladen);
-   zodra bekend is welk beeld het origineel gebruikt, hoort daar waarschijnlijk ook een andere blendmodus bij.
-2. **De voetafstand van 22 eenheden opzij.** Het origineel geeft alleen een links/rechts-vlag mee; waar
-   `0x47cba0` de afdruk precies neerzet (en of het de voet-node van het skelet pakt) is niet bekend.
+1. **Which image.** Unknown. The port uses bank 0 image 14 (the soft puff from the rocket smoke) and
+   draws the imprint **multiplicatively**: `dst · (1 − rgb·strength)`. That image is white on black with alpha 1,
+   so a plain alpha blend would put a dark *square* on the ground; this way only the cloud shape remains
+   as a dark smudge. `WOODY_STEPIMG=<n>` selects a different bank-0 image (it is then loaded as fx slot 10);
+   once it's known which image the original uses, a different blend mode probably belongs with it too.
+2. **The foot distance of 22 units to the side.** The original only passes a left/right flag; exactly where
+   `0x47cba0` places the imprint (and whether it uses the foot node of the skeleton) is not known.
 
-`WOODY_FXLOG=1` logt elke stap en elke landing met positie en soort.
+`WOODY_FXLOG=1` logs every step and every landing with position and kind.
 
-## 5. Open punten
+## 5. Open points
 
-1. **`0x47cba0` decompileren**: beeldnummer(s), grootte, kleur, levensduur, blendmodus, of de afdruk ook op
-   gewone grond (soort 2) verschijnt en wat het verschil tussen soort 2 en 3 precies is, en waar de afdruk
-   t.o.v. de Perso-positie terechtkomt. Zonder dat blijft §4 een reconstructie.
-2. **`0x476140` decompileren**: betekenis van `0.25` en `1.5`, het deeltje zelf (beeld, zwaartekracht,
-   levensduur), en of het aantal 3 een aantal per aanroep of per seconde is.
-3. **Grondsoort 1 (glad)**: `P+0x308` wordt nu wél gelezen, maar `0x45a850` (trage bijdraai-ramp op ijs) is
-   niet geport — zie TODO.md.
-4. **Waar staan de stap-effecten in de levels?** Met de exe erbij is `tools/funcinfo.py 0x47cba0` (aanroepers
-   en strings) en `tools/drange.py` het startpunt; `tools/levelparse.py` kan per level opsommen welke textuurgroepen
-   een grondtype-byte ≠ 0 hebben, en dat zegt meteen in welke levels de afdrukken te zien horen te zijn.
+1. **Decompile `0x47cba0`**: image number(s), size, color, lifetime, blend mode, whether the imprint also
+   appears on normal ground (kind 2) and what the exact difference between kind 2 and 3 is, and where the imprint
+   ends up relative to the Perso position. Without that, §4 remains a reconstruction.
+2. **Decompile `0x476140`**: meaning of `0.25` and `1.5`, the particle itself (image, gravity,
+   lifetime), and whether the count 3 is a count per call or per second.
+3. **Ground kind 1 (slippery)**: `P+0x308` is now read, but `0x45a850` (slow turn-in ramp on ice) is
+   not ported — see TODO.md.
+4. **Where are the step effects placed in the levels?** With the exe available, `tools/funcinfo.py 0x47cba0` (callers
+   and strings) and `tools/drange.py` are the starting point; `tools/levelparse.py` can enumerate per level which texture groups
+   have a ground-type byte ≠ 0, which immediately says in which levels the imprints should be visible.
