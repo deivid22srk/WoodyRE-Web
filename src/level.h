@@ -160,7 +160,7 @@ typedef struct Model {
     uint32_t nvolume_nodes, *volume_nodes; uint32_t nmesh_nodes, *mesh_nodes;
     uint32_t ncollision_ids;
     int32_t *owner; float cull_r;                             /* per point: owning node (built lazily, ins_point_owner) */
-    uint32_t ncoll, *coll; int coll_ok;                       /* the press (kind 1) and hull (kind 4) nodes, built lazily */
+    uint32_t ncoll, *coll; int coll_ok;                       /* the press nodes (kind 1), built lazily */
 } Model;
 
 typedef struct { Vec3 position; uint32_t id, index; Trajectory traj; } Camera;
@@ -208,7 +208,7 @@ Vec3 ins_point_world(const Instance *inst, uint32_t point_index);
 Vec3 ins_anim_centre(const Instance *inst);
 /* Which node owns point index i (0-based node index). */
 int  ins_point_owner(const Model *m, uint32_t point_index);
-/* The nodes a collision query has to look at: press nodes (kind 1) and collision hulls (kind 4). */
+/* The nodes a collision query has to look at: the press nodes (kind 1). */
 const uint32_t *ins_collision_nodes(const Model *m, uint32_t *count);
 /* World aabb of one node's geometry under the instance's current pose, to reject it without touching its polygons.
  * 0 when the node has no usable box (no points of its own), and the caller has to take it as it comes. */
