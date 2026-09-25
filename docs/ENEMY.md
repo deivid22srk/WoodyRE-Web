@@ -732,7 +732,7 @@ case S_DODGE:  anim = DODGE; if (e->t > 0) { e->t -= dt; enemy_move(e, pl, dodge
    `k = powf(1 − steer, dt·60)`; `dir.xz = norm_xz(target − pos)·(1 − k) + dir.xz·k` (aim height 0), renormalize, and revert if
    `dot(dir.xz, dir0.xz) < 0`; y stays 0. Hitting the player ⇒ `player_hit(dmg)`; on death, `enemy → S_WIN`. Lifetime 15 s, first world hit = gone.
    Visual 0/1 = missile (PROJECTILES.md §5.3: ribbon 20 × 25, head image 4 orange, explosion `0x477060(2, …)`, model from the type-41 pool; W1A has 8): **ported**,
-   see PROJECTILES.md §7.1. Visual 3 = fireball (§5.5): not yet ported, drawn as the orb of visual 2 for now, with the right sound.
+   see PROJECTILES.md §7.1. Visual 3 = fireball (§5.5: spinning image-12 head, image-13 spark trail, launch glow, explosion kind 2): **ported**, with SoundFx 20.
 6. **Test W1A**: instance 312 (model 45) at (3701, 4, 2671), sight through the script 800, leash 200: come within 800 ⇒ 0.53 s winding up, missile at
    muzzle height that curves toward Woody in xz, then one shot every 2.0 s; within 150 while winding up ⇒ short charge run with a bite (1 heart);
    one peck = death (hp 1), sounds 63..65 and 66..68 from the animation events. K3A/W3A 549/550 for the dodging of type 9 (aerial peck dive from above).

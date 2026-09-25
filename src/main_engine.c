@@ -1389,28 +1389,32 @@ static void chests_blast(Vec3 c, float r)                                       
 
 /* ---- launcher type 42 + projectiles (docs/PROJECTILES.md). Only template kind 1: straight line at 1000 u/s, radius 5,
  * 1 heart, removed on any hit or after `life` seconds. Visual 2 (the energy bolt every level script uses) and visual
- * 0/1 (the missile of the shooting enemies, section 5.3) are ported, and the bomb thrower (kind 0: a class-40 bomb
- * on template 0, docs/BOMB.md 6); homing, bounces, gravity of the plain shots and the fireball of visual 3 (which is
- * drawn as the bolt) are not. */
+ * 0/1 (the missile of the shooting enemies, section 5.3) and the fireball of visual 3 (section 5.5) are ported, and the
+ * bomb thrower (kind 0: a class-40 bomb on template 0, docs/BOMB.md 6); bounces and gravity of the plain shots are not. */
 typedef struct { Instance *inst, *target; int active, count, aim, kind, visual, anim; float T, t0, last, life, anim_dur, speed, gravity; } Launcher;   /* anim/anim_dur: 1002 [7] / [8] (+0x17c / +0x180); speed/gravity: 1002 [0] / [1] (T+0x20 / T+0x1c) */
-typedef struct { int active, visual; const Instance *owner; Vec3 pos, dir, dir0, origin; float age, life, dying, speed, damage, steer, vsteer, aim_h; Enemy *enemy; Missile *missile; } Shot;   /* vsteer / aim_h: T+0x44 / T+0x3c (class 16) */
-typedef struct { Vec3 pos; float t; int kind; } Flash;                             /* kind 0 = the flash of visual 2 (0x46f180), 1 = the muzzle flash of the missile (0x46fa40) */
+typedef struct { int active, visual; const Instance *owner; Vec3 pos, dir, dir0, origin; float age, life, dying, speed, damage, steer, vsteer, aim_h; Enemy *enemy; Missile *missile; float fb_acc; Vec3 fb_prev; } Shot;   /* vsteer / aim_h: T+0x44 / T+0x3c (class 16); fb_acc / fb_prev: the fireball's spark clock fx+0x40 and last position fx+0x24 */
+typedef struct { Vec3 pos; float t; int kind; } Flash;                             /* kind 0 = the flash of visual 2 (0x46f180), 1 = the muzzle flash of the missile (0x46fa40), 2 = the launch glow of the fireball (0x4702b0, 1 s) */
+typedef struct { Vec3 pos; float t, rot; } Spark;                                  /* 0x470370: one spark of the fireball's trail, 0.4 s, image 13 */
+static Spark g_sparks[256]; static int g_spark_next;
 static Launcher g_launchers[32]; static int g_nlaunchers;
 static Shot g_shots[200]; static Flash g_flashes[64];
 static Launcher *launcher_of(const Instance *in) { for (int i = 0; i < g_nlaunchers; i++) if (g_launchers[i].inst == in) return &g_launchers[i]; return NULL; }
 static void flash_add(Vec3 p, int kind) { for (int i = 0; i < 64; i++) if (g_flashes[i].t <= 0) { g_flashes[i].pos = p; g_flashes[i].t = 1e-4f; g_flashes[i].kind = kind; return; } }
 static int shot_is_missile(const Shot *s) { return s->visual == 0 || s->visual == 1; }
 /* how long the trail keeps shrinking after the projectile is gone: seconds per segment / (3 * that per second),
- * 0.04 / 0.3 for the bolt (0x46f8a0) and 0.025 / 0.15 for the missile (0x46fb30) */
-static float shot_fade_len(const Shot *s) { return shot_is_missile(s) ? 0.16667f : 0.13333f; }
+ * 0.04 / 0.3 for the bolt (0x46f8a0) and 0.025 / 0.15 for the missile (0x46fb30); the fireball's record lives on
+ * 0.03125 / 0.09375 s but draws nothing in that time (its ribbon is never submitted, docs/PROJECTILES.md 5.5) */
+static float shot_fade_len(const Shot *s) { return shot_is_missile(s) ? 0.16667f : s->visual == 3 ? 0.33333f : 0.13333f; }
 /* 0x449130: the sound and the visual of a new projectile. Visual 0/1 take a missile model from the pool and open with
- * their own muzzle flash, 2 and 3 open with the flash of the bolt, and from 4 on a projectile is silent and invisible
+ * their own muzzle flash, 2 opens with the flash of the bolt, 3 with the 1-second glow of 0x4702b0, and from 4 on a projectile is silent and invisible
  * (the thrown bomb of template 0). SoundFx 17/18/19/20 by visual (SOUND.md 5), 3D on the owner. */
 static void shot_begin(Shot *s, const Instance *owner, int sound_fx)
 {
     if (s->visual >= 4) return;                                                    /* jump table 0x4492b8 has four entries */
     if (owner) audio_fx(sound_fx, owner, &owner->position.x);
-    if (shot_is_missile(s)) { s->missile = missile_take(s->pos, s->dir); flash_add(s->pos, 1); } else flash_add(s->pos, 0);
+    if (shot_is_missile(s)) { s->missile = missile_take(s->pos, s->dir); flash_add(s->pos, 1); }
+    else if (s->visual == 3) { s->fb_prev = s->pos; s->fb_acc = 0; flash_add(s->pos, 2); }   /* 0x470af0: fx+0x24 = start, fx+0x40 = 0, record 0x4702b0 at the start */
+    else flash_add(s->pos, 0);
 }
 static int shot_sound(int visual) { return visual == 0 ? 17 : visual == 1 ? 18 : visual == 2 ? 19 : 20; }
 static void launcher_fire(Launcher *l)                                             /* 0x452560 -> 0x4490a0 / 0x449130 */
@@ -1432,7 +1436,7 @@ static void launcher_fire(Launcher *l)                                          
     }
 }
 /* projectile of a shooting enemy (0x418820): template 1 with the enemy's speed / damage / xz steering and its own
- * visual (P+0x74): 0/1 = the missile, 3 = the fireball, which is not ported and is drawn as the visual-2 bolt */
+ * visual (P+0x74): 0/1 = the missile, 3 = the fireball */
 void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, int visual, int sound_fx)
 {
     for (int i = 0; i < 200; i++) if (!g_shots[i].active) {
@@ -1488,12 +1492,13 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
         s->pos = b;
         if (!end) { if (s->missile) missile_place(s->missile, s->pos, s->dir); continue; }                 /* 0x4723d0 -> 0x4724e0: the model rides along */
         /* 0x46fbca: a missile explodes (0x477060 kind 2, radius 400, no damage of its own) and hands its model back;
-         * the bolt only leaves the flash of 0x46f36d. Either way the trail goes on shrinking for a moment. */
-        if (shot_is_missile(s)) { blast_add(b, 400.0f); missile_release(s->missile); s->missile = NULL; } else flash_add(b, 0);
+         * the fireball explodes the same way (0x4704d7, at fx+0x24: the last position its record saw, the one before
+         * this step); the bolt only leaves the flash of 0x46f36d. Either way the trail goes on shrinking for a moment. */
+        if (shot_is_missile(s)) { blast_add(b, 400.0f); missile_release(s->missile); s->missile = NULL; } else if (s->visual == 3) blast_add(a, 400.0f); else flash_add(b, 0);
         s->dying = shot_fade_len(s);
         if (getenv("WOODY_FXLOG")) printf("shot %d (visual %d) ends at %.0f %.0f %.0f age %.2f from %.0f %.0f %.0f", i, s->visual, b.x, b.y, b.z, s->age, s->origin.x, s->origin.y, s->origin.z), puts("");
     }
-    for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) { g_flashes[i].t += dt; if (g_flashes[i].t >= 0.4f) g_flashes[i].t = 0; }
+    for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) { g_flashes[i].t += dt; if (g_flashes[i].t >= (g_flashes[i].kind == 2 ? 1.0f : 0.4f)) g_flashes[i].t = 0; }
 }
 /* ---- class 14, the Buzz boss (boss.c, docs/BOSS14.md): the engine side ------------------------------------------
  * mailbox variable, camera shake, the HUD boss bar, the kind-1 explosion and the smoke plumes on the markers of the
@@ -1944,13 +1949,38 @@ static void steps_draw(float dt)
 
 /* the visuals of a projectile: the bolt of visual 2 (0x46f8a0) and the missile of visual 0/1 (0x4700e0). Both are a
  * head sprite with a ribbon behind it, and the missile has the model and its exhaust on top of that (0x46fb30).
+ * The fireball of visual 3 (0x470420) has no ribbon on screen: two dim image-12 sprites spinning against each other
+ * and a trail of image-13 sparks, 75 a second, left behind where it flew (docs/PROJECTILES.md 5.5).
  * The original samples the ribbon from the path the projectile really flew; the port lays it out straight behind the
  * current direction, so a homing shot (only the type-7 enemy steers) drags its ribbon around with it. */
+/* 0x470420 while the projectile lives: the head and the sparks. t = the record's age (fx+0), the same clock as s->age. */
+static void fireball_draw(Shot *s, float dt)
+{
+    static const float grey[3] = { 0.5f, 0.5f, 0.5f };
+    int r = (int)(s->age * 511.0f) % 511;                                          /* 0x47080d: (int)(t * 511) % 511, the second one 511 minus that */
+    hud_world_fx(12, &s->pos.x, 140.0f, r / 512.0f, grey, 0.7f);                   /* flags 5: additive, so 0.5 * 0.7 of the texture */
+    hud_world_fx(12, &s->pos.x, 70.0f, (511 - r) / 512.0f, grey, 0.7f);
+    if (dt <= 0) { s->fb_prev = s->pos; return; }
+    /* 0x470863: acc += dt, n = (int)(acc * 100), acc -= n * 0.0133 -> 75 sparks a second on average, spread over the way
+     * flown since the previous frame, back from the head along the current direction, each axis +-10 at random */
+    s->fb_acc += dt; int n = (int)(s->fb_acc * 100.0f); s->fb_acc -= n * 0.0133f;
+    float dx = s->fb_prev.x - s->pos.x, dy = s->fb_prev.y - s->pos.y, dz = s->fb_prev.z - s->pos.z, dist = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (n > 32) n = 32;
+    for (int k = 0; k < n; k++) {
+        float f = (float)k / n; Spark *p = &g_sparks[g_spark_next++ % 256];
+        p->pos.x = s->pos.x - f * s->dir.x * dist + (float)msvc_rand(NULL) / 32767.0f * 20.0f - 10.0f;
+        p->pos.y = s->pos.y - f * s->dir.y * dist + (float)msvc_rand(NULL) / 32767.0f * 20.0f - 10.0f;
+        p->pos.z = s->pos.z - f * s->dir.z * dist + (float)msvc_rand(NULL) / 32767.0f * 20.0f - 10.0f;
+        p->rot = (float)(int)((float)msvc_rand(NULL) / 32767.0f * 512.0f) / 512.0f; p->t = 1e-4f;
+    }
+    s->fb_prev = s->pos;
+}
 static void launchers_draw(const float *eye, float dt)
 {
     static const float white[3] = { 1, 1, 1 };
     for (int i = 0; i < 200; i++) {
         Shot *s = &g_shots[i]; if (!s->active || s->visual >= 4) continue;
+        if (s->visual == 3) { if (s->dying <= 0) fireball_draw(s, dt); continue; }
         int mis = shot_is_missile(s), nseg = mis ? 20 : 10;                         /* 500 in 20 resp. 400 in 10 (0x4a9998 / 0x4a964c) */
         float span = mis ? 500.0f : 400.0f, hw = mis ? 7.0f : 30.0f;
         float t = fmodf(s->age, 2.0f), k = s->dying > 0 ? s->dying / shot_fade_len(s) : 1.0f;
@@ -1975,9 +2005,13 @@ static void launchers_draw(const float *eye, float dt)
             hud_world_fx(6, &s->pos.x, 80.0f, (1.0f - t * 0.5f) * 511.0f / 512.0f, white, 0.5f);
         }
     }
+    for (int i = 0; i < 256; i++) if (g_sparks[i].t > 0) {                          /* 0x470370: image 13, size 50, white, alpha 1 - u, 0.4 s, where it was left */
+        Spark *p = &g_sparks[i]; float u = p->t / 0.4f;
+        hud_world_fx(13, &p->pos.x, 50.0f, p->rot, white, 1.0f - u); if ((p->t += dt) >= 0.4f) p->t = 0; }
     for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) {                          /* muzzle / end flash, 0.4 s */
         float t = g_flashes[i].t, u = t / 0.4f, size = 200.0f * cosf(u * 1.5707963f);
         if (g_flashes[i].kind) { hud_world_fx(32, &g_flashes[i].pos.x, size, (1.0f - t * 0.5f), white, 0.5f - 0.5f * u); continue; }   /* 0x46fa40: one image-32 flash at the muzzle */
+        if (g_flashes[i].kind == 2) { hud_world_fx(32, &g_flashes[i].pos.x, 80.0f, t, white, 1.0f - t); continue; }   /* 0x4702b0: 1 s, size 80, alpha 1 - u, one turn in that second */
         hud_world_fx(6, &g_flashes[i].pos.x, size, t * 256.0f / 512.0f, white, 1.0f - u);
         hud_world_fx(4, &g_flashes[i].pos.x, size, (1.0f - t * 0.5f) * 512.0f / 512.0f, white, 0.5f - 0.5f * u);
     }
@@ -2494,7 +2528,7 @@ typedef struct {
 static void *read_all(const char *path, size_t *sz);
 static void level_free(Level *L)
 {
-    g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
+    g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); memset(g_sparks, 0, sizeof g_sparks); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     car_forget();
     memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); g_nenv = 0; g_nflies = 0; water_reset(NULL); storm_reset(); g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); memset(g_pecks, 0, sizeof g_pecks); g_peck_next = 0; memset(g_chips, 0, sizeof g_chips); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);

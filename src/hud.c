@@ -22,7 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
-    GLuint fx[20];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow, shared by the rocket (docs/ROCKET.md 5) and the missiles (docs/PROJECTILES.md 5.3); slot 10 = the footstep mark (docs/FOOTSTEPS.md); slot 11 = image 58, the wake on the water (docs/WATER.md 4.1); 12 = image 18, the spark of a bomb's fuse, 13 = image 24, the smoke of the bomb blast (docs/BOMB.md 3.4, 4.3); 14 = image 57, the drop of the water splash (docs/SPLASH.md 4); 15..17 = images 7, 8, 9, the hit star (0x4750e0), 18 = image 33, the fire ring of the special attack (docs/PERSO_SPECIAL.md 3), 19 = image 30, a segment of the storm's lightning bolt (docs/STORM.md 5) */
+    GLuint fx[21];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow, shared by the rocket (docs/ROCKET.md 5) and the missiles (docs/PROJECTILES.md 5.3); slot 10 = the footstep mark (docs/FOOTSTEPS.md); slot 11 = image 58, the wake on the water (docs/WATER.md 4.1); 12 = image 18, the spark of a bomb's fuse, 13 = image 24, the smoke of the bomb blast (docs/BOMB.md 3.4, 4.3); 14 = image 57, the drop of the water splash (docs/SPLASH.md 4); 15..17 = images 7, 8, 9, the hit star (0x4750e0), 18 = image 33, the fire ring of the special attack (docs/PERSO_SPECIAL.md 3), 19 = image 30, a segment of the storm's lightning bolt (docs/STORM.md 5), 20 = image 13, the spark of the fireball's trail (docs/PROJECTILES.md 5.5) */
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint env[4];                                        /* bank 0 images 53..56: the butterflies of the environment instances (0x47e050 picks one of the four) */
@@ -70,7 +70,7 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
 /* which bank 0 image the footstep mark uses. 0x47cba0 is not decompiled, so its image is unknown: the port takes
  * the soft cloud (image 14) and WOODY_STEPIMG=<n> tries another one (docs/FOOTSTEPS.md 4). */
 int hud_step_image(void) { static int v = -1; if (v < 0) { const char *e = getenv("WOODY_STEPIMG"); v = e ? atoi(e) : 14; if (v < 0) v = 14; } return v; }
-static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : image == hud_step_image() ? 10 : image == 0x3a ? 11 : image == 18 ? 12 : image == 24 ? 13 : image == 57 ? 14 : image == 7 ? 15 : image == 8 ? 16 : image == 9 ? 17 : image == 33 ? 18 : image == 30 ? 19 : -1; }
+static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : image == hud_step_image() ? 10 : image == 0x3a ? 11 : image == 18 ? 12 : image == 24 ? 13 : image == 57 ? 14 : image == 7 ? 15 : image == 8 ? 16 : image == 9 ? 17 : image == 33 ? 18 : image == 30 ? 19 : image == 13 ? 20 : -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
@@ -138,7 +138,7 @@ void hud_free(void)
     for (int i = 0; i < 4; i++) if (H.env[i]) glDeleteTextures(1, &H.env[i]);
     for (int i = 0; i < 9; i++) if (H.bub[i]) glDeleteTextures(1, &H.bub[i]);
     if (H.beam) glDeleteTextures(1, &H.beam);
-    for (int i = 0; i < 20; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
+    for (int i = 0; i < 21; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }

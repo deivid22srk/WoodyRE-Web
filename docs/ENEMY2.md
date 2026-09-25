@@ -497,8 +497,8 @@ dive condition xz ≤ 300 and dot > 0.95, dive time = len(anim 13)/3 + ½·len(a
 2. States → existing code: 5 = type 4's 8 (wander), 1/2 = 2/1 (noticed/chase, speed 300), 7 = 4 (charge, speed 500), 13/8 = 6 (brake, **no** `cool`),
    3 = 3 (after the bite, then `cool = 0.5`), 9/10 = 11, 6 = 9 (hit; on recovery `reload = 2·P.reload`), 11 = 12 (dead).
 3. New in chase (state 2): first the dive test; otherwise if `reload <= 0`: muzzle point = `hand ? marker0 : marker1` (marker nodes with typecode 1 from the model,
-   world position of the first point), direction = `normalize(player.pos − muzzle)`, projectile with visual kind 3 (fireball; `src/main_engine.c` only has kind 2 –
-   draw as a sphere until that exists), damage 2, owner = ghost, SoundFx 20 (3D); `reload += P.reload; hand ^= 1`. If the projectile kills the player ⇒ `st = 9`.
+   world position of the first point), direction = `normalize(player.pos − muzzle)`, projectile with visual kind 3 (fireball, PROJECTILES.md §5.5; ported in
+   `src/main_engine.c` `fireball_draw`), damage 2, owner = ghost, SoundFx 20 (3D); `reload += P.reload; hand ^= 1`. If the projectile kills the player ⇒ `st = 9`.
 4. Vertical: `enemy_move` must do **no ground/edge test** for this type (walls only; y stays) and the gravity block at the bottom of `enemy_update` is skipped; instead, per §3.3:
    target y = player's feet (or `home.y`), step `300·dt` (× 0.2 while the player is rising in a jump) resp. `walk·dt`, not below ground, not through the ceiling (ray from y + 140);
    not while hit/dead.
