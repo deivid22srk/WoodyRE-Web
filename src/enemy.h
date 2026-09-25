@@ -66,6 +66,7 @@ typedef struct Enemy {
     float speed, want_speed, turn_t, cool, hit_t, knock_t, atk_t, t, dead_t, hp, vfall;
     Vec3 knock_dir;
     int attackable, removed, chasing;
+    int list1;                                   /* registered in actor list 1 (RegisterActor 0x40c080) by this frame's Update: types 12 and 15 only */
     int wander_walk; float wander_t, want_ang;   /* wander: alternating idle / walk actions */
     uint32_t path_to; int path_dir;              /* patrol along the instance TRAJ */
 } Enemy;
@@ -91,6 +92,7 @@ void enemy_place(Enemy *e);                                                   /*
 
 /* type 12, the bomb thrower (W2B end boss, docs/ENEMY2.md 4) */
 Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, float r);   /* HitActors 0x44a0a0 for a bomb: the first thrower whose cylinder the swept sphere touches */
+void enemies_actor_blast(EnemySet *s, Vec3 c, float r);                       /* rocket explosion 0x453560: vtbl[40](c, r) on the enemies of actor list 1 (thrower 12, Boss2 15) */
 int  game_enemy_bomb(Enemy *e, Vec3 pos, Vec3 dir, float speed, float fuse);  /* Fire 0x411e80: 0 = no free bomb in the pool (in main_engine.c) */
 void game_msgmask(Instance *in, uint32_t bits, int on);                      /* MsgMask_Set 0x443e50 / _Clear 0x443e90 on the instance's script object (in main_engine.c) */
 

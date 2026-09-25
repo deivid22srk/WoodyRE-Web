@@ -252,6 +252,40 @@ with category 2 or 1: `actor->vtbl[40](&this->pos, 600.0)` (`0x44160000`).
 * Type-17 breakable objects and chests 120/121 are only hit by the **bomb** (`0x44d650`: own lists, radius 400; BONUS.md §7), **not** by the rocket.
   `0x477060` itself does no damage (PROJECTILES.md §5.3).
 
+**The loop in detail** (only for type 20: `cmp [+0x164], 0x14` at `0x45355b`; type 21 jumps to the turn-back at `0x4535cf`):
+```c
+for (i = 0; i < [0x4c531c]; i++) {                         /* 0x453560; ebx = i, ebp walks 0x4c52d8 in steps of 8 */
+    Actor *a = list1[i].actor;                             /* +0 = actor, +4 = the argument of RegisterActor (always 10) */
+    if (Category(a) == 2 || Category(a) == 1)              /* 0x40c340 twice; every entry passes (the three registrants are 1 or 2) */
+        a->vtbl[40](&this->pos /* +0xc */, 600.0f);        /* call [edx+0xa0], 0x44160000; no return value used, no rider exception */
+}
+FadeInst(1.0, 1);  t = 0;  state = 9;                      /* 0x4535ac */
+```
+* **List 1** is double-buffered: `RegisterActor 0x40c080` (ecx = actor, arg 10) appends to the building list `0x4c5218[0x4c5320]` (max **8**, extra
+  entries are dropped); `0x40bf60` (once per frame) copies it to `0x4c52d8[0x4c531c]` and empties the building list. So every reader
+  sees the actors registered in the **previous frame**. Readers: this loop, `HitActors 0x44a0a0` (projectiles), the laser hit test `0x450f80`,
+  the storm `0x451d32`, and the nearest-actor query `0x40c0d0` (category/subtype filter, 3D distance below a limit, |dy| below a limit).
+* **Registrants** (all three `call 0x40c080` in the image):
+  * the Perso `0x44b6b0`: only if `+0x690 == 0`, `+0x26c == 0` and state `+0x21c != 5` (not dead);
+  * enemy type 12, the bomb thrower, `0x4110e6`: first thing in its Update `0x4110c0` after `Enemy_Update 0x41a3e0`, every frame (also when dead);
+  * Boss2 (class 15) `0x40dd58`: in its Update `0x40dd30` once message 61 has linked the crushers (`+0x1c8 != 0`).
+  Both enemy Updates only run after Think `0x41a320` (in the world, within `active_d` of the camera, or dead). No other class registers,
+  so ordinary enemies, Buzz (14), class 16 and all objects are never hit by the rocket.
+* **What `vtbl[40]` does** per registrant: Perso `0x44d040` (above: Kill(6)); thrower `0x4119b0` (1 hp per blast, 3.6 s immune, ENEMY2.md §4);
+  Boss2 `0x40e800` (sphere r against his cylinder 50 × 140, 1 of 6 hp, no immunity, BOSS15_16.md §6.1).
+* **In the shipped levels this never meets an enemy**: type 20 exists only in W1A, WWS, KWS, SWS, K1A, S1A; the thrower only in W2B (533) and Boss2
+  only in W2D (762) / W3D (790) (`1200 [inst, type]` over all 28 `code` files). W2B and W2D have only the **cannon** (type 21), whose ridden bomb
+  explodes through the bomb path `0x44d650` (Npc table `0x4c4e00`, r 400 — Boss2 and the thrower are hit through that, BOMB.md §4); the W2D cannon 178
+  (−11096, 3524, −2405) shoots toward (−9905, 4325, 1118), ≈ 12000 from Boss2's arena at (−3928, 2206, 9596). W3D has neither a rocket nor a cannon.
+  So in the original the rocket blast only ever hits Woody; Boss2 and the thrower are reachable only in principle.
+* **Port** (`src/main_engine.c` rocket state 7 → `enemies_actor_blast` in `src/enemy.c`): the player test as before, then `vtbl[40](pos, 600)` on
+  every enemy whose last Update registered it (`Enemy.list1`, set in `enemies_update` from the same conditions: type 12 / 15, in the world,
+  within `active_d` or dead, class 15 only after message 61) → `bomber_blast` / `boss15_blast`. Order within one blast: the player first, then
+  the enemies (the original's list order is the frame's Update order; it only matters when the same blast kills Woody and takes Boss2's last
+  point: then his `vtbl[36]` test keeps him at 1 hp). Verified with a forced rocket (temporary hack turning the W2D cannon into a type-20
+  rocket exploding at (−3928, 2300, 9900)): `BOSS2 762 blast: hp 5`, the HUD bar drops to 5; at (−3928, 2300, 10300) (704 away) no hit;
+  in W2B at (10953, −2900, 11400): `THROWER 533 blast: hp 4`. W1A unchanged (`ROCKET 323 blast kills the player`).
+
 ### 4.4 Reset `0x452ae0` (vtbl[17])
 
 Position, rotation and center (`+0x60`) back to the start values, `+0x128 = 0`, `0x4077f0(this, 0)`; if `+0x168` (type 21): `bomb->vtbl[17]()` (deactivate bomb) and `+0x168 = 0`;

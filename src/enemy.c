@@ -428,6 +428,25 @@ static void bomber_blast(Enemy *e, Vec3 c, float r)                    /* vtbl[4
     e->hp -= 1.0f; game_hit_star(c);                                   /* Enemy_TakeDamage(0, 1.0, 0, pos, 0): the star on the blast point */
     if (getenv("WOODY_BOSSLOG")) printf("  THROWER %u blast: hp %.0f", e->inst->index, e->hp), puts("");
 }
+/* actor list 1 (0x4c52d8, max 8, double-buffered by 0x40bf60): besides the Perso only two enemy Updates call RegisterActor 0x40c080 --
+ * the bomb thrower 0x4110e6 (every Update) and Boss2 0x40dd58 (once message 61 has linked his crushers). An Update only runs after
+ * Think 0x41a320 (in the world, within active_d of the camera or dead), so the membership is the one of this frame's Update */
+static int actor_list1(const Enemy *e, Vec3 cam)
+{
+    if ((e->type != 12 && e->type != 15) || e->removed || !e->inst->visible) return 0;
+    if (e->type == 15 && !e->bb.crush[0]) return 0;
+    float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z;
+    return dx * dx + dy * dy + dz * dz < e->P.active_d * e->P.active_d || (e->type == 12 ? e->st == 13 : e->hp <= 0);
+}
+/* the rocket explosion (state 7, 0x453560..0x4535a9): every list-1 actor of category 1 or 2 gets vtbl[40](&rocket.pos, 600);
+ * for the enemies that is the thrower's 0x4119b0 (1 hp) or Boss2's 0x40e800 (sphere against his cylinder, 1 hp) */
+void enemies_actor_blast(EnemySet *s, Vec3 c, float r)
+{
+    for (int i = 0; i < s->n; i++) {
+        Enemy *e = &s->e[i]; if (!e->list1) continue;
+        if (e->type == 12) bomber_blast(e, c, r); else if (e->type == 15) boss15_blast(e, c, r);
+    }
+}
 Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, float r)
 {
     for (int i = 0; i < s->n; i++) {
@@ -563,5 +582,6 @@ void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt)
         else if (e->type == 16) boss16_update(e, pl, cam_pos, dt);
         else if (e->type == 12) bomber_update(e, pl, cam_pos, dt);
         else if (e->type >= 7 && e->type <= 9) shooter_update(e, pl, cam_pos, dt); else enemy_update(e, pl, cam_pos, dt);
+        e->list1 = actor_list1(e, cam_pos);                           /* RegisterActor 0x40c080 in the Update */
     }
 }
