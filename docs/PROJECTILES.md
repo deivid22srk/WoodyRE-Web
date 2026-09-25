@@ -168,6 +168,14 @@ For the W1A launcher (`max_bounce = 0`): **the first hit against the world or an
 Note: the ray starts at the marker's beginning; if that lies inside a hull of the launcher itself, the shot dies instantly. In W1A this apparently does not happen
 (marker = "muzzle", outside the housing); not verified: uncertain.
 
+**Ported (instance part of the ray).** `0x449daf` is the same `0x4359b0(old, pos, −1)` as the class-51 laser (OBJECTS.md §2.1: world polygons plus
+the press nodes of the instances in the visited cells and the dynamic list; −1 is the start cell, nothing is skipped, the actors have no press nodes). The port's
+shot update (`launchers_update`, main_engine.c, for launcher and enemy shots alike) now tests `gel_ray_frac` and `inst_ray_press` (instance.c) and ends
+the shot at the nearer of the two; `WOODY_FXLOG=1` prints `shot N (owner …) stops on instance …`. Seen (first 12 s of each level): W1B launchers
+99/388 (model 16) stop on scenery instances 100/101/36 (model 6) and 79 (model 8) after 0.5..1.4 s of flight, W3B launchers 56/69 on instances 286/281
+(model 28), K1A launcher 371 on instances 233/368 (models 1/2), S1A launchers 502/503 on instances 106/141/142 (model 20); W1A, W2A and W3A shots
+reach no instance. No shot died in its own launcher (the muzzle is outside the housing's press node). Not ported: bouncing (`max_bounce ≠ 0`) and kind 3.
+
 ### 2.4 Carried instance (`T+0x5c`, bombs only; BONUS.md §7)
 
 After `Move` (`0x449b35`): `carried->pos = P->pos + (0, 1, 0)`, `carried+0x60 = P->pos`, `0x4077f0` (re-cell); outside the world (`cell < 0`) → if it is a bomb
@@ -409,7 +417,7 @@ typedef struct { int active; ProjT t; Vec3 pos, dir, start; float age, dead_t; c
 2. Projectiles: `age += dt; if (age >= life) dead;` `old = pos; pos += dir·speed·dt` (+ gravity/damping from §2.2 if `gravity != 0`);
    test against the player first: segment `old→pos` against the player cylinder with radius **69 + 5** and y range `[feet − 5, feet + 193 + 5]` (reuse the segment-cylinder code of `laser_hits_player`
    with a different radius; not ×0.85) → `if (player_hit(p, t.damage, dir)) player_kill(p, 3);` dead. Don't test if the player is dead (`dead_kind`) — actor list 1 does not contain him then.
-   Then the world: `f = gel_ray_frac(gel, old, pos); if (f <= 1) { pos = old + (pos−old)·f; dead; }` (max_bounce 0; instance hulls once the port has a ray test for those).
+   Then the world: `f = gel_ray_frac(gel, old, pos); if (f <= 1) { pos = old + (pos−old)·f; dead; }` (max_bounce 0), and the press nodes of instances with `inst_ray_press` (ported, §2.3).
    Enemies are also hit thanks to `hits_all = 1` (`vtbl[39]`), optionally via the existing enemy damage function in `src/enemy.c`.
 3. "dead" = `active = 0`, `dead_t = 0`, impact flash (E) at `pos`; let the ribbon keep shrinking for another 0.133 s.
 
@@ -427,7 +435,8 @@ typedef struct { int active; ProjT t; Vec3 pos, dir, start; float age, dead_t; c
 ## 8. Open questions
 1. `L+0x184` (copy of parameter 2) and `L+0x188` (parameter 6): no reader found.
 2. Does `Think` also run for launchers in non-visible sectors (§4.2)?
-3. Does the ray `0x4359b0` hit the launcher's own hulls (§2.3)? No exclusion in the code for projectiles without a carried instance.
+3. ~~Does the ray `0x4359b0` hit the launcher's own hulls (§2.3)?~~ It tests press nodes, not hulls, and excludes nothing (the −1 is the start cell); in the port
+   no shot of any level stops in its own launcher, so the muzzles lie outside the housings' press nodes (§2.3).
 4. Exact meaning of sprite-flag bits 1 and 2 and mode 0x12/0x13 of `0x470f10`; color scale of the line primitive (0.5 = neutral at the laser default: is 0.45 here "almost full"?).
 5. Visual kind 3 (`0x470420`), explosion kinds 0/1, and which enemy subtypes get `Pe+0x74 = 0/1` (missile): not worked out.
 6. `P+0xf0..0x100` (bounce plane): no reader found.

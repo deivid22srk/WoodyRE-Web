@@ -939,7 +939,7 @@ static void results_update(EkoVM *vm, float dt, int ok)               /* the tab
 }
 
 /* ---- lasers: classes 50 / 51 / 52 (docs/OBJECTS.md 2.1). One beam per typecode-0 vector marker; off until message 50.
- * 51: marker start along the marker direction for `len` (message 52, default 400), cut at the first world polygon;
+ * 51: marker start along the marker direction for `len` (message 52, default 400), cut at the first world polygon or instance press node;
  * 50: endless until the first hit; 52: to the marker start of the target instance (message 53). Touching a beam kills (Kill(2)). */
 /* one lazer effect object per marker (0x46e4a0, 0x40 B, flags +0x34 = 0x3c0 for every laser): the timers of the
  * travelling pulse, the lightning arc and the impact at the hit point, plus the arc's own ring of 32 side offsets
@@ -959,8 +959,16 @@ static int laser_segment(const Laser *z, uint32_t marker, const GelFile *gel, Ve
         float len = z->type == 50 ? 100000.0f : z->len; *a = p0; *kind = 0;
         if (z->type == 52) { Vec3 t0, td; if (z->target && inst_vector(z->target, 0, &t0, &td)) { *b = t0; *kind = 2; return 1; } if (marker) return 0; }
         b->x = p0.x + d.x / l * len; b->y = p0.y + d.y / l * len; b->z = p0.z + d.z / l * len;
-        float t = gel_ray_frac(gel, *a, *b);
+        /* 51: Ray 0x4359b0(a, b, -1), 50: the endless ray 0x435810(a, a + dir, -1); both stop at the first world polygon (kind 1) OR
+         * press node of an instance (kind 2), and the -1 is the start cell (look it up), not an instance to leave out: the beam's own
+         * housing is not skipped, the marker simply starts outside its press node (W1A model 33: marker z -62.9, press tip z -60.4).
+         * Woody and the enemies have no press nodes, so the beam passes through them; only the hit test below kills (the player) */
+        float t = gel_ray_frac(gel, *a, *b), tw = t < 1.0f ? t : 1.0f, ti; const Instance *hi = NULL;   /* the instances only up to the wall: a small box to cull with */
+        Vec3 bw = { a->x + (b->x - a->x) * tw, a->y + (b->y - a->y) * tw, a->z + (b->z - a->z) * tw };
+        if (inst_ray_press(&g_ins, NULL, *a, bw, &ti, NULL, &hi) && ti * tw < t) t = ti * tw; else hi = NULL;
         if (t <= 1.0f) { b->x = a->x + (b->x - a->x) * t; b->y = a->y + (b->y - a->y) * t; b->z = a->z + (b->z - a->z) * t; *kind = 1; }
+        if (z->type == 50) *kind = 1;                                               /* 0x45122d: rec+0x2c = 1 whether or not the ray found anything */
+        if (hi && getenv("WOODY_FXLOG")) { static const Instance *last[64][8]; int zi = (int)(z - g_lasers); if (zi >= 0 && zi < 64 && marker < 8 && last[zi][marker] != hi) { last[zi][marker] = hi; printf("laser %u (type %d) marker %u stops on instance %u (model %d) at %.0f %.0f %.0f, %.0f long", z->inst->index, z->type, marker, hi->index, (int)(hi->model - g_ins.models), b->x, b->y, b->z, sqrtf((b->x - a->x) * (b->x - a->x) + (b->y - a->y) * (b->y - a->y) + (b->z - a->z) * (b->z - a->z))), puts(""); } }
         return 1;
     }
     return 0;
@@ -1452,7 +1460,14 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
             float x = a.x + d.x * t - pl->pos.x, y = a.y + d.y * t - pl->pos.y, z = a.z + d.z * t - pl->pos.z;
             if (x * x + z * z <= 74.0f * 74.0f && y >= -5.0f && y <= player_body_height(pl) + 5.0f) { if (player_hit(pl, s->damage, s->dir)) { player_kill(pl, 3); enemy_player_killed(s->enemy); } b = (Vec3){ a.x + d.x * t, a.y + d.y * t, a.z + d.z * t }; end = 1; }
         }
-        if (!end) { float f = gel_ray_frac(gel, a, b); if (f <= 1.0f) { b = (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }; end = 1; } }
+        if (!end) {                                                                /* 0x449daf: Ray 0x4359b0(old, pos, -1), the laser's ray: world polygons and the
+                                                                                    * press nodes of instances, the launcher's own included (no skip without a carried
+                                                                                    * instance); max_bounce 0, so any hit (kind 1, 2 or 3) ends the shot (0x449dff) */
+            float f = gel_ray_frac(gel, a, b), fi; const Instance *hi = NULL;
+            if (inst_ray_press(&g_ins, NULL, a, b, &fi, NULL, &hi) && fi < f) f = fi; else hi = NULL;
+            if (f <= 1.0f) { b = (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }; end = 1; }
+            if (hi && end && getenv("WOODY_FXLOG")) printf("shot %d (owner %u) stops on instance %u (model %d) after %.2f s at %.0f %.0f %.0f", i, s->owner ? s->owner->index : 0u, hi->index, (int)(hi->model - g_ins.models), s->age, b.x, b.y, b.z), puts("");
+        }
         s->pos = b;
         if (!end) { if (s->missile) missile_place(s->missile, s->pos, s->dir); continue; }                 /* 0x4723d0 -> 0x4724e0: the model rides along */
         /* 0x46fbca: a missile explodes (0x477060 kind 2, radius 400, no damage of its own) and hands its model back;
@@ -2242,8 +2257,9 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 59: case 60:                                                               /* class 14 (the Buzz boss, 0x410070): 59 couples an instance, 60 names its mailbox var */
         if (in && in->type == 14 && m->nargs > 1) enemies_boss_msg(&g_enemies, in, (int)m->id, m->args[1], m->id == 59 ? slot_instance(m->args[1]) : NULL);
         break;
-    case 16: case 18: case 19:                                                      /* texture frame override (docs/INSTANCE.md 2): the level-select doors turn their red
-                                                                                     * cross into a green tick with it; 0x42db50 has no scripted test */
+    case 15: case 16: case 17: case 18: case 19:                                    /* texture overrides (docs/INSTANCE.md 2): 16/18 frames - the level-select doors turn their
+                                                                                     * red cross into a green tick with it -, 15/17 UV scroll (no level sends those); 0x42db50
+                                                                                     * has no scripted test */
         if (in) inst_msg(in, m->id, m->args, m->nargs, g_now);
         break;
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
@@ -2842,6 +2858,17 @@ int main(int argc, char **argv)
             while (e && L.have_player && sscanf(e, "%f %f %f %f%n", &pa[0], &pa[1], &pa[2], &pa[3], &used) == 4) { if (!(posat_done >> k & 1) && now - t0 >= pa[0]) { posat_done |= 1 << k; L.player.pos = (Vec3){ pa[1], pa[2], pa[3] }; L.player.floor_y = pa[2] - 1000.0f; L.player.on_ground = 0; } e += used; k++; } }
         { static int setvar_done; float sv[3]; const char *e = getenv("WOODY_SETVAR"); int k = 0, used;   /* testing: WOODY_SETVAR="T var val [...]" = SetVar T s into the level (W2B boss fight: "1 1 1") */
             while (e && L.have_player && sscanf(e, "%f %f %f%n", &sv[0], &sv[1], &sv[2], &used) == 3) { if (!(setvar_done >> k & 1) && now - t0 >= sv[0]) { setvar_done |= 1 << k; game_var_set((uint32_t)sv[1], (int)sv[2]); } e += used; k++; } }
+        {   /* testing: WOODY_MSGAT="T id a0 a1 ...[; T id ...]" = send a script message T s into the level, once (a0 = slot number or
+             * reference, e.g. "2 17 216 255 1 100" = message 17 to slot 216: messages no level script sends, like 15/17) */
+            static int msgat_done; const char *e = getenv("WOODY_MSGAT"); int k = 0;
+            while (e && *e && k < 31) {
+                char *end; float T = strtof(e, &end); if (end == e) break; e = end;
+                EkoMsg em; memset(&em, 0, sizeof em); em.id = (uint32_t)strtol(e, &end, 0); e = end;
+                while (em.nargs < EKO_MAX_MSG_ARGS) { long v = strtol(e, &end, 0); if (end == e) break; em.args[em.nargs++] = (uint32_t)v; e = end; }
+                while (*e == ' ' || *e == ';') e++;
+                if (!(msgat_done >> k & 1) && now - t0 >= T) { msgat_done |= 1 << k; on_msg(&L.vm, &em, NULL); }
+                k++;
+            } }
         {   /* testing: WOODY_KILLAT="T" = the pit message 1020 (Kill(1) + death camera) T s into the level, once; for the respawn */
             static int killat_done; if (getenv("WOODY_KILLAT") && !killat_done && L.have_player && now - t0 >= atof(getenv("WOODY_KILLAT"))) {
                 killat_done = 1; EkoMsg em; memset(&em, 0, sizeof em); em.id = 1020; on_msg(&L.vm, &em, NULL); } }

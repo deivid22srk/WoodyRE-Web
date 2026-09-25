@@ -514,6 +514,21 @@ static uint32_t tex_frame(const Instance *I, const TexGroup *g)   /* frame mode 
     return (uint32_t)(f < 0 ? 0 : f > n - 1 ? n - 1 : f);
 }
 
+/* UV scroll mode A of 0x47f290 (docs/INSTANCE.md 2), messages 15 / 17: only for a texture with a scroll speed (tex+0x48 / +0x4c,
+ * the .tex group's scroll_u / scroll_v; only K3A g76, S3A g75 and W3A g77 have one) and only while an instance override is
+ * on - without one, nothing in the engine scrolls a model texture. The offset goes onto the material's constant terms
+ * (material+0xc = m[9] for u, +0x1c = m[10] for v) for this one polygon and is taken off again after it (0x43c369). */
+static int tex_scroll(const Instance *I, const TexGroup *g, float *du, float *dv)
+{
+    int md = I->uv_mode; if (!md || (g->scroll_u == 0 && g->scroll_v == 0)) return 0;
+    float t = g_tex_now - I->uv_t0, su = g->scroll_u * I->uv_fac, sv = g->scroll_v * I->uv_fac;
+    if (md == 1 || md == 2) { if (!(t < I->uv_t2)) t = I->uv_t2; }              /* 15: the scroll stops after T2 */
+    else if (md != 4 && md != 5) return 0;                                      /* jump table 0x47f61c: mode 3 moves nothing */
+    su *= t; sv *= t; su -= floorf(su); sv -= floorf(sv);                        /* 0x499ede floor: only the fraction is added */
+    if (md == 2 || md == 5) { su = -su; sv = -sv; }                             /* a2 = 0: backwards (0x47f5d8 fsubr) */
+    *du = su; *dv = sv; return 1;
+}
+
 static void set_material(const Renderer *r, uint32_t material, const Material **mat_out, uint32_t frame, const Instance *inst)   /* frame: models never auto-cycle (0x47f290), only an override does */
 {
     /* GL state = (texture or none, blend mode). Every polygon has its own material record (a planar projection), so the
@@ -837,12 +852,13 @@ static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int 
         InsPoly *p = &n->polys[k]; if (p->nverts < 3 || mat_blended(r, p->material) != pass) continue;
         if (have_cl && !(p->flags & 2)) { const float *pl = poly_plane(m, n, p); if (pl[0] * cl.x + pl[1] * cl.y + pl[2] * cl.z + pl[3] <= 0) continue; }
         set_material(r, p->material, &mat, frame, inst);
+        float du = 0, dv = 0; int scroll = mat && helper < 0 && mat->group < r->tex->ngroups && tex_scroll(inst, &r->tex->groups[mat->group], &du, &dv);
         bt_begin(1);
         for (uint32_t c = 0; c < p->nverts; c++) {
             InsPoint *pt = &m->points[p->indices[c]];
             Vec3 lp = { pt->pos.x - n->pivot.x, pt->pos.y - n->pivot.y, pt->pos.z - n->pivot.z };
             Vec3 wp = mat4_apply(&inst->node_world[ni], lp);
-            if (mat) { float u, v; node_poly_uv(inst, helper, mat, lp, wp, &u, &v); bt_texcoord(u, v); }
+            if (mat) { float u, v; node_poly_uv(inst, helper, mat, lp, wp, &u, &v); if (scroll) { u += du; v += dv; } bt_texcoord(u, v); }
             { float base[3] = { 1, 1, 1 }; if (!mat && (p->material & 0x8000)) argb1555_to_rgb(p->material, base); if (mat || (p->material & 0x8000)) lit_vertex_colour(r, inst, &inst->node_world[ni], pt, base); }
             bt_vertex(wp.x, wp.y, wp.z);
         }
@@ -870,7 +886,7 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
         bt_begin(0);
         for (uint32_t t = 0; t < m->ntris; t++) {
             InsTri *tr = &m->tris[t]; if (mat_blended(r, tr->material) != pass) continue;
-            if (tr->material != last) { bt_end(); set_material(r, tr->material, &mat, 0, inst); last = tr->material; base[0] = base[1] = base[2] = 1; if (tr->material & 0x8000) argb1555_to_rgb(tr->material, base); bt_begin(0); }
+            if (tr->material != last) { bt_end(); set_material(r, tr->material, &mat, 0, NULL); last = tr->material; base[0] = base[1] = base[2] = 1; if (tr->material & 0x8000) argb1555_to_rgb(tr->material, base); bt_begin(0); }
             uint32_t idx[3] = { tr->i0, tr->i1, tr->i2 };
             Vec3 wp[3]; const Mat4 *MM[3];
             for (int c = 0; c < 3; c++) {
