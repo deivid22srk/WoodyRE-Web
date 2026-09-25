@@ -2051,10 +2051,11 @@ static void rockets_update(float dt, Player *pl, int have_player)               
             if (r->t >= 1.0f) { audio_fx_stop(11, in, 1); audio_fx(6, in, &in->position.x); r->t = 0; r->state = 7;
                 blast_add(in->position, 1400.0f); blast_add(in->position, 400.0f); } break;                    /* explosion kind 1: two flash records */
         case 7: if (r->type == 21) { r->q0 = in->quat; r->q1 = r->start_q; r->t = 0; r->state = 8; break; }   /* 0x453613: turn back to the start rotation */
-                                                                                   /* blast 600 on the registered actors: here the player (0x44d040) */
+                                                                                   /* blast 600 on actor list 1 (0x453560, ROCKET.md 4.3): first the player (0x44d040) */
             if (have_player && !pl->dead_kind) { Vec3 d = { pl->inst->position.x - in->position.x, pl->inst->position.y - in->position.y, pl->inst->position.z - in->position.z };
                 if (d.x * d.x + d.y * d.y + d.z * d.z < 600.0f * 600.0f && !getenv("WOODY_GOD")) { float l = sqrtf(d.x * d.x + d.z * d.z); Vec3 away = l > 1e-3f ? (Vec3){ d.x / l, 0, d.z / l } : (Vec3){ 0, 0, 1 };
                     player_hit(pl, 0, away); player_kill(pl, 6); printf("  ROCKET %u blast kills the player", in->index), puts(""); } }
+            enemies_actor_blast(&g_enemies, in->position, 600.0f);                 /* the rest of list 1: the thrower (0x4119b0) and Boss2 (0x40e800) */
             in->fade = in->fade_target = 1.0f; r->t = 0; r->state = 9; break;
         case 8: r->t += dt; if (r->t > 2.0f) r->t = 2.0f; in->quat = q_slerp(r->q0, r->q1, r->t / 2.0f);
             if (r->t >= 2.0f) { r->t = 0; r->state = 0; rocket_place(r); } break;           /* no Reset: +0x168 and the 0x40 flag stay until the next 40 */
