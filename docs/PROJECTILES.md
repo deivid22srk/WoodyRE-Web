@@ -361,9 +361,51 @@ flame = three quads rotated around the axis (0, 85, 170 /512 turns + `f3·512`, 
 smoke = **200 puffs/s** (`(int)(acc·200)`, `0x4aa164`; `0x4abd08` = 0.005 subtracted per puff) spread along the distance travelled, each a record `0x475380`: 0.2 s, image 14, white,
 `alpha = 0.3·(1 − u)`, `size = 15·(1 + u)`, random rotation, flag 7 (additive). State 1 scales everything with `min(1, …)·6.67` ramps, state 3 ×2 (class 20/21).
 
-### 5.5 Visual kind 3 — fireball `0x470af0` (1002 `[18, 1]`, 90× in later levels; short)
-Record `0x470420` with a ribbon from pool `0x5e8310` (ribbon length 1000 units in 32 segments: `0x4aa188` = 1000, `0x4ab5b8` = 32), half-ribbon-width 70 (image 0), head two sprites image 12 (alpha 0.7, sizes 140 and 70),
-spark records `0x4702b0`, and at the end `0x477060` (explosion). Sound SoundFx 20. Not read further: uncertain.
+### 5.5 Visual kind 3 — fireball `0x470af0` (1002 `[18, 1]`, enemies `P+0x74 = 3`; **ported**, §7.1)
+
+Users: shooter type 9 and ghost type 13 (ENEMY.md §8, ENEMY2.md §3), the class-16 boss (BOSS15_16.md: three homing fireballs), and every launcher
+whose script sends 1002 `[18, 1]`. Sound: **SoundFx 20** on the owner, from `0x449130` (`0x4492a1`), not from the visual. **No dynamic light** anywhere in
+the chain (`0x470af0`, `0x470420`, `0x4702b0`, `0x470370`, `0x477060`/`0x4762e0` call nothing but the ribbon pool, `rand`, `ftol` and the sprite primitive).
+
+**Creation `0x470af0(P)`** (only caller `0x4492a9`, jump table `0x4492b8[3]`): two records in the effect pool.
+1. Main record, update `0x470420`, lifetime 10000 s (`0x461c4000`; ends itself): ribbon from pool `0x5e8310` (`0x47d380`; the pool is made by `0x470290` =
+   `0x46e3b0(32 points, 200 ribbons)`; no ribbon → record freed, `0x470c62`), `fx+0xc = P`, `fx+0x44 = P->generation`, `fx+0x18 = fx+0x24 = P->pos`,
+   every ribbon point = `(P->pos, P->dir)`, `fx+0x3c = 1000 / ((N−1)·speed)`, `fx+0x10 = 1000 / (speed·32)` (`0x4aa188` = 1000, `0x4ab5b8` = 32), `fx+0x14 = 0`,
+   `fx+0x40 = 0` (spark clock), `fx+0x48 = 1` (explosion still to come).
+2. **Launch glow** `0x4702b0` at the start position, lifetime **1.0 s**: `u = age/1` (after `age += dt`);
+   `sprite(img 32, rgb 1,1,1, alpha 1 − u, size 80 /*0x42a00000*/, rot = (int)(u·512), flags 7)` — one full turn while it fades.
+
+**Per frame `0x470420`**, "alive" = `P->active && fx+0x44 == P->generation` (`0x470468`):
+```c
+/* alive (0x470546) */
+fx->ribbon_t += dt; fx->acc += dt; fx->t += dt;                                     /* +0x14, +0x40, +0 */
+if (fx->ribbon_t > fx+0x3c) { ribbon_push(P->pos, P->dir, fx->ribbon_t); fx->ribbon_t = 0; }   /* 0x47d090 */
+old = fx->pos;  fx->pos (+0x24) = P->pos;  fx->dir (+0x30) = P->dir;
+/* the ribbon is sampled into 33 points (0x47062d..0x47079c, interpolation 0x46d0d0) and the loop 0x4709fd fills the line
+ * record S+0x278..0x2b4 per segment: half width 70 (0x428c0000), image 0 (0x10000), rgb0/rgb1 (0.67, 0.03, 0.04) (0x3f2b851f,
+ * 0x3cf5c28f, 0x3d23d70a), alpha0 = 1 - i/32 (0 for i = 0), alpha1 = 1 - (i+1)/32 -- but **0x471a10 is never called**: the only
+ * calls in 0x470420 are the two sprites at 0x47082c / 0x47085e. The dark-red ribbon is computed and thrown away; nothing of it is seen. */
+r = (int)(fx->t * 511.0) % 511;                                                     /* 0x4abc90 = 511, idiv 0x1ff */
+sprite(img 12, rgb 0.5,0.5,0.5, alpha 0.7, size 140 /*0x430c0000*/, rot = r,       flags 5);   /* at fx->pos */
+sprite(img 12, rgb 0.5,0.5,0.5, alpha 0.7, size  70 /*0x428c0000*/, rot = 511 - r, flags 5);   /* spins the other way */
+/* sparks (0x470863): about 75 a second */
+n = (int)(fx->acc * 100);  fx->acc -= n * 0.0133;                                   /* 0x4a9010 = 100, 0x4abca4 = 0.0133 */
+dist = |old - P->pos|;
+for (i = 0; i < n; i++) {                                                          /* record 0x470370, 0.4 s (0x3ecccccd) */
+    f = i / n;
+    spark.pos = fx->pos - f * fx->dir * dist + (rand01()*20 - 10, rand01()*20 - 10, rand01()*20 - 10);   /* 0x4a9994 = 20, 0x4a9750 = 10 */
+    spark.rot = (int)(rand01() * 512);                                             /* rand01 = 0x43ff40 = rand()/32767 */
+}
+```
+Spark record `0x470370` (stationary): `u = age/0.4` (before `age += dt`), `sprite(img 13, rgb 1,1,1, alpha 1 − u, size 50 /*0x42480000*/, rot = spark.rot, flags 7)`.
+
+Not alive (`0x470483`): no head, no sparks; `fx+0x10 −= dt · 3 · 0.03125` (`0x4a988c`, `0x4abca8`); once (`fx+0x48`) **explosion `0x477060(2, &fx->pos, NULL)`**
+(`0x4704d7`) — kind 2 ignores the normal: one `0x4762e0` record, R = 400, 0.3 s, the nine flat quads of §5.3. `fx->pos` is the position the record saw on the
+last live frame, i.e. the projectile's position one step before the hit. When `fx+0x10 ≤ 0.0001` (0.333 s later) the ribbon is released (`0x47d3f0`) and the record freed.
+
+What the player sees: a **dim orange-white double sprite** (image 12 at 0.35, 140 and 70 wide, counter-rotating ~1 turn/s) trailing a **streak of sparks**
+(image 13, 50 wide, each fading in 0.4 s where it was dropped: at 1000 u/s a 400-unit trail, at 2000 u/s 800), a 1-second spinning image-32 glow where it was fired,
+and the 400-radius star-shaped flash of explosion kind 2 where it ends. No impact sound.
 
 ## 6. Other users (brief)
 - **Shooter enemy** `0x418820` (ENEMY.md §8): block = ctor values, then `0x449070(1, ·)`; direction = muzzle vector **horizontally** normalized (y = 0); overrides damage `= Pe+0x40`,
@@ -376,8 +418,8 @@ spark records `0x4702b0`, and at the end `0x477060` (explosion). Sound SoundFx 2
 
 ### 7.1 What is in `src/main_engine.c`
 
-Ported: the launcher (§4), the projectile (§2, without gravity/bouncing/seeking except for xz steering), the energy orb of kind 2 (§5.1-5.2) **and the missile
-of kind 0/1 (§5.3-5.4)**. The missile side consists of:
+Ported: the launcher (§4), the projectile (§2, without gravity/bouncing/seeking except for xz steering), the energy orb of kind 2 (§5.1-5.2), **the missile
+of kind 0/1 (§5.3-5.4)** and **the fireball of kind 3 (§5.5)**. The missile side consists of:
 
 | original | port |
 |---|---|
@@ -390,7 +432,18 @@ of kind 0/1 (§5.3-5.4)**. The missile side consists of:
 | `0x477060(2, …)` → `0x4762e0` | `blast_add(pos, 400)`; `fx_smoke_draw` draws the nine flat quads with `hud_world_fx_plane` |
 | ribbon shrinks `dt·3·0.05` | `shot_fade_len` = 0.167 s (the orb: 0.133 s) |
 
-Not yet ported: fireball kind 3 (§5.5, drawn like the orb), explosion kinds 0/1 beyond their two flashes, the bomb thrower (template 0), bouncing,
+The fireball (kind 3):
+
+| original | port |
+|---|---|
+| `0x4702b0` launch glow | `flash_add(pos, 2)`: image 32, size 80, `alpha = 1 − u`, rotation `u` turns, **1.0 s** (the flash array now has a lifetime per kind) |
+| `0x470420` head | `fireball_draw`: two additive image-12 sprites at the projectile, rgb 0.5 × alpha 0.7, sizes 140 / 70, rotation `r/512` and `(511 − r)/512`, `r = (int)(age·511) % 511` |
+| `0x470420` sparks + `0x470370` | `fireball_draw` drops `n = (int)(acc·100)`, `acc −= n·0.0133` sparks per frame over the way flown since the previous frame (±10 jitter per axis) into `g_sparks[256]`; `launchers_draw` draws them (image 13, size 50, `alpha = 1 − u`, 0.4 s, random fixed rotation). Bank 0 image 13 got HUD fx slot 20 (`src/hud.c`) |
+| ribbon (filled, never submitted) | not drawn, as in the original |
+| `0x4704d7` explosion kind 2 | `blast_add(pre-step position, 400)` |
+| record lives on 0.333 s | `shot_fade_len` = 0.333 s (nothing is drawn in that time) |
+
+Not yet ported: explosion kinds 0/1 beyond their two flashes, the bomb thrower (template 0), bouncing,
 gravity and target-seeking via `T+0x38`. The ribbon trails straight behind the current direction instead of along the actually flown path, so for the only
 target-seeking shooter (type 7, `T+0x40 = 0.2`) it drags along instead of curving.
 
@@ -438,5 +491,6 @@ typedef struct { int active; ProjT t; Vec3 pos, dir, start; float age, dead_t; c
 3. ~~Does the ray `0x4359b0` hit the launcher's own hulls (§2.3)?~~ It tests press nodes, not hulls, and excludes nothing (the −1 is the start cell); in the port
    no shot of any level stops in its own launcher, so the muzzles lie outside the housings' press nodes (§2.3).
 4. Exact meaning of sprite-flag bits 1 and 2 and mode 0x12/0x13 of `0x470f10`; color scale of the line primitive (0.5 = neutral at the laser default: is 0.45 here "almost full"?).
-5. Visual kind 3 (`0x470420`), explosion kinds 0/1, and which enemy subtypes get `Pe+0x74 = 0/1` (missile): not worked out.
+5. ~~Visual kind 3 (`0x470420`)~~ (§5.5). Explosion kinds 0/1, and which enemy subtypes get `Pe+0x74 = 0/1` (missile): not worked out.
+   The fireball's dark-red ribbon (half width 70, 32 segments over 1000 units) is fully computed but never drawn (no call to `0x471a10`): a leftover in the original.
 6. `P+0xf0..0x100` (bounce plane): no reader found.
