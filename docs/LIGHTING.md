@@ -1,293 +1,292 @@
-# Verlichting en schaduw (`.lit`) – hoe het origineel het tekent
+# Lighting and shadow (`.lit`) – how the original draws it
 
-Statische analyse van `game/Woody.exe` (niets is op de draaiende game geverifieerd).
-Bestandsformaat: zie `FORMAT_TEX_COL_VIS_LIT.md` §4; dit document beschrijft wat de engine er
-per frame mee doet en corrigeert dat formaatdocument op drie punten (§2).
-Data-controle: `python tools/litparse.py W1A` (per-licht statistiek + 5 controles, §6).
+Static analysis of `game/Woody.exe` (nothing verified against the running game).
+File format: see `FORMAT_TEX_COL_VIS_LIT.md` §4; this document describes what the engine does with it
+per frame and corrects that format document on three points (§2).
+Data check: `python tools/litparse.py W1A` (per-light statistics + 5 checks, §6).
 
-**Kernidee.** De engine gebruikt een *multipass-lightmap in de framebuffer*:
+**Core idea.** The engine uses a *multipass lightmap in the framebuffer*:
 
 ```
-pixel = 2 · textuur · vertexkleur · ( AMB + Σ_lichten  C/255 · max(0, 1 − |P − L| / R) )      AMB = 76/255 ≈ 0.30
+pixel = 2 · texture · vertex-colour · ( AMB + Σ_lights  C/255 · max(0, 1 − |P − L| / R) )      AMB = 76/255 ≈ 0.30
 ```
 
-waarbij de som alleen loopt over lichten die het punt **zien**. Zichtbaarheid is vooraf
-uitgerekend: lijst A = faces die het licht helemaal ziet, lijst C = de belichte *stukken* van
-faces die gedeeltelijk in de schaduw liggen. Schaduw is dus geen donkere polygoon; schaduw is
-de plek waar de additieve lichtpolygoon **ontbreekt**. De scherpe polygonale randen van de
-platformschaduwen in W1A zijn de randen van de C-polygonen. Faces die door geen enkel licht
-worden geraakt krijgen in één pas `textuur · vertexkleur · 0.6` (= 2·AMB, dus naadloos).
-Er is **geen N·L** op de wereld, alleen lineaire afstandsval.
+where the sum only runs over lights that **see** the point. Visibility is precomputed:
+list A = faces the light fully sees, list C = the lit *pieces* of
+faces that are partly in shadow. Shadow is thus not a dark polygon; shadow is
+the place where the additive light polygon is **missing**. The sharp polygonal edges of
+the platform shadows in W1A are the edges of the C polygons. Faces hit by no light
+at all get, in a single pass, `texture · vertex-colour · 0.6` (= 2·AMB, so seamless).
+There is **no N·L** on the world, only linear distance falloff.
 
-## Recept (in volgorde)
+## Recipe (in order)
 
-1. **Laden.** Per licht: positie `L`, kleur `C` (floats 0..255), bereik `R`, lijsten A, B, C,
-   cel-ranges, BSP. Laad de tabel die in het formaatdocument "probes" heet als
-   **extra-vertextabel**: index `i < 0` in een C-polygoon = record `−i−1` (positie = eerste
-   3 floats; de u32 erachter is ongebruikt). Laad ook de trailer (lichten per cel) voor stap 5.
-2. **Face-vlaggen per frame.** `lit[face] = 0`; voor elk licht, voor elke cel-range waarvan
-   de cel zichtbaar is: alle faces van A en B → `lit[face] = 2`. (Een port zonder
-   cel-zichtbaarheid mag dit één keer bij het laden doen voor alle lichten.)
-3. **Wereld, onbelichte faces** (`lit == 0`): één pas, `textuur × vertexkleur × 0.6`,
-   texenv MODULATE **1×** (niet 2×), opaak.
-4. **Wereld, belichte faces** (`lit == 2`), vier stappen in deze volgorde (alles van alle
-   faces per stap, want de framebuffer is de accumulator):
-   1. *Ambient-vulling*: face zonder textuur, egale kleur `0x4C4C4C` (76,76,76), opaak,
-      z-write aan.
-   2. *Lichtpas*: `glDepthMask(0)`, `glEnable(GL_BLEND)`, `glBlendFunc(GL_ONE, GL_ONE)`,
-      wrap **CLAMP**, MODULATE 1×, dieptetest LEQUAL. Per licht, per zichtbare cel-range:
-      elke face van **A** (hele face) en elke polygoon van **C**. Per polygoon met vlak
+1. **Loading.** Per light: position `L`, colour `C` (floats 0..255), range `R`, lists A, B, C,
+   cell ranges, BSP. Also load the table the format document calls "probes" as an
+   **extra vertex table**: index `i < 0` in a C polygon = record `−i−1` (position = the first
+   3 floats; the u32 after it is unused). Also load the trailer (lights per cell) for step 5.
+2. **Face flags per frame.** `lit[face] = 0`; for each light, for each cell range whose
+   cell is visible: all faces of A and B → `lit[face] = 2`. (A port without
+   cell visibility may do this once at load time for all lights.)
+3. **World, unlit faces** (`lit == 0`): one pass, `texture × vertex-colour × 0.6`,
+   texenv MODULATE **1×** (not 2×), opaque.
+4. **World, lit faces** (`lit == 2`), four steps in this order (all faces per step,
+   since the framebuffer is the accumulator):
+   1. *Ambient fill*: face without texture, flat colour `0x4C4C4C` (76,76,76), opaque,
+      z-write on.
+   2. *Light pass*: `glDepthMask(0)`, `glEnable(GL_BLEND)`, `glBlendFunc(GL_ONE, GL_ONE)`,
+      wrap **CLAMP**, MODULATE 1×, depth test LEQUAL. Per light, per visible cell range:
+      each face of **A** (whole face) and each polygon of **C**. Per polygon with plane
       `(n,d)`:
-      - `dist = n·L + d`; als `|dist| ≥ R` → overslaan; backface (camera achter het vlak) → overslaan;
-      - `k = 1 − |dist|/R`; kleur van *alle* vertices = `((int)(C.r·k), (int)(C.g·k), (int)(C.b·k))`;
-      - textuur = radiale gloed nr. `i = 15 − round(k · 15.49)` (16 texturen 32×32, §1.4);
+      - `dist = n·L + d`; if `|dist| ≥ R` → skip; backface (camera behind the plane) → skip;
+      - `k = 1 − |dist|/R`; colour of *all* vertices = `((int)(C.r·k), (int)(C.g·k), (int)(C.b·k))`;
+      - texture = radial glow no. `i = 15 − round(k · 15.49)` (16 textures 32×32, §1.4);
       - UV: `F = L − n·dist`, `r = sqrt(R² − dist²)`, `s = 0.5/r`,
-        `U = normalize(V2 − F)` (V2 = **derde** vertex van de polygoon), `W = n × U`,
+        `U = normalize(V2 − F)` (V2 = **third** vertex of the polygon), `W = n × U`,
         `u = 0.5 + s·(P − F)·W`, `v = 0.5 + s·(P − F)·U`.
-      - Netto (textuur × kleur) is dat exact `C/255 · max(0, 1 − |P − L|/R)`; de keuze van U
-        doet er niet toe want de textuur is rotatiesymmetrisch. Een port mag dus net zo goed
-        één 2D-gloedtextuur per `i` genereren of de formule per pixel/vertex uitrekenen.
-   3. *Geworpen schaduwen van instanties* (optioneel, §4): opake polygonen (blend uit,
-      z-write uit) in kleur `0x4C4C4C` die de opgetelde lichten weer overschrijven.
-   4. *Textuurpas*: dezelfde faces nogmaals met hun eigen textuur en vertexkleur (1.0×),
-      `glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR)` (= 2 · src · dst), z-write uit, dieptetest
+      - Net (texture × colour) that is exactly `C/255 · max(0, 1 − |P − L|/R)`; the choice of U
+        doesn't matter since the texture is rotationally symmetric. A port may just as well
+        generate a single 2D glow texture per `i` or compute the formula per pixel/vertex.
+   3. *Cast shadows from instances* (optional, §4): opaque polygons (blend off,
+      z-write off) in colour `0x4C4C4C` that overwrite the summed lights again.
+   4. *Texture pass*: the same faces again with their own texture and vertex colour (1.0×),
+      `glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR)` (= 2 · src · dst), z-write off, depth test
       LEQUAL/EQUAL.
-   Alles wat transparant/additief is (water, effecten, modellen met alfa) komt hierna.
-5. **Modellen (Woody, vijanden, instanties)**, §3: kies per instantie één licht uit de
-   lichtlijst van zijn cel; per modeldeel een gladgestreken lichtvector
-   `Ldir = 0.85·Ldir + 0.15·normalize(L − p)·(1 − |L − p|/R)` als het deel door dat licht
-   gezien wordt (BSP-query), anders alleen `Ldir *= 0.85`; vertexkleur
-   `= vcol·0.3 + max(0, N·Ldir)·C` (schaal 0..255), getekend met MODULATE **2×**. In de
-   schaduw zakt een figuur dus in ~10 frames naar `0.6·vcol`.
-   **Uitzondering: een vlak van een geblende textuurgroep (vlagbit 1) krijgt géén belichting.** `0x428020`
-   kopieert de groepsvlaggen 1-2 bij het laden naar de polygoonvlaggen 0x20/0x40, `0x43d7b9` test `0x60` en
-   zet `[0x5ac8d8] = 1`, en `0x43d91d` springt daarmee over de belichte RGB op `v+0x24..0x2c` heen: er wordt
-   `0x00iiiiii` geschreven met `i = (int)(alpha · 0.5)` (`0x43d9a4`) en `alpha = (1 − inst+0x6c) · 255`
-   (`0x43b504`). Voor een instantie die niet uitvervaagt is dat `i = 128`, onder MODULATE 2× dus precies
-   `1.0 × textuur`. Neonreclame, het rode kruis / de groene pijl naast een deur en de lichtbalken erboven
-   zijn daarom **altijd even fel**, waar ze ook staan. De intensiteitsbyte `tex+0x46` wordt nergens gelezen.
-   Alleen modelvlakken doen dit: `.gel`-wereldpolygonen krijgen de vlaggen nooit (`0x42801a` zit in de
-   `.ins`-lader) en geskinde driehoeken evenmin (`0x43e107` zet `[0x5ac8d8] = 0`). In de data van alle 28
-   levels staat geen enkele wereldpolygoon of geskinde driehoek in een geblende groep.
-6. Er is **geen blob-schaduw** (§4); de schaduw onder Woody is echte, vanuit het licht
-   geprojecteerde modelgeometrie, en alleen als de detailoptie aan staat (§5).
+   Everything transparent/additive (water, effects, models with alpha) comes after this.
+5. **Models (Woody, enemies, instances)**, §3: pick one light per instance from the
+   light list of its cell; per model part a smoothed light vector
+   `Ldir = 0.85·Ldir + 0.15·normalize(L − p)·(1 − |L − p|/R)` if the part is seen
+   by that light (BSP query), otherwise just `Ldir *= 0.85`; vertex colour
+   `= vcol·0.3 + max(0, N·Ldir)·C` (scale 0..255), drawn with MODULATE **2×**. In
+   shadow a figure thus sinks to `0.6·vcol` over ~10 frames.
+   **Exception: a face of a blended texture group (flag bit 1) gets no lighting.** `0x428020`
+   copies group flags 1-2 at load time to polygon flags 0x20/0x40, `0x43d7b9` tests `0x60` and
+   sets `[0x5ac8d8] = 1`, and `0x43d91d` then skips the lit RGB at `v+0x24..0x2c`: it writes
+   `0x00iiiiii` with `i = (int)(alpha · 0.5)` (`0x43d9a4`) and `alpha = (1 − inst+0x6c) · 255`
+   (`0x43b504`). For an instance that isn't fading out that's `i = 128`, under MODULATE 2× thus exactly
+   `1.0 × texture`. Neon signs, the red cross / green arrow next to a door and the light bars above them
+   are therefore **always equally bright**, wherever they are. The intensity byte `tex+0x46` is never read.
+   Only model faces do this: `.gel` world polygons never get the flags (`0x42801a` is in the
+   `.ins` loader) and skinned triangles neither (`0x43e107` sets `[0x5ac8d8] = 0`). In the data of all 28
+   levels, no world polygon or skinned triangle is in a blended group.
+6. There is **no blob shadow** (§4); the shadow under Woody is real model geometry projected
+   from the light, and only when the detail option is on (§5).
 
-## 1. Wereld
+## 1. World
 
-### 1.1 Frame-volgorde (`0x401ab0`)
+### 1.1 Frame order (`0x401ab0`)
 
-| Adres | Aanroep | Wat |
+| Address | Call | What |
 |---|---|---|
-| `0x401922` | `0x4843e0(0.3)` | per frame: `renderer+0x1ac = 0.6` (factor onbelichte faces), `renderer+0x1b0 = 0x4C4C4C` (`(int)(0.3·256)` = 76 in R, G en B) = **AMB**. Renderer = `[0x5e86ac]` = `[0x509adc]` (zelfde object, `0x42a451`/`0x48407e`) |
-| `0x401d78` | `0x42b400` | objecten updaten; voor zichtbare licht-objecten (soort 2 = een `.lit`-lichtrecord, `0x40ae60`) `0x474a90`: lensflare met zichtlijntest `0x497ed0` – geen invloed op de wereldbelichting. **Onbereikbaar in het uitgeleverde spel**: `0x474a90` loopt alleen over de tabel `0x5e8428` (64 plaatsen), en die wordt uitsluitend gevuld door de handler van bericht **1510** (`0x46cf02`) – dat bericht komt in geen van de 28 levelscripts voor (wel alle andere ids 1500..1511). De tabel blijft dus leeg en de functie keert altijd meteen terug op `0x474abe`. Niet porten |
-| `0x401d85` | `0x42abc0` | `lightsys+0x28[face] = 0` voor alle faces van de zichtbare sectoren |
-| `0x401d91` | `0x42b380` | instanties tekenen; schaduwontvangende faces krijgen hier ook vlag 2 (`0x42eb73`, `0x42ecbc`) |
-| `0x401d99` | `0x42b4e0` | **lichtpas** (onvoorwaardelijk, niet afhankelijk van een optie) |
-| `0x401da1` | `0x42ac10` | basis-faces via `0x42b6c0(face)`; slaat vlag `== 1` over (`0x42ad0b`), maar er is geen schrijver van 1 gevonden (alleen 0 en 2) |
-| `0x401756` | `0x4293f0` | flush van alle emmers met de renderstates (§1.5) |
+| `0x401922` | `0x4843e0(0.3)` | per frame: `renderer+0x1ac = 0.6` (factor for unlit faces), `renderer+0x1b0 = 0x4C4C4C` (`(int)(0.3·256)` = 76 in R, G and B) = **AMB**. Renderer = `[0x5e86ac]` = `[0x509adc]` (same object, `0x42a451`/`0x48407e`) |
+| `0x401d78` | `0x42b400` | update objects; for visible light objects (kind 2 = a `.lit` light record, `0x40ae60`) `0x474a90`: lens flare with sightline test `0x497ed0` – no effect on world lighting. **Unreachable in the shipped game**: `0x474a90` only walks the table `0x5e8428` (64 slots), which is only ever filled by the handler of message **1510** (`0x46cf02`) – that message does not occur in any of the 28 level scripts (all other ids 1500..1511 do). The table therefore stays empty and the function always returns immediately at `0x474abe`. Do not port |
+| `0x401d85` | `0x42abc0` | `lightsys+0x28[face] = 0` for all faces of the visible sectors |
+| `0x401d91` | `0x42b380` | draw instances; shadow-receiving faces also get flag 2 here (`0x42eb73`, `0x42ecbc`) |
+| `0x401d99` | `0x42b4e0` | **light pass** (unconditional, not gated by an option) |
+| `0x401da1` | `0x42ac10` | base faces via `0x42b6c0(face)`; skips flag `== 1` (`0x42ad0b`), but no writer of 1 was found (only 0 and 2) |
+| `0x401756` | `0x4293f0` | flush of all buckets with the render states (§1.5) |
 
-### 1.2 `0x42b4e0` – lichtpas
+### 1.2 `0x42b4e0` – light pass
 
-Lus over alle lichten (`lightsys+0x04`, 0x40 B per licht; `S = light+0x3c`). Per cel-range
-(0x1c B, `S+0x04`) alleen als `range.cel` in de lijst zichtbare cellen staat
-(`renderer+0x58`, aantal `+0x54`; `0x42b548`).
+Loop over all lights (`lightsys+0x04`, 0x40 B per light; `S = light+0x3c`). Per cell range
+(0x1c B, `S+0x04`) only if `range.cel` is in the list of visible cells
+(`renderer+0x58`, count `+0x54`; `0x42b548`).
 
-| Lijst | Code | Actie |
+| List | Code | Action |
 |---|---|---|
-| A (`S+0x0c`) | `0x42b56b` | één keer per licht per frame (stempel `face+4 == [0x4c4c24]`): vlag `= 2`; `0x498830(tmp, face, &light+0x0c, light+0x2c)`; `0x42c320(face, tmp, &light+0x30)` |
-| B (`S+0x14`) | `0x42b5e3` | alleen vlag `= 2` – niets getekend |
-| C (`S+0x1c`) | `0x42b60f` | `0x498830(tmp, poly, pos, bereik)`; `0x42c320(poly, tmp, kleur)` |
+| A (`S+0x0c`) | `0x42b56b` | once per light per frame (stamp `face+4 == [0x4c4c24]`): flag `= 2`; `0x498830(tmp, face, &light+0x0c, light+0x2c)`; `0x42c320(face, tmp, &light+0x30)` |
+| B (`S+0x14`) | `0x42b5e3` | flag `= 2` only – nothing drawn |
+| C (`S+0x1c`) | `0x42b60f` | `0x498830(tmp, poly, pos, range)`; `0x42c320(poly, tmp, colour)` |
 
-### 1.3 `0x498830` / `0x498871` / `0x498890` – lichtbol op het vlak projecteren
+### 1.3 `0x498830` / `0x498871` / `0x498890` – project the light sphere onto the plane
 
-`dist = n·L + d` (`0x49883c`); `dist ≥ R` of `dist ≤ −R` → `tmp+0x20 = 0`, klaar.
-Anders `s = 0.5 / sqrt(R² − dist²)` (`0x498890..0x4988b4`, `[0x4a9014] = 0.5`),
-`F = L − n·dist`, referentievertex = index op `poly+0x24` (derde index; negatief → extra
+`dist = n·L + d` (`0x49883c`); `dist ≥ R` or `dist ≤ −R` → `tmp+0x20 = 0`, done.
+Otherwise `s = 0.5 / sqrt(R² − dist²)` (`0x498890..0x4988b4`, `[0x4a9014] = 0.5`),
+`F = L − n·dist`, reference vertex = index at `poly+0x24` (third index; negative → extra
 vertex, `0x49891a`), `U = normalize(V − F)`, `W = n × U` (`0x498a0e..0x498a83`).
-Uit: `tmp+0x00..0x08 = W·s`, `tmp+0x0c = 0.5 − F·(W·s)` (rij voor `u`);
-`tmp+0x10..0x18 = U·s`, `tmp+0x1c = 0.5 − F·(U·s)` (rij voor `v`);
+Output: `tmp+0x00..0x08 = W·s`, `tmp+0x0c = 0.5 − F·(W·s)` (row for `u`);
+`tmp+0x10..0x18 = U·s`, `tmp+0x1c = 0.5 − F·(U·s)` (row for `v`);
 `tmp+0x20 = k = 1 − |dist|/R` (`0x498b54..0x498b7c`).
 
-### 1.4 `0x42c320` – lichtpolygoon uitgeven
+### 1.4 `0x42c320` – emit the light polygon
 
-- Backface-test tegen de camera (`0x42c33c`), transformatie + clipping tegen de vier
-  frustumvlakken (`0x42c910/0x42cb90/0x42ce00/0x42d070`).
-- Vertex `i < 0` → `lightsys+0x0c + 0x30·(−i−1)` (`0x42c3a2`, `0x42c7cf`); de 0x30-byte
-  records hebben dezelfde layout als een wereld-vertex (positie, getransformeerd `+0x0c`,
-  scherm `+0x18`, clipvlaggen `+0x24`, frame-stempel `+0x2c`).
-- Kleur `(int)(C.r·k)<<16 | (int)(C.g·k)<<8 | (int)(C.b·k)` voor alle vertices
-  (`0x42c5da..0x42c63d`); `u,v` uit de twee rijen van `tmp` (`0x42c78b..0x42c89c`).
-- Textuur `[0x5e8678] + 0x74·(15 − round(k·15.49))` (`0x42c621..0x42c66a`,
-  `[0x4aa304] = 15.49`), emmer **4** (`0x42c8ee`).
+- Backface test against the camera (`0x42c33c`), transform + clip against the four
+  frustum planes (`0x42c910/0x42cb90/0x42ce00/0x42d070`).
+- Vertex `i < 0` → `lightsys+0x0c + 0x30·(−i−1)` (`0x42c3a2`, `0x42c7cf`); the 0x30-byte
+  records have the same layout as a world vertex (position, transformed `+0x0c`,
+  screen `+0x18`, clip flags `+0x24`, frame stamp `+0x2c`).
+- Colour `(int)(C.r·k)<<16 | (int)(C.g·k)<<8 | (int)(C.b·k)` for all vertices
+  (`0x42c5da..0x42c63d`); `u,v` from the two rows of `tmp` (`0x42c78b..0x42c89c`).
+- Texture `[0x5e8678] + 0x74·(15 − round(k·15.49))` (`0x42c621..0x42c66a`,
+  `[0x4aa304] = 15.49`), bucket **4** (`0x42c8ee`).
 
-Lichttexturen: 16 × 32×32, aangemaakt in `0x426f2b` (`0x47f870(i)` → `0x480090`):
-`a = i/16` (`[0x4abd9c] = 0.0625`), `px = ((x + 0.5 − 16)/16)·sqrt(1 − a²)`, `py` idem,
-`d = min(1, sqrt(px² + py² + a²))`, `grijs = (1 − d) · (i ≠ 0 ? 1/(1 − a) : 1) · 255`.
-Textuur `i` is dus de doorsnede van de lineaire lichtbol op hoogte `a·R`, genormaliseerd
-op zijn maximum `1 − a`; vermenigvuldigd met de vertexkleur `C·k` (`k ≈ 1 − a`) geeft dat
-`C · (1 − afstand/R)`.
+Light textures: 16 × 32×32, created in `0x426f2b` (`0x47f870(i)` → `0x480090`):
+`a = i/16` (`[0x4abd9c] = 0.0625`), `px = ((x + 0.5 − 16)/16)·sqrt(1 − a²)`, `py` likewise,
+`d = min(1, sqrt(px² + py² + a²))`, `grey = (1 − d) · (i ≠ 0 ? 1/(1 − a) : 1) · 255`.
+Texture `i` is thus the cross-section of the linear light sphere at height `a·R`, normalized
+to its maximum `1 − a`; multiplied by the vertex colour `C·k` (`k ≈ 1 − a`) that gives
+`C · (1 − distance/R)`.
 
-### 1.5 `0x42b6c0` – basis-face, en de emmers in `0x4293f0`
+### 1.5 `0x42b6c0` – base face, and the buckets in `0x4293f0`
 
-`0x42b6c0` kijkt naar de vlag (`0x42ba31..0x42ba3f`):
+`0x42b6c0` looks at the flag (`0x42ba31..0x42ba3f`):
 
-- vlag ≠ 2 (`0x42bef9`): één polygoon, vertexkleur × `renderer+0x1ac` (0.6; `0x42bfb5`…),
-  eigen textuur, emmer **10** (`0x42c2ec`).
-- vlag = 2: (a) polygoon met de blanco textuur `[0x5e8684]`, kleur `renderer+0x1b0`
-  (AMB), `u = v = 0.5`, emmer **10** (`0x42ba45..0x42bb99`); (b) polygoon met eigen
-  textuur en onverzwakte vertexkleur, emmer **1** (`0x42bb9e..0x42bef4`).
+- flag ≠ 2 (`0x42bef9`): one polygon, vertex colour × `renderer+0x1ac` (0.6; `0x42bfb5`…),
+  own texture, bucket **10** (`0x42c2ec`).
+- flag = 2: (a) polygon with the blank texture `[0x5e8684]`, colour `renderer+0x1b0`
+  (AMB), `u = v = 0.5`, bucket **10** (`0x42ba45..0x42bb99`); (b) polygon with own
+  texture and unattenuated vertex colour, bucket **1** (`0x42bb9e..0x42bef4`).
 
-Emmer `n` = lijst `tex+8+4n` (`0x42b460`). Volgorde en states in `0x4293f0`
-(D3D7-renderstates: 0x0e ZWRITEENABLE, 0x0f ALPHATESTENABLE, 0x13 SRCBLEND, 0x14 DESTBLEND,
+Bucket `n` = list `tex+8+4n` (`0x42b460`). Order and states in `0x4293f0`
+(D3D7 render states: 0x0e ZWRITEENABLE, 0x0f ALPHATESTENABLE, 0x13 SRCBLEND, 0x14 DESTBLEND,
 0x1b ALPHABLENDENABLE, 0x1d SPECULARENABLE; TSS 1 = COLOROP, 0x0c = ADDRESS):
 
-| # | Emmer | Adres | States | Inhoud |
+| # | Bucket | Address | States | Content |
 |---|---|---|---|---|
-| 1 | 0, 10 | `0x4294ad..0x429564` | COLOROP MODULATE(4), blend uit, zwrite aan, ADDRESS WRAP | opake wereld: onbelichte faces en de AMB-vulling |
-| 2 | **4** | `0x429572..0x429600` | zwrite uit, ADDRESS **CLAMP(3)**, blend aan, SRC = **ONE(2)**, DEST = **ONE(2)** | lichtpolygonen (A en C) |
-| 3 | 2 | `0x42960e..0x42965e` | blend uit, zwrite uit, SPECULAR aan | half-doorzichtige-instantie-schaduw: `AMB (specular) + lichttextuur × C·k·…` (§4) |
-| 4 | 5 | `0x42966c..0x429696` | blend uit, zwrite uit, SPECULAR uit | instantie-schaduw: egaal AMB (§4) |
-| 5 | **1** | `0x4296a4..0x429732` | ADDRESS WRAP, blend aan, SRC = **DESTCOLOR(9)**, DEST = **SRCCOLOR(3)** | textuurpas van de belichte faces = 2·src·dst |
-| 6 | – | `0x429740` | als `device+0x20 ≠ 0`: COLOROP = **MODULATE2X(5)** voor alles hierna | |
-| 7 | lijst `+0x1c0`, 11, 8 (SRCALPHA/INVSRCALPHA), 3 (ONE/ONE), `0x428d00`, 9 | `0x4297ae..0x429a07` | | modellen, transparant, effecten |
+| 1 | 0, 10 | `0x4294ad..0x429564` | COLOROP MODULATE(4), blend off, zwrite on, ADDRESS WRAP | opaque world: unlit faces and the AMB fill |
+| 2 | **4** | `0x429572..0x429600` | zwrite off, ADDRESS **CLAMP(3)**, blend on, SRC = **ONE(2)**, DEST = **ONE(2)** | light polygons (A and C) |
+| 3 | 2 | `0x42960e..0x42965e` | blend off, zwrite off, SPECULAR on | semi-transparent instance shadow: `AMB (specular) + light texture × C·k·…` (§4) |
+| 4 | 5 | `0x42966c..0x429696` | blend off, zwrite off, SPECULAR off | instance shadow: flat AMB (§4) |
+| 5 | **1** | `0x4296a4..0x429732` | ADDRESS WRAP, blend on, SRC = **DESTCOLOR(9)**, DEST = **SRCCOLOR(3)** | texture pass of the lit faces = 2·src·dst |
+| 6 | – | `0x429740` | if `device+0x20 ≠ 0`: COLOROP = **MODULATE2X(5)** for everything after this | |
+| 7 | list `+0x1c0`, 11, 8 (SRCALPHA/INVSRCALPHA), 3 (ONE/ONE), `0x428d00`, 9 | `0x4297ae..0x429a07` | | models, transparent, effects |
 
-## 2. Lijsten A, B, C en de extra vertices (correcties op het formaatdocument)
+## 2. Lists A, B, C and the extra vertices (corrections to the format document)
 
-| Wat | Betekenis | Bewijs |
+| What | Meaning | Evidence |
 |---|---|---|
-| **A** | faces die het licht volledig ziet; hele face krijgt de lichtpolygoon | `0x42b56b`; data: licht ligt altijd vóór het vlak en binnen bereik, zwaartepunt volgens de BSP altijd belicht (W1A 5385/5385) |
-| **B** | **ouder-faces van de C-polygonen** (gedeeltelijk belicht); alleen nodig om ze vlag 2 te geven zodat ze in multipass getekend worden. Niet "schaduwwerpers" | `0x42b5e3`; data: elke C-polygoon is coplanair met een B-face, A ∩ B = ∅ |
-| **C** | de belichte restpolygonen van B-faces, vooraf geclipt door de lichtbouwtool | `0x42b60f` |
-| C-veld `+0x08` ("face") | **geen face-index**: het staat op de plek van het materiaalwoord van een `.gel`-face en is in ~93 % van de gevallen exact het materiaalwoord van de ouder; de lichtpas leest het niet | `0x42c320` leest `poly+8` nergens; `litparse.py` controle 3 |
-| **extra vertices** (negatieve indices) | **staan in het bestand**: het is de tabel "probes" (`lightsys+0x08/+0x0c`, 16 B in het bestand → 0x30 B in geheugen). Index `i` → record `−i−1`. Het zijn dus geen lichtsamples; de u32 "kleur" wordt door geen enkele gevonden lezer gebruikt | `0x42c3a2`, `0x42c7cf`, `0x49891a`; data: alle negatieve indices < aantal records en elk punt ligt op het vlak van zijn polygoon |
-| volledig beschaduwde faces | staan in geen enkele lijst → vlag 0 → `vcol × 0.6` | |
-| BSP (`S+0x20/+0x24`) | schaduw-BSP voor **punt**queries door modellen (§3), niet gebruikt voor de wereld | `0x40b540`: alleen aangeroepen vanuit `0x42e463`, `0x42f20c`, `0x43ba38` |
+| **A** | faces the light fully sees; the whole face gets the light polygon | `0x42b56b`; data: light is always in front of the plane and within range, centroid according to the BSP always lit (W1A 5385/5385) |
+| **B** | **parent faces of the C polygons** (partly lit); only needed to give them flag 2 so they get drawn in multipass. Not "shadow casters" | `0x42b5e3`; data: every C polygon is coplanar with a B face, A ∩ B = ∅ |
+| **C** | the lit remainder polygons of B faces, pre-clipped by the light build tool | `0x42b60f` |
+| C field `+0x08` ("face") | **not a face index**: it sits where the material word of a `.gel` face would be and is, in ~93% of cases, exactly the material word of the parent; the light pass never reads it | `0x42c320` never reads `poly+8`; `litparse.py` check 3 |
+| **extra vertices** (negative indices) | **stored in the file**: it's the table the format doc calls "probes" (`lightsys+0x08/+0x0c`, 16 B in the file → 0x30 B in memory). Index `i` → record `−i−1`. So they are not light samples; the u32 "colour" is not used by any reader found | `0x42c3a2`, `0x42c7cf`, `0x49891a`; data: all negative indices < record count and every point lies on the plane of its polygon |
+| fully shadowed faces | occur in no list → flag 0 → `vcol × 0.6` | |
+| BSP (`S+0x20/+0x24`) | shadow BSP for **point** queries by models (§3), not used for the world | `0x40b540`: only called from `0x42e463`, `0x42f20c`, `0x43ba38` |
 
-## 3. Dynamische objecten (Woody, vijanden, instanties)
+## 3. Dynamic objects (Woody, enemies, instances)
 
-Alles in de instantie-tekenfunctie `0x42e2b0`/`0x42e374` (arg-bits: 2 = schaduw werpen,
-4 = model tekenen) en de modelrenderer `0x43b3f0`.
+All in the instance draw function `0x42e2b0`/`0x42e374` (arg bits: 2 = cast shadow,
+4 = draw model) and the model renderer `0x43b3f0`.
 
-**Lichtkeuze** (`0x42e3e4..0x42e573`): lichtlijst van de **sector** van de instantie
-(`lightsys+0x10[inst+0x1c]` = `{n, index…}`). `n == 0` → geen licht (bit 2 vervalt).
-`n == 1` → dat licht. `n > 1`: per licht `f = 0x40b540(S, inst+0x60)` (de geanimeerde skeletwortel, INSTANCE.md §1.1;
-de port neemt `ins_anim_centre()` + 20 omhoog als enig meetpunt, ook voor de lichtrichting die het origineel per deel bepaalt):
+**Light choice** (`0x42e3e4..0x42e573`): light list of the instance's **sector**
+(`lightsys+0x10[inst+0x1c]` = `{n, index…}`). `n == 0` → no light (bit 2 drops out).
+`n == 1` → that light. `n > 1`: per light `f = 0x40b540(S, inst+0x60)` (the animated skeleton root, INSTANCE.md §1.1;
+the port takes `ins_anim_centre()` + 20 up as its sole reference point, also for the light direction, which the original determines per part):
 
-- `f == −1` en `|L − p|² < R²` → dit licht, klaar (`0x42e4c2`);
-- `f ≠ −1` en `vlak(f)·p > 0` (punt vóór de bladface = belicht) → dit licht, klaar (`0x42e541`);
-- anders (in schaduw): onthoud het licht met de grootste (minst negatieve) vlakafstand; dat
-  wordt gekozen als geen enkel licht het punt ziet.
+- `f == −1` and `|L − p|² < R²` → this light, done (`0x42e4c2`);
+- `f ≠ −1` and `plane(f)·p > 0` (point in front of the leaf face = lit) → this light, done (`0x42e541`);
+- otherwise (in shadow): remember the light with the largest (least negative) plane distance; that
+  is chosen if no light sees the point.
 
-> **Sector, geen cel.** De trailer van de `.lit` (FORMAT_TEX_COL_VIS_LIT.md §4, "lichten per
-> cel") heeft in alle 28 levels precies zoveel lijsten als de `.gel` **sectoren** heeft, niet
-> zoveel als er cellen zijn: House 33 lijsten / 33 sectoren / 2530 cellen, W1A·WWS·W3D·K1A 128
-> lijsten / 128 sectoren / 6245–7691 cellen. `world+0x20` is dus het sectoraantal en `inst+0x1c`
-> de sectorindex; de sector van een punt komt van `0x4081c0` (daal in de hoofd-kd-boom tot een
-> knoop een sectorindex draagt), niet van de bladcelquery `0x408180`. Indexeren met de cel zou
-> ver buiten de tabel lezen. Dit is gemeten, niet uit de disassembly gelezen.
+> **Sector, not cell.** The trailer of the `.lit` (FORMAT_TEX_COL_VIS_LIT.md §4, "lights per
+> cell") has, in all 28 levels, exactly as many lists as the `.gel` has **sectors**, not
+> as many as there are cells: House 33 lists / 33 sectors / 2530 cells, W1A/WWS/W3D/K1A 128
+> lists / 128 sectors / 6245-7691 cells. `world+0x20` is thus the sector count and `inst+0x1c`
+> the sector index; the sector of a point comes from `0x4081c0` (descend the main kd-tree until a
+> node carries a sector index), not from the leaf-cell query `0x408180`. Indexing with the cell would
+> read far past the table. This was measured, not read from the disassembly.
 
-**Puntquery `0x40b540(S, p)`**: loop vanaf knoop 0; `vlak·p + d > 0` → `front`, anders
-`back`; kind `& 0xF`: 0 = knoop `>>4`, 1 = blad met face `>>4`, anders −1. Interpretatie
-door alle drie de aanroepers: **belicht ⇔ resultaat −1 óf p ligt vóór het vlak van de
-bladface** (`0x43ba3d..0x43ba80`, `0x42f211..0x42f254`). (Met `litparse.py` nagerekend op de
-zwaartepunten van A-faces en C-polygonen: 100 % / 99,9 % belicht.)
+**Point query `0x40b540(S, p)`**: walk from node 0; `plane·p + d > 0` → `front`, otherwise
+`back`; child `& 0xF`: 0 = node `>>4`, 1 = leaf with face `>>4`, otherwise −1. Interpretation
+by all three callers: **lit ⇔ result −1 or p lies in front of the plane of the
+leaf face** (`0x43ba3d..0x43ba80`, `0x42f211..0x42f254`). (Checked with `litparse.py` against the
+centroids of A faces and C polygons: 100% / 99.9% lit.)
 
-**Lichtvector per modeldeel** (`0x43b912..0x43bc4c`; gecachete variant voor stilstaande
-instanties `0x42f110`, zonder demping):
+**Light vector per model part** (`0x43b912..0x43bc4c`; cached variant for stationary
+instances `0x42f110`, without damping):
 
 ```
-p      = wereldpositie van het deel (matrix-translatie +0x24..+0x2c)
-Ldir  *= 0.85                                   ; [0x4aa3d8], elke frame
-als licht gekozen en punt belicht (query hierboven) en |L − p| < R:
-    Ldir += 0.15 · normalize(L_lokaal − p_lokaal) · (1 − |L − p|/R)     ; [0x4aa1c8]
-    Lkleur = C (floats 0..255)                  ; part+0x0c..+0x14
+p      = world position of the part (matrix translation +0x24..+0x2c)
+Ldir  *= 0.85                                   ; [0x4aa3d8], every frame
+if a light was chosen and the point is lit (query above) and |L − p| < R:
+    Ldir += 0.15 · normalize(L_local − p_local) · (1 − |L − p|/R)     ; [0x4aa1c8]
+    Lcolour = C (floats 0..255)                 ; part+0x0c..+0x14
 ```
 
-Opslag: per deel 0x18 B op `inst+0xf4 + deeloffset` (`Ldir` 3 floats, kleur 3 floats).
+Storage: 0x18 B per part at `inst+0xf4 + partoffset` (`Ldir` 3 floats, colour 3 floats).
 
-**Vertexkleur** (`0x43bce4..0x43bdbd`): `ndl = N·Ldir` (vertexnormaal `+0x10`, vertexkleur
+**Vertex colour** (`0x43bce4..0x43bdbd`): `ndl = N·Ldir` (vertex normal `+0x10`, vertex colour
 `+0x1c..+0x24`):
-`uit = vcol · renderer+0x1ac · 0.5 (= vcol·0.3) + (ndl > 0 ? ndl·Lkleur : 0)`, per kanaal,
-daarna begrensd. Modellen worden na stap 6 van §1.5 getekend (MODULATE2X), dus effectief
-`0.6·vcol + 2·ndl·C`. Er is geen aparte per-instantie "kleur"; het zit in de per-deel
-lichtvector. `[0x5ac850]` (1/2) telt daarna nog `[0x5ac854]` bij de kleur op (`0x43bdce`;
-flits/highlight, niet uitgezocht).
+`out = vcol · renderer+0x1ac · 0.5 (= vcol·0.3) + (ndl > 0 ? ndl·Lcolour : 0)`, per channel,
+then clamped. Models are drawn after step 6 of §1.5 (MODULATE2X), so effectively
+`0.6·vcol + 2·ndl·C`. There is no separate per-instance "colour"; it's contained in the per-part
+light vector. `[0x5ac850]` (1/2) then still adds `[0x5ac854]` to the colour (`0x43bdce`;
+flash/highlight, not investigated).
 
-## 4. Schaduw onder figuren: geen blob, wel geprojecteerde geometrie
+## 4. Shadow under figures: no blob, but projected geometry
 
-- Er is geen blob-textuur in gebruik: de twee kandidaten `[0x5e867c]` (64×64
-  alfa-verloop, `0x480310`) en `[0x5e8680]` worden alleen geschreven, nooit gelezen.
-- Wel: arg-bit 2 van `0x42e2b0` (`0x42e651..0x42ec3a`). Met het gekozen licht wordt per
-  modeldeel de omtrek bepaald (`0x43aaa0`), tegen de wereld geclipt via de licht-BSP
-  (`0x40bb40`, `0x40bda0` → lijst ontvangende polygonen `{n, soort, face, n×16 B}`), en
-  elke vertex vanuit het licht op het facevlak geprojecteerd:
-  `P' = L + (P − L) · (−(n·L + d)) / (n·(P − L))` (`0x42eac1..0x42eb53`). De ontvangende
-  face krijgt vlag 2 (`0x42eb73`).
-- Tekenen: `inst+0x6c` (transparantie) ≤ 0.01 → `0x4385f0`: egale kleur AMB, blanco
-  textuur, emmer 5 (opaak, overschrijft de opgetelde lichten → na de textuurpas ziet het
-  eruit als een onbelichte face, d.w.z. *alle* lichten weg, niet alleen het gekozen licht).
-  Transparantie > 0.01 → `0x4388e0`: emmer 2, lichttextuur, diffuus = `C·k·transparantie`,
-  specular = AMB (schaduw wordt lichter naarmate de instantie vervaagt). Transparantie
-  > 0.98 → instantie helemaal niet getekend (`0x42e374`).
-- Geen hoogte-fade of grondzoeker: de schaduw valt waar de projectie een face raakt; het
-  bereik is impliciet dat van het licht.
-- Er wordt **nergens getest of het gekozen licht de werper ziet**. Bij `n == 1` wordt dat licht
-  zonder enige test genomen (`0x42e422`), bij `n > 1` is er altijd de terugvalkeuze
-  (`0x42e524`); alleen een **lege** sectorlijst haalt bit 2 weg (`0x42e56a`). Een figuur die in
-  de schaduw staat werpt dus nog steeds een schaduw, vanuit dat terugvallicht. Verder valt de
-  hele tekenfunctie af bij `inst+0x1c == -1` (geen sector, `0x42e2c3`).
+- No blob texture is in use: the two candidates `[0x5e867c]` (64×64
+  alpha gradient, `0x480310`) and `[0x5e8680]` are only ever written, never read.
+- Instead: arg bit 2 of `0x42e2b0` (`0x42e651..0x42ec3a`). With the chosen light, the outline
+  of each model part is determined (`0x43aaa0`), clipped against the world via the light BSP
+  (`0x40bb40`, `0x40bda0` → list of receiving polygons `{n, kind, face, n×16 B}`), and
+  every vertex is projected from the light onto the face plane:
+  `P' = L + (P − L) · (−(n·L + d)) / (n·(P − L))` (`0x42eac1..0x42eb53`). The receiving
+  face gets flag 2 (`0x42eb73`).
+- Drawing: `inst+0x6c` (transparency) ≤ 0.01 → `0x4385f0`: flat colour AMB, blank
+  texture, bucket 5 (opaque, overwrites the summed lights → after the texture pass it looks
+  like an unlit face, i.e. *all* lights gone, not just the chosen one).
+  Transparency > 0.01 → `0x4388e0`: bucket 2, light texture, diffuse = `C·k·transparency`,
+  specular = AMB (shadow gets lighter as the instance fades). Transparency
+  > 0.98 → instance not drawn at all (`0x42e374`).
+- No height fade or ground finder: the shadow falls wherever the projection hits a face; the
+  range is implicitly that of the light.
+- There is **nowhere a test whether the chosen light sees the caster**. At `n == 1` that light is
+  taken without any test (`0x42e422`); at `n > 1` there is always the fallback choice
+  (`0x42e524`); only an **empty** sector list removes bit 2 (`0x42e56a`). A figure standing in
+  shadow thus still casts a shadow, from that fallback light. The whole draw function is also
+  skipped entirely if `inst+0x1c == -1` (no sector, `0x42e2c3`).
 
-### Wat de port anders doet (`cast_shadow`/`draw_cast_shadows` in `src/render_gl.c`)
+### What the port does differently (`cast_shadow`/`draw_cast_shadows` in `src/render_gl.c`)
 
-| Origineel | Port |
+| Original | Port |
 |---|---|
-| werper = omtrek (`0x43aaa0`) van de **hull-nodes** (`S+0x3c`, nodevlag 0x04; Woody 43 van 142), voorgefilterd met de omtrek van de bbox-node | alle polygonen van elke mesh-node + alle skin-driehoeken, per driehoek geprojecteerd |
-| ontvangers uit de **licht-BSP** (`0x40bb40`/`0x40bda0`), al tot convexe polygonen geclipt | lijsten A en B van het licht, geclipt met de stencilbuffer. A ∪ B is niet dezelfde verzameling: een volledig beschaduwde face staat in geen van beide |
-| enige tests: bladsoort ≠ 2, ≥ 1 vertex vóór het ontvangstvlak, camera vóór dat vlak | plus zelfbedachte grenzen (`s > 40`, een bolstraal-`reach`-test, `k` buiten 1..100). Ze zijn er omdat de port A/B afloopt in plaats van de BSP, en kunnen geldige schaduwen laten vallen |
-| `0.01 < transparantie ≤ 0.98` → doorschijnende schaduw (emmer 2, `C·k·transparantie`) | altijd de opake AMB-variant tot 0.98 |
-| werper zonder animatie herbruikt zijn polygonen (`0x42f3d0`/`0x42f460`) | elke frame opnieuw |
-| werper wordt **niet** getest op zichtbaarheid: `0x42b380` roept `0x42e2b0` met bit 2 aan voor elke instantie in `wereld+0x64` | idem (issue #29); de port slaat alleen ontvangende faces over die deze frame niet getekend worden, wat exact is |
+| caster = outline (`0x43aaa0`) of the **hull nodes** (`S+0x3c`, node flag 0x04; Woody 43 of 142), pre-filtered with the outline of the bbox node | all polygons of every mesh node + all skin triangles, projected per triangle |
+| receivers from the **light BSP** (`0x40bb40`/`0x40bda0`), already clipped to convex polygons | lists A and B of the light, clipped with the stencil buffer. A ∪ B is not the same set: a fully shadowed face is in neither |
+| only tests: leaf kind ≠ 2, ≥ 1 vertex in front of the receiving plane, camera in front of that plane | plus made-up bounds (`s > 40`, a sphere-radius `reach` test, `k` outside 1..100). They exist because the port walks A/B instead of the BSP, and can drop valid shadows |
+| `0.01 < transparency ≤ 0.98` → translucent shadow (bucket 2, `C·k·transparency`) | always the opaque AMB variant up to 0.98 |
+| a caster without animation reuses its polygons (`0x42f3d0`/`0x42f460`) | recomputed every frame |
+| the caster is **not** tested for visibility: `0x42b380` calls `0x42e2b0` with bit 2 on for every instance in `world+0x64` | same (issue #29); the port only skips receiving faces that aren't drawn this frame, which is exact |
 
-## 5. Detailoptie `[0x4c2c0c]`
+## 5. Detail option `[0x4c2c0c]`
 
-| Waarde | Effect | Adres |
+| Value | Effect | Address |
 |---|---|---|
-| 0 | speler getekend met arg 4 (geen geworpen schaduw); instanties arg 5 | `0x42b380..0x42b39d` |
-| ≠ 0 | speler arg 6 (schaduw + model); instanties met SetFlags-bit 1 (`inst+0xf0 & 1`) en soort 1: arg 7 i.p.v. 5 | `0x42b3a2`, `0x42b3cc..0x42b3df` |
-| 2 | bovendien de effectpas van SetFlags-bit 0x20 (zie `INSTANCE.md` §6) | `0x43b423` |
+| 0 | player drawn with arg 4 (no cast shadow); instances arg 5 | `0x42b380..0x42b39d` |
+| ≠ 0 | player arg 6 (shadow + model); instances with SetFlags bit 1 (`inst+0xf0 & 1`) and kind 1: arg 7 instead of 5 | `0x42b3a2`, `0x42b3cc..0x42b3df` |
+| 2 | plus the effect pass of SetFlags bit 0x20 (see `INSTANCE.md` §6) | `0x43b423` |
 
-De wereld-lichtpas (§1) en de modelbelichting (§3) hangen **niet** van de optie af. Dit
-beantwoordt ook open punt 2 van `INSTANCE.md`: de "extra pas tegen tabel `[0x4c4cac]+4`" is
-de geworpen schaduw, en die tabel is de lichtentabel.
+The world light pass (§1) and the model lighting (§3) do **not** depend on the option. This
+also answers open point 2 of `INSTANCE.md`: the "extra pass against table `[0x4c4cac]+4`" is
+the cast shadow, and that table is the light table.
 
-## 6. Controle tegen W1A (`python tools/litparse.py W1A`)
+## 6. Check against W1A (`python tools/litparse.py W1A`)
 
-7 lichten, 1987 extra vertices, 20382 faces. Per licht o.a.: licht 0 `R = 2500`,
-kleur (168,236,255), A = 1626, B = 232, C = 304; licht 4 `R = 2450`, A = 570, B = 299,
-C = 442. Controles: (1) 0 negatieve indices buiten de extra-tabel; (2) 0 extra vertices
-buiten het polygoonvlak; (3) 0 C-polygonen zonder coplanaire B-face, A ∩ B = ∅
-(C-veld `+8` = materiaalwoord van die B-face in 1538 van 1654 gevallen); (4) 0 A-faces met het licht achter
-het vlak of buiten bereik; (5) BSP-query: C-zwaartepunten 1653/1654 belicht, A 5385/5385.
+7 lights, 1987 extra vertices, 20382 faces. Per light, among others: light 0 `R = 2500`,
+colour (168,236,255), A = 1626, B = 232, C = 304; light 4 `R = 2450`, A = 570, B = 299,
+C = 442. Checks: (1) 0 negative indices outside the extra table; (2) 0 extra vertices
+outside their polygon's plane; (3) 0 C polygons without a coplanar B face, A ∩ B = ∅
+(C field `+8` = material word of that B face in 1538 of 1654 cases); (4) 0 A faces with the light behind
+the plane or out of range; (5) BSP query: C centroids 1653/1654 lit, A 5385/5385.
 
-## Onzeker
+## Uncertain
 
-- **Dynamische lichten**: `0x498790(lightsys, soort, &pos, &kleur, straal)` zet een record
-  (0x2c B) in `lightsys+0x18` (aantal `+0x14`); aanroepers `0x40c6dc`, `0x40cce7`,
-  `0x40cd9d`, `0x40cea4`, `0x40d1da`, `0x4766ee`, `0x477dc6` (effecten/projectielen). De
-  *lezer* van die tabel is niet gevonden; onbekend of en hoe ze de wereld of modellen
-  belichten.
-- `light+0x28` (2, één keer 3) en het typebyte van `object_id`: geen lezer gevonden in de
-  lichtpas.
-- C-veld `+0x08`: 7 % wijkt een paar eenheden af van het materiaalwoord van de ouder
-  (vermoedelijk hernummerde materiaaltabel na de lichtbouw); functioneel irrelevant. De port zoekt de echte ouder zelf (coplanaire B-face die het zwaartepunt bevat, `lit_c_parent`): het veld als face-index gebruiken koppelde in W1A/W1B/House 0 van de 7209 C-polygonen aan hun ouder, waardoor de belichte helft van vloeren met de zichtbare sectoren aan- en uitsprong (issue #29).
-- Vlagwaarde 1 in `lightsys+0x28` (wordt getest in `0x42ad0b`, nergens gezet).
-- `[0x5ac860]` = 1 met vector `[0x5ac864..0x5ac86c]` (`0x42ed16`): alternatieve
-  lichtrichting voor modellen (menu/cutscene?), en `[0x5ac850]/[0x5ac854]` (kleur-optelling)
-  zijn niet uitgezocht.
-- De exacte begrenzing/afronding van de model-vertexkleur na `0x43bdbd` en de details van
-  de omtrek-/clipfuncties `0x43aaa0`, `0x40b8f0`, `0x40bbc0` (alleen nodig voor geworpen
-  instantie-schaduwen) zijn niet uitgewerkt.
-- Of `device+0x20` (MODULATE2X-ondersteuning, `0x429745`) op elke kaart gezet is; zo niet,
-  dan zijn modellen half zo helder. Aanname in dit document: gezet.
-- Framebuffer-verzadiging: de optelling klemt op 1.0 vóór de ×2-textuurpas; een port die de
-  formule in één pas uitrekent moet `min(1, AMB + Σ)` nemen om hetzelfde te krijgen.
+- **Dynamic lights**: `0x498790(lightsys, kind, &pos, &colour, radius)` sets a record
+  (0x2c B) in `lightsys+0x18` (count `+0x14`); callers `0x40c6dc`, `0x40cce7`,
+  `0x40cd9d`, `0x40cea4`, `0x40d1da`, `0x4766ee`, `0x477dc6` (effects/projectiles). The
+  *reader* of that table was not found; unknown whether and how they light the world or models.
+- `light+0x28` (2, once 3) and the type byte of `object_id`: no reader found in the
+  light pass.
+- C field `+0x08`: 7% deviates by a few units from the material word of the parent
+  (presumably a renumbered material table after the light build); functionally irrelevant. The port looks for the real parent itself (coplanar B face containing the centroid, `lit_c_parent`): using the field as a face index linked 0 of the 7209 C polygons in W1A/W1B/House to their parent, causing the lit half of floors to flicker on and off with the visible sectors (issue #29).
+- Flag value 1 in `lightsys+0x28` (tested in `0x42ad0b`, never set).
+- `[0x5ac860]` = 1 with vector `[0x5ac864..0x5ac86c]` (`0x42ed16`): alternative
+  light direction for models (menu/cutscene?), and `[0x5ac850]/[0x5ac854]` (colour summation)
+  are not investigated.
+- The exact clamping/rounding of the model vertex colour after `0x43bdbd` and the details of
+  the outline/clip functions `0x43aaa0`, `0x40b8f0`, `0x40bbc0` (only needed for cast
+  instance shadows) are not worked out.
+- Whether `device+0x20` (MODULATE2X support, `0x429745`) is set on every card; if not,
+  models are half as bright. Assumption in this document: set.
+- Framebuffer saturation: the summation clamps to 1.0 before the ×2 texture pass; a port that
+  computes the formula in a single pass must take `min(1, AMB + Σ)` to get the same result.

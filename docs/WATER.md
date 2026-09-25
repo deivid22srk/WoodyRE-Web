@@ -1,103 +1,103 @@
-# WATER.md — klasse 60, het watervolume
+# WATER.md — class 60, the water volume
 
-Statische analyse van de instantieklasse 60 (`size 0x158`, ctor inline in `0x403440` op `0x403c79`, vtable `0x4a9194`) en de
-port in `src/water.c`. Aanleiding: in W2A bewoog het water niet en verdronk Woody er niet in. Vier W2A-instanties
-(183..186, model 25) krijgen `SetTypeInstance 60` en direct daarna bericht 1506; in totaal gebruiken 16 levels de klasse
+Static analysis of instance class 60 (`size 0x158`, ctor inline in `0x403440` at `0x403c79`, vtable `0x4a9194`) and the
+port in `src/water.c`. Background: in W2A the water didn't move and Woody didn't drown in it. Four W2A instances
+(183..186, model 25) get `SetTypeInstance 60` and immediately afterward message 1506; in total 16 levels use the class
 (K2A/K2R/K3A/K3R/KWS, S2A/S2R/S3A/S3R/SWS, W2A/W2B/W2D/W3A/W3B/WWS).
 
-| vtable | adres | wat |
+| vtable | address | what |
 |---|---|---|
-| [1] | `0x473120` | Init: het rooster over de bovenkant bouwen (alleen als `+0x14c` gezet is, anders basis `0x42e210`) |
-| [2] | `0x4738c0` | Draw(bits): bit 1 = middelpunt/straal voor de zichtbaarheid (`+0x88..+0x98`, gemiddelde van de 8 boxpunten × 0.125), bit 4 = het oppervlak tekenen |
-| [3] | `0x4747f0` | Update: kielzog-effecten en de verdrinkingstest |
-| [22] | `0x474a40` | handler: 29, 33, 35 genegeerd (geeft 0), rest naar de basis `0x42d5e0` |
-| dtor | `0x474250` | geeft de vijf roosterbuffers vrij als `nc·nr < 0x190` |
+| [1] | `0x473120` | Init: build the grid over the top (only if `+0x14c` is set, otherwise base `0x42e210`) |
+| [2] | `0x4738c0` | Draw(bits): bit 1 = center/radius for visibility (`+0x88..+0x98`, average of the 8 box points × 0.125), bit 4 = draw the surface |
+| [3] | `0x4747f0` | Update: wake effects and the drowning test |
+| [22] | `0x474a40` | handler: 29, 33, 35 ignored (returns 0), rest to the base `0x42d5e0` |
+| dtor | `0x474250` | frees the five grid buffers if `nc·nr < 0x190` |
 
-Het model (W2A model 25) is een doos: node 0 mesh (12 driehoeken, boven- en onderkant met textuurgroep 56), node 1 kind 2
-(bbox), node 2 kind 1 (press). **De doos zelf wordt nooit getekend** (Draw vervangt de modelrenderer; `0x42e2b0` wordt alleen
-met bit 1 aangeroepen) en **botst nooit**: Init zet `inst+8 |= 0x40` (`0x473876`).
+The model (W2A model 25) is a box: node 0 mesh (12 triangles, top and bottom with texture group 56), node 1 child 2
+(bbox), node 2 child 1 (press). **The box itself is never drawn** (Draw replaces the model renderer; `0x42e2b0` is only
+called with bit 1) and **never collides**: Init sets `inst+8 |= 0x40` (`0x473876`).
 
-## 1. Bericht 1506 SetWaterVolumeParameter (`0x46ce38` → `0x474690`)
+## 1. Message 1506 SetWaterVolumeParameter (`0x46ce38` → `0x474690`)
 
-`1506 [inst, a, b, c, d]` → `+0x13c = a·0.01` (celgrootte), `+0x140 = b` (**geheel getal**, geen ×0.01: aantal vakken langs
-de korte kant), `+0x144 = c·0.01` (golfamplitude), `+0x148 = d·0.01` (alfa), `+0x14c = 1`, dan `vtable[1]` (Init).
-MESSAGES.md had b als ×0.01; dat is fout (`0x46ce4e`: `mov ecx,[eax+0x10]` gaat ongeschaald de stack op).
-W2A: `[1000000, 2, 3500, 40]` voor 183..185 (cel 10000, 2 vakken, 35, 0.40), `[130000, 4, 2000, 50]` voor 186; de assert-tekst
-van de klasse noemt dezelfde tweede set als voorbeeld.
+`1506 [inst, a, b, c, d]` → `+0x13c = a·0.01` (cell size), `+0x140 = b` (**integer**, not ×0.01: number of cells along
+the short side), `+0x144 = c·0.01` (wave amplitude), `+0x148 = d·0.01` (alpha), `+0x14c = 1`, then `vtable[1]` (Init).
+MESSAGES.md had b as ×0.01; that's wrong (`0x46ce4e`: `mov ecx,[eax+0x10]` pushes it onto the stack unscaled).
+W2A: `[1000000, 2, 3500, 40]` for 183..185 (cell 10000, 2 cells, 35, 0.40), `[130000, 4, 2000, 50]` for 186; the assert text
+of the class cites that same second set as an example.
 
 ## 2. Init `0x473120`
 
-1. `M = 0x42f7e0(0, 0, &M, 1)`: de track van de **eerste gewone top-node** (vanaf `S+0x6c`, volgende broer zolang de vlaggen
-   ≠ 0) op animatie 0, fase 0, maal de instantiematrix (met schaal). De dozen hebben hun echte plaats in die track: W2A 183
-   staat daardoor 340 lager dan zijn `.ins`-positie (bovenkant y = −89, bodem van het meer −1000, de steiger 114).
-   Met alleen de instantiematrix lag het oppervlak boven de steiger en verdronk Woody bij de start.
-2. Hoeken: van elke polygoon van de eerste mesh-node (`S+0x34`, 1-gebaseerd) met **normaal-z ≥ 0.1 in node-ruimte**
-   (`[poly+0x10]`; de dozen zijn z-omhoog gemodelleerd en door de instantie rechtop gezet) de eerste drie indices, uniek, maximaal 4.
-   De eerste polygoon zonder bit 15 in het materiaal levert de textuur (`+0x110`).
-3. `0x4742f0(c, 4)` sorteert half: pas 1 `i = 0..2`: wissel `c[i]`↔`c[0]` als `P[i].x < P[0].x && P[i].y > P[0].y`; pas 2
-   `i = 1..2`: wissel met `c[1]` als `x > && y >`; pas 3 wisselt `c[2]` met zichzelf. `c[3]` wordt nooit bekeken.
+1. `M = 0x42f7e0(0, 0, &M, 1)`: the track of the **first regular top node** (starting at `S+0x6c`, next sibling as long as the
+   flags ≠ 0) at animation 0, phase 0, times the instance matrix (with scale). The boxes have their real position in that track: W2A 183
+   is thus 340 lower than its `.ins` position (top y = −89, bottom of the lake −1000, the jetty 114).
+   With only the instance matrix, the surface was above the jetty and Woody drowned at the start.
+2. Corners: from each polygon of the first mesh node (`S+0x34`, 1-based) with **normal-z ≥ 0.1 in node space**
+   (`[poly+0x10]`; the boxes are modeled z-up and stood upright by the instance) the first three indices, unique, up to 4.
+   The first polygon without bit 15 in the material supplies the texture (`+0x110`).
+3. `0x4742f0(c, 4)` half-sorts: pass 1 `i = 0..2`: swap `c[i]`↔`c[0]` if `P[i].x < P[0].x && P[i].y > P[0].y`; pass 2
+   `i = 1..2`: swap with `c[1]` if `x > && y >`; pass 3 swaps `c[2]` with itself. `c[3]` is never examined.
 4. `A = M·P[c0]`, `E1 = M·P[c1] − A`, `E2 = M·P[c3] − A`; `len1 = |E1|` (`+0x11c`), `len2 = |E2|` (`+0x120`);
    `+0x13c = min(+0x13c, len1, len2)`.
-5. `n1 = round(+0x140 · len1 / +0x13c)`, `n2` idem met len2 (fistp, minimaal 1); `nc = n1+1` (`+0x114`), `nr = n2+1` (`+0x118`).
-   `nc·nr > 400` → `"Un volume d'eau a trop de face"` en klaar (in de data nooit).
-6. Hoekpunt `k = j·nc + i`, `s = i/(nc−1)`, `t = j/(nr−1)`: `v = A + s·E1 + t·E2 + (0, 10, 0)` (`+0xfc`),
-   `uv = (s·len1, t·len2) / +0x13c` (`+0x100`: de textuur herhaalt elke `+0x13c` eenheden), fase `= ftol(rand·512)` (`+0x10c`).
-7. Driehoeken per vak: `(k, k+1, k+nc)` en `(k+nc, k+1, k+nc+1)` (`+0x108`).
-8. Middelpunt `+0x130 = v[0] + 0.5·E1 + 0.5·E2`; `inst+8 |= 0x40`; kielzogtimer `+0x154 = rand·5`.
+5. `n1 = round(+0x140 · len1 / +0x13c)`, `n2` likewise with len2 (fistp, at least 1); `nc = n1+1` (`+0x114`), `nr = n2+1` (`+0x118`).
+   `nc·nr > 400` → `"Un volume d'eau a trop de face"` and done (never in the data).
+6. Vertex `k = j·nc + i`, `s = i/(nc−1)`, `t = j/(nr−1)`: `v = A + s·E1 + t·E2 + (0, 10, 0)` (`+0xfc`),
+   `uv = (s·len1, t·len2) / +0x13c` (`+0x100`: the texture repeats every `+0x13c` units), phase `= ftol(rand·512)` (`+0x10c`).
+7. Triangles per cell: `(k, k+1, k+nc)` and `(k+nc, k+1, k+nc+1)` (`+0x108`).
+8. Center `+0x130 = v[0] + 0.5·E1 + 0.5·E2`; `inst+8 |= 0x40`; wake timer `+0x154 = rand·5`.
 
 ## 3. Draw bit 4 (`0x473a58..0x474229`)
 
-Tabellen in het subsysteem `[0x5e823c]` (gevuld op `0x40248f`/`0x402520`): `+0` = `cos(i·2π/512)`, 512 stuks;
-`+0x900` = `0.5·cos(i·2π/512)^8`, 128 stuks.
+Tables in the subsystem `[0x5e823c]` (filled at `0x40248f`/`0x402520`): `+0` = `cos(i·2π/512)`, 512 entries;
+`+0x900` = `0.5·cos(i·2π/512)^8`, 128 entries.
 
-* **Licht** (`0x474128`): `d` = genormaliseerde xz-richting camera → middelpunt, `L = len1 + len2`;
-  zonpunt `+0x124 = middelpunt + (L·d.x, 0.25·L, L·d.z)` — achter het water gezien vanaf de camera.
-* **Kleur per hoekpunt** (`0x474490`): `a = norm(camera − v)`, `b = norm(v − zon)`, gespiegeld `r = (b.x, −b.y, b.z)`;
-  `a·r < 0` → waarde 1, anders `|a × r|` (sinus van de hoek). RGB = `tabel900[round(waarde·127)] + 0.4`, alfa = `+0x148`.
-  Een glimlijn waar de weerspiegelde zon het oog raakt: 0.9 recht erin, 0.4 daarbuiten.
-* **Twee lagen**, elk alle driehoeken; eerst laag B, dan A. Alleen **binnenpunten** bewegen (niet rij 0, niet de laatste rij,
-  niet `k % nc == 0`, niet `(k+1) % nc == 0`), met `c = cos[ph & 511]`, `s = −cos[(ph+128) & 511] = sin`, amplitude `+0x144`:
-  A = `(x + c·amp, y, z + s·amp)`, uv; B = `(x − c·amp, y − 5, z − s·amp)`, `uv + (0.23, 0.85)`. De twee lagen draaien dus
-  tegen elkaar in; met de grove roosters van W2A (3×5, 3×7, 3×3, 12×8) is het effect vooral een wervelende textuur.
-* Driehoeken via `0x472040` (clip) naar **textuurlijst 8** (`0x42b460(tex, 8)`): in de flush `0x4293f0` blend aan,
-  SRCALPHA/INVSRCALPHA, **z-write uit**, na de modellen (lijst 11) en vóór de additieve lijst 3 en de fadelijst; MODULATE2X
-  (LIGHTING.md §1.5). Kleurbytes = `float·255` (`0x4aa308`). Geen culling.
-* Daarna per hoekpunt `fase += ftol((rand·30 + 250)·dt)` (fistp, afronden): ~265/512 omwenteling per seconde, alleen in
-  frames waarin het water getekend wordt.
+* **Light** (`0x474128`): `d` = normalized xz direction camera → center, `L = len1 + len2`;
+  sun point `+0x124 = center + (L·d.x, 0.25·L, L·d.z)` — seen behind the water from the camera.
+* **Color per vertex** (`0x474490`): `a = norm(camera − v)`, `b = norm(v − sun)`, mirrored `r = (b.x, −b.y, b.z)`;
+  `a·r < 0` → value 1, otherwise `|a × r|` (sine of the angle). RGB = `table900[round(value·127)] + 0.4`, alpha = `+0x148`.
+  A glint line where the reflected sun hits the eye: 0.9 dead-on, 0.4 outside it.
+* **Two layers**, each all triangles; first layer B, then A. Only **interior points** move (not row 0, not the last row,
+  not `k % nc == 0`, not `(k+1) % nc == 0`), with `c = cos[ph & 511]`, `s = −cos[(ph+128) & 511] = sin`, amplitude `+0x144`:
+  A = `(x + c·amp, y, z + s·amp)`, uv; B = `(x − c·amp, y − 5, z − s·amp)`, `uv + (0.23, 0.85)`. The two layers thus rotate
+  against each other; with the coarse grids of W2A (3×5, 3×7, 3×3, 12×8) the effect is mostly a swirling texture.
+* Triangles via `0x472040` (clip) to **texture list 8** (`0x42b460(tex, 8)`): in the flush `0x4293f0` blend on,
+  SRCALPHA/INVSRCALPHA, **z-write off**, after the models (list 11) and before the additive list 3 and the fade list; MODULATE2X
+  (LIGHTING.md §1.5). Color bytes = `float·255` (`0x4aa308`). No culling.
+* Afterward, per vertex `phase += ftol((rand·30 + 250)·dt)` (fistp, rounding): ~265/512 revolution per second, only in
+  frames where the water is drawn.
 
 ## 4. Update `0x4747f0`
 
-1. `+0x154 −= dt`; onder 0: kielzog op een willekeurig punt `v0 + rand·len1·norm(v1−v0) + rand·len2·norm(v_nc−v0)` (de
-   eerste driehoek), hoogte `v0.y`, richting `(cos a, 0, sin a)` met `a = ftol(rand·512)`: `0x472ec0(pos, dir)`;
-   dan `+0x154 += rand·2`.
-2. Verdrinken: `p = Perso.pos + (0, 120, 0)` (`0x4abcb4`); `0x4746e0` transformeert p naar node-ruimte (`0x440fc0`, de
-   actuele nodematrix) en test alle vlakken van de mesh-node: overal `n·p + d ≤ 0` → binnen. Dan `+0x14d = 1`,
-   **`0x44d160` = `Perso->vtbl[0x98](7)` = Kill(7)** en `+0x150 = 3.0`. Elk frame opnieuw; de Perso negeert het als hij al
-   aan het verdrinken is. Voeten 120 onder het oppervlak is dus dood: in W2A y < −209.
+1. `+0x154 −= dt`; below 0: wake at a random point `v0 + rand·len1·norm(v1−v0) + rand·len2·norm(v_nc−v0)` (the
+   first triangle), height `v0.y`, direction `(cos a, 0, sin a)` with `a = ftol(rand·512)`: `0x472ec0(pos, dir)`;
+   then `+0x154 += rand·2`.
+2. Drowning: `p = Perso.pos + (0, 120, 0)` (`0x4abcb4`); `0x4746e0` transforms p into node space (`0x440fc0`, the
+   current node matrix) and tests all faces of the mesh node: everywhere `n·p + d ≤ 0` → inside. Then `+0x14d = 1`,
+   **`0x44d160` = `Perso->vtbl[0x98](7)` = Kill(7)** and `+0x150 = 3.0`. Every frame again; the Perso ignores it if it's already
+   drowning. Feet 120 below the surface is thus death: in W2A that's y < −209.
 
-### 4.1 Kielzog (`0x472ec0` → `0x472f50` → `0x473050`, deeltjeslijst `[0x5e823c]+0xdb8`, max 2000)
+### 4.1 Wake (`0x472ec0` → `0x472f50` → `0x473050`, particle list `[0x5e823c]+0xdb8`, max 2000)
 
-Emitter: leeft 1.0 s, beweegt 300 eenheden/s (`0x4a986c`) langs `dir` en laat elke 0.1 s een merkteken achter.
-Merkteken: leeft 0.5 s, `p = leeftijd/0.5`; sprite `0x470f10` met vlaggen 0x12 (eigen kleur, geen billboard → plat op normaal
-(0, 1, 0), additief), beeld `0x1003a` = bank 0 beeld 58, kleur 0.8, alfa `(1−p)·0.7`, halve diagonaal `10 + 70·p`,
-rotatie `+0x224` willekeurig maar zonder vlag 4 ongebruikt.
+Emitter: lives 1.0 s, moves 300 units/s (`0x4a986c`) along `dir` and leaves a mark every 0.1 s.
+Mark: lives 0.5 s, `p = age/0.5`; sprite `0x470f10` with flags 0x12 (own color, no billboard → flat on normal
+(0, 1, 0), additive), image `0x1003a` = bank 0 image 58, color 0.8, alpha `(1−p)·0.7`, half-diagonal `10 + 70·p`,
+rotation `+0x224` random but unused without flag 4.
 
 ## 5. Port (`src/water.c`)
 
-* `water_add` bij `SetTypeInstance 60`, `water_param` bij 1506 (Init, met `M` = `node_world` na `ins_pose(inst, 0, 0)`),
-  `water_update` elk niet-gepauzeerd frame (fases, kielzog, Kill(7) via `player_kill`), `water_draw` via de nieuwe haak
-  `Renderer.post_models` (na de modelpassen, vóór de fadelijst), `water_fx_draw` bij de effectsprites (`hud_world_fx_plane`,
-  fx-slot 11 = beeld 58). `draw_instance` slaat type 60 over.
-* Afwijkingen: de fase loopt als float door (geen ftol per frame, dus onafhankelijk van de framerate) en ook buiten beeld;
-  de binnentest gebruikt de matrix van Init i.p.v. de actuele (geen enkele waterdoos is geanimeerd); MODULATE2X via
-  `GL_COMBINE` + `RGB_SCALE 2` (zonder die extensie: kleur ×2, geklemd).
-* Test: `extract/Data W2A` (start op de steiger, water rondom); verdrinken `--pos -700 200 500` (Kill 7 rond 0.6 s,
-  respawn); animatie `WOODY_SHOTSEQ="out/wq 1.0 0.25 6" --cam -600 300 -600 200 -35`; `WOODY_WATERLOG=1` = rooster per volume
-  en elke seconde het aantal kielzoggen/merktekens.
+* `water_add` on `SetTypeInstance 60`, `water_param` on 1506 (Init, with `M` = `node_world` after `ins_pose(inst, 0, 0)`),
+  `water_update` every non-paused frame (phases, wake, Kill(7) via `player_kill`), `water_draw` via the new hook
+  `Renderer.post_models` (after the model passes, before the fade list), `water_fx_draw` for the effect sprites (`hud_world_fx_plane`,
+  fx slot 11 = image 58). `draw_instance` skips type 60.
+* Deviations: the phase runs on as a float (no ftol per frame, so independent of framerate) and also off-screen;
+  the inside test uses the Init matrix instead of the current one (no water box is animated); MODULATE2X via
+  `GL_COMBINE` + `RGB_SCALE 2` (without that extension: color ×2, clamped).
+* Test: `extract/Data W2A` (start on the jetty, water all around); drowning `--pos -700 200 500` (Kill 7 around 0.6 s,
+  respawn); animation `WOODY_SHOTSEQ="out/wq 1.0 0.25 6" --cam -600 300 -600 200 -35`; `WOODY_WATERLOG=1` = grid per volume
+  and, every second, the number of wakes/marks.
 
 ## 6. Open
 
-* De waterplons `0x478660` (van Kill(7) en van bericht 1505 `[inst, f]` = `0x478660(&inst.pos, 1000, f·0.01)`; 45× in 7 levels,
-  W2A 17×) is volledig uitgewerkt in **SPLASH.md**, met port-recept; nog niet geport.
-* Wat `+0x14d` en `+0x150` (3.0) na het verdrinken doen: geen lezer gevonden in de klasse zelf.
-* Niet vergeleken met het draaiende origineel.
+* The water splash `0x478660` (from Kill(7) and from message 1505 `[inst, f]` = `0x478660(&inst.pos, 1000, f·0.01)`; 45× in 7 levels,
+  W2A 17×) is fully worked out in **SPLASH.md**, with a port recipe; not yet ported.
+* What `+0x14d` and `+0x150` (3.0) do after drowning: no reader found in the class itself.
+* Not compared against the running original.

@@ -1,276 +1,276 @@
-# Modelrendering (`.ins`-instances): typecodes, oogtextuur/knipperen, 0xFFFF en UV's
+# Model rendering (`.ins` instances): type codes, eye texture/blinking, 0xFFFF and UVs
 
-Statisch afgeleid uit `Woody.exe`: instance-renderer `0x43b3f0` (enige aanroeper `0x42f0fe` in de per-instance
-draw `0x42e2b0`), polygoontekenaar `0x43d790`, driehoektekenaar `0x43e0f0`, textuurframe-kiezer `0x47f290`,
-`.ins`-loader `0x427290` (punten `0x427b69`–`0x427f40`, polygonen `0x427fa0`–`0x4283b6`, driehoeken
-`0x428460`–`0x4285d5`), matrixhulpen `0x440fc0` (inverse met schaal) en `0x4408e0` (A·B, rijvectoren).
-Numerieke controle: `tools/modeluv.py`, `tools/helperuv.py`. Node-nummers hieronder zijn **1-based** (zoals in
-het bestand / `insparse.py`); in de C-port (0-based array) is dat steeds één lager (Woody: ogen = port-nodes 62/65,
-"witte vierkantjes" = 64/67, helpers = 63/66).
+Statically derived from `Woody.exe`: instance renderer `0x43b3f0` (sole caller `0x42f0fe` in the per-instance
+draw `0x42e2b0`), polygon drawer `0x43d790`, triangle drawer `0x43e0f0`, texture-frame picker `0x47f290`,
+`.ins` loader `0x427290` (points `0x427b69`-`0x427f40`, polygons `0x427fa0`-`0x4283b6`, triangles
+`0x428460`-`0x4285d5`), matrix helpers `0x440fc0` (inverse with scale) and `0x4408e0` (A·B, row vectors).
+Numeric verification: `tools/modeluv.py`, `tools/helperuv.py`. Node numbers below are **1-based** (as in
+the file / `insparse.py`); in the C port (0-based array) that is always one lower (Woody: eyes = port nodes 62/65,
+"white squares" = 64/67, helpers = 63/66).
 
-## Recept (wat er in een port moet veranderen)
+## Recipe (what needs to change in a port)
 
-1. **Mesh-nodes met typecode 2 nooit tekenen.** (`0x43b6c2`: `cmp byte [node+1], 2 ; je volgende node`.) Dat zijn
-   de twee witte vierkanten voor Woody's ogen. Het zijn geen oogleden en ze worden nergens anders getekend.
-2. **Skinned driehoeken (`Model.tris`) hebben expliciete UV's**, geen projectie: de "matrix" van hun materiaal
-   is een tabel met drie UV-paren. Bestandsvertex j (j = 0,1,2 in bestandsvolgorde) krijgt
-   `(u, v) = (f[3j], f[3j+1])`. In de port (`t->i2` = 1e dword, `t->i1` = 2e, `t->i0` = 3e):
-   `i2 → (m[0], m[1])`, `i1 → (m[3], m[4])`, `i0 → (m[6], m[7])`. **Dit is bug B** (ruis op het shirt van de
-   vijanden: model 42 in W1A heeft 299 getextureerde driehoeken; de planaire formule geeft daar UV's van −25..+34).
-3. **Node-polygonen: planaire projectie op het punt *minus de node-pivot***, dus op dezelfde `lp` die de port al
-   voor de positie gebruikt: `u = m0·lp.x + m3·lp.y + m6·lp.z + m9`, `v = m1·lp.x + m4·lp.y + m7·lp.z + m10`
-   (pivot = die van de node waartoe het punt behoort). Bij de meeste modellen is de pivot 0 en maakt het niets uit;
-   bij Woody's ogen en snavel wel.
-4. **Mesh-node met een helper-kind (kind 0x10, `parent` = de mesh):** in het gewone pad komen de UV's van *alle*
-   polygonen van die mesh niet uit het materiaal maar uit de helper: breng het (pivot-relatieve) punt naar
-   de lokale ruimte van de helpernode, `q = p · W_mesh · W_helper⁻¹`, en neem
+1. **Never draw mesh nodes with type code 2.** (`0x43b6c2`: `cmp byte [node+1], 2 ; jump to next node`.) Those are
+   the two white squares for Woody's eyes. They are not eyelids and are not drawn anywhere else.
+2. **Skinned triangles (`Model.tris`) have explicit UVs**, no projection: the "matrix" of their material
+   is a table with three UV pairs. File vertex j (j = 0,1,2 in file order) gets
+   `(u, v) = (f[3j], f[3j+1])`. In the port (`t->i2` = 1st dword, `t->i1` = 2nd, `t->i0` = 3rd):
+   `i2 → (m[0], m[1])`, `i1 → (m[3], m[4])`, `i0 → (m[6], m[7])`. **This is bug B** (noise on the enemies' shirt;
+   model 42 in W1A has 299 textured triangles; the planar formula gives UVs of −25..+34 there).
+3. **Node polygons: planar projection on the point minus the node pivot**, i.e. on the same `lp` the port already
+   uses for position: `u = m0·lp.x + m3·lp.y + m6·lp.z + m9`, `v = m1·lp.x + m4·lp.y + m7·lp.z + m10`
+   (pivot = that of the node the point belongs to). For most models the pivot is 0 and it makes no difference;
+   for Woody's eyes and beak it does.
+4. **Mesh node with a helper child (kind 0x10, `parent` = the mesh):** in the normal path the UVs of *all*
+   polygons of that mesh do not come from the material but from the helper: bring the (pivot-relative) point into
+   the local space of the helper node, `q = p · W_mesh · W_helper⁻¹`, and take
    mode 0: `(a,b) = (q.y, q.z)`, mode 1: `(q.x, q.z)`, mode 2: `(q.x, q.y)`;
-   `u = 0.5 − a / v_8`, `v = b / v_c − 0.5` (`v_c`, `v_8` = 1e en 2e float van de helper in het bestand;
-   Woody: 35 en 40, mode 1). Textuur = **frame 0** van de groep. De helpernode is geanimeerd → zo beweegt de pupil.
-5. **Oogleden/knipperen = animatie-events, geen timer.** Lees per frame de event-track van **node 1** van het
-   model voor de lopende animatie; het laatste event type 5 met `t ≤ huidig frame` levert vier frame-indices
-   `e[2], e[3], e[4], e[5]` voor mesh-nodes met typecode **5, 6, 7, 8** (geen event → 0). Index 0 = ogen open (alleen
-   stap 4). Index k ≠ 0: teken de polygonen van die node **twee keer**: één laag met textuurframe `k`
-   (als `k < frame_count`, anders frame 0) en de gewone materiaal-UV's van stap 3 (ooglid, colour-key), en één laag
-   met frame 0 en de helper-UV's van stap 4 (oogbol). Ooglid bovenop.
-   Woody's idle (anim 0, 1200 frames in 6 s): t=600 → 1, t=640 → 2, t=660 → 1, t=700 → 0: **één knipper per 6 s-lus,
-   op 3.0 s, 0.5 s lang** (half 0.2 s, dicht 0.1 s, half 0.2 s).
-6. **Geen automatische textuurframe-cyclus op modellen.** Zonder bericht 16/18 (`inst+0xd8` bits 0-2 = 0) wordt
-   altijd frame 0 gebruikt, ongeacht `frame_count`/`anim_duration`. Bind voor instances dus `gl_frames[0]`
-   i.p.v. de globaal cyclende `gl_tex` (de override-modi staan in INSTANCE.md §2).
-7. **Materiaal met bit 15 = vlakke kleur ARGB1555**, écht getekend: `R = (m>>10)&31`, `G = (m>>5)&31`, `B = m&31`,
-   elk `× 8/255 ×` de belichte vertexkleur (0..255). `0xFFFF` = wit (0.973) — Woody's handschoenen. De vele
-   0xFFFF-polygonen in kind-4/kind-2-nodes worden niet getekend omdat de renderer alleen de mesh-lijst (kind 0) afloopt.
-8. Texturen moeten **herhalen** (wrap): de UV's van Woody's ogen liggen in [−1, 0].
-9. **Backface-culling doet de engine zelf, per polygoon; het apparaat staat op `D3DCULL_NONE`** (`0x47ec8b`),
-   want polygoonvlag `0x2` markeert een dubbelzijdige polygoon die wél getekend moet worden. Node-polygonen
-   (`0x43bf65`): breng de camera naar de lokale ruimte van de node en sla de polygoon over als
-   `n·cam_lokaal + d ≤ 0` met het vlak dat de loader uit de rustpose bouwt (`0x4280c2`–`0x428375`): over elk
-   drietal opeenvolgende hoeken P, Q, R het drietal met de langste `n = (R−Q) × (R−P)` boven 0.01, genormaliseerd,
-   `d = −n·R`; geen enkel drietal zo lang → (1, 0, 0, 0). **Alleen de winding beslist**; de vertexnormalen worden
-   niet bekeken (ze zijn op sommige modellen onzin: W1A-model 18, de glazen liftplaat van issue #2, heeft elk vlak
-   twee keer, getextureerd en als omgekeerde 0xFFFF-kopie, en een keuze op de normalensom hield van elk paar de
-   verkeerde over). Skinned driehoeken
-   (`0x43c1a4`), elke frame in wereldruimte: `n = (A−B) × (A−C)`, tekenen als `n·(camera − A) > 0`.
-   Zonder dit worden ook de achterkanten getekend; die krijgen `ndl = 0` en dus alleen de ambient-term
-   (0.6 × vertexkleur), en precies op de silhouetrand — waar voor- en achterkant dezelfde diepte hebben —
-   kan de donkere winnen: een donker randje om elk figuur.
-10. **Alfatest**: `ALPHAREF = 0x7f`, `ALPHAFUNC = GREATEREQUAL` (`0x47ec50`, `0x47ec5c`), aan/uit per **textuur**
-   (de colour-key-vlag van de `.tex`-groep, `tex+0x44 & 1`), niet per pas (`0x429a6b`). Filter: MAG/MIN LINEAR,
-   MIP POINT (`0x47ed42`–`0x47ed62`) over 4 zelfgebouwde niveaus (SKY.md §8; port: `GL_LINEAR_MIPMAP_NEAREST`),
-   adressering WRAP behalve voor de lichtvlekken (CLAMP, `0x429597`).
-   Bij het omzetten van een colour-key-textuur gooit het origineel de magenta wég: de texel wordt
-   `ARGB 0x00000000`, dus **zwart met alfa 0** (`0x47fc1e`). Blijft de magenta staan, dan mengt het filter die
-   met de ondoorzichtige buren en krijgt elke alfarand een roze zoom.
-11. **Zwarte contourlijn** (`0x43ea30`, gevoed door de twee achterkantlijsten die `0x43b3f0` aanlegt): dit is de
-   inktlijn om de figuren in het origineel. Zie §7.
+   `u = 0.5 − a / v_8`, `v = b / v_c − 0.5` (`v_c`, `v_8` = 1st and 2nd float of the helper in the file;
+   Woody: 35 and 40, mode 1). Texture = **frame 0** of the group. The helper node is animated → that's how the pupil moves.
+5. **Eyelids/blinking = animation events, not a timer.** Per frame, read the event track of **node 1** of the
+   model for the current animation; the last event of type 5 with `t ≤ current frame` yields four frame indices
+   `e[2], e[3], e[4], e[5]` for mesh nodes with type code **5, 6, 7, 8** (no event → 0). Index 0 = eyes open (only
+   step 4). Index k ≠ 0: draw the polygons of that node **twice**: one layer with texture frame `k`
+   (if `k < frame_count`, else frame 0) and the normal material UVs from step 3 (eyelid, colour key), and one layer
+   with frame 0 and the helper UVs from step 4 (eyeball). Eyelid on top.
+   Woody's idle (anim 0, 1200 frames in 6 s): t=600 → 1, t=640 → 2, t=660 → 1, t=700 → 0: **one blink per 6 s loop,
+   at 3.0 s, 0.5 s long** (half 0.2 s, closed 0.1 s, half 0.2 s).
+6. **No automatic texture-frame cycling on models.** Without message 16/18 (`inst+0xd8` bits 0-2 = 0), frame 0 is
+   always used, regardless of `frame_count`/`anim_duration`. So for instances bind `gl_frames[0]`
+   instead of the globally cycling `gl_tex` (the override modes are in INSTANCE.md §2).
+7. **Material with bit 15 = flat colour ARGB1555**, actually drawn: `R = (m>>10)&31`, `G = (m>>5)&31`, `B = m&31`,
+   each `× 8/255 ×` the lit vertex colour (0..255). `0xFFFF` = white (0.973) — Woody's gloves. The many
+   0xFFFF polygons in kind-4/kind-2 nodes are not drawn because the renderer only walks the mesh list (kind 0).
+8. Textures must **repeat** (wrap): the UVs of Woody's eyes lie in [−1, 0].
+9. **Backface culling is done by the engine itself, per polygon; the device is set to `D3DCULL_NONE`** (`0x47ec8b`),
+   because polygon flag `0x2` marks a double-sided polygon that must still be drawn. Node polygons
+   (`0x43bf65`): bring the camera into the node's local space and skip the polygon if
+   `n·cam_local + d ≤ 0` with the plane the loader builds from the rest pose (`0x4280c2`-`0x428375`): over each
+   triplet of consecutive corners P, Q, R, the triplet with the longest `n = (R−Q) × (R−P)` above 0.01, normalized,
+   `d = −n·R`; if no triplet is that long → (1, 0, 0, 0). **Only the winding decides**; vertex normals are
+   not consulted (they are nonsense on some models: W1A model 18, the glass elevator platform from issue #2, has every face
+   twice, textured and as a reversed 0xFFFF copy, and picking by the normal sum kept the wrong one of each pair).
+   Skinned triangles
+   (`0x43c1a4`), each frame in world space: `n = (A−B) × (A−C)`, drawn if `n·(camera − A) > 0`.
+   Without this, backfaces would also be drawn; they get `ndl = 0` and thus only the ambient term
+   (0.6 × vertex colour), and precisely at the silhouette edge — where front and back have the same depth —
+   the dark one can win: a dark outline around every figure.
+10. **Alpha test**: `ALPHAREF = 0x7f`, `ALPHAFUNC = GREATEREQUAL` (`0x47ec50`, `0x47ec5c`), on/off per **texture**
+   (the colour-key flag of the `.tex` group, `tex+0x44 & 1`), not per pass (`0x429a6b`). Filter: MAG/MIN LINEAR,
+   MIP POINT (`0x47ed42`-`0x47ed62`) over 4 self-built levels (SKY.md §8; port: `GL_LINEAR_MIPMAP_NEAREST`),
+   addressing WRAP except for the light spots (CLAMP, `0x429597`).
+   When converting a colour-key texture, the original throws away the magenta: the texel becomes
+   `ARGB 0x00000000`, i.e. **black with alpha 0** (`0x47fc1e`). If the magenta stays, the filter blends it
+   with the opaque neighbours and every alpha edge gets a pink fringe.
+11. **Black outline** (`0x43ea30`, fed by the two backface lists that `0x43b3f0` builds up): this is the
+   ink line around the figures in the original. See §7.
 
-## 1. Welke nodes worden getekend; typecodes
+## 1. Which nodes get drawn; type codes
 
-`0x43b3f0` loopt uitsluitend over de mesh-lijst `S+0x30/0x34` (kind 0x00; `0x43b40a`–`0x43b420`, lus `0x43b67d`–
-`0x43c158`). Hull- (0x04), bbox- (0x02), press-, volume-, marker- en helpernodes komen daar niet in voor en worden dus
-nooit getekend, wat hun materiaal ook is.
+`0x43b3f0` only walks the mesh list `S+0x30/0x34` (kind 0x00; `0x43b40a`-`0x43b420`, loop `0x43b67d`-
+`0x43c158`). Hull (0x04), bbox (0x02), press, volume, marker and helper nodes do not occur there and are thus
+never drawn, whatever their material.
 
-Typecode (`node+1`, flags bits 8-15) in de renderer:
+Type code (`node+1`, flag bits 8-15) in the renderer:
 
-| typecode | kind | gedrag | adres |
+| type code | kind | behaviour | address |
 |---|---|---|---|
-| 2 | 0x00 mesh | node overslaan (modus 1 reserveert alleen zijn 16-byte lichtslot) | `0x43b6ae`, `0x43b6c2`; idem in het niet-tekenpad `0x42f170` |
-| 5, 6, 7, 8 | 0x00 mesh | textuurframe uit event type 5: `idx = typecode − 5` in `[esp+0x90..0x9c]` | `0x43bf03`–`0x43bf3a` |
-| overig / 0 | 0x00 mesh | gewoon pad | `0x43c065` |
+| 2 | 0x00 mesh | skip node (mode 1 only reserves its 16-byte light slot) | `0x43b6ae`, `0x43b6c2`; likewise in the non-draw path `0x42f170` |
+| 5, 6, 7, 8 | 0x00 mesh | texture frame from event type 5: `idx = typecode − 5` in `[esp+0x90..0x9c]` | `0x43bf03`-`0x43bf3a` |
+| other / 0 | 0x00 mesh | normal path | `0x43c065` |
 
-Verdere vergelijkingen met typecode 2 bestaan niet (`cmp byte [reg+1], 2` komt alleen op `0x42f170` en `0x43b6c2`
-voor). In alle 28 levels komen op mesh-nodes alleen typecode 2 (50×), 5 (48×) en 6 (48×) voor. De overige
-waargenomen codes zitten op andere nodesoorten en raken de renderer niet: press 1/4, marker 1/5/9, licht 5/7,
-dummy 1 (markers worden via `0x42f6b0(typecode, n, out)` opgezocht; zie FORMAT_INS.md §6).
+Further comparisons against type code 2 don't exist (`cmp byte [reg+1], 2` occurs only at `0x42f170` and `0x43b6c2`).
+Across all 28 levels, only type codes 2 (50×), 5 (48×) and 6 (48×) occur on mesh nodes. The other
+observed codes sit on other node kinds and don't touch the renderer: press 1/4, marker 1/5/9, light 5/7,
+dummy 1 (markers are looked up via `0x42f6b0(typecode, n, out)`; see FORMAT_INS.md §6).
 
-Woody (model 0): node 63 (tc 6, pivot (−7.96, 24.98, −12), 15 polys materiaal 0x458d) met kinderen 65 (tc 2,
-2 driehoeken 0xFFFF, 24.4 × 31.8 vlak) en 64 (helper mode 1, 35/40); node 66 (tc 5, 0x458e) met 68 (tc 2) en 67
-(helper). Groep 64: 64×64, colour-key, 5 frames: **0 = oog (wit + groene iris), 1 = ooglid half, 2 = ooglid dicht,
-3 en 4 = schuine "boze" oogleden** (magenta = transparant).
+Woody (model 0): node 63 (tc 6, pivot (−7.96, 24.98, −12), 15 polys material 0x458d) with children 65 (tc 2,
+2 triangles 0xFFFF, 24.4 × 31.8 plane) and 64 (helper mode 1, 35/40); node 66 (tc 5, 0x458e) with 68 (tc 2) and 67
+(helper). Group 64: 64×64, colour-key, 5 frames: **0 = eye (white + green iris), 1 = eyelid half, 2 = eyelid closed,
+3 and 4 = angled "angry" eyelids** (magenta = transparent).
 
-## 2. Frame-keuze: event type 5 (`0x43b58b`–`0x43b62c`)
+## 2. Frame selection: event type 5 (`0x43b58b`-`0x43b62c`)
 
 ```
-N1   = eerste node van de node-array (S+0x68)            ; 0x43b58b
+N1   = first node of the node array (S+0x68)              ; 0x43b58b
 ev   = N1+0x78 [anim = inst+0xb0] -> (off, cnt) in N1+0x88 ; 0x43b595-0x43b5ce
-tcur = inst+0xac / (duration/4096) * nframes             ; 0x43b5ae-0x43b5bd  (0x4aa138 = 1/4096)
+tcur = inst+0xac / (duration/4096) * nframes               ; 0x43b5ae-0x43b5bd  (0x4aa138 = 1/4096)
 f[0..3] = 0
-for elk event (in volgorde) zolang event.t <= tcur:       ; 0x43b5d7-0x43b5e3
-    type 5: f[0..3] = event dwords 2,3,4,5 ; 6 dwords     ; 0x43b5f2-0x43b61d
-    type 4: 9 dwords overslaan ; type 3: 15 dwords          ; 0x43b61f / 0x43b624
+for each event (in order) while event.t <= tcur:           ; 0x43b5d7-0x43b5e3
+    type 5: f[0..3] = event dwords 2,3,4,5 ; 6 dwords      ; 0x43b5f2-0x43b61d
+    type 4: skip 9 dwords ; type 3: skip 15 dwords          ; 0x43b61f / 0x43b624
 ```
-Bij het tekenen van een mesh-node met typecode 5..8 en `k = f[typecode−5] ≠ 0` (`0x43bf2d`–`0x43bf3a`):
-per voorwaarts gericht (of dubbelzijdig, polyflag 0x2) getextureerd polygoon
-`tex = (k < tex+0x58) ? groep + k·0x74 : groep` (`0x43bfb0`–`0x43bfc8`) en `0x43d790(poly, tex, materiaal, vlag)`
-(`0x43bfcb`); heeft de mesh een helper, dan daarna nog eens `0x43d790(poly, materiaal->tex (frame 0), helpermatrix)`
-voor dezelfde polygonen (`0x43c00c`–`0x43c056`). Vlakke-kleurpolygonen worden in dit pad overgeslagen (`0x43bf97`).
+When drawing a mesh node with type code 5..8 and `k = f[typecode−5] ≠ 0` (`0x43bf2d`-`0x43bf3a`):
+for each forward-facing (or double-sided, polyflag 0x2) textured polygon,
+`tex = (k < tex+0x58) ? group + k·0x74 : group` (`0x43bfb0`-`0x43bfc8`) and `0x43d790(poly, tex, material, flag)`
+(`0x43bfcb`); if the mesh has a helper, then once more `0x43d790(poly, material->tex (frame 0), helpermatrix)`
+for the same polygons (`0x43c00c`-`0x43c056`). Flat-colour polygons are skipped in this path (`0x43bf97`).
 
-Data (W1A, model 0, event-track van node 1; 14 van de 91 animaties hebben type-5-events):
+Data (W1A, model 0, event track of node 1; 14 of 91 animations have type-5 events):
 anim 0 (idle, 1200 fr / 6.0 s): (600: 1,1) (640: 2,2) (660: 1,1) (700: 0,0); anim 20/22/26: (0: 0,0) (3: 2,2)
-(10 of 7: 0,0); anim 31: (0: 2,2) = ogen dicht; één animatie gebruikt (4, 3) = boze blik (typecode-5-oog = node 66 frame 4, typecode-6-oog = node 63 frame 3).
-Ook andere modellen gebruiken het (455 type-5-events buiten model 0 over alle levels).
-Er is geen random/timer-knipperlogica in de renderer; `Perso` (`0x44a2d0`/`0x44cda0`) is hiervoor niet nodig.
+(10 or 7: 0,0); anim 31: (0: 2,2) = eyes closed; one animation uses (4, 3) = angry look (type-5 eye = node 66 frame 4, type-6 eye = node 63 frame 3).
+Other models use this too (455 type-5 events outside model 0 across all levels).
+There is no random/timer blink logic in the renderer; `Perso` (`0x44a2d0`/`0x44cda0`) is not needed for this.
 
-## 3. Geen auto-cyclus op modellen (`0x47f290`)
+## 3. No auto-cycling on models (`0x47f290`)
 
-Gewone polygonen worden verzameld (`0x43c10b`) en daarna getekend met
-`0x47f290(this = materiaal->tex, &inst+0xd8, out, materiaal, now)` (`0x43c314`–`0x43c35d`; enige aanroeper).
-`0x47f290`: `tex+0 == 0` (statische groep) → klaar; anders `[0x5e8688] = this` (= frame 0) en alleen als
-`inst+0xd8 & 7 ≠ 0` én `frame_count ≠ 1` wordt een ander frame gekozen (`0x47f2bd`–`0x47f2d4`, jumptabel `0x47f604`).
-De ctor-reset `0x42e218` zet `+0xd8 &= 0xc0`. Multi-frame groepen met `anim_duration > 0` cyclen op instances dus
-**niet** vanzelf; alleen na bericht 16/18 (INSTANCE.md §2). De zin "zonder override geldt de normale globale
-textuuranimatie" in INSTANCE.md §2 klopt voor instances niet: er is dan gewoon frame 0.
-Het helper-pad (`0x43c0e0`) en het typecode-pad roepen `0x47f290` niet aan.
+Ordinary polygons are collected (`0x43c10b`) and then drawn with
+`0x47f290(this = material->tex, &inst+0xd8, out, material, now)` (`0x43c314`-`0x43c35d`; sole caller).
+`0x47f290`: `tex+0 == 0` (static group) → done; otherwise `[0x5e8688] = this` (= frame 0) and only if
+`inst+0xd8 & 7 ≠ 0` and `frame_count ≠ 1` is a different frame chosen (`0x47f2bd`-`0x47f2d4`, jump table `0x47f604`).
+The ctor reset `0x42e218` sets `+0xd8 &= 0xc0`. Multi-frame groups with `anim_duration > 0` therefore do **not**
+cycle automatically on instances; only after message 16/18 (INSTANCE.md §2). The sentence "without an override the
+normal global texture animation applies" in INSTANCE.md §2 does not hold for instances: it's just frame 0 then.
+The helper path (`0x43c0e0`) and the type-code path do not call `0x47f290`.
 
-## 4. UV-generatie
+## 4. UV generation
 
-### 4.1 Node-polygonen: planair op pivot-relatieve punten
-De loader trekt per node, vóórdat hij de polygonen van die node leest, de pivot van alle punten van de node af
-(`0x427daf`–`0x427df9`: `P -= N+0x20..0x28`). De UV-berekening in de loader (`0x4280e4`–`0x428110`) dient alleen om
-`P+0xc` (UV-splitsvlag, drempel 0.015 = `0x4aa288`) te zetten; er worden geen UV's opgeslagen.
-De echte UV's ontstaan per frame in `0x43d790` (`0x43da31`–`0x43da6c`), tenzij `poly+1 & 0x80` (vlakke kleur):
+### 4.1 Node polygons: planar on pivot-relative points
+The loader subtracts, per node, before reading that node's polygons, the pivot from all points of the node
+(`0x427daf`-`0x427df9`: `P -= N+0x20..0x28`). The UV calculation in the loader (`0x4280e4`-`0x428110`) only serves
+to set `P+0xc` (UV split flag, threshold 0.015 = `0x4aa288`); no UVs are stored.
+The actual UVs arise per frame in `0x43d790` (`0x43da31`-`0x43da6c`), unless `poly+1 & 0x80` (flat colour):
 ```
-P = [renderer+0x14] + idx·0x28        ; renderer+0x14 = S+0x20 (0x42e3de; 0x509adc en 0x5e86ac zijn hetzelfde object, 0x484068/0x48407e)
-u = M[0]·P.x + M[1]·P.y + M[2]·P.z + M[3]        ; M = 3e argument (materiaal: f0,f3,f6,f9)
+P = [renderer+0x14] + idx·0x28        ; renderer+0x14 = S+0x20 (0x42e3de; 0x509adc and 0x5e86ac are the same object, 0x484068/0x48407e)
+u = M[0]·P.x + M[1]·P.y + M[2]·P.z + M[3]        ; M = 3rd argument (material: f0,f3,f6,f9)
 v = M[4]·P.x + M[5]·P.y + M[6]·P.z + M[7]        ; (f1,f4,f7,f10)
 ```
-`P` is het rustpose-punt relatief t.o.v. de pivot, niet het geanimeerde punt → de textuur zit vast aan de node.
-Geen per-polygoonvlag verandert de formule: polyflag 0x1 (`0x427ff8`) laat in de loader alleen de materiaalkoppeling
-weg (komt in de data niet voor), 0x2 = dubbelzijdig (geen backface-test, `0x43bf65`/`0x43c094`), bits 0x60 =
-textuurvlag `&6` → gemengde tekenmodus 3 (`0x43d7b9`). Er is geen aparte materiaaltabel voor modellen (`level+0x5c`,
+`P` is the rest-pose point relative to the pivot, not the animated point → the texture is fixed to the node.
+No per-polygon flag changes the formula: polyflag 0x1 (`0x427ff8`) only drops the material link in the loader
+(doesn't occur in the data), 0x2 = double-sided (no backface test, `0x43bf65`/`0x43c094`), bits 0x60 =
+texture flag `&6` → mixed draw mode 3 (`0x43d7b9`). There is no separate material table for models (`level+0x5c`,
 `0x43bf9c`/`0x43c314`).
 
-Controle (`python tools/modeluv.py W1A -m 0 -n 61 63 66`): met pivot-aftrek vallen beide ogen binnen één tegel en
-zijn ze symmetrisch (L: u −0.67..−0.24, v −0.80..−0.04; R: u −0.79..−0.33, v −0.82..−0.06); zonder aftrek loopt het
-rechteroog over de tegelrand (v −1.18..−0.41). Snavelvlak node 61: v −0.81..−0.29 i.p.v. −0.43..+0.08.
-Vijand (model 42): alle pivots 0, polygoon-UV's 0.01..0.99 met beide formules (elk polygoon heeft een eigen materiaal).
+Verification (`python tools/modeluv.py W1A -m 0 -n 61 63 66`): with pivot subtraction, both eyes fall within one tile and
+are symmetric (L: u −0.67..−0.24, v −0.80..−0.04; R: u −0.79..−0.33, v −0.82..−0.06); without subtraction the
+right eye runs past the tile edge (v −1.18..−0.41). Beak face node 61: v −0.81..−0.29 instead of −0.43..+0.08.
+Enemy (model 42): all pivots 0, polygon UVs 0.01..0.99 with both formulas (each polygon has its own material).
 
-### 4.2 Skinned driehoeken: expliciete UV's uit de materiaalentry
-Loader `0x428460`: bestands-dwords d0,d1,d2,mat → `poly+0x1c = d0`, `+0x1a = d1`, `+0x18 = d2`. Tekenaar `0x43e0f0`:
-`ptr = materiaal+8` (`0x43e13c`); voor engine-vertex k = 0,1,2 (`0x43e39a`–`0x43e3ab`): `u = [ptr]`, `v = [ptr+0x10]`,
-`ptr −= 4`. Dus engine-vertex k: `u = mat[2−k]`, `v = mat[4+2−k]`; met `mat+0..0xc = f0,f3,f6,f9` en
-`mat+0x10..0x1c = f1,f4,f7,f10` (FORMAT_TEX §1) is dat: **bestandsvertex j → (f[3j], f[3j+1])**; rij 3 en kolom 2 van
-de "matrix" zijn bij deze materialen 0. Er wordt geen puntpositie gebruikt.
+### 4.2 Skinned triangles: explicit UVs from the material entry
+Loader `0x428460`: file dwords d0,d1,d2,mat → `poly+0x1c = d0`, `+0x1a = d1`, `+0x18 = d2`. Drawer `0x43e0f0`:
+`ptr = material+8` (`0x43e13c`); for engine vertex k = 0,1,2 (`0x43e39a`-`0x43e3ab`): `u = [ptr]`, `v = [ptr+0x10]`,
+`ptr −= 4`. So engine vertex k: `u = mat[2−k]`, `v = mat[4+2−k]`; with `mat+0..0xc = f0,f3,f6,f9` and
+`mat+0x10..0x1c = f1,f4,f7,f10` (FORMAT_TEX §1) that is: **file vertex j → (f[3j], f[3j+1])**; row 3 and column 2 of
+the "matrix" are 0 for these materials. No point position is used.
 
-Controle (`python tools/modeluv.py W1A -s 282`): model 42 (slots 282, 293, 313, 314, 396, 494), 299 driehoeken,
-groep 105: expliciet u 0.28..0.98, v 0.02..0.98, max. spanwijdte per driehoek 0.19; planair −25..+34, spanwijdte 37.
-Gedeelde punten: 347 keer dezelfde UV bij deze toewijzing, tegen ≤ 100 bij elke andere permutatie van de drie rijen
-(de rest zijn echte UV-naden). Woody heeft 712 driehoeken waarvan 4 getextureerd (groep 63), de rest vlakke kleur.
+Verification (`python tools/modeluv.py W1A -s 282`): model 42 (slots 282, 293, 313, 314, 396, 494), 299 triangles,
+group 105: explicit u 0.28..0.98, v 0.02..0.98, max span per triangle 0.19; planar −25..+34, span 37.
+Shared points: 347 times the same UV with this assignment, versus ≤ 100 for any other permutation of the three rows
+(the rest are genuine UV seams). Woody has 712 triangles of which 4 are textured (group 63), the rest flat colour.
 
-### 4.3 Helper-projectie (kind 0x10) — `0x43b6ce`–`0x43b908`
-Voor elke mesh-node zoekt de renderer in de helperlijst `S+0x40/0x44` een helper met `N+0x84 == mesh` (`0x43b716`–
-`0x43b746`). Gevonden: `X = 0x440fc0(W_helper, schaal)` (inverse), `H = 0x4408e0: W_mesh · X` (`0x43b74d`–`0x43b798`),
-en een 8-float "pseudomateriaal" op `[esp+0x70]` (s8 = `N+8` = 1/v_8, sc = `N+0xc` = 1/v_c, H rij-major 4×3):
+### 4.3 Helper projection (kind 0x10) — `0x43b6ce`-`0x43b908`
+For each mesh node the renderer looks in the helper list `S+0x40/0x44` for a helper with `N+0x84 == mesh` (`0x43b716`-
+`0x43b746`). If found: `X = 0x440fc0(W_helper, scale)` (inverse), `H = 0x4408e0: W_mesh · X` (`0x43b74d`-`0x43b798`),
+and an 8-float "pseudo-material" at `[esp+0x70]` (s8 = `N+8` = 1/v_8, sc = `N+0xc` = 1/v_c, H row-major 4×3):
 
-| mode (`N+4`) | u-rij | v-rij |
+| mode (`N+4`) | u row | v row |
 |---|---|---|
 | 0 (`0x43b878`) | −s8·(H1,H4,H7), 0.5 − s8·H10 | sc·(H2,H5,H8), sc·H11 − 0.5 |
 | 1 (`0x43b83f`) | −s8·(H0,H3,H6), 0.5 − s8·H9 | sc·(H2,H5,H8), sc·H11 − 0.5 |
 | 2 (`0x43b7ba`) | −s8·(H0,H3,H6), 0.5 − s8·H9 | sc·(H1,H4,H7), sc·H10 − 0.5 |
 
-In het gewone pad wordt elk zichtbaar polygoon van zo'n mesh direct getekend met dit pseudomateriaal en
-`materiaal->tex` = frame 0 (`0x43c0d8`–`0x43c106`). Controle (`python tools/helperuv.py W1A 0 63 0`): u 0.35..0.83,
-v −0.82..0.03 over alle keyframes van de helper (de helper verschuift o.a. tussen t=540 en 560 → pupil kijkt opzij).
-In alle levels: 96 helpers mode 1, 1× mode 2.
+In the normal path every visible polygon of such a mesh is drawn directly with this pseudo-material and
+`material->tex` = frame 0 (`0x43c0d8`-`0x43c106`). Verification (`python tools/helperuv.py W1A 0 63 0`): u 0.35..0.83,
+v −0.82..0.03 across all keyframes of the helper (the helper shifts between t=540 and 560 → the pupil looks sideways).
+Across all levels: 96 helpers mode 1, 1× mode 2.
 
-## 5. Materiaal 0xFFFF / bit 15 (`0x43db83`–`0x43df09`, driehoeken `0x43e4c5` e.v.)
-`test byte [poly+1], 0x80` → textuur = standaardtextuur `[0x5e8684]`, geen UV-berekening, en per vertex
-`kleur = (int)(c5 · 0.0313725 (0x4aa3e8 = 8/255) · vertexlicht)` met c5 = bits 10-14 (R), 5-9 (G), 0-4 (B)
-(`0x43dc65`–`0x43dd3f`). Dat is ARGB1555 met bit 15 als vlag, niet RGB565 (FORMAT_INS.md §2.4 is op dit punt onjuist);
-de port (`argb1555_to_rgb`) doet het al goed. 0xFFFF is dus zichtbaar wit; er bestaat geen "niet tekenen"-waarde.
+## 5. Material 0xFFFF / bit 15 (`0x43db83`-`0x43df09`, triangles `0x43e4c5` ff.)
+`test byte [poly+1], 0x80` → texture = default texture `[0x5e8684]`, no UV calculation, and per vertex
+`colour = (int)(c5 · 0.0313725 (0x4aa3e8 = 8/255) · vertex-light)` with c5 = bits 10-14 (R), 5-9 (G), 0-4 (B)
+(`0x43dc65`-`0x43dd3f`). That is ARGB1555 with bit 15 as flag, not RGB565 (FORMAT_INS.md §2.4 is wrong on this point);
+the port (`argb1555_to_rgb`) already does it right. 0xFFFF is thus visible white; there is no "don't draw" value.
 
-## 7. De zwarte contourlijn (`0x43ea30`)
+## 7. The black outline (`0x43ea30`)
 
-Dit is de inktlijn om Woody en de andere figuren. Het is **geen lijnprimitief en geen crease-lijst**, maar de
-achterkant van het model nog een keer, opgeblazen: een klassieke back-face hull.
+This is the ink line around Woody and the other figures. It is **not a line primitive and not a crease list**, but the
+backface of the model once more, inflated: a classic back-face hull.
 
-**Poort (de twee enige aanroepers, `0x43c5ac` en `0x43c5d1`, aan het eind van `0x43b3f0`)** over de twee lijsten
-die de renderer tijdens het gewone tekenen heeft aangelegd: achterwaartse driehoeken (`0x43c289`) en
-achterwaartse node-polygonen (`0x43c0c7`).
+**Port (the two only callers, `0x43c5ac` and `0x43c5d1`, at the end of `0x43b3f0`)** over the two lists
+the renderer built up during normal drawing: backward-facing triangles (`0x43c289`) and
+backward-facing node polygons (`0x43c0c7`).
 
-**Voorwaarden** (alle drie in de proloog van `0x43b3f0`):
+**Conditions** (all three in the prologue of `0x43b3f0`):
 
-1. `inst+0xf0 & 0x20` — SetFlags-bit 0x20, bericht 45 (`0x43b423`). Het levelscript zet die per instantie:
-   2 tot 51 per level (W1A 9, K2A 29, W3D 51; Blackbox en Credits geen). Instantie 0 (de speler) zit erbij in
-   House, W1A, W3C, W3D en WWS; in W2B/W3A is het `…0001`, W2D `…0003`, W1B `…0008`.
-2. `[0x4c2c0c] == 2` (`0x43b43a`) — de detailoptie uit `Woody.cfg` (bestandsoffset 0x40), in de meegeleverde cfg 2.
-3. De breedte moet positief zijn (hieronder).
+1. `inst+0xf0 & 0x20` — SetFlags bit 0x20, message 45 (`0x43b423`). The level script sets this per instance:
+   2 to 51 per level (W1A 9, K2A 29, W3D 51; Blackbox and Credits none). Instance 0 (the player) has it in
+   House, W1A, W3C, W3D and WWS; in W2B/W3A it is `…0001`, W2D `…0003`, W1B `…0008`.
+2. `[0x4c2c0c] == 2` (`0x43b43a`) — the detail option from `Woody.cfg` (file offset 0x40), 2 in the supplied cfg.
+3. The width must be positive (below).
 
-**Breedte** (`0x43b447..0x43b4fe`), met `d` = afstand van de camera tot `inst+0x60` (de geanimeerde skeletwortel,
-INSTANCE.md §1.1; port `ins_anim_centre()`). **Niet** de instantiepositie: Buzz in W1A (slot 276) staat 1800 eenheden
-van de plek waar zijn filmpje (deur 321) hem heen laat lopen, en gemeten vanaf `inst+0xc` viel hij buiten 1500 en
-verloor hij zijn contour (issue #35):
+**Width** (`0x43b447..0x43b4fe`), with `d` = distance from the camera to `inst+0x60` (the animated skeleton root,
+INSTANCE.md §1.1; port `ins_anim_centre()`). **Not** the instance position: Buzz in W1A (slot 276) stands 1800 units
+from the spot his cutscene (door 321) makes him walk to, and measured from `inst+0xc` he fell outside 1500 and
+lost his outline (issue #35):
 
-| d | w (wereldeenheden) |
+| d | w (world units) |
 |---|---|
 | 0 … 750 | `d / 300` (0 → 2.5) |
 | 750 … 1500 | `5 − d/300` (2.5 → 0) |
-| > 1500 | geen contour |
+| > 1500 | no outline |
 
-Constanten: `[0x4aa3e4] = 1/300`, `[0x4aa3e0] = 2.5`, `[0x4a9884] = 5.0`. Omdat `w ∝ d` is de lijn tot 750
-eenheden **even dik in beeldpunten** (met de projectie van de port ongeveer `hoogte/540` px).
+Constants: `[0x4aa3e4] = 1/300`, `[0x4aa3e0] = 2.5`, `[0x4a9884] = 5.0`. Because `w ∝ d`, the line is up to 750
+units **equally thick in screen pixels** (with the port's projection roughly `height/540` px).
 
-**Geometrie** (`0x43c49a..0x43c56a`): per vertex van een achterwaartse primitief
-`p' = M_node · ((p − pivot) + w · n)` met `n` de **genormaliseerde** vertexnormaal (de loader normaliseert bij het
-inlezen, `0x427c01`; de port doet dat niet en moet het zelf doen). Let op: de polygoonlus markeert alleen index
-0, 1 en 2 (`0x43c42d`), dus in het origineel blijft de vierde hoek van een quad op het oppervlak liggen tenzij een
-buurprimitief hem ook markeert. De port schuift alle hoeken op.
+**Geometry** (`0x43c49a..0x43c56a`): for each vertex of a backward-facing primitive,
+`p' = M_node · ((p − pivot) + w · n)` with `n` the **normalized** vertex normal (the loader normalizes on load,
+`0x427c01`; the port doesn't and has to do it itself). Note: the polygon loop only marks index
+0, 1 and 2 (`0x43c42d`), so in the original the fourth corner of a quad stays on the surface unless a
+neighbouring primitive marks it too. The port shifts all corners.
 
-**Kleur en diepte** (`0x43ecd3..0x43ed17`, `0x43edf0`): vlak **zwart**, alfa = `2 × (1 − inst+0x6c)` begrensd op
-255 — met z-write aan en zonder blending op de opake lijst is dat gewoon zwart; alleen de vervaag-lijst
-(`renderer+0x1c4`, als `(1−fade)·255 < 252`) mengt echt. De diepte is `1 − 12·rhw`, **exact dezelfde als het
-model** (geen bias, in tegenstelling tot de schaduw die er `3/65536` af haalt). Omdat batches vooraan gelinkt
-worden, komt de contour vóór het model in de flush: buiten de silhouetrand blijft de hull staan, en waar hij door
-een holle plooi heen steekt wint hij de dieptetest — dáár komen de lijnen om een snuit of een vinger vandaan.
+**Colour and depth** (`0x43ecd3..0x43ed17`, `0x43edf0`): flat **black**, alpha = `2 × (1 − inst+0x6c)` clamped to
+255 — with z-write on and no blending on the opaque list, that is just black; only the fade list
+(`renderer+0x1c4`, if `(1−fade)·255 < 252`) actually blends. The depth is `1 − 12·rhw`, **exactly the same as the
+model** (no bias, unlike the shadow which subtracts `3/65536`). Because batches are linked at the front,
+the outline ends up before the model in the flush: outside the silhouette edge the hull stays visible, and where it
+pokes through a hollow fold it wins the depth test — that's where the lines around a snout or a finger come from.
 
-**Wat wel en niet meedoet**: alle achterwaartse skinned driehoeken; node-polygonen alleen als ze niet
-dubbelzijdig zijn (vlag 0x2) en geen blendvlaggen hebben (`flags & 0x60`, `0x43c0c2`). Typecode-2-nodes en de
-ooglid-laag (typecode 5..8, `0x43bf65`) doen niet mee.
+**What does and doesn't participate**: all backward-facing skinned triangles; node polygons only if they are not
+double-sided (flag 0x2) and have no blend flags (`flags & 0x60`, `0x43c0c2`). Type-code-2 nodes and the
+eyelid layer (type code 5..8, `0x43bf65`) do not participate.
 
-**De bit komt alleen van het script.** Elk level stuurt direct na bericht 1200 (SetTypeInstance) bericht 45 met
-0x21 naar elke actor die een contour heeft, de bazen inbegrepen (W1B Buzz slot 405, W3D 775/790/801). Over alle 28
-levels krijgen alleen deze actoren géén 0x20, en dat is authentiek: Woody in Blackbox/Credits/Lang, de eindbaas van
-W2B (type 12) en de drie spoken van W3B (type 13). De port zette de bit vroeger zelf op elke actorklasse omdat Buzz
-zonder lijn stond; dat was echter de afstandsfout hierboven (zijn geanimeerde wortel staat in W1B 3400 eenheden van
-`inst+0xc`), en die hack is weg. `WOODY_SHLOG=1` schrijft per seconde één regel voor elke getekende actor die géén
-contour krijgt, met de afstand en de reden (geen bit 0x20, of verder dan 1500).
+**The bit only comes from the script.** Every level sends message 45 with 0x21 directly after message 1200
+(SetTypeInstance) to every actor that has an outline, bosses included (W1B Buzz slot 405, W3D 775/790/801). Across all 28
+levels, only these actors do not get a 0x20, and that is authentic: Woody in Blackbox/Credits/Lang, the final boss of
+W2B (type 12) and the three ghosts of W3B (type 13). The port used to set the bit itself on every actor class because Buzz
+stood without a line; that, however, was the distance bug above (his animated root stands 3400 units from
+`inst+0xc` in W1B), and that hack is gone. `WOODY_SHLOG=1` writes one line per second for every drawn actor that does not get
+an outline, with the distance and the reason (no bit 0x20, or beyond 1500).
 
-## 8. Vervagende instanties (`inst+0x6c`, berichten 56/57): de lijst `+0x1c4`
+## 8. Fading instances (`inst+0x6c`, messages 56/57): the list `+0x1c4`
 
-Voorbeeld: de verdwijnende platforms aan het eind van W1B (type 70, model 1, slots 229/230/232, fade-snelheid
-57 = 0.6/s). Vóór deze ronde tekende de port alleen de gloeivlakken met `1 − fade`; al het andere bleef ondoorzichtig
-tot `fade > 0.98` en verdween dan in één frame.
+Example: the disappearing platforms at the end of W1B (type 70, model 1, slots 229/230/232, fade speed
+57 = 0.6/s). Before this round the port only drew the glow faces with `1 − fade`; everything else stayed opaque
+until `fade > 0.98` and then vanished in a single frame.
 
 - `0x43b504`: `alpha = (1 − inst+0x6c) · 255` (`[0x4a900c] = 1`, `[0x4aa308] = 255`); **`alpha < 252`**
-  (`[0x4aa3dc]`) zet `[esp+0x2c] = 1` en berekent de sorteerdiepte `[0x5ac8d4]` = camera-z van de `.ins`-positie
-  `inst+0xc` (rij `+0x11c/+0x12c/+0x13c/+0x14c`), begrensd op ≥ 0 (`0x43b528..0x43b56a`).
-- `0x43bdc4`: elke vertex krijgt `v+0x30 = alpha`; `0x43d926` schrijft die als diffuse-byte 3. Het apparaat staat op
-  ALPHAOP MODULATE, ALPHAARG1 TEXTURE, ALPHAARG2 DIFFUSE (`0x47ed72..0x47ed91`), dus eindalfa = textuur × vertex.
-- `[esp+0x2c]` is de modus van de batch (4e arg van `0x43d790`, ook voor de contour `0x43ea30` via `0x43c59d`):
-  0 = lijst `+0x1c0` (opaak), 1 = lijst `+0x1c4` (vervagend); blendvlakken krijgen altijd modus 3 (`0x43d7c8`).
-- `0x428d00` (na de doorzichtige wereldemmers 11/8/3 in `0x4293f0`): diepste = max(1, alle batchdieptes van
-  `+0x1c4/+0x1c8/+0x1cc`); emmer = `round(diepte · 254 / diepste)` (`[0x4aa2f0] = 254`), batches van dezelfde
-  instantie (`batch+8`) blijven bij elkaar; getekend van emmer 255 naar 0 (ver naar dichtbij). Per emmer:
-  1. ZWRITE aan, SRCBLEND ZERO, DESTBLEND ONE (`0x428f10..0x428f45`): alleen diepte;
-  2. SRCBLEND SRCALPHA, DESTBLEND INVSRCALPHA (`0x428fdd..0x428fff`), ZWRITE blijft aan; ZFUNC is globaal
-     LESSEQUAL (`0x47ec44`), dus alleen het voorste oppervlak van het object mengt (geen binnenvlakken zichtbaar);
-  3. ALPHATESTENABLE per textuur = kleursleutelbit `tex+0x44 & 1` (`0x428f6b`): een gekleurde-sleuteltextuur
-     verdwijnt dus al bij alpha < 127, de rest vervaagt tot 0.98.
-- De modus-3-batches (`+0x1cc`) gaan door dezelfde emmers, maar met de diepte die de laatste vervagende instantie in
-  `[0x5ac8d4]` achterliet; hun volgorde t.o.v. de vervaaglijst is dus willekeurig. De port tekent ze in pass 1 zoals
-  voorheen en de vervaaglijst daarna (`render_gl.c`, `g_fading`).
-- Niet geport: de schaduw van een vervagende werper (`0x42e69a`/`0x42eb7a`, pad `0x4388e0`).
-## Onzeker
-- Tekenvolgorde van de twee ooglagen: `0x43d790` tekent niet direct maar vult batches per (textuur, modus)
-  (`renderer+0x1b8`, lijsten `+0x1c0`); een afgesloten batch wordt vooraan gelinkt, zodat de later afgesloten
-  oogbol-batch vermoedelijk eerst en het ooglid erna getekend wordt. De flush zelf is niet gevolgd; logisch moet het
-  ooglid bovenop liggen (zelfde diepte → in een port `GL_LEQUAL` of polygon offset).
-- Doel van de typecode-2-vlakken (nooit getekend, geen andere lezer gevonden): vermoedelijk editor-/exportrest.
-- `0x440fc0` is alleen voor uniforme schaal volledig gelezen (getransponeerde rotatie × 1/s²); bij instances met
-  schaal ≠ 1 kan de helper-UV afwijken van "lokale helperruimte".
-- Typecode 7 en 8 (f[2], f[3]) komen in de data op mesh-nodes niet voor; de event-dwords 4 en 5 zijn overal 0.
-- Wrap/clamp-state van de textuur is niet uit de D3D-calls afgelezen; de data (UV's in [−1,0]) vereist herhalen.
-- Hoe wereldpolygonen (`.gel`) hun frame kiezen is hier niet onderzocht (`0x47f290` wordt alleen voor instances
-  aangeroepen).
-- Waar `[0x4c2c0c]` geschreven wordt is niet gevonden: het blok komt als geheel uit `Woody.cfg`.
+  (`[0x4aa3dc]`) sets `[esp+0x2c] = 1` and computes the sort depth `[0x5ac8d4]` = camera-z of the `.ins` position
+  `inst+0xc` (row `+0x11c/+0x12c/+0x13c/+0x14c`), clamped to ≥ 0 (`0x43b528..0x43b56a`).
+- `0x43bdc4`: every vertex gets `v+0x30 = alpha`; `0x43d926` writes that as diffuse byte 3. The device is set to
+  ALPHAOP MODULATE, ALPHAARG1 TEXTURE, ALPHAARG2 DIFFUSE (`0x47ed72..0x47ed91`), so final alpha = texture × vertex.
+- `[esp+0x2c]` is the batch mode (4th arg of `0x43d790`, also used for the outline `0x43ea30` via `0x43c59d`):
+  0 = list `+0x1c0` (opaque), 1 = list `+0x1c4` (fading); blend faces always get mode 3 (`0x43d7c8`).
+- `0x428d00` (after the transparent world buckets 11/8/3 in `0x4293f0`): deepest = max(1, all batch depths of
+  `+0x1c4/+0x1c8/+0x1cc`); bucket = `round(depth · 254 / deepest)` (`[0x4aa2f0] = 254`), batches of the same
+  instance (`batch+8`) stay together; drawn from bucket 255 to 0 (far to near). Per bucket:
+  1. ZWRITE on, SRCBLEND ZERO, DESTBLEND ONE (`0x428f10..0x428f45`): depth only;
+  2. SRCBLEND SRCALPHA, DESTBLEND INVSRCALPHA (`0x428fdd..0x428fff`), ZWRITE stays on; ZFUNC is globally
+     LESSEQUAL (`0x47ec44`), so only the frontmost surface of the object blends (no interior faces visible);
+  3. ALPHATESTENABLE per texture = colour-key bit `tex+0x44 & 1` (`0x428f6b`): a colour-keyed texture
+     thus already vanishes below alpha 127, the rest fades to 0.98.
+- The mode-3 batches (`+0x1cc`) go through the same buckets, but with the depth the last fading instance left behind
+  in `[0x5ac8d4]`; their order relative to the fade list is thus arbitrary. The port draws them in pass 1 as
+  before, and the fade list afterward (`render_gl.c`, `g_fading`).
+- Not ported: the shadow of a fading caster (`0x42e69a`/`0x42eb7a`, path `0x4388e0`).
+## Uncertain
+- Draw order of the two eye layers: `0x43d790` doesn't draw directly but fills batches per (texture, mode)
+  (`renderer+0x1b8`, lists `+0x1c0`); a closed batch is linked at the front, so the later-closed
+  eyeball batch is presumably drawn first and the eyelid after. The flush itself was not traced; logically the
+  eyelid should be on top (same depth → in a port `GL_LEQUAL` or polygon offset).
+- Purpose of the type-code-2 faces (never drawn, no other reader found): presumably an editor/export leftover.
+- `0x440fc0` is only fully correct for uniform scale (transposed rotation × 1/s²); for instances with
+  scale ≠ 1 the helper UV may deviate from "local helper space".
+- Type code 7 and 8 (f[2], f[3]) do not occur in the data on mesh nodes; event dwords 4 and 5 are 0 everywhere.
+- Wrap/clamp state of the texture was not read from the D3D calls; the data (UVs in [−1,0]) requires repeat.
+- How world polygons (`.gel`) pick their frame has not been investigated here (`0x47f290` is only called
+  for instances).
+- Where `[0x4c2c0c]` is written was not found: the block comes as a whole from `Woody.cfg`.

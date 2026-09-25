@@ -1,146 +1,146 @@
-# EKO CODE – de script-VM van Woody Woodpecker (PC, Eko Software 2001)
+# EKO CODE – the script VM of Woody Woodpecker (PC, Eko Software 2001)
 
-Alles hieronder is afgeleid uit Woody.exe (build 17-10-2001) en geverifieerd met de
-Python-tools in `tools/`: de disassembler ([ekodisasm.py](../tools/ekodisasm.py)) parseert alle 28
-`code`-bestanden zonder fouten (alle sprongdoelen geldig, elk object eindigt netjes), en de
-emulator ([ekovm.py](../tools/ekovm.py)) draait de level-initialisatie van alle 28 levels met een
-sluitende stack en produceert alleen berichttypes die de engine ook echt afhandelt.
+Everything below is derived from Woody.exe (build 17-10-2001) and verified with the
+Python tools in `tools/`: the disassembler ([ekodisasm.py](../tools/ekodisasm.py)) parses all 28
+`code` files without errors (all jump targets valid, each object ends cleanly), and the
+emulator ([ekovm.py](../tools/ekovm.py)) runs the level initialization of all 28 levels with a
+balanced stack and produces only message types the engine actually handles.
 
-## 1. Bestandsformaat `Data\<LVL>\code`
+## 1. File format `Data\<LVL>\code`
 
-Alles is little-endian uint32 ("woord"). Indexen hieronder zijn woordindexen vanaf het begin.
+Everything is little-endian uint32 ("word"). Indices below are word indices from the start.
 
-| woord | betekenis |
+| word | meaning |
 |---|---|
 | 0-1 | magic `EKO CODE` |
-| 2 | `nobj` aantal script-objecten |
-| 3 | offset objecttabel (altijd 12) |
-| 4, 5 | `nvars`, offset variabelentabel |
-| 6, 7 | `nvol`, offset world_volume-tabel |
-| 8, 9 | `nstr`, offset stringtabel |
-| 10, 11 | `ncol`, offset world_collision-tabel |
-| 12 .. 12+nobj-1 | objecttabel A: per object de codestart (relatief t.o.v. codebasis) |
-| 12+nobj .. | **codebasis** B: de bytecode van alle objecten achter elkaar |
-| vars_off | `nvars` entries van 2 woorden (waarde, runtime-pointer), daarna per variabele een lijst `[count][objId...]` = *watchers*: objecten die opnieuw draaien als de variabele verandert |
-| vol_off | `nvol` entries van 4 woorden (runtime: count u16, flags u16, tijdstempel, ptr) + per volume een watcher-lijst `[count][objId...]` |
-| str_off | `nstr` pointers (runtime ingevuld) gevolgd door C-strings |
-| col_off | `ncol` entries van 3 woorden + watcher-lijsten |
-| laatste-2 | `0xFADEFADE` |
-| laatste | compilerversie, moet 6 zijn (`"Conflit: La version du compilateur est %d..."`) |
+| 2 | `nobj` number of script objects |
+| 3 | object table offset (always 12) |
+| 4, 5 | `nvars`, variable table offset |
+| 6, 7 | `nvol`, world_volume table offset |
+| 8, 9 | `nstr`, string table offset |
+| 10, 11 | `ncol`, world_collision table offset |
+| 12 .. 12+nobj-1 | object table A: per object the code start (relative to the code base) |
+| 12+nobj .. | **code base** B: the bytecode of all objects in sequence |
+| vars_off | `nvars` entries of 2 words (value, runtime pointer), followed per variable by a list `[count][objId...]` = *watchers*: objects that run again when the variable changes |
+| vol_off | `nvol` entries of 4 words (runtime: count u16, flags u16, timestamp, ptr) + per volume a watcher list `[count][objId...]` |
+| str_off | `nstr` pointers (filled in at runtime) followed by C strings |
+| col_off | `ncol` entries of 3 words + watcher lists |
+| second-to-last | `0xFADEFADE` |
+| last | compiler version, must be 6 (`"Conflit: La version du compilateur est %d..."`) |
 
-Loader in de exe: `0x4424b0` (leest bestand, versiecheck), `0x442570` (bouwt tabellen), `0x4427e0` (init).
+Loader in the exe: `0x4424b0` (reads file, version check), `0x442570` (builds tables), `0x4427e0` (init).
 
-## 2. Runtime-model
+## 2. Runtime model
 
-- **Integer-stack** (`0x5ce2b4`, sp op `0x5d051c`) en een aparte **boolean-stack** van bytes
-  (`0x5ce44c`, sp op `0x5d0520`). Vergelijkingen halen ints van de int-stack en zetten een bool op de bool-stack;
-  `JF` haalt van de bool-stack.
-- **Globals** `0x5ce444 + 4*n`: global 0 = `this` (het actor-id in een `FOREACH`), global 1 = vrij.
-- **Variabelen** (per level) met watcher-lijsten. `STOREVAR` wekt alle watchers.
-- **Tijd** `0x5d0514` in honderdsten van seconden: de engine zet per frame `time = (int)(frametijd_s * 100.0)` (`0x4019fd`, constante `0x4a9010`). `DELAY 100` = 1 seconde.
-- Elk object begint met `JMP <entry>`. Bij de init wordt die `JMP` (2 woorden) tijdelijk door `NOP NOP`
-  vervangen en het object vanaf woord 0 uitgevoerd (init-blok). Daarna wordt de `JMP` teruggezet.
-  Wordt het object later "gewekt", dan start het weer bij woord 0 en springt dus direct naar `<entry>`:
-  bij 8006 van de 13227 objecten is dat het einde (object doet niets reactief), bij 5221 is het een
-  reactief blok binnen het object.
-- **Init** (`0x4427e0`) draait alle objecten **twee keer**; de berichten van de eerste ronde worden
-  weggegooid (`0x441d40`), timers gereset, dan ronde twee "echt".
-  De berichten van ronde twee gaan in de **wachtrij** (`0x5bd300`, max 1280) en worden pas **na** de init aan de
-  game gegeven, net als elke tick. Dat is niet vrijblijvend: een handler die een scriptvariabele zet
-  (`1082 LevelIsEnable` voor de hub-deuren, GAMEFLOW.md §4.6) wekt daarmee zijn watcherobject, en aan het eind van
-  `0x4427e0` worden alle wekkerlijsten gewist. Geeft de port ze meteen tijdens de init door, dan verdwijnen die
-  wekkers en draait zo'n object nooit (`level_load` doet de doorgifte daarom na `eko_init`).
+- **Integer stack** (`0x5ce2b4`, sp at `0x5d051c`) and a separate **boolean stack** of bytes
+  (`0x5ce44c`, sp at `0x5d0520`). Comparisons pop ints from the int stack and push a bool onto the bool stack;
+  `JF` pops from the bool stack.
+- **Globals** `0x5ce444 + 4*n`: global 0 = `this` (the actor id in a `FOREACH`), global 1 = free.
+- **Variables** (per level) with watcher lists. `STOREVAR` wakes all watchers.
+- **Time** `0x5d0514` in hundredths of a second: the engine sets per frame `time = (int)(frame_time_s * 100.0)` (`0x4019fd`, constant `0x4a9010`). `DELAY 100` = 1 second.
+- Each object starts with `JMP <entry>`. During init, that `JMP` (2 words) is temporarily
+  replaced by `NOP NOP` and the object is executed from word 0 (init block). Afterward the `JMP` is restored.
+  If the object is later "woken", it starts again at word 0 and thus jumps straight to `<entry>`:
+  for 8006 of the 13227 objects that's the end (object does nothing reactive), for 5221 it's a
+  reactive block within the object.
+- **Init** (`0x4427e0`) runs all objects **twice**; the messages of the first round are
+  discarded (`0x441d40`), timers reset, then round two "for real".
+  The messages of round two go into the **queue** (`0x5bd300`, max 1280) and are only handed to the
+  game **after** init, just like every tick. That's not incidental: a handler that sets a script variable
+  (`1082 LevelIsEnable` for the hub doors, GAMEFLOW.md §4.6) thereby wakes its watcher object, and at the end of
+  `0x4427e0` all wake lists are cleared. If the port forwards them immediately during init, those
+  wakes are lost and such an object never runs (`level_load` therefore forwards them after `eko_init`).
 
-### Tick (`0x442240`, aangeroepen uit de game-loop `0x4019c0`)
-1. `0x442350`: voer alle verlopen **DELAY**-entries uit (gesorteerde lijst `0x5d24d8..`, entry = {tijd, doel}).
-2. `0x4423a0` → `0x444150`: voer **alle** DURING-entries uit, elke tick (ongesorteerde lijst `0x5d0578..`); een entry waarvan de tijd verstreken is (`tijd < now`) wordt eerst ontkoppeld en draait dan nog één laatste keer. `DURING d t` = "voer t elke tick uit, d honderdsten lang" (live geverifieerd: W2B-baasintro stuurt 0,5 s lang elke tick `1152`).
-3. `0x442320`: wissel de dubbele wake-lijst (`0x4b3578`/`0x4b357c`, max 1000).
-4. Voor elk gewekt object (dedupe via frame-stempel per object `0x5d0550`): `run(codestart)`.
-5. `0x4423f0`/`0x442450`: wis de per-frame flags van gewijzigde volumes/collisions.
-6. Framecounter `0x4b3574`++, statistieken (`"Total des during executes %d"` enz.).
+### Tick (`0x442240`, called from the game loop `0x4019c0`)
+1. `0x442350`: execute all expired **DELAY** entries (sorted list `0x5d24d8..`, entry = {time, target}).
+2. `0x4423a0` → `0x444150`: execute **all** DURING entries, every tick (unsorted list `0x5d0578..`); an entry whose time has expired (`time < now`) is first unlinked and then still runs one last time. `DURING d t` = "run t every tick, for d hundredths of a second" (verified live: the W2B boss intro sends `1152` every tick for 0.5 s).
+3. `0x442320`: swap the double wake list (`0x4b3578`/`0x4b357c`, max 1000).
+4. For each woken object (dedupe via per-object frame stamp `0x5d0550`): `run(codestart)`.
+5. `0x4423f0`/`0x442450`: clear the per-frame flags of changed volumes/collisions.
+6. Frame counter `0x4b3574`++, statistics (`"Total des during executes %d"` etc.).
 
-Daarna verwerkt de game-loop de **uitgaande berichtenwachtrij** (`0x5bd300`, 48-byte records, max 1280):
-`record = {id, nargs, arg0..}`; arg0 is meestal de doelinstantie (`0x01000000 | index`).
+Afterward the game loop processes the **outgoing message queue** (`0x5bd300`, 48-byte records, max 1280):
+`record = {id, nargs, arg0..}`; arg0 is usually the target instance (`0x01000000 | index`).
 
-## 3. Opcodes (handler-tabel `0x5d0418`, init in `0x442a30`, interpreter `0x4429f0`)
+## 3. Opcodes (handler table `0x5d0418`, init in `0x442a30`, interpreter `0x4429f0`)
 
-Handler-signatuur: `uint32* handler(uint32* pc)` geeft de volgende pc terug. Opcode ≥ 63 stopt.
+Handler signature: `uint32* handler(uint32* pc)` returns the next pc. Opcode ≥ 63 stops.
 
-| op | naam | operanden | semantiek |
+| op | name | operands | semantics |
 |---|---|---|---|
 | 0 | NOP | | |
-| 1 | HANG | | geeft dezelfde pc terug (ongebruikt) |
-| 2 | END | | stop deze run |
+| 1 | HANG | | returns the same pc (unused) |
+| 2 | END | | stop this run |
 | 3 | PUSH | imm | |
-| 4 | PUSHSTR | n | push pointer naar string n |
+| 4 | PUSHSTR | n | push pointer to string n |
 | 5 | PUSHVAR | n | push var[n] |
-| 6 | STOREVAR | n | var[n] = pop; wek watchers |
-| 7-11 | ADD SUB MUL DIV NEG | | int-stack |
+| 6 | STOREVAR | n | var[n] = pop; wake watchers |
+| 7-11 | ADD SUB MUL DIV NEG | | int stack |
 | 12 | TOBOOL | | bpush(pop != 0) |
 | 13-18 | EQ NE GT GE LT LE | | pop b, pop a → bpush(a ? b) (signed) |
-| 19-21 | OR AND NOT | | bool-stack |
-| 22 | JMP | t | pc = t (absoluut in B) |
+| 19-21 | OR AND NOT | | bool stack |
+| 22 | JMP | t | pc = t (absolute in B) |
 | 23 | JF | t | if !bpop: pc = t |
-| 24 | DELAY | d, t | plan run(t) op tijd now+d |
-| 25 | SKIP1 | x | nop met operand |
-| 26 | DURING | d, t | run(t) **elke tick** tot now+d verstreken is (tweede lijst, zie Tick stap 2) |
+| 24 | DELAY | d, t | schedule run(t) at time now+d |
+| 25 | SKIP1 | x | nop with operand |
+| 26 | DURING | d, t | run(t) **every tick** until now+d has elapsed (second list, see Tick step 2) |
 | 27 | PUSHTIME | | push now |
-| 28 | SEND | n | pop n waarden; bericht {id=eerste, args=rest} in de wachtrij |
-| 29,31,32,48,49 | VOL_FLAGb | v | bpush(bit 5/4/3/6/2 van volume[v].flags) |
+| 28 | SEND | n | pop n values; message {id=first, args=rest} into the queue |
+| 29,31,32,48,49 | VOL_FLAGb | v | bpush(bit 5/4/3/6/2 of volume[v].flags) |
 | 30 | VOL_STATE | v | bpush(flags==0 or flags&9) |
 | 33 | VOL_COUNT | v | push volume[v].count |
-| 34 | FOREACH | v, end | voor elke actor in volume[v] zonder flag 1: this=actor; run(body); daarna pc=end |
+| 34 | FOREACH | v, end | for each actor in volume[v] without flag 1: this=actor; run(body); afterward pc=end |
 | 35/36 | PUSHGLOBAL/STOREGLOBAL | n | |
-| 37/38 | VOL_HAS / VOL_HASNOT | v, a | actor a in volume v (37: alleen als flags&4 en &0x24) |
-| 39-42 | COL_FLAGb | c | bit 5/4/6/3 van collision[c].flags |
+| 37/38 | VOL_HAS / VOL_HASNOT | v, a | actor a in volume v (37: only if flags&4 and &0x24) |
+| 39-42 | COL_FLAGb | c | bit 5/4/6/3 of collision[c].flags |
 | 43 | JMPPOP | | pc = pop |
 | 44 | VOL_SEQ | v1, v2 | bpush(vol[v2].time - vol[v1].time == 1) |
-| 45/46 | VOL_ACTOR_F2/F1 | v, a | actor a in volume v met entry-flag 2/1 |
+| 45/46 | VOL_ACTOR_F2/F1 | v, a | actor a in volume v with entry flag 2/1 |
 | 47 | INVALID | | stop |
-| 50 | VOL_ALL_F1 | v | alle actors in v hebben flag 1 |
+| 50 | VOL_ALL_F1 | v | all actors in v have flag 1 |
 | 51/52 | COL_B3_BIT0 / COL_B2_BIT0 | c | |
 | 53 | COL_ALL_F4 | c | |
 | 54-56 | COL_ACTOR_F2/F4/F1 | c, a | |
-| 57 | CUT | x | keyword `cut`, niet geïmplementeerd: bpush(0) + waarschuwing |
+| 57 | CUT | x | keyword `cut`, not implemented: bpush(0) + warning |
 | 58 | MSGTEST | o | bpush(pop & msgmask[o]) |
 | 59 | MSGCLEAR | o | msgmask[o] = 0 |
-| 60 | VOL_PAIR | v1, v2, a | a in v1 met flag 1 én in v2 met flag 4 |
-| 61 | DELAYPOP | t | plan run(t) op now+pop |
+| 60 | VOL_PAIR | v1, v2, a | a in v1 with flag 1 and in v2 with flag 4 |
+| 61 | DELAYPOP | t | schedule run(t) at now+pop |
 | 62 | RANDOM | | push rand() % pop |
 
-## 4. Berichtroutering (engine-kant, `0x4019c0` → `0x401370`)
+## 4. Message routing (engine side, `0x4019c0` → `0x401370`)
 
-| id-bereik | handler | betekenis |
+| id range | handler | meaning |
 |---|---|---|
-| 1200-1300 | `0x403440` | 1200 = **SetTypeInstance(obj, type)**: `new` van de C++-klasse voor `type` (tabel in `0x403502`, 121 types → 42 klassen). 1201/1202 = flag 0x400 zetten/wissen |
-| < 1000 | `instance->vtable[22](record)` | per-klasse berichthandler; gedeelde basis `0x42d5e0` (ids 1..56, 22 cases), klassespecifieke ids inline (bv. Perso 26/30, vijanden 6/11) |
-| 7 | `0x4012f0` | annuleer wachtende berichten 12/13 voor dat object |
-| 1000-1499 | `0x444870` (this `0x5d7afc`) | game/level-berichten, 46 cases voor 1000..1180 (o.a. LevelIsEnable, SaveAuto, SetRaceInfo, StartBoostSurf) |
-| 1500-1599 | `0x46cca0` (this `0x5e823c`) | 12 cases (positie/vector-achtig, floats × schaal) |
-| 1600-1700 | `0x467fa0` (this `0x4c2dd8`) | 58 cases, geluid (vtable-calls met volume 1.0) |
+| 1200-1300 | `0x403440` | 1200 = **SetTypeInstance(obj, type)**: `new` of the C++ class for `type` (table at `0x403502`, 121 types → 42 classes). 1201/1202 = set/clear flag 0x400 |
+| < 1000 | `instance->vtable[22](record)` | per-class message handler; shared base `0x42d5e0` (ids 1..56, 22 cases), class-specific ids inline (e.g. Perso 26/30, enemies 6/11) |
+| 7 | `0x4012f0` | cancel pending messages 12/13 for that object |
+| 1000-1499 | `0x444870` (this `0x5d7afc`) | game/level messages, 46 cases for 1000..1180 (incl. LevelIsEnable, SaveAuto, SetRaceInfo, StartBoostSurf) |
+| 1500-1599 | `0x46cca0` (this `0x5e823c`) | 12 cases (position/vector-like, floats × scale) |
+| 1600-1700 | `0x467fa0` (this `0x4c2dd8`) | 58 cases, sound (vtable calls with volume 1.0) |
 
-Handlers die `true` teruggeven worden opnieuw geprobeerd (`0x401250`, lijst van 32 uitgestelde records).
+Handlers that return `true` are retried (`0x401250`, list of 32 deferred records).
 
-Referentie-encoding in argumenten: `0x01000000 | i` = instantie i (in `[0x50944c]->0x6c[i]`), `0x02000000 | i` = tweede soort verwijzing (nog te bepalen), `0x0002xxxx` paren komen voor als (type, index).
+Reference encoding in arguments: `0x01000000 | i` = instance i (in `[0x50944c]->0x6c[i]`), `0x02000000 | i` = second kind of reference (still to be determined), `0x0002xxxx` pairs occur as (type, index).
 
 ## 5. Engine → VM
 
-Callback-tabel `0x5cc360[id]` (dispatcher `0x441c90`), ids 100-103 gezet in `0x441ed0`:
-100 = SetVar(var, waarde), 101 = volume **Enter**(vol, actor), 102 = **Leave**, 103 = **In**.
-Collision-varianten (Press/UnPress/In/PersoUnpress) via `0x441fc0..0x442100`.
-Elke gebeurtenis zet flags op het volume en op de actor-entry en wekt de watcher-objecten van dat volume (`0x443d20`).
-Bron van de volume-events: `0x430210` (bounding-volume test per actor, `push 0x65/0x66/0x67`).
+Callback table `0x5cc360[id]` (dispatcher `0x441c90`), ids 100-103 set in `0x441ed0`:
+100 = SetVar(var, value), 101 = volume **Enter**(vol, actor), 102 = **Leave**, 103 = **In**.
+Collision variants (Press/UnPress/In/PersoUnpress) via `0x441fc0..0x442100`.
+Each event sets flags on the volume and on the actor entry and wakes the watcher objects of that volume (`0x443d20`).
+Source of the volume events: `0x430210` (bounding-volume test per actor, `push 0x65/0x66/0x67`).
 
-## 6. Implementaties
+## 6. Implementations
 
-- `tools/ekovm.py`: Python-emulator (init + tick), gebruikt voor statistieken en als referentie.
-- `src/ekovm.c` + `src/ekovm.h`: C-implementatie met dezelfde semantiek (inclusief de eigenaardigheden:
-  dubbele init-pass, `FOREACH` beëindigt de omliggende run, wake-lijst achterstevoren, wachtrij-cap van 1280
-  berichten met waarschuwing). `src/ekorun.c` is een testharnas; traces zijn identiek aan de Python-emulator.
-- Beide gebruiken de MSVC-`rand()` LCG (`seed*214013+2531011`) zodat `RANDOM` deterministisch vergelijkbaar is.
+- `tools/ekovm.py`: Python emulator (init + tick), used for statistics and as a reference.
+- `src/ekovm.c` + `src/ekovm.h`: C implementation with the same semantics (including the quirks:
+  double init pass, `FOREACH` terminates the enclosing run, wake list reversed, queue cap of 1280
+  messages with a warning). `src/ekorun.c` is a test harness; traces are identical to the Python emulator.
+- Both use the MSVC `rand()` LCG (`seed*214013+2531011`) so `RANDOM` is deterministically comparable.
 
-## 7. Wat nog ontbreekt voor een 1:1 reimplementatie
+## 7. What's still missing for a 1:1 reimplementation
 
-- Semantiek per berichttype: zie [MESSAGES.md](MESSAGES.md) (routering compleet, gedrag deels).
-- Plek van de VM-tick in de frame-loop (`0x4019c0` wordt aangeroepen uit `0x401ab0`/`0x404822`).
-- Betekenis van de `0x02000000`-verwijzingen en de `.ins`-koppeling object ↔ instantie.
+- Semantics per message type: see [MESSAGES.md](MESSAGES.md) (routing complete, behavior partial).
+- Location of the VM tick in the frame loop (`0x4019c0` is called from `0x401ab0`/`0x404822`).
+- Meaning of the `0x02000000` references and the `.ins` linkage object ↔ instance.

@@ -1,137 +1,137 @@
-# Berichten van script naar engine (SEND-opcode)
+# Messages from script to engine (SEND opcode)
 
-Elk `SEND n` haalt n waarden van de stack: het eerste is het bericht-id, de rest zijn argumenten.
-`arg0` is bijna altijd een instantieverwijzing `0x01000000 | i`; de engine gebruikt de onderste 24 bits als
-index in de instantietabel `[0x50944c]->0x6c`. Getallen die een float voorstellen zijn ×100 opgeslagen
-(de engine vermenigvuldigt met 0.01, constante `0x4aa0ac`). Tijd is in 1/100 s.
+Every `SEND n` pops n values from the stack: the first is the message id, the rest are arguments.
+`arg0` is almost always an instance reference `0x01000000 | i`; the engine uses the low 24 bits as an
+index into the instance table `[0x50944c]->0x6c`. Numbers representing a float are stored x100
+(the engine multiplies by 0.01, constant `0x4aa0ac`). Time is in 1/100 s.
 
-Gebruik = aantal keer verzonden tijdens de level-init van alle 28 levels (emulator).
-Status: ✔ = gedrag uit de code gelezen, ~ = hypothese op basis van argumenten/strings, ? = nog niet bekeken.
+Usage = number of times sent during level init across all 28 levels (emulator).
+Status: check = behavior read from the code, tilde = hypothesis based on arguments/strings, question mark = not yet examined.
 
-## Routering
+## Routing
 | id | handler | this |
 |---|---|---|
-| 1..999 | `instance->vtable[22]` (per klasse; basis `0x42d5e0`) | de instantie in arg0 |
-| 1000..1180 | `0x444870` | game-object `[0x5d7afc]` |
-| 1200..1202 | `0x403440` | wereld `[0x4c4c0c]` |
-| 1500..1511 | `0x46cca0` | subsysteem `[0x5e823c]` |
-| 1600..1657 | `0x467fa0` | geluidsmanager `[0x4c2dd8]` (Cryo Sound Library) |
+| 1..999 | `instance->vtable[22]` (per class; base `0x42d5e0`) | the instance in arg0 |
+| 1000..1180 | `0x444870` | game object `[0x5d7afc]` |
+| 1200..1202 | `0x403440` | world `[0x4c4c0c]` |
+| 1500..1511 | `0x46cca0` | subsystem `[0x5e823c]` |
+| 1600..1657 | `0x467fa0` | sound manager `[0x4c2dd8]` (Cryo Sound Library) |
 
-De game-handler eindigt vaak in `0x4455be` = `eko_set_var(var, waarde)`: het antwoord aan het script
-komt dus terug via een scriptvariabele (watchers worden gewekt).
+The game handler often ends in `0x4455be` = `eko_set_var(var, value)`: the answer to the script
+thus comes back through a script variable (watchers get woken).
 
-## Instantieberichten (klasse-basis `0x42d5e0`, velden van de C++-instantie tussen haakjes)
-| id | args | gebruik | betekenis |
+## Instance messages (base class `0x42d5e0`, fields of the C++ instance in parentheses)
+| id | args | usage | meaning |
 |---|---|---|---|
-| 1 | inst, anim, speed | 5 | ✔ PlayAnim: slot0 = anim, slots1-3 = -1, snelheid = animlen·k·speed, `0x42e290(0)` (reset blend) |
-| 2 | inst, anim, flag, dur, x | 0 | ✔ PlayAnim met duur (deelt animlen door dur) |
-| 3 | inst, anim, flag, n | 39 | ✔ SetAnim-variant (n ≤ 10 → status +0x88 reset); als flag=0 → snelheid 0 |
-| 4 | inst, anim, flag, dur | 934 | ✔ PlayAnim op alle 4 slots, starttijd = nu; flag=0 → blend terug (`-[+0xa0]`) |
-| 5 | inst | 9 | ✔ ResetAnim (`0x42e290(0)`) |
-| 6 | inst, on | 285 | ✔ on≠0: als `[+0x1c] < 0` → `0x407790` (activeren/tonen); on=0 → `0x407850` (deactiveren/verbergen) |
-| 7 | inst | 0 | ✔ annuleer wachtende 12/13 voor deze instantie (`0x4012f0`) |
-| 10 | inst | 0 | ~ klasse 30-38 (volumes/triggers): eigen afhandeling `0x44f362` |
-| 11 | inst, a, b | 1004 | ? vijandklassen 4-13 (`0x41a78b`, "trajet de suivi / aleatoire"): patrouille- of volgpad instellen |
-| 12 / 13 | als 3 / 4 | 0 | ✔ uitgestelde 3 / 4: pas uitvoeren als `[+0x9c] != 0`, anders opnieuw proberen |
-| 14 | inst, b0,b1,b2,f,d | 0 | ✔ per sub-onderdeel (16-byte records op `[+0x74]`, aantal `[+0xf8]->0x28`) kleur/waarde zetten; 0xffff = ongewijzigd |
-| 15/17 | inst, a, mode, t1, t2 | 0 | ✔ overgang type A: byte +0xda, modusbits in +0xd8, tijden ×0.01 in +0xe8/+0xec, start = nu |
-| 16/18 | inst, a, mode, t | 23/54 | ✔ overgang type B: byte +0xd9, modusbits, tijd ×0.01 in +0xe0 |
-| 19 | inst | 0 | ✔ overgangsbits wissen (`+0xd8 &= 0xc0`) |
-| 26 / 30 | perso | 0 | ✔ alleen Perso-klasse: 26 `[_, inst, mode]` = teleport (1 = positie, 2 = + richting van de marker), 30 `[_, cs]` = LockMove; zie PERSO_DEATH.md §1 |
-| 29 | inst | 0 | ✔ klasse 20: Reset `0x452ae0` (ROCKET.md §4.4); ~ klassen 21, 40/120/121 |
+| 1 | inst, anim, speed | 5 | check PlayAnim: slot0 = anim, slots1-3 = -1, speed = animlen·k·speed, `0x42e290(0)` (reset blend) |
+| 2 | inst, anim, flag, dur, x | 0 | check PlayAnim with duration (divides animlen by dur) |
+| 3 | inst, anim, flag, n | 39 | check SetAnim variant (n ≤ 10 → status +0x88 reset); if flag=0 → speed 0 |
+| 4 | inst, anim, flag, dur | 934 | check PlayAnim on all 4 slots, start time = now; flag=0 → blend back (`-[+0xa0]`) |
+| 5 | inst | 9 | check ResetAnim (`0x42e290(0)`) |
+| 6 | inst, on | 285 | check on≠0: if `[+0x1c] < 0` → `0x407790` (activate/show); on=0 → `0x407850` (deactivate/hide) |
+| 7 | inst | 0 | check cancel pending 12/13 for this instance (`0x4012f0`) |
+| 10 | inst | 0 | tilde class 30-38 (volumes/triggers): own handling `0x44f362` |
+| 11 | inst, a, b | 1004 | ? enemy classes 4-13 (`0x41a78b`, "follow / random path"): set patrol or follow path |
+| 12 / 13 | as 3 / 4 | 0 | check deferred 3 / 4: only executed once `[+0x9c] != 0`, otherwise retried |
+| 14 | inst, b0,b1,b2,f,d | 0 | check for each sub-part (16-byte records at `[+0x74]`, count `[+0xf8]->0x28`) set color/value; 0xffff = unchanged |
+| 15/17 | inst, a, mode, t1, t2 | 0 | check transition type A: byte +0xda, mode bits in +0xd8, times ×0.01 in +0xe8/+0xec, start = now |
+| 16/18 | inst, a, mode, t | 23/54 | check transition type B: byte +0xd9, mode bits, time ×0.01 in +0xe0 |
+| 19 | inst | 0 | check clear transition bits (`+0xd8 &= 0xc0`) |
+| 26 / 30 | perso | 0 | check Perso class only: 26 `[_, inst, mode]` = teleport (1 = position, 2 = + direction of the marker), 30 `[_, cs]` = LockMove; see PERSO_DEATH.md §1 |
+| 29 | inst | 0 | check class 20: Reset `0x452ae0` (ROCKET.md §4.4); tilde classes 21, 40/120/121 |
 | 33 | inst, a, b | 50 | ? |
-| 34 | inst, other | 340 | ✔ koppel instantie aan `other` (paar in tabel `[0x50944c]->0x50`, teller +0x4c) – "attach/link" |
-| 40 / 55 | inst | 0 | ✔ klasse 20 (ROCKET.md §2.1): 40 = opstappen, 55 `(1, v)` vliegtijd v·0.01 s, `(2, v)` maximumsnelheid; klasse 21 niet geport |
-| 42 | inst, a, f | 5 | ✔ op padvolger `[+0x78]`: `0x437d10(a≠1, f·0.01)`, daarna positie uit pad kopiëren en `0x4077f0` (herpositioneren) |
-| 43 | inst, a, f, c | 129 | ✔ als 42 met extra vlag `c==1` (`0x437d50`) |
-| 44 | inst | 0 | ✔ padvolger `0x437d90()` (stop/reset) |
-| 45 | inst, bits | 1296 | ✔ SetFlags: `+0xf0 \|= bits & (1\|2\|0x20)` |
-| 46 | inst, a, b | 7 | ✔ padvolger `0x4381e0(a==1, b==1)` |
-| 50 / 51 | inst, v | 279 / 44 | ~ klassen 50-52: `0x45108a` / `0x451059` |
+| 34 | inst, other | 340 | check link instance to `other` (pair in table `[0x50944c]->0x50`, counter +0x4c) – "attach/link" |
+| 40 / 55 | inst | 0 | check class 20 (ROCKET.md §2.1): 40 = mount, 55 `(1, v)` flight time v·0.01 s, `(2, v)` max speed; class 21 not ported |
+| 42 | inst, a, f | 5 | check on path follower `[+0x78]`: `0x437d10(a≠1, f·0.01)`, then copy position from the path and `0x4077f0` (reposition) |
+| 43 | inst, a, f, c | 129 | check like 42 with extra flag `c==1` (`0x437d50`) |
+| 44 | inst | 0 | check path follower `0x437d90()` (stop/reset) |
+| 45 | inst, bits | 1296 | check SetFlags: `+0xf0 \|= bits & (1\|2\|0x20)` |
+| 46 | inst, a, b | 7 | check path follower `0x4381e0(a==1, b==1)` |
+| 50 / 51 | inst, v | 279 / 44 | tilde classes 50-52: `0x45108a` / `0x451059` |
 | 52 | inst, v | 158 | ? |
 | 53 | inst, v | 3 | ? |
-| 54 | inst, mode, v | 98 | ✔ klasse 80: mode 1 → `0x451b74`; mode 2 → float +0x10c = v; daarna basis |
-| 55 | inst, a, b | 34 | ✔ parameters raket/kanon klasse 20/21 (ROCKET.md §2.1) |
-| 56 | inst, v | 606 | ✔ basis: float +0x6c = v·0.01; in `0x44e8f0` (meeste klassen) eerst `0x44e91b` |
-| 57 | inst, v | 643 | ~ `0x44e907` (klasse-gemeenschappelijk) |
-| 58..63 | inst, … | weinig | klasse 14 (baas Buzz, `0x410070`): **59** `[baas, inst]` koppelt **één** instantie (`+0x234`, vlag 0x20, eigen AnimCtrl), **60** `[baas, var]` = brievenbus-variabele (BOSS14.md §7); klasse 15 (`0x40e781`): 8 instanties in +0x1c8..+0x1e4, vlag 0x40; 63 in klasse 17 |
-| 650, 800 | inst | 11 / 2 | ? via vtable[22] van de klasse |
+| 54 | inst, mode, v | 98 | check class 80: mode 1 → `0x451b74`; mode 2 → float +0x10c = v; then base |
+| 55 | inst, a, b | 34 | check rocket/cannon parameters class 20/21 (ROCKET.md §2.1) |
+| 56 | inst, v | 606 | check base: float +0x6c = v·0.01; in `0x44e8f0` (most classes) first `0x44e91b` |
+| 57 | inst, v | 643 | tilde `0x44e907` (class-common) |
+| 58..63 | inst, … | few | class 14 (boss Buzz, `0x410070`): **59** `[boss, inst]` links **one** instance (`+0x234`, flag 0x20, own AnimCtrl), **60** `[boss, var]` = mailbox variable (BOSS14.md §7); class 15 (`0x40e781`): 8 instances at +0x1c8..+0x1e4, flag 0x40; 63 in class 17 |
+| 650, 800 | inst | 11 / 2 | ? via vtable[22] of the class |
 
-## Wereld (`0x403440`)
-| id | args | gebruik | betekenis |
+## World (`0x403440`)
+| id | args | usage | meaning |
 |---|---|---|---|
-| 1200 | obj, type | 4907 | ✔ **SetTypeInstance**: `new` C++-klasse voor `type` (zie classmap_raw.txt), koppelt aan scriptobject |
-| 1201 / 1202 | obj | 0 | ✔ vlag 0x400 zetten / wissen op de instantie (via vtable[4]) |
+| 1200 | obj, type | 4907 | check **SetTypeInstance**: `new` C++ class for `type` (see classmap_raw.txt), links to the script object |
+| 1201 / 1202 | obj | 0 | check set / clear flag 0x400 on the instance (via vtable[4]) |
 
 ## Game (`0x444870`)
-| id | args | gebruik | betekenis |
+| id | args | usage | meaning |
 |---|---|---|---|
-| 1000 | inst, target\|−1 | 0 | ✔ **lanceerder** (type 42, typewoord-categorie 6; PROJECTILES.md §4): `0x4522b0(1, 1.0, target)` = één schot bij de eerstvolgende denk-stap |
-| 1001 | inst, soort | 94 | ✔ lanceerder `0x452330(soort)`: reset (`vtbl[17]`) + projectielsjabloon `0x5d7ba8 + soort·0x68` naar `this+0x108`; soort 0 = bommenwerper, 1..3 = projectiel (ctor: 1) |
-| 1002 | inst, n, v | 513 | ✔ lanceerder `0x452360(n, v)`: projectielparameter n = 0..19 (0 snelheid, 1 zwaartekracht, 2 levensduur ×0.01 s, 3 max. stuiters, 4 schade, 5 richthoogte, 7/8 schiet-animatie + duur, 9 straal, 10/11 demping, 12..17 doelzoeken, 18 visueel, 19 richten op doel); tabel in PROJECTILES.md §3 |
-| 1003 | inst, target\|−1, aantal\|−1, t | 177 | ✔ lanceerder `0x4522b0(aantal, t·0.01, target)`: reeks starten, interval t·0.01 s (min. 0.2), aantal −1 = eindeloos, eerste schot direct |
-| 1004 | inst | 7 | ✔ lanceerder `0x452320()`: reeks stoppen (`+0x198 = 0`) |
-| 1010..1050 | … | 0 | ✔ zie GAMEFLOW.md §8 (1030 SaveAuto, 1040/1043 scripted actie, 1042 nabij+kijkrichting, 1048..1050 toetstests) |
-| 1080 | rec | 0 | ✔ `0x456ed0(record)` op `game+0x18` |
-| 1081 | level | 0 | ✔ **GotoLevel**: `0x404b60(1.5, level, 1, 0)` = RequestLevel met 1,5 s fade (hubdeuren; zie GAMEFLOW.md §4) |
-| 1082 | level, var | 24 | ✔ **LevelIsEnable**: var = `0x450470(saved, level)`; waarschuwt zonder save-struct |
-| 1083 | – | 0 | ✔ **EndLevel** `0x404be0(0.5)`: level als gedaan markeren, terug naar de hub van het personage (GAMEFLOW.md §4) |
-| 1084 | var | 3 | ✔ **GetPrevLevel**: var = `app+0x6c` (vorige levelindex; het hub-script kiest daarmee de spawndeur) |
-| 1085 | level, var | 4 | ✔ **LevelIsDone**: var = done-vlag `0x4509e0(saved, level)` |
-| 1088 | inst, v | 0 | ✔ `0x459960(inst, v)` |
-| 1090 | inst, other, f | 0 | ✔ effect (particles) van inst naar other, `0x44d5d0` |
-| 1100 / 1101 | f / – | 0 | ✔ `0x451ba0(f·0.01)` / `0x451bd0()` |
-| 1110 | n, v | 0 | ✔ parameter n (1..9) van de zij-aanzichtcamera mode 0x20 (CAMERA_SCRIPT.md §4.2); 1088 start die mode |
-| 1120 | inst, other | 6 | ✔ **SetRaceInfo**: `0x455dc0(inst, other->0x28)` als other type 3 (camera met polylijn): het board `inst` rijdt onder de Perso mee (`+0x4b4`), polylijn = de baan (RACE.md §2) |
-| 1121 | inst, a, f | 0 | ✔ **StartBoostSurf**(vector van inst, a, f·0.01): `0x456000`, RACE.md §3.3 |
-| 1130 | a, b, c | 0 | ✔ `0x44e990`/`0x44e9e0` op `game+0x64` |
-| 1131 / 1132 | inst, v | 0 | ✔ `0x44e980` / `0x44e9a0` |
-| 1140 | inst, var | 0 | ✔ var = 0; `0x404df0`; `0x453d90(vector, var)` (SaveAuto-achtig) |
-| 1141 | inst | 1 | ✔ `0x44e640(vector van inst)` |
-| 1142 | inst | 2 | ✔ `game+0x748 = inst` |
-| 1150 / 1151 | f | 0 | ✔ `0x401440` / `0x401480` (f·0.01) |
-| 1152 | – | 0 | ✔ `0x4014c0`: volledig scherm vullen (fade naar zwart) |
-| 1160 | var, obj | 1 | ✔ `app+0x8c = var`, `app+0x90 = script-object` van de House-intro (GAMEFLOW.md §5) |
-| 1170 / 1171 | – | 0 | ✔ `0x44c7a0(-1)` / `0x44c840(-1)`: **leven −1** (min 1) / **$ −1** (unieke items, min 0); alleen de Jackpot in WWS (object 349) stuurt ze |
-| 1172 | – | 0 | ✔ `byte game+0x70 = 1` |
-| 1173 | var | 0 | ✔ als `perso+0x260 > 0` ($, unieke items): var = 1 anders var = 0; WWS-object 425 zet er de Jackpot mee aan |
-| 1180 | – | 0 | ✔ `0x404b60(0, 0x1a, 0, 0x20)` |
+| 1000 | inst, target\|−1 | 0 | check **launcher** (type 42, typeword category 6; PROJECTILES.md §4): `0x4522b0(1, 1.0, target)` = one shot on the next think step |
+| 1001 | inst, kind | 94 | check launcher `0x452330(kind)`: reset (`vtbl[17]`) + projectile template `0x5d7ba8 + kind·0x68` into `this+0x108`; kind 0 = bomb thrower, 1..3 = projectile (ctor: 1) |
+| 1002 | inst, n, v | 513 | check launcher `0x452360(n, v)`: projectile parameter n = 0..19 (0 speed, 1 gravity, 2 lifetime ×0.01 s, 3 max bounces, 4 damage, 5 aim height, 7/8 shoot animation + duration, 9 radius, 10/11 drag, 12..17 homing, 18 visual, 19 aim at target); table in PROJECTILES.md §3 |
+| 1003 | inst, target\|−1, count\|−1, t | 177 | check launcher `0x4522b0(count, t·0.01, target)`: start a series, interval t·0.01 s (min. 0.2), count −1 = endless, first shot immediate |
+| 1004 | inst | 7 | check launcher `0x452320()`: stop series (`+0x198 = 0`) |
+| 1010..1050 | … | 0 | check see GAMEFLOW.md §8 (1030 SaveAuto, 1040/1043 scripted action, 1042 proximity + facing, 1048..1050 key tests) |
+| 1080 | rec | 0 | check `0x456ed0(record)` on `game+0x18` |
+| 1081 | level | 0 | check **GotoLevel**: `0x404b60(1.5, level, 1, 0)` = RequestLevel with 1.5 s fade (hub doors; see GAMEFLOW.md §4) |
+| 1082 | level, var | 24 | check **LevelIsEnable**: var = `0x450470(saved, level)`; warns without a save struct |
+| 1083 | – | 0 | check **EndLevel** `0x404be0(0.5)`: mark level as done, back to the character's hub (GAMEFLOW.md §4) |
+| 1084 | var | 3 | check **GetPrevLevel**: var = `app+0x6c` (previous level index; the hub script uses it to pick the spawn door) |
+| 1085 | level, var | 4 | check **LevelIsDone**: var = done flag `0x4509e0(saved, level)` |
+| 1088 | inst, v | 0 | check `0x459960(inst, v)` |
+| 1090 | inst, other, f | 0 | check effect (particles) from inst to other, `0x44d5d0` |
+| 1100 / 1101 | f / – | 0 | check `0x451ba0(f·0.01)` / `0x451bd0()` |
+| 1110 | n, v | 0 | check parameter n (1..9) of the side-view camera mode 0x20 (CAMERA_SCRIPT.md §4.2); 1088 starts that mode |
+| 1120 | inst, other | 6 | check **SetRaceInfo**: `0x455dc0(inst, other->0x28)` if other is type 3 (camera with polyline): the board `inst` rides along with Perso (`+0x4b4`), polyline = the track (RACE.md §2) |
+| 1121 | inst, a, f | 0 | check **StartBoostSurf**(vector of inst, a, f·0.01): `0x456000`, RACE.md §3.3 |
+| 1130 | a, b, c | 0 | check `0x44e990`/`0x44e9e0` on `game+0x64` |
+| 1131 / 1132 | inst, v | 0 | check `0x44e980` / `0x44e9a0` |
+| 1140 | inst, var | 0 | check var = 0; `0x404df0`; `0x453d90(vector, var)` (SaveAuto-like) |
+| 1141 | inst | 1 | check `0x44e640(vector of inst)` |
+| 1142 | inst | 2 | check `game+0x748 = inst` |
+| 1150 / 1151 | f | 0 | check `0x401440` / `0x401480` (f·0.01) |
+| 1152 | – | 0 | check `0x4014c0`: fill the whole screen (fade to black) |
+| 1160 | var, obj | 1 | check `app+0x8c = var`, `app+0x90 = script object` of the House intro (GAMEFLOW.md §5) |
+| 1170 / 1171 | – | 0 | check `0x44c7a0(-1)` / `0x44c840(-1)`: **life −1** (min 1) / **coin −1** (unique items, min 0); only the Jackpot in WWS (object 349) sends them |
+| 1172 | – | 0 | check `byte game+0x70 = 1` |
+| 1173 | var | 0 | check if `perso+0x260 > 0` (coins, unique items): var = 1 else var = 0; WWS object 425 uses it to turn the Jackpot on |
+| 1180 | – | 0 | check `0x404b60(0, 0x1a, 0, 0x20)` |
 
-## Subsysteem `[0x5e823c]` (`0x46cca0`) – beweging/effecten op instanties
-| id | args | gebruik | betekenis |
+## Subsystem `[0x5e823c]` (`0x46cca0`) – movement/effects on instances
+| id | args | usage | meaning |
 |---|---|---|---|
-| 1500 | inst, a, f, b, c | 0 | ✔ `0x478980(inst, a, f·0.01, b, c, 0)` |
-| 1501 | inst, v | 59 | ✔ `inst+0xfc = v` |
-| 1502 | inst, x, y, z, w, flag | 27 | ✔ doel/vector: `+0x110..0x118 = x,y,z · k`, `+0x11c = w·0.01`, `+0x100 = flag`, `+0x108 = 0`, `vtable[0x1c]()` |
-| 1503 | inst, v | 18 | ✔ `inst+0x14c = v`, `vtable[0x1d]()` |
-| 1504 | inst, v | 14 | ✔ `inst+0x100 = v`, `+0x108 = 0` |
-| 1505 | inst, f | 0 | ✔ `0x478660(&pos, 1000.0, f·0.01)` |
-| 1506 | inst, a, b, c, d | 63 | ✔ SetWaterVolumeParameter (klasse 60): `0x474690(inst, a·0.01, b, c·0.01, d·0.01)` = cel, vakken (ongeschaald), amplitude, alfa; WATER.md §1 |
-| 1507 | inst | 0 | ✔ `0x4750e0(&pos)` |
-| 1508 | inst | 17 | ✔ registreer 20-byte node in lijst `0x5e8638`, `0x47cdf0` |
-| 1509 | a, inst, mode, x | 0 | ✔ mode 4/5: vector van inst → `0x477060(1, vec, 0)` |
-| 1510 | obj | 0 | ✔ voeg wereld-instantie toe aan array `0x5e8428` |
-| 1511 | inst, b | 7 | ✔ `byte inst+0x120 = (b != 0)` |
+| 1500 | inst, a, f, b, c | 0 | check `0x478980(inst, a, f·0.01, b, c, 0)` |
+| 1501 | inst, v | 59 | check `inst+0xfc = v` |
+| 1502 | inst, x, y, z, w, flag | 27 | check target/vector: `+0x110..0x118 = x,y,z · k`, `+0x11c = w·0.01`, `+0x100 = flag`, `+0x108 = 0`, `vtable[0x1c]()` |
+| 1503 | inst, v | 18 | check `inst+0x14c = v`, `vtable[0x1d]()` |
+| 1504 | inst, v | 14 | check `inst+0x100 = v`, `+0x108 = 0` |
+| 1505 | inst, f | 0 | check `0x478660(&pos, 1000.0, f·0.01)` |
+| 1506 | inst, a, b, c, d | 63 | check SetWaterVolumeParameter (class 60): `0x474690(inst, a·0.01, b, c·0.01, d·0.01)` = cell, tiles (unscaled), amplitude, alpha; WATER.md §1 |
+| 1507 | inst | 0 | check `0x4750e0(&pos)` |
+| 1508 | inst | 17 | check register 20-byte node in list `0x5e8638`, `0x47cdf0` |
+| 1509 | a, inst, mode, x | 0 | check mode 4/5: vector of inst → `0x477060(1, vec, 0)` |
+| 1510 | obj | 0 | check add world instance to array `0x5e8428` |
+| 1511 | inst, b | 7 | check `byte inst+0x120 = (b != 0)` |
 
-## Geluid (`0x467fa0`, vtable van de Cryo-soundmanager)
-> **Let op:** de tabel hieronder is achterhaald. [SOUND.md](SOUND.md) §1 is leidend: 1655 = PlayMusic(track), 1628 = stop van de
-> 3D-stemmen van (inst, id) met fade, 1652 = stop 2D, 1620/1630 = 3D-lussen, 1622/1623/1627 = 3D eenmalig, 1600/1602 = 2D eenmalig, 1606 = 2D-lus.
-| id | args | gebruik | betekenis |
+## Sound (`0x467fa0`, vtable of the Cryo sound manager)
+> **Note:** the table below is outdated. [SOUND.md](SOUND.md) §1 is authoritative: 1655 = PlayMusic(track), 1628 = stop of the
+> 3D voices of (inst, id) with fade, 1652 = stop 2D, 1620/1630 = 3D loops, 1622/1623/1627 = 3D one-shot, 1600/1602 = 2D one-shot, 1606 = 2D loop.
+| id | args | usage | meaning |
 |---|---|---|---|
-| 1600..1619 | … | 0 | ~ 2D-varianten (vtable +0x24/+0x28: PlaySound2D(id, 0, 1.0, …)) |
-| 1606 | id, f | 8 | ✔ `vt[0x28](id, 0, 1.0, f, 1e13)` |
-| 1620 | inst, id, vol | 445 | ✔ **PlaySound3D**: `vt[0x40](id, inst, 0, 1.0, 1e10, vol, 2.0)` |
-| 1621 | inst, id, vol, f | 37 | ✔ als 1620 met `f·0.01` |
-| 1622 / 1623 | id, … | 22 | ✔ 2D met parameters (`0x468468`) |
-| 1628 | inst, id, f | 6 | ✔ `vt[0x58](id, inst, f·0.01)` (volume/pitch aanpassen) |
-| 1629 | inst, id, a, b, c | 0 | ✔ 3D met afstanden (-b·0.01, c·0.01 of 1e10) |
-| 1630 | inst, id, a, b | 233 | ✔ `vt[0x40](id, inst, 0, 1.0, 1e13, a, b·0.01)` |
-| 1631 | inst, id, a, b, c | 22 | ✔ als 1630 met `c·0.01` als extra |
-| 1632..1636 | … | 4-19 | ✔ varianten (vt[0x38]/[0x40]) met ×0.01 en ×`0x4ab990` schaling |
-| 1646/1656, 1649/1650 (`0x41fa40/50`), 1652..1654, 1657 | … | 0-26 | ~ stop/pauze/hervat |
-| 1655 | id | 26 | ✔ `vt[0x48](id)` = StopSound |
+| 1600..1619 | … | 0 | tilde 2D variants (vtable +0x24/+0x28: PlaySound2D(id, 0, 1.0, …)) |
+| 1606 | id, f | 8 | check `vt[0x28](id, 0, 1.0, f, 1e13)` |
+| 1620 | inst, id, vol | 445 | check **PlaySound3D**: `vt[0x40](id, inst, 0, 1.0, 1e10, vol, 2.0)` |
+| 1621 | inst, id, vol, f | 37 | check like 1620 with `f·0.01` |
+| 1622 / 1623 | id, … | 22 | check 2D with parameters (`0x468468`) |
+| 1628 | inst, id, f | 6 | check `vt[0x58](id, inst, f·0.01)` (adjust volume/pitch) |
+| 1629 | inst, id, a, b, c | 0 | check 3D with distances (-b·0.01, c·0.01 or 1e10) |
+| 1630 | inst, id, a, b | 233 | check `vt[0x40](id, inst, 0, 1.0, 1e13, a, b·0.01)` |
+| 1631 | inst, id, a, b, c | 22 | check like 1630 with `c·0.01` as an extra |
+| 1632..1636 | … | 4-19 | check variants (vt[0x38]/[0x40]) with ×0.01 and ×`0x4ab990` scaling |
+| 1646/1656, 1649/1650 (`0x41fa40/50`), 1652..1654, 1657 | … | 0-26 | tilde stop/pause/resume |
+| 1655 | id | 26 | check `vt[0x48](id)` = StopSound |
 
 ## Engine → script
-Callback-tabel `0x5cc360`: 100 SetVar(var, v) · 101 VolumeEnter(vol, actor) · 102 VolumeLeave · 103 VolumeIn,
-plus collision Press/In/UnPress en Perso-varianten (zie `src/ekovm.h`). Antwoorden op game-berichten gaan via
-`eko_set_var`; per-object berichtvlaggen via `eko_msgmask_set` (opcode MSGTEST/MSGCLEAR).
+Callback table `0x5cc360`: 100 SetVar(var, v) · 101 VolumeEnter(vol, actor) · 102 VolumeLeave · 103 VolumeIn,
+plus collision Press/In/UnPress and Perso variants (see `src/ekovm.h`). Answers to game messages go through
+`eko_set_var`; per-object message flags through `eko_msgmask_set` (MSGTEST/MSGCLEAR opcode).

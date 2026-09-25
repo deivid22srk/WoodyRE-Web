@@ -1,135 +1,135 @@
-# Vijandklasse 14 – Buzz Buzzard (eindbaas W1B, W2D, W3D, WWS) – Woody.exe
+# Enemy class 14 – Buzz Buzzard (end boss W1B, W2D, W3D, WWS) – Woody.exe
 
-Status: statische analyse van `game/Woody.exe` (`out/disasm_full.txt`, `tools/drange.py`), volledig gelezen van `0x40eb50` t/m `0x410e90`
-(ctor tot en met `vtbl[31]`). Floats, jumptabellen en animatierecords zijn met een PE-lezer uit de exe gehaald, niet geraden. Vervolg op
-ENEMY.md / ENEMY2.md: de basisklasse `Enemy`, het parameterblok **P**, de hoekregelaar **H**, de gedragingen (Dwalen / Achtervolgen /
-Stilstaan), `Enemy::Update 0x41a3e0`, `Enemy_TakeDamage 0x41adc0`, `FindTarget` en `AnimLen(n,k) = 0x436b90` gelden hier ongewijzigd.
-"onzeker" = niet statisch te bepalen.
+Status: static analysis of `game/Woody.exe` (`out/disasm_full.txt`, `tools/drange.py`), fully read from `0x40eb50` through `0x410e90`
+(ctor up to and including `vtbl[31]`). Floats, jump tables and animation records were extracted from the exe with a PE reader, not guessed. Follows on from
+ENEMY.md / ENEMY2.md: the base class `Enemy`, the parameter block **P**, the angle controller **H**, the behaviours (Wander / Chase /
+Stand), `Enemy::Update 0x41a3e0`, `Enemy_TakeDamage 0x41adc0`, `FindTarget` and `AnimLen(n,k) = 0x436b90` apply unchanged here.
+"uncertain" = cannot be determined statically.
 
-## 0. Samenvatting
+## 0. Summary
 
-* **Klassefabriek** `0x403502`: type 14 → `new(0x24c)` + `0x40eb50(11)` (`push 0xb` op `0x403883`) → **subtype 11**; daarna (zoals bij
-  elk type) `vtbl[1]` PostLoad, `vtbl[17]` Reset en `0x407790` (in de wereld hangen) (`0x403e6d..0x403e7a`).
-* **Twee varianten** ("modus" `+0x228`), gekozen door het **script via een brievenbus-variabele** (bericht 60): modus **1** = W1B (Buzz in zijn
-  vliegmachine, logische records 0..16), modus **2** = W2D / W3D / WWS (records 17..33, "hupsen" met stof). Modus **0** = uit: de klasse
-  doet dan helemaal niets behalve de brievenbus lezen.
-* **Gevecht** (modus 1): Buzz achtervolgt de speler **hoog** (op de y van zijn plaatsing, W1B 2430) met 900 u/s, schudt 0.25 s boven de speler en
-  **valt** dan met zwaartekracht naar beneden (stomp; raakt de speler binnen een kegel = 1 hartje; camera-schok bij de landing). Daarna zweeft hij
-  **laag** (grond onder de startpositie + 290, W1B ≈ 1635) en is **alleen dan kwetsbaar**: elke treffer = **1 hp** (ongeacht de schade),
-  **5 hp**, 2.1 s rood knipperend "geraakt", daarna weer omhoog. Raakt hij de speler in de lage fase, dan gaat hij ook weer omhoog.
-* **Gekoppelde instantie** (bericht 59, W1B: 404 = type 17, model 38): krijgt elke frame **exact de positie en rotatie** van de baas, speelt
-  **dezelfde logische animatie** (eigen AnimCtrl, eigen model), knippert mee rood, en krijgt rookpluimen op zijn markers bij de treffers 2..4.
-* **Einde**: bij hp ≤ 0 schrijft hij **3** in de brievenbus-variabele (W1B: var 51), stopt zijn geluid en zet modus 0 (bevriest). Het script
-  verbergt 405/404 0.5 s later en start de outro. Verder schrijft hij alleen **−1** (bevestiging van een commando), nooit 1 of 2.
-* **HUD**: elke frame `0x4484d0(1, (int)hp, (int)P+0x34)` = baas-levensbalk (HUD_TEXT.md §4.4) met 5 bolletjes.
-* **Geen** projectielen, geen bommen, geen TRAJ/pad, geen `vtbl[58]`, geen sterf-deeltjes, geen fade, geen verwijdering (`+0x10c` blijft 0).
+* **Class factory** `0x403502`: type 14 → `new(0x24c)` + `0x40eb50(11)` (`push 0xb` at `0x403883`) → **subtype 11**; then (as with
+  every type) `vtbl[1]` PostLoad, `vtbl[17]` Reset and `0x407790` (hangs in the world) (`0x403e6d..0x403e7a`).
+* **Two variants** ("mode" `+0x228`), chosen by the **script via a mailbox variable** (message 60): mode **1** = W1B (Buzz in his
+  flying machine, logical records 0..16), mode **2** = W2D / W3D / WWS ("bobbing" with dust). Mode **0** = off: the class
+  then does nothing at all except read the mailbox.
+* **Fight** (mode 1): Buzz chases the player **high up** (at the y of his placement, W1B 2430) at 900 u/s, shakes for 0.25 s above the player and
+  then **falls** with gravity (stomp; hits the player within a cone = 1 heart; camera shake on landing). Afterwards he hovers
+  **low** (ground below the start position + 290, W1B ≈ 1635) and is **only then vulnerable**: every hit = **1 hp** (regardless of damage),
+  **5 hp**, 2.1 s flashing red "hit", then back up. If he hits the player during the low phase, he also goes back up.
+* **Linked instance** (message 59, W1B: 404 = type 17, model 38): gets **exactly the position and rotation** of the boss every frame, plays
+  **the same logical animation** (own AnimCtrl, own model), flashes red along with him, and gets smoke plumes on its markers at hits 2..4.
+* **End**: at hp ≤ 0 he writes **3** to the mailbox variable (W1B: var 51), stops his sound and sets mode 0 (freezes). The script
+  hides 405/404 0.5 s later and starts the outro. Otherwise he only ever writes **−1** (acknowledgement of a command), never 1 or 2.
+* **HUD**: every frame `0x4484d0(1, (int)hp, (int)P+0x34)` = boss health bar (HUD_TEXT.md §4.4) with 5 dots.
+* **No** projectiles, no bombs, no TRAJ/path, no `vtbl[58]`, no death particles, no fade, no removal (`+0x10c` stays 0).
 
-## 1. Vtable `0x4a98a8` (58 slots) t.o.v. de Enemy-basis `0x4a9fbc`
+## 1. Vtable `0x4a98a8` (58 slots) vs. the Enemy base `0x4a9fbc`
 
-Slots 0..57 als in ENEMY.md §1.1. Na slot 57 staan drie floats (`0x4a9990` = 1/60, `0x4a9994` = 20.0, `0x4a9998` = 500.0) en dan de
-AnimCtrl-vtable `0x4a999c` (`[0]` = `0x4108e0`, `[1]` `0x40d7f0`, `[2]` `0x436b70` Request, `[3]` `0x436a50` Tick, `[4]` `0x436a40` Reset).
-Er is dus **geen slot 58 (Fire)**.
+Slots 0..57 as in ENEMY.md §1.1. After slot 57 there are three floats (`0x4a9990` = 1/60, `0x4a9994` = 20.0, `0x4a9998` = 500.0) and then the
+AnimCtrl vtable `0x4a999c` (`[0]` = `0x4108e0`, `[1]` `0x40d7f0`, `[2]` `0x436b70` Request, `[3]` `0x436a50` Tick, `[4]` `0x436a40` Reset).
+So there is **no slot 58 (Fire)**.
 
-| slot | off | klasse 14 | basis | betekenis |
+| slot | off | class 14 | base | meaning |
 |---|---|---|---|---|
-| 0 | +0x00 | `0x40ebc0` | `0x419d30` | scalar-dtor → `0x40ebe0`: beide AnimCtrl's (`+0x1c4`, `+0x1c8`) `vtbl[1](1)`, dan `0x419d50` |
+| 0 | +0x00 | `0x40ebc0` | `0x419d30` | scalar dtor → `0x40ebe0`: both AnimCtrls (`+0x1c4`, `+0x1c8`) `vtbl[1](1)`, then `0x419d50` |
 | 1 | +0x04 | **`0x40ec50`** | `0x419e30` | PostLoad (§3.2) |
-| 3 | +0x0c | = `0x41a320` | | Think: Update alleen als 3D-afstand tot de camera `< P+0xc0` (**3000**, niet overschreven) of `hp ≤ 0`; niet tijdens een cinematic |
+| 3 | +0x0c | = `0x41a320` | | Think: Update only if the 3D distance to the camera `< P+0xc0` (**3000**, not overridden) or `hp ≤ 0`; not during a cinematic |
 | 17 | +0x44 | **`0x40ed90`** | `0x41a010` | Reset (§3.3) |
-| 22 | +0x58 | **`0x410070`** | `0x41a740` | berichten 59 / 60, rest → `Enemy::HandleMsg` (§7) |
-| 23 | +0x5c | `0x45b340` (`return 8`) | `0x41ad40` (1 of 0x10) | geen aanroeper met zekerheid gevonden: onzeker |
-| 26 | +0x68 | **`0x40fde0`** | `0x430010` | render-kleur: rood/wit knipperen in toestand 9 en 12 (§8) |
-| 31 | +0x7c | **`0x410cf0`** | `0x40c1e0` | **Touch** = kegeltest (§6.1) |
-| 38 | +0x98 | `0x4078a0` (leeg) | `0x40c3b0` (leeg) | |
+| 22 | +0x58 | **`0x410070`** | `0x41a740` | messages 59 / 60, rest → `Enemy::HandleMsg` (§7) |
+| 23 | +0x5c | `0x45b340` (`return 8`) | `0x41ad40` (1 or 0x10) | no caller found with certainty: uncertain |
+| 26 | +0x68 | **`0x40fde0`** | `0x430010` | render colour: red/white flashing in states 9 and 12 (§8) |
+| 31 | +0x7c | **`0x410cf0`** | `0x40c1e0` | **Touch** = cone test (§6.1) |
+| 38 | +0x98 | `0x4078a0` (empty) | `0x40c3b0` (empty) | |
 | 39 | +0x9c | **`0x40fe90`** | `0x41adc0` | **TakeDamage** (§6.2) |
-| 40 | +0xa0 | = `0x41ae20` | | Blast: gaat via `vtbl[39]` ⇒ ook maar 1 hp |
-| 43 | +0xac | **`0x410900`** | `0x41a4e0` | hoogteregeling / val (§5) |
-| 45 | +0xb4 | **`0x410170`** | purecall | animatiekeuze (§4.2) |
-| 47 | +0xbc | = `0x41a4d0` | | altijd als actor/aanvalsdoel geregistreerd |
-| 51 | +0xcc | **`0x4105e0`** | purecall | `return 4.0f` (`0x4a94c0`); alleen gebruikt door de fade van `Enemy::Update`, die nooit start (`+0x15c` blijft 0) |
-| 52 | +0xd0 | **`0x40eec0`** | `0x41a3e0` | Update / toestandsmachine (§3A) |
-| 53 | +0xd4 | **`0x4105f0`** | `0x40d840` | duur per toestand (§4.3) |
-| 54 | +0xd8 | **`0x40fe80`** | `0x4078b0` (0) | `return +0x234` = **gekoppelde instantie** |
-| 55 | +0xdc | = `0x41b1b0` | | **meeslepen**: als `vtbl[54]()` ≠ 0 ⇒ positie en rotatie naar de gekoppelde instantie kopiëren (§9.1). Correctie op ENEMY.md §1.1 ("cel bijwerken") |
-| 57 | +0xe4 | = `0x41b000` | | sterf-effect – wordt in deze klasse **nooit** aangeroepen |
+| 40 | +0xa0 | = `0x41ae20` | | Blast: goes via `vtbl[39]` ⇒ also just 1 hp |
+| 43 | +0xac | **`0x410900`** | `0x41a4e0` | height control / falling (§5) |
+| 45 | +0xb4 | **`0x410170`** | purecall | animation choice (§4.2) |
+| 47 | +0xbc | = `0x41a4d0` | | always registered as actor/attack target |
+| 51 | +0xcc | **`0x4105e0`** | purecall | `return 4.0f` (`0x4a94c0`); only used by the fade of `Enemy::Update`, which never starts (`+0x15c` stays 0) |
+| 52 | +0xd0 | **`0x40eec0`** | `0x41a3e0` | Update / state machine (§3A) |
+| 53 | +0xd4 | **`0x4105f0`** | `0x40d840` | duration per state (§4.3) |
+| 54 | +0xd8 | **`0x40fe80`** | `0x4078b0` (0) | `return +0x234` = **linked instance** |
+| 55 | +0xdc | = `0x41b1b0` | | **drag along**: if `vtbl[54]()` ≠ 0 ⇒ copy position and rotation to the linked instance (§9.1). Correction to ENEMY.md §1.1 ("update cell") |
+| 57 | +0xe4 | = `0x41b000` | | death effect – **never** called in this class |
 
-Alle andere slots = basis (o.a. 32 straal = `P+4`, 33 hoogte = `P+0x28`, 34 positie-pointer, 37 waarschuwing `ret 4`, 41 = `0x4078a0` leeg,
+All other slots = base (among others 32 radius = `P+4`, 33 height = `P+0x28`, 34 position pointer, 37 warning `ret 4`, 41 = `0x4078a0` empty,
 48 FindTarget).
 
-## 2. Velden (size 0x24c)
+## 2. Fields (size 0x24c)
 
-### 2.1 Eigen velden
+### 2.1 Own fields
 
-| off | type | init | betekenis | schrijvers / lezers |
+| off | type | init | meaning | writers / readers |
 |---|---|---|---|---|
-| 0x1c0 | int | Reset 0 | **toestand** 0..12 (13 alleen in de anim-/duurtabel) | |
-| 0x1c4 | AnimCtrl* | ctor 0; PostLoad | eigen AnimCtrl (`0x4108c0(this)`, 0x54 B) | |
-| 0x1c8 | AnimCtrl* | ctor 0 | AnimCtrl van de **gekoppelde instantie** (`0x4108c0(link)`, bericht 59) | `0x410126` |
-| 0x1d0 | float | – | tijd dat de speler stilstaat (+= dt in toestand 3, 0 als hij beweegt) | **geen lezer** |
-| 0x1d4 | float | – | schudtimer toestand 6 (`P+0xa4` = 0.25) | proloog `-= dt` zolang ≥ 0 |
-| 0x1d8 | float | Reset 0 | wachttimer na de landing, toestand 8 (`P+0x9c` = 0.3) | idem |
-| 0x1e0 | float | – | juich-timer toestand 10/11 (4.0) | |
-| 0x1e4 | float | – | timer toestand 1 (`P+0x38` = 1.0 of 0) | proloog `-= dt` zolang ≥ 0 |
-| 0x1e8 | int | – | stapteller 0..3 van het schudden (toestand 6) | |
-| 0x1ec | vec3 | – | spelerpositie vorige frame | toestand 2 zet 0 |
-| 0x1f8 | vec3 | – | spelerpositie deze frame | |
-| 0x204 | vec3 | – | bewaard thuispunt tijdens het terugwijken | |
-| 0x210 | float | – | bewaarde `P+0x1c` (leash) tijdens het terugwijken | |
-| 0x214 | float | PostLoad | **hoge zweefhoogte** = y van het thuispunt = y van de plaatsing (W1B **2430**) | |
-| 0x218 | float | PostLoad | **lage zweefhoogte** = grond onder de plaatsing (`0x41a2a0`) + `P+0x88` (290). W1B: wereldvloer onder (−7031, −8863) = **1344.8** ⇒ **1634.8** (met `tools/gelparse.py` over de wereldpolygonen bepaald, zonder instantie-hulls) | |
-| 0x21c | float | Reset 0 | accumulator voor de vaste 60-Hz-stappen van toestand 6 | |
-| 0x224 | u8 | Reset 1 | **"hoog"**: 1 = hoge fase (onkwetsbaar), 0 = lage fase (kwetsbaar) | |
-| 0x228 | int | PostLoad 0 | **modus** 0 = uit, 1 = W1B-variant, 2 = W2D/W3D/WWS-variant | `0x410be0` |
-| 0x22c | int | Reset 0 | geen lezer | |
-| 0x230 | int | PostLoad 0 | **brievenbus-variabele** (script-var-id, `& 0xffffff`), bericht 60 | |
-| 0x234 | Inst* | ctor 0 | **gekoppelde instantie** (bericht 59) | |
-| 0x23c | u8 | Reset 1 | modus 2: richting van het hupsen (1 = omlaag) | |
-| 0x240 | float | Reset 0 | modus 2: hups-diepte 0..150 | |
-| 0x244 | float | Reset 150.0 (`0x43160000`) | modus 2: maximale hups-diepte | |
-| 0x248 | Bron (4 B) | Reset `0x468e10` | geluidsbron voor de lus (SOUND.md §5: `0x468e40` actief, `0x468e50` start, `0x468e20` stop) | |
+| 0x1c0 | int | Reset 0 | **state** 0..12 (13 only in the anim/duration table) | |
+| 0x1c4 | AnimCtrl* | ctor 0; PostLoad | own AnimCtrl (`0x4108c0(this)`, 0x54 B) | |
+| 0x1c8 | AnimCtrl* | ctor 0 | AnimCtrl of the **linked instance** (`0x4108c0(link)`, message 59) | `0x410126` |
+| 0x1d0 | float | – | time the player stands still (+= dt in state 3, 0 if he moves) | **no reader** |
+| 0x1d4 | float | – | shake timer state 6 (`P+0xa4` = 0.25) | prologue `-= dt` while ≥ 0 |
+| 0x1d8 | float | Reset 0 | wait timer after landing, state 8 (`P+0x9c` = 0.3) | ditto |
+| 0x1e0 | float | – | cheer timer state 10/11 (4.0) | |
+| 0x1e4 | float | – | timer state 1 (`P+0x38` = 1.0 or 0) | prologue `-= dt` while ≥ 0 |
+| 0x1e8 | int | – | step counter 0..3 of the shaking (state 6) | |
+| 0x1ec | vec3 | – | player position previous frame | state 2 sets 0 |
+| 0x1f8 | vec3 | – | player position this frame | |
+| 0x204 | vec3 | – | saved home point during the retreat | |
+| 0x210 | float | – | saved `P+0x1c` (leash) during the retreat | |
+| 0x214 | float | PostLoad | **high hover height** = y of the home point = y of the placement (W1B **2430**) | |
+| 0x218 | float | PostLoad | **low hover height** = ground below the placement (`0x41a2a0`) + `P+0x88` (290). W1B: world floor below (−7031, −8863) = **1344.8** ⇒ **1634.8** (determined with `tools/gelparse.py` over the world polygons, without instance hulls) | |
+| 0x21c | float | Reset 0 | accumulator for the fixed 60 Hz steps of state 6 | |
+| 0x224 | u8 | Reset 1 | **"high"**: 1 = high phase (invulnerable), 0 = low phase (vulnerable) | |
+| 0x228 | int | PostLoad 0 | **mode** 0 = off, 1 = W1B variant, 2 = W2D/W3D/WWS variant | `0x410be0` |
+| 0x22c | int | Reset 0 | no reader | |
+| 0x230 | int | PostLoad 0 | **mailbox variable** (script var id, `& 0xffffff`), message 60 | |
+| 0x234 | Inst* | ctor 0 | **linked instance** (message 59) | |
+| 0x23c | u8 | Reset 1 | mode 2: direction of the bobbing (1 = down) | |
+| 0x240 | float | Reset 0 | mode 2: bob depth 0..150 | |
+| 0x244 | float | Reset 150.0 (`0x43160000`) | mode 2: maximum bob depth | |
+| 0x248 | Source (4 B) | Reset `0x468e10` | sound source for the loop (SOUND.md §5: `0x468e40` active, `0x468e50` start, `0x468e20` stop) | |
 
-### 2.2 Gebruikte basisvelden
+### 2.2 Used base fields
 
-`+0xc` positie (**de klasse verplaatst deze zelf**, §5), `+0x114` dt, `+0x118` P, `+0x11c` actief gedrag, `+0x120` H, `+0x128` startpositie,
-`+0x134` thuispunt (`+0x138` = y), `+0x150` hp, `+0x158` hit-timer, `+0x15c` sterf-timer (altijd 0), `+0x160` Dwalen, `+0x164` Achtervolgen,
-`+0x168` Stilstaan (**geen** Pad: `+0x16c` blijft 0, TRAJ wordt niet gebruikt), `+0x174` vlaggen (bit 1 op de grond, **bit 4 = zwaartekracht/val aan**),
-`+0x178` grondprobe.
+`+0xc` position (**the class moves this itself**, §5), `+0x114` dt, `+0x118` P, `+0x11c` active behaviour, `+0x120` H, `+0x128` start position,
+`+0x134` home point (`+0x138` = y), `+0x150` hp, `+0x158` hit timer, `+0x15c` death timer (always 0), `+0x160` Wander, `+0x164` Chase,
+`+0x168` Stand (**no** Path: `+0x16c` stays 0, TRAJ is not used), `+0x174` flags (bit 1 on the ground, **bit 4 = gravity/falling on**),
+`+0x178` ground probe.
 
-### 2.3 Parameterblok P voor subtype 11 (`0x41d510`, case `0x41daa6`)
+### 2.3 Parameter block P for subtype 11 (`0x41d510`, case `0x41daa6`)
 
-| P+ | waarde | modus 1 (Reset) | modus 2 (Reset) | gebruik in deze klasse |
+| P+ | value | mode 1 (Reset) | mode 2 (Reset) | used in this class |
 |---|---|---|---|---|
-| 0x00 | 200 | **400** | **800** | valversnelling (basis-grondvolger tijdens de val) |
-| 0x04 | **240** | | | straal (`vtbl[32]`; gebruikt door andere code, niet door de klasse) |
-| 0x08 | **600** | **400** | **390** | loopsnelheid (Dwalen, terugwijken, H-snelheid in toestand 10) |
-| 0x0c | **900** | **900** | **400** | rensnelheid (Achtervolgen); modus 2 ook hups-snelheid |
-| 0x10 | **π/4** | | | draaisnelheid Dwalen / terugwijken |
-| 0x14 | **π** | | | draaisnelheid Achtervolgen, toestand 5 |
-| 0x18 | π/2 | | | niet gelezen |
-| 0x1c | **1000** | | | leash rond het thuispunt (3D voor subtype ≥ 9); tijdens terugwijken 1.0 |
-| 0x20 | **4600** | | | zichtafstand FindTarget (3D) |
-| 0x24 | **3000** | | | max. \|dy\| FindTarget |
-| 0x28 | **150** | | | hoogte (`vtbl[33]`; h/2 = 75 voor probe en cel) |
-| 0x2c / 0x30 | **15000** | | | max. afstap / opstap ⇒ geen randtest |
-| 0x34 | **5** | | | **levenspunten** (en HUD-maximum) |
-| 0x38 | 1.0 | | | duur toestand 1 in de hoge fase |
-| 0x3c | 1.0 | | | **schade aan de speler** (kegel-contact) |
-| 0x78 | **900** | | | verticale snelheid van de hoogteregeling |
-| 0x7c | **250** | | | **kegelhoogte** (onder `pos`); treffpunt op `pos.y − 125` |
-| 0x80 | **150** | | | **kegelstraal** bovenaan / afstand treffpunt |
-| 0x88 | **290** | | | lage zweefhoogte boven de grond |
-| 0x9c | **0.3** | | | wachttijd na de landing (toestand 8) |
-| 0xa4 | **0.25** | | | schudduur (toestand 6) |
-| 0xa8 | **20** | | | schud-amplitude |
-| 0x84, 0xa0 | 2.0, 2.0 | | | gezet, **geen lezer** |
-| 0xc0 | 3000 | | | activeringsafstand tot de camera (Think) |
+| 0x00 | 200 | **400** | **800** | fall acceleration (base ground follower during the fall) |
+| 0x04 | **240** | | | radius (`vtbl[32]`; used by other code, not by the class) |
+| 0x08 | **600** | **400** | **390** | walk speed (Wander, retreat, H speed in state 10) |
+| 0x0c | **900** | **900** | **400** | run speed (Chase); mode 2 also bob speed |
+| 0x10 | **π/4** | | | turn speed Wander / retreat |
+| 0x14 | **π** | | | turn speed Chase, state 5 |
+| 0x18 | π/2 | | | not read |
+| 0x1c | **1000** | | | leash around the home point (3D for subtype ≥ 9); during the retreat 1.0 |
+| 0x20 | **4600** | | | FindTarget sight distance (3D) |
+| 0x24 | **3000** | | | FindTarget max. \|dy\| |
+| 0x28 | **150** | | | height (`vtbl[33]`; h/2 = 75 for probe and cell) |
+| 0x2c / 0x30 | **15000** | | | max. step-down / step-up ⇒ no edge test |
+| 0x34 | **5** | | | **hit points** (and HUD maximum) |
+| 0x38 | 1.0 | | | duration state 1 in the high phase |
+| 0x3c | 1.0 | | | **damage to the player** (cone contact) |
+| 0x78 | **900** | | | vertical speed of the height control |
+| 0x7c | **250** | | | **cone height** (below `pos`); hit point at `pos.y − 125` |
+| 0x80 | **150** | | | **cone radius** at the top / hit-point distance |
+| 0x88 | **290** | | | low hover height above the ground |
+| 0x9c | **0.3** | | | wait time after landing (state 8) |
+| 0xa4 | **0.25** | | | shake duration (state 6) |
+| 0xa8 | **20** | | | shake amplitude |
+| 0x84, 0xa0 | 2.0, 2.0 | | | set, **no reader** |
+| 0xc0 | 3000 | | | activation distance to the camera (Think) |
 
-Overige velden = defaults (ENEMY.md §2.3; o.a. `P+0x44 = 600` terugslagfactor). Let op: Reset herschrijft `P+0/8/0xc` alleen als de modus 1 of 2 is;
-de Reset uit de fabriek (modus 0) laat 200/600/900 staan.
+Other fields = defaults (ENEMY.md §2.3; among others `P+0x44 = 600` knockback factor). Note: Reset only overwrites `P+0/8/0xc` if the
+mode is 1 or 2; the Reset from the factory (mode 0) leaves 200/600/900 as is.
 
-## 3. Constructie, PostLoad, Reset, brievenbus
+## 3. Construction, PostLoad, Reset, mailbox
 
-### 3.1 Ctor `0x40eb50(subtype)` en dtor
+### 3.1 Ctor `0x40eb50(subtype)` and dtor
 
 ```c
 Boss14 *Boss14_ctor(Boss14 *e, int subtype) {        /* 0x40eb50 */
@@ -147,31 +147,31 @@ void Boss14_dtor(Boss14 *e) {                         /* 0x40ebe0 */
 
 ```c
 void Boss14_PostLoad(Boss14 *e) {
-    Enemy_PostLoad(e);                                /* 0x419e30: P, H, Sensor, Fall, start/thuis = pos */
+    Enemy_PostLoad(e);                                /* 0x419e30: P, H, Sensor, Fall, start/home = pos */
     e->anim   = new AnimCtrl14(e);                    /* 0x4108c0: 0x4369f0(e) + vtable 0x4a999c */
-    e->wander = new Dwalen(e, 1, &e->home);           /* +0x160, 0x41bf30: leash aan rond +0x134 */
+    e->wander = new Wander(e, 1, &e->home);           /* +0x160, 0x41bf30: leash around +0x134 */
     e->yHigh  = e->home.y;                            /* +0x214 */
     e->yLow   = GroundBelow(e) + P->+0x88;            /* +0x218 = 0x41a2a0() + 290 */
-    e->chase  = new Achtervolgen(e, 0);               /* +0x164, 0x41bbf0 */
-    e->still  = new Stilstaan(e);                     /* +0x168, 0x41b710 */
+    e->chase  = new Chase(e, 0);               /* +0x164, 0x41bbf0 */
+    e->still  = new Stand(e);                /* +0x168, 0x41b710 */
     e->mailVar = 0;  e->mode = 0;                     /* +0x230, +0x228 */
 }
 ```
-Geen Pad-gedrag en geen `[0x4c5330]++` (telt niet mee als "vijand in het level").
+No Path behaviour and no `[0x4c5330]++` (does not count as "enemy in the level").
 
 ### 3.3 Reset `vtbl[17]` = `0x40ed90`
 
 ```c
 void Boss14_Reset(Boss14 *e) {
-    Enemy_Reset(e);            /* 0x41a010: pos = thuis = start, hp = P+0x34, hitT = deathT = 0, typewoord |= 0x400,
-                                  niet in de wereld ⇒ 0x407790 (wordt dus weer zichtbaar!), vlag 4 aan, msgmask 0x10 wissen */
-    e->behav = e->wander;  e->wander->vtbl[6]();  Wander_Start(e->wander);   /* 0x41c160: draaisnelheid P+0x10 */
-    e->flags &= ~4;                                    /* geen val */
+    Enemy_Reset(e);            /* 0x41a010: pos = home = start, hp = P+0x34, hitT = deathT = 0, type word |= 0x400,
+                                  not in the world ⇒ 0x407790 (so becomes visible again!), flag 4 on, clear msgmask 0x10 */
+    e->behav = e->wander;  e->wander->vtbl[6]();  Wander_Start(e->wander);   /* 0x41c160: turn speed P+0x10 */
+    e->flags &= ~4;                                    /* no falling */
     e->state = 0;  e->t1d8 = 0;  e->deathT = 0;  e->high = 1;  e->u22c = 0;  e->acc = 0;
     e->bobDown = 1;  e->bobMax = 150.0f;  e->bob = 0;
     e->hp = P->+0x34;                                  /* 5 */
-    smokeOn[0] = smokeOn[1] = smokeOn[2] = 0;          /* bytes 0x5e857c..e: rookpluimen uit (§9.2) */
-    e->anim->vtbl[4]();  if (e->linkAnim) e->linkAnim->vtbl[4]();   /* AnimCtrl-reset (0x436a40) */
+    smokeOn[0] = smokeOn[1] = smokeOn[2] = 0;          /* bytes 0x5e857c..e: smoke plumes off (§9.2) */
+    e->anim->vtbl[4]();  if (e->linkAnim) e->linkAnim->vtbl[4]();   /* AnimCtrl reset (0x436a40) */
     switch (e->mode) {
     case 1: P->+0x0c = 900; P->+0x08 = 400; P->+0x00 = 400; break;     /* 0x40ee7d */
     case 2: P->+0x0c = 400; P->+0x08 = 390; P->+0x00 = 800; break;     /* 0x40ee49 */
@@ -179,68 +179,68 @@ void Boss14_Reset(Boss14 *e) {
     SoundSrc_Init(&e->src);                            /* 0x468e10(this+0x248) */
 }
 ```
-Reset wordt aangeroepen door de fabriek (bericht 1200), door **elke modus-wissel** (§3.4) en door bericht `11 [inst, 4]` (basis; W2D/W3D
-gebruiken dat om de baas terug te zetten).
+Reset is called by the factory (message 1200), by **every mode switch** (§3.4) and by message `11 [inst, 4]` (base; W2D/W3D
+use that to put the boss back).
 
-### 3.4 Brievenbus `0x410be0` (elke Update, als eerste)
+### 3.4 Mailbox `0x410be0` (every Update, first thing)
 
 ```c
 bool Boss14_CheckCommand(Boss14 *e) {
     int v = *GetVar(e->mailVar);                       /* 0x443cd0 */
     if (v == 1)      { if (e->mode != 1) { e->mode = 1; e->vtbl[17](); } SetVar(e->mailVar, -1); return true; }
     else if (v == 2) { if (e->mode != 2) { e->mode = 2; e->vtbl[17](); } SetVar(e->mailVar, -1); return true; }
-    SetVar(e->mailVar, -1);                            /* 0x443ca0; óók bij elke andere waarde (0, 3, -1) */
-    return false;                                      /* resultaat wordt door Update niet gebruikt */
+    SetVar(e->mailVar, -1);                            /* 0x443ca0; also on any other value (0, 3, -1) */
+    return false;                                      /* result is not used by Update */
 }
 ```
-* Het script schrijft **1 of 2** (commando "start in modus 1/2"); de baas bevestigt met **−1**. Een commando voor de modus die al actief is doet
-  niets (geen Reset). SetVar wekt de watchers vóór het schrijven (`0x443ce0`), dus elke Update wekt de script-objecten die op de var wachten.
-* Zolang bericht 60 niet is ontvangen is `mailVar = 0`: de baas leest dan **var 0** en schrijft er −1 in (alleen als hij in die eerste frames al
-  geüpdatet wordt, d.w.z. binnen 3000 van de camera staat).
-* De brievenbus wordt alleen gelezen als Think Update aanroept (camera < 3000, geen cinematic).
+* The script writes **1 or 2** (command "start in mode 1/2"); the boss acknowledges with **−1**. A command for the mode that is already active does
+  nothing (no Reset). SetVar wakes the watchers before writing (`0x443ce0`), so every Update wakes the script objects waiting on the var.
+* As long as message 60 has not been received, `mailVar = 0`: the boss then reads **var 0** and writes −1 into it (only if it is already being
+  updated in those first frames, i.e. while within 3000 of the camera).
+* The mailbox is only read if Think calls Update (camera < 3000, no cinematic).
 
-## 3A. Update `vtbl[52]` = `0x40eec0` (jumptabel `0x40fd9c`, 13 toestanden)
+## 3A. Update `vtbl[52]` = `0x40eec0` (jump table `0x40fd9c`, 13 states)
 
 ```c
 void Boss14_Update(Boss14 *e) {
     Boss14_CheckCommand(e);                                        /* 0x410be0 */
-    if (e->mode == 0) return;                                      /* 0x40eee8 → 0x40fd8a: ook geen HUD */
-    Enemy_Update(e);   /* 0x41a3e0: gedrag-tick, vtbl[43] hoogte (§5), vtbl[44] rotatie, vtbl[45] animatie (§4), vtbl[55] meeslepen (§9.1) */
-    if (e->mode == 1 && e->link && e->link->smoke) e->link->smoke->on = 1;   /* 0x40ef08: type-17-rook (+0x10c)->+0xc; W1B: smoke == 0 */
+    if (e->mode == 0) return;                                      /* 0x40eee8 → 0x40fd8a: also no HUD */
+    Enemy_Update(e);   /* 0x41a3e0: behaviour tick, vtbl[43] height (§5), vtbl[44] rotation, vtbl[45] animation (§4), vtbl[55] drag along (§9.1) */
+    if (e->mode == 1 && e->link && e->link->smoke) e->link->smoke->on = 1;   /* 0x40ef08: type-17 smoke (+0x10c)->+0xc; W1B: smoke == 0 */
     if (e->state == 3) e->stillT += dt;
     if (e->t1d4 >= 0) e->t1d4 -= dt;   if (e->t1d8 >= 0) e->t1d8 -= dt;   if (e->t1e4 >= 0) e->t1e4 -= dt;
-    Actor *t;                              /* FindTarget = vtbl[48](1, 0): zicht 4600 (3D), |dy| < 3000 */
+    Actor *t;                              /* FindTarget = vtbl[48](1, 0): sight 4600 (3D), |dy| < 3000 */
     switch (e->state) {
-    case 0: /* NAAR ZWEEFHOOGTE / DWALEN START  0x40efb5 */
+    case 0: /* TO HOVER HEIGHT / WANDER START  0x40efb5 */
         e->home.y = e->high ? e->yHigh : e->yLow;
         e->flags &= ~4;
         e->behav = e->wander;  e->wander->vtbl[6]();  Wander_Start(e->wander);
         e->t1e4 = e->high ? P->+0x38 /*1.0*/ : 0;   e->state = 1;
         break;
-    case 1: /* DWALEN  0x40f045 */
+    case 1: /* WANDER  0x40f045 */
         if (e->t1e4 < 0) e->state = 2;
         break;
-    case 2: /* OPMERKEN  0x40f06b */
+    case 2: /* NOTICE  0x40f06b */
         if (!(t = FindTarget(1,0))) { e->state = 0; break; }
-        e->flags &= ~4;  H->speed = P->+0x08;                      /* direct overschreven door Chase_Start */
-        e->behav = e->chase;  e->chase->vtbl[6]();  Chase_Start(e->chase, t);   /* 0x41bc80: snelheid P+0xc (900) direct, draaien P+0x14 (π) */
+        e->flags &= ~4;  H->speed = P->+0x08;                      /* immediately overwritten by Chase_Start */
+        e->behav = e->chase;  e->chase->vtbl[6]();  Chase_Start(e->chase, t);   /* 0x41bc80: speed P+0xc (900) immediately, turn P+0x14 (π) */
         e->stillT = 0;  e->plPrev = (0,0,0);  e->state = 3;
         break;
-    case 3: /* ACHTERVOLGEN  0x40f0e9 */
-        if (e->high && e->home.y - e->pos.y >= 20.0f) break;        /* 0x4a9994: eerst (bijna) op de hoge zweefhoogte */
+    case 3: /* CHASE  0x40f0e9 */
+        if (e->high && e->home.y - e->pos.y >= 20.0f) break;        /* 0x4a9994: wait until (nearly) at the high hover height */
         if (!(t = FindTarget(1,0))) { e->state = 0; break; }
         e->plPrev = e->plCur;  e->plCur = t->pos;
         if (!PlayerStill(&e->plPrev, &e->plCur)) e->stillT = 0;     /* 0x410c60: |Δ| < 1.0 */
         if (!e->high) {
-            if (e->vtbl[31](1, 0)) {                                /* kegel-contact §6.1 */
+            if (e->vtbl[31](1, 0)) {                                /* cone contact §6.1 */
                 vec3 d = normalize_xz(t->pos - e->pos);
                 vec3 pt = { e->pos.x + d.x*P->+0x80, e->pos.y - P->+0x7c*0.5f, e->pos.z + d.z*P->+0x80 };   /* pos + d·150 − (0,125,0) */
                 if (t->vtbl[39](e, P->+0x3c /*1.0*/, &d, &pt, 0)) { e->state = 10; break; }
                 SoundFx(e->mode == 1 ? 41 : 46, 0);                 /* 0x40f291 */
-                e->high = 1;  e->state = 0;  break;                 /* terug omhoog */
+                e->high = 1;  e->state = 0;  break;                 /* back up */
             }
-            if (dist_xz(e->pos, e->plCur) < 150.0f) {               /* 0x4a9754; speler onder/naast hem maar niet in de kegel ⇒ TERUGWIJKEN */
-                vec3 a = e->home - t->pos;  float L = len3(a);      /* 3D-lengte, maar alleen x/z worden gebruikt */
+            if (dist_xz(e->pos, e->plCur) < 150.0f) {               /* 0x4a9754; player below/beside him but not in the cone ⇒ RETREAT */
+                vec3 a = e->home - t->pos;  float L = len3(a);      /* 3D length, but only x/z are used */
                 e->homeSave = e->home;
                 e->home = (vec3){ t->pos.x + a.x/L*1300.0f, e->yLow, t->pos.z + a.z/L*1300.0f };   /* 0x4a9860 */
                 e->behav = e->wander;  e->wander->vtbl[6]();  Wander_Start(e->wander);  Wander_SetLeash(e->wander, 1, &e->home);
@@ -249,47 +249,47 @@ void Boss14_Update(Boss14 *e) {
         }
         if (dist_xz(e->pos, e->plCur) < 150.0f) {                   /* 0x40f407 */
             e->behav = e->still;  e->t1e8 = 0;  e->t1d4 = P->+0xa4 /*0.25*/;
-            if (e->high) e->state = 6;                              /* STOMP-aanloop */
+            if (e->high) e->state = 6;                              /* STOMP run-up */
         }
         break;
-    case 4: /* TERUGWIJKEN  0x40f47d */
+    case 4: /* RETREAT  0x40f47d */
         if (!(t = FindTarget(1,0))) goto restore;
         e->plPrev = e->plCur;  e->plCur = t->pos;
-        if (!PlayerStill(&e->plPrev, &e->plCur)) goto restore;      /* speler beweegt ⇒ afbreken */
+        if (!PlayerStill(&e->plPrev, &e->plCur)) goto restore;      /* player moves ⇒ abort */
         Wander_SetLeash(e->wander, 1, &e->home);
         if (dist3(e->pos, e->home) < 150.0f) e->state = 5;
         break;
-    case 5: /* WACHTEN OP HET WIJKPUNT  0x40f558 */
+    case 5: /* WAITING AT THE RETREAT POINT  0x40f558 */
         if (!(t = FindTarget(1,0))) goto restore;
         e->plPrev = e->plCur;  e->plCur = t->pos;
         if (!PlayerStill(&e->plPrev, &e->plCur)) goto restore;
         e->behav = e->still;  H_SetTurnSpeed(H, P->+0x14 /*π*/);  H_TurnTo(H, e->pos, t->pos, 0);   /* 0x41b940, 0x41ba60 */
-        if (AngArc(H->target, H->angle > 0 ? 1.0f : 0.0f) != 0) H_Tick(H, dt);   /* 0x4401c0 – letterlijk zo (vermoedelijk bedoeld:
-                                                                                     boog(doel, hoek)); in de praktijk draait hij altijd */
+        if (AngArc(H->target, H->angle > 0 ? 1.0f : 0.0f) != 0) H_Tick(H, dt);   /* 0x4401c0 – literally like this (presumably intended:
+                                                                                     arc(target, angle)); in practice he always turns */
         break;
     restore: /* 0x40f66f */
         P->+0x1c = e->leashSave;  e->home = e->homeSave;  Wander_SetLeash(e->wander, 1, &e->home);  e->state = 2;
         break;
-    case 6: /* SCHUDDEN BOVEN DE SPELER  0x40f6bb */
+    case 6: /* SHAKING ABOVE THE PLAYER  0x40f6bb */
         if (!(t = FindTarget(1,0))) { e->state = 2; break; }
-        if (e->t1d4 <= 0) { e->state = 7; e->flags |= 4; break; }   /* zwaartekracht aan ⇒ vallen */
-        e->acc += dt;  if (e->acc <= 1/60.0f) break;                /* 0x4a9990: vaste stap van 1/60 s */
+        if (e->t1d4 <= 0) { e->state = 7; e->flags |= 4; break; }   /* gravity on ⇒ falling */
+        e->acc += dt;  if (e->acc <= 1/60.0f) break;                /* 0x4a9990: fixed step of 1/60 s */
         vec3 p = e->pos;  vec3 d = normalize_xz(H_MoveDir(H));      /* 0x41b860 */
         int n = e->t1e8++;
-        switch (n) { case 0: s = -20; break;  case 1: case 2: s = +20; break;  case 3: e->t1e8 = 0; s = -20; break; }   /* tabel 0x40fdd0, P+0xa8 */
-        p += d * s;                                                  /* patroon −20, +20, +20, −20 langs de bewegingsrichting */
-        if (e->t1e8 & 1) { vec3 w = t->pos - p; w.y = 0; if (len_xz(w) != 0) p += w * 0.1f; }   /* 0x4a9008: 10 % naar de speler */
+        switch (n) { case 0: s = -20; break;  case 1: case 2: s = +20; break;  case 3: e->t1e8 = 0; s = -20; break; }   /* table 0x40fdd0, P+0xa8 */
+        p += d * s;                                                  /* pattern −20, +20, +20, −20 along the movement direction */
+        if (e->t1e8 & 1) { vec3 w = t->pos - p; w.y = 0; if (len_xz(w) != 0) p += w * 0.1f; }   /* 0x4a9008: 10 % towards the player */
         e->pos = p;
-        while (e->acc > 1/60.0f) e->acc -= 1/60.0f;                  /* maximaal één stap per frame, overschot vervalt */
+        while (e->acc > 1/60.0f) e->acc -= 1/60.0f;                  /* at most one step per frame, remainder is dropped */
         break;
-    case 7: /* VALLEN (STOMP)  0x40f909 */
+    case 7: /* FALLING (STOMP)  0x40f909 */
         if (!(t = FindTarget(1,0))) { e->state = 0; break; }
-        if (e->flags & 1) {                                          /* geland (basis-grondvolger, §5) */
+        if (e->flags & 1) {                                          /* landed (base ground follower, §5) */
             CameraShake(cam, 1.5f);                                  /* 0x41fbb0 */
             e->high = 0;  e->t1d8 = P->+0x9c /*0.3*/;  e->state = 8;
             if (e->mode == 2) Dust(&(vec3){pos.x, pos.y - 50, pos.z}, &(vec3){0,1,0}, 0, 1.5f, 6.0f);   /* 0x476140 */
             SoundFx(e->mode == 1 ? 40 : 45, 0);                      /* 0x40f9e5 */
-        }                                                            /* geen break: loopt door */
+        }                                                            /* no break: falls through */
         H_TurnTo(H, e->pos, t->pos, 0);  H_Tick(H, dt);
         e->pos.x += (t->pos.x - e->pos.x) * 0.01f;  e->pos.z += (t->pos.z - e->pos.z) * 0.01f;   /* 0x4a94f8: 1 % per FRAME */
         if (e->vtbl[31](1, 0)) {
@@ -299,151 +299,151 @@ void Boss14_Update(Boss14 *e) {
             e->high = 0;  e->t1d8 = 0.3f;  e->state = 8;
         }
         break;
-    case 8: /* NA DE LANDING  0x40fbb5 */
-        if (e->t1d8 < 0) e->state = 0;                               /* lage fase begint (high == 0) */
+    case 8: /* AFTER LANDING  0x40fbb5 */
+        if (e->t1d8 < 0) e->state = 0;                               /* low phase begins (high == 0) */
         break;
-    case 9: /* GERAAKT  0x40fbd1 */
+    case 9: /* HIT  0x40fbd1 */
         if (e->hp <= 0) { e->state = 12; break; }
         e->hitT -= dt;  e->behav = e->still;
-        if (e->hitT < 0) { e->high = 1; e->state = 0; }               /* 0x40fd4e: weer omhoog */
+        if (e->hitT < 0) { e->high = 1; e->state = 0; }               /* 0x40fd4e: back up */
         break;
-    case 10: /* SPELER VERSLAGEN start  0x40fcb1 */
+    case 10: /* PLAYER DEFEATED start  0x40fcb1 */
         if (e->mode == 1) { SoundFx(43, 0); SoundSrc_Stop(&e->src, 0, 39); } else { SoundFx(48, 0); SoundSrc_Stop(&e->src, 0, 44); }
         e->t1e0 = 4.0f;  e->state = 11;  e->behav = e->still;  H_SetSpeed(H, P->+0x08, 1);   /* 0x41b9d0 */
         /* fallthrough */
-    case 11: /* JUICHEN  0x40fd2f */
+    case 11: /* CHEERING  0x40fd2f */
         if ((e->t1e0 -= dt) <= 0) { e->high = 1; e->state = 0; }
         break;
-    case 12: /* VERSLAGEN  0x40fc27 */
+    case 12: /* DEFEATED  0x40fc27 */
         e->behav = e->still;  e->flags |= 4;
         if (e->hitT >= 0) e->hitT -= dt;
-        SetVar(e->mailVar, 3);                                        /* 0x40fc6f: ⇒ script "baas verslagen" */
+        SetVar(e->mailVar, 3);                                        /* 0x40fc6f: ⇒ script "boss defeated" */
         SoundSrc_Stop(&e->src, 0, e->mode == 1 ? 39 : 44);            /* 0x468e20 */
-        e->mode = 0;                                                  /* vanaf de volgende frame doet Update niets meer */
+        e->mode = 0;                                                  /* from the next frame on, Update does nothing anymore */
         break;
     }
-    HUD_BossBar(1, (int)e->hp, (int)P->+0x34);                        /* 0x40fd82: 0x4484d0 op [0x5d7b44] */
+    HUD_BossBar(1, (int)e->hp, (int)P->+0x34);                        /* 0x40fd82: 0x4484d0 on [0x5d7b44] */
 }
 bool PlayerStill(vec3 *a, vec3 *b) { return len3(*a - *b) < 1.0f; }  /* 0x410c60 */
 ```
 
-### 3A.1 Toestanden in één oogopslag
+### 3A.1 States at a glance
 
-| # | code | naam | gedrag | uit |
+| # | code | name | behaviour | to |
 |---|---|---|---|---|
-| 0 | `0x40efb5` | naar zweefhoogte | Dwalen | → 1 |
-| 1 | `0x40f045` | dwalen | Dwalen | `t1e4 < 0` → 2 (hoog: na 1.0 s, laag: volgende frame) |
-| 2 | `0x40f06b` | opmerken | → Achtervolgen | doel → 3, anders → 0 |
-| 3 | `0x40f0e9` | achtervolgen (900 u/s, draaien π) | Achtervolgen | hoog: xz < 150 → **6**; laag: kegel-contact → speler geraakt → 0 (hoog) of 10; xz < 150 zonder contact → **4**; geen doel → 0 |
-| 4 | `0x40f47d` | terugwijken naar een punt 1300 van de speler | Dwalen (leash 1.0) | speler beweegt → 2; binnen 150 van het punt → 5 |
-| 5 | `0x40f558` | stil hangen, naar de speler draaien | Stilstaan | speler beweegt / weg → 2 |
-| 6 | `0x40f6bb` | schudden boven de speler (0.25 s) | Stilstaan | → 7 (val aan) |
-| 7 | `0x40f909` | vallen, 1 %/frame naar de speler schuiven | Stilstaan | geland of contact → 8 (laag); speler dood → 10 |
-| 8 | `0x40fbb5` | na de landing (0.3 s) | Stilstaan | → 0 (laag) |
-| 9 | `0x40fbd1` | geraakt (2.1 s) | Stilstaan | hp ≤ 0 → 12; `hitT < 0` → 0 (hoog) |
-| 10/11 | `0x40fcb1` / `0x40fd2f` | speler verslagen, 4.0 s | Stilstaan | → 0 (hoog) |
-| 12 | `0x40fc27` | verslagen: var := 3, modus := 0 | Stilstaan | (bevroren) |
+| 0 | `0x40efb5` | to hover height | Wander | → 1 |
+| 1 | `0x40f045` | wander | Wander | `t1e4 < 0` → 2 (high: after 1.0 s, low: next frame) |
+| 2 | `0x40f06b` | notice | → Chase | target → 3, else → 0 |
+| 3 | `0x40f0e9` | chase (900 u/s, turning π) | Chase | high: xz < 150 → **6**; low: cone contact → player hit → 0 (high) or 10; xz < 150 without contact → **4**; no target → 0 |
+| 4 | `0x40f47d` | retreat to a point 1300 from the player | Wander (leash 1.0) | player moves → 2; within 150 of the point → 5 |
+| 5 | `0x40f558` | hang still, turn to the player | Stand | player moves / gone → 2 |
+| 6 | `0x40f6bb` | shaking above the player (0.25 s) | Stand | → 7 (fall on) |
+| 7 | `0x40f909` | falling, 1 %/frame sliding towards the player | Stand | landed or contact → 8 (low); player dead → 10 |
+| 8 | `0x40fbb5` | after landing (0.3 s) | Stand | → 0 (low) |
+| 9 | `0x40fbd1` | hit (2.1 s) | Stand | hp ≤ 0 → 12; `hitT < 0` → 0 (high) |
+| 10/11 | `0x40fcb1` / `0x40fd2f` | player defeated, 4.0 s | Stand | → 0 (high) |
+| 12 | `0x40fc27` | defeated: var := 3, mode := 0 | Stand | (frozen) |
 
-**Cyclus**: 0 → 1 (1 s) → 2 → 3 (hoog achtervolgen) → 6 (0.25 s schudden) → 7 (val) → 8 (0.3 s) → 0 → 1 → 2 → 3 (laag achtervolgen;
-kwetsbaar) → { pik ⇒ 9 (2.1 s) ⇒ 0 hoog | contact ⇒ speler −1 ⇒ 0 hoog | speler staat stil dichtbij ⇒ 4/5 terugwijken tot hij beweegt ⇒ 2 }.
-De juiste "val-in"-voorwaarde voor de stomp is alleen **xz-afstand < 150** (plus ≤ 20 onder de hoge zweefhoogte); er is geen zichtlijn- of hoektest.
-Frame-afhankelijk (letterlijk): de 1 %-schuif in toestand 7, de val (per frame, §5) en de maximaal één schudstap per frame in toestand 6.
+**Cycle**: 0 → 1 (1 s) → 2 → 3 (high chase) → 6 (0.25 s shaking) → 7 (fall) → 8 (0.3 s) → 0 → 1 → 2 → 3 (low chase;
+vulnerable) → { peck ⇒ 9 (2.1 s) ⇒ 0 high | contact ⇒ player −1 ⇒ 0 high | player stands still nearby ⇒ 4/5 retreat until he moves ⇒ 2 }.
+The actual "fall in" condition for the stomp is only **xz distance < 150** (plus ≤ 20 below the high hover height); there is no line-of-sight or angle test.
+Frame-dependent (literally): the 1 % slide in state 7, the fall (per frame, §5) and the at-most-one-shake-step-per-frame in state 6.
 
-## 4. Animatie
+## 4. Animation
 
-### 4.1 AnimCtrl `0x4108c0` en records
+### 4.1 AnimCtrl `0x4108c0` and records
 
-`0x4108c0(inst)` = `0x4369f0(inst)` + vtable `0x4a999c`; record-getter `0x4108e0(n)` = `0x4b1958 + n·0x1c` (34 records, eindigt precies waar de
-type-12-tabel `0x4b1d10` begint), formaat `{int sub[4]; int prio; float speed; u8 restart}`; alle prio 1000, restart 1. `AnimLen(n) = duur(sub[0]) / speed`
-van het **baasmodel** (`AnimCtrl+0x4c` = de baas). Duur in s van W1B-model 37 (43 anims; opgemeten uit de .ins): 5 = 5.9, 6 = 1.0, 7 = 0.5, 8 = 1.8,
-9 = 0.9, 10 = 0.1, 11 = 0.9, 12 = 1.3, 13 = 6.6, 14 = 2.1, 15 = 2.1, 16 = 4.3, 17 = 5.9, 18 = 4.6; 0/1 = 59.6/54.8 (cinematic-sporen), 2/3/4 = 10.0.
+`0x4108c0(inst)` = `0x4369f0(inst)` + vtable `0x4a999c`; record getter `0x4108e0(n)` = `0x4b1958 + n·0x1c` (34 records, ending exactly where the
+type-12 table `0x4b1d10` begins), format `{int sub[4]; int prio; float speed; u8 restart}`; all prio 1000, restart 1. `AnimLen(n) = duration(sub[0]) / speed`
+of the **boss model** (`AnimCtrl+0x4c` = the boss). Duration in s of W1B model 37 (43 anims; measured from the .ins): 5 = 5.9, 6 = 1.0, 7 = 0.5, 8 = 1.8,
+9 = 0.9, 10 = 0.1, 11 = 0.9, 12 = 1.3, 13 = 6.6, 14 = 2.1, 15 = 2.1, 16 = 4.3, 17 = 5.9, 18 = 4.6; 0/1 = 59.6/54.8 (cinematic tracks), 2/3/4 = 10.0.
 
-| n | sub[] | speed | modus | gebruikt in toestand | AnimLen W1B |
+| n | sub[] | speed | mode | used in state | AnimLen W1B |
 |---|---|---|---|---|---|
-| 0 | 5,5,5,5 | 3 | 1 | – (ongebruikt) | 1.97 |
+| 0 | 5,5,5,5 | 3 | 1 | – (unused) | 1.97 |
 | 1 | 6,7,7,7 | 3 | 1 | – | 0.33 |
-| **2** | 7,7,7,7 | 3 | 1 | **bewegen**: dwaal-acties 5,6,7,9,10; toestanden 2, 3 | 0.167 |
+| **2** | 7,7,7,7 | 3 | 1 | **movement**: wander actions 5,6,7,9,10; states 2, 3 | 0.167 |
 | 3 | 8,5,−1,−1 | 3 | 1 | – | 0.6 |
-| **4** | 9,10,10,10 | 3 | 1 | **6, 7** schudden + vallen | 0.3 (daarna 10 in lus) |
+| **4** | 9,10,10,10 | 3 | 1 | **6, 7** shaking + falling | 0.3 (then 10 looped) |
 | 5 | 11,5,−1,−1 | 3 | 1 | – | 0.3 |
-| 6 | 11,5,−1,−1 | 3 | 1 | toestand 13 (bestaat niet in Update) | 0.3 |
-| **7** | 13,13,13,13 | 2 | 1 | **10, 11** speler verslagen | 3.3 |
-| **8** | 14,5,−1,−1 | 1 | 1 | **9** geraakt; ook de hit-timer | **2.1** |
-| **9** | 18,−1,−1,−1 | 1 | 1 | **12** verslagen (eenmalig, laatste beeld blijft) | 4.6 |
-| **10/11/12** | 15,5 / 16,5 / 17,5 | 3 | 1 | **idles**: dwaal-actie 0/3 ⇒ 10, 1/4 ⇒ 11, 2 ⇒ 12 (toestanden 0, 1, 4) | 0.7 / 1.43 / 1.97 |
+| 6 | 11,5,−1,−1 | 3 | 1 | state 13 (doesn't exist in Update) | 0.3 |
+| **7** | 13,13,13,13 | 2 | 1 | **10, 11** player defeated | 3.3 |
+| **8** | 14,5,−1,−1 | 1 | 1 | **9** hit; also the hit timer | **2.1** |
+| **9** | 18,−1,−1,−1 | 1 | 1 | **12** defeated (once, last frame held) | 4.6 |
+| **10/11/12** | 15,5 / 16,5 / 17,5 | 3 | 1 | **idles**: wander action 0/3 ⇒ 10, 1/4 ⇒ 11, 2 ⇒ 12 (states 0, 1, 4) | 0.7 / 1.43 / 1.97 |
 | 13, 14 | 15,5 / 17,5 | 3 | 1 | – | |
-| **15** | 12,12,12,12 | 3 | 1 | **8** na de landing | 0.43 |
-| **16** | 16,17,15,16 | 1.5 | 1 | **5** hangen op het wijkpunt | 2.87 |
+| **15** | 12,12,12,12 | 3 | 1 | **8** after landing | 0.43 |
+| **16** | 16,17,15,16 | 1.5 | 1 | **5** hanging at the retreat point | 2.87 |
 | 17 | 19×4 | 3 | 2 | – | |
-| **18/19** | 20,21,21,21 / 21×4 | 3 | 2 | 19 = bewegen (als 2) | |
+| **18/19** | 20,21,21,21 / 21×4 | 3 | 2 | 19 = movement (like 2) | |
 | 20 | 22,19 | 3 | 2 | – | |
 | **21** | 23,24,24,24 | 3 | 2 | 6, 7 | |
-| 22 / **23** | 25,19 / 25,19 | 3 | 2 | 23 = toestand 13 | |
+| 22 / **23** | 25,19 / 25,19 | 3 | 2 | 23 = state 13 | |
 | **24** | 27×4 | 2 | 2 | 10, 11 | |
-| **25** | 28,19 | 1 | 2 | 9 geraakt | |
-| **26** | 32 | 1 | 2 | 12 verslagen | |
-| **27/28/29** | 29,19 / 30,19 / 31,19 | 3 | 2 | idles (als 10/11/12) | |
+| **25** | 28,19 | 1 | 2 | 9 hit | |
+| **26** | 32 | 1 | 2 | 12 defeated | |
+| **27/28/29** | 29,19 / 30,19 / 31,19 | 3 | 2 | idles (like 10/11/12) | |
 | 30, 31 | 29,19 / 31,19 | 3 | 2 | – | |
 | **32** | 25,26,26,26 | 3 | 2 | 8 | |
 | **33** | 30,31,29,30 | 1.5 | 2 | 5 | |
 
-Modus 1 gebruikt dus alleen de .ins-animaties **5..18**, modus 2 alleen **19..32**. De cinematic-sporen 0/1 (wortel op y ≈ 5826 bij W1B) en 2..4, 33..42
-worden door de klasse **nooit** aangevraagd; ze zijn voor scripts/cinematics. De "welke beweging is het"-namen hierboven komen uit het gebruik, niet uit
-het beeld (onzeker).
+Mode 1 thus only uses .ins anims **5..18**, mode 2 only **19..32**. The cinematic tracks 0/1 (root at y ≈ 5826 for W1B) and 2..4, 33..42
+are **never** requested by the class; they are for scripts/cinematics. The "which movement is this" names above come from the usage, not from the
+picture (uncertain).
 
-### 4.2 Keuze `vtbl[45]` = `0x410170` (tabellen `0x410574` per toestand, `0x4105ac` per dwaal-actie + 1)
+### 4.2 Choice `vtbl[45]` = `0x410170` (tables `0x410574` per state, `0x4105ac` per wander action + 1)
 
 ```c
 void Boss14_Anim(Boss14 *e) {
     int n = -1;  bool m1 = (e->mode == 1);
     switch (e->state) {
-    case 0: case 1: case 4: {                                   /* 0x410190: actie = Dwalen+0x50 (0x41c630) */
+    case 0: case 1: case 4: {                                   /* 0x410190: action = Wander+0x50 (0x41c630) */
         int a = e->wander->action;
         if (a == 0 || a == 3) n = m1 ? 10 : 27;  else if (a == 1 || a == 4) n = m1 ? 11 : 28;  else if (a == 2) n = m1 ? 12 : 29;
-        else if (a == 5 || a == 6 || a == 7 || a == 9 || a == 10) n = m1 ? 2 : 19;   /* a == -1 of 8: niets */
+        else if (a == 5 || a == 6 || a == 7 || a == 9 || a == 10) n = m1 ? 2 : 19;   /* a == -1 or 8: nothing */
         break; }
-    case 2: case 3: if (e->chase->running /*+0x30*/ >= 0 && e->chase->running <= 1) n = m1 ? 2 : 19;  break;   /* 0x4102a5: altijd */
+    case 2: case 3: if (e->chase->running /*+0x30*/ >= 0 && e->chase->running <= 1) n = m1 ? 2 : 19;  break;   /* 0x4102a5: always */
     case 5:  n = m1 ? 16 : 33;  break;         case 6: case 7:   n = m1 ? 4 : 21;  break;
     case 8:  n = m1 ? 15 : 32;  break;         case 9:           n = m1 ? 8 : 25;  break;
     case 10: case 11: n = m1 ? 7 : 24;  break; case 12:          n = m1 ? 9 : 26;  break;
     case 13: n = m1 ? 6 : 23;  break;
     }
-    if (n >= 0) { e->anim->Request(n);  if (e->linkAnim) e->linkAnim->Request(n); }   /* zelfde recordnummer voor beide */
+    if (n >= 0) { e->anim->Request(n);  if (e->linkAnim) e->linkAnim->Request(n); }   /* same record number for both */
     e->anim->Tick(dt);  if (e->linkAnim) e->linkAnim->Tick(dt);
-    if (e->state != 10 && e->state != 11 && e->state != 12) {                /* geluidslus */
+    if (e->state != 10 && e->state != 11 && e->state != 12) {                /* sound loop */
         SoundSrc_Active(&e->src);                                            /* 0x468e40 */
         SoundSrc_Play(&e->src, 0 /*2D*/, m1 ? 39 : 44, [0x5e48c8], -1.0f);   /* 0x468e50 */
     }
 }
 ```
-Omdat `vtbl[45]` in `Enemy::Update` vóór de switch loopt, hoort de animatie bij de toestand van het **vorige** frame. Na de dood (modus 0) wordt er niet
-meer ge-tickt; de instantieklok speelt anim 18 (record 9) verder uit en houdt het laatste beeld vast. Of record 9 nog vóór het bevriezen echt start
-hangt af van de prio-/wachtrijregels van `0x436a50` (ENEMY.md §8.6; gelijke prio) – vermoedelijk wel, niet nagelopen.
+Because `vtbl[45]` runs in `Enemy::Update` before the switch, the animation matches the state of the **previous** frame. After death (mode 0) it no longer
+ticks; the instance clock keeps playing anim 18 (record 9) to the end and holds the last frame. Whether record 9 actually starts before the freeze
+depends on the priority/queue rules of `0x436a50` (ENEMY.md §8.6; equal priority) – presumably yes, not traced.
 
-### 4.3 Duur `vtbl[53]` = `0x4105f0` (tabellen `0x410858`, `0x410890`; argument genegeerd)
+### 4.3 Duration `vtbl[53]` = `0x4105f0` (tables `0x410858`, `0x410890`; argument ignored)
 
-Zelfde indeling als §4.2 maar met `AnimLen(n, 0)`: 0/1/4 per dwaal-actie (idles 10/11/12 resp. 27/28/29, beweegacties 2/19, actie −1 of 8 ⇒ 0.0);
-2/3 ⇒ AnimLen(2/19); 5 ⇒ 16/33; 6/7 ⇒ 4/21; 8 ⇒ 15/32; **9 ⇒ 8/25**; 10/11 ⇒ 7/24; 12 ⇒ 9/26; 13 ⇒ 6/23. Gebruikt door Dwalen (actieduur:
-een beweeg-actie duurt dus maar AnimLen(2) = 0.167 s) en door **TakeDamage** (`hitT` en terugslagtijd = AnimLen(8) = **2.1 s** in W1B).
+Same layout as §4.2 but with `AnimLen(n, 0)`: 0/1/4 per wander action (idles 10/11/12 resp. 27/28/29, movement actions 2/19, action −1 or 8 ⇒ 0.0);
+2/3 ⇒ AnimLen(2/19); 5 ⇒ 16/33; 6/7 ⇒ 4/21; 8 ⇒ 15/32; **9 ⇒ 8/25**; 10/11 ⇒ 7/24; 12 ⇒ 9/26; 13 ⇒ 6/23. Used by Wander (action duration:
+a movement action thus lasts only AnimLen(2) = 0.167 s) and by **TakeDamage** (`hitT` and knockback time = AnimLen(8) = **2.1 s** in W1B).
 
-## 5. Beweging en hoogte (antwoord op "waar staat hij?")
+## 5. Movement and height (answer to "where does he stand?")
 
-* **Horizontaal**: de gewone gedragingen (ENEMY.md §5): Dwalen (400 u/s, draaien π/4 rad/s, leash 1000 rond het thuispunt), Achtervolgen (900 u/s,
-  π rad/s), Stilstaan. Subtype ≥ 9 ⇒ de gemeenschappelijke verplaatsing `0x41b2c0` houdt y vast; `P+0x2c/0x30 = 15000` ⇒ geen rand-/opstaptest, alleen
-  de sweep tegen muren (§5.1). Plus de directe schrijvingen in toestand 6 (schudden) en 7 (1 %-schuif). **Geen TRAJ/pad.**
-* **Verticaal** `vtbl[43]` = `0x410900`:
+* **Horizontal**: the normal behaviours (ENEMY.md §5): Wander (400 u/s, turning π/4 rad/s, leash 1000 around the home point), Chase (900 u/s,
+  π rad/s), Stand. Subtype ≥ 9 ⇒ the shared movement function `0x41b2c0` keeps y fixed; `P+0x2c/0x30 = 15000` ⇒ no edge/step-up test, only
+  the sweep against walls (§5.1). Plus the direct writes in state 6 (shaking) and 7 (1 % slide). **No TRAJ/path.**
+* **Vertical** `vtbl[43]` = `0x410900`:
 ```c
 void Boss14_Height(Boss14 *e) {
     float h2 = P->+0x28 * 0.5f;                                     /* 75 */
     vec3 p = e->pos + (0,h2,0);
-    bool hit = Probe_Test(&e->probe, World_FindCell(&p), &p, h2, e->id);   /* 0x428ce0, 0x436dc0: press-events */
+    bool hit = Probe_Test(&e->probe, World_FindCell(&p), &p, h2, e->id);   /* 0x428ce0, 0x436dc0: press events */
     e->flags = hit ? e->flags | 1 : e->flags & ~1;   msgmask(e->id, 0x200) = hit;   /* 0x443e50 / 0x443e90 */
-    if (e->flags & 4) {                                             /* 0x410b78: VALLEN (toestand 7, 8, 10, 12) */
-        float k = (e->mode == 2) ? 130.0f : 200.0f;                 /* voeten liggen k onder pos */
-        e->pos.y -= k;  Enemy_Ground(e);  e->pos.y += k;            /* 0x41a4e0: zwaartekracht P+0 (400), v += dt·g − 0.2·v per frame */
+    if (e->flags & 4) {                                             /* 0x410b78: FALLING (state 7, 8, 10, 12) */
+        float k = (e->mode == 2) ? 130.0f : 200.0f;                 /* feet sit k below pos */
+        e->pos.y -= k;  Enemy_Ground(e);  e->pos.y += k;            /* 0x41a4e0: gravity P+0 (400), v += dt·g − 0.2·v per frame */
         return;
     }
-    if (e->mode == 2 && !e->high && e->state != 9) {                /* HUPSEN (alleen modus 2, lage fase) */
+    if (e->mode == 2 && !e->high && e->state != 9) {                /* BOBBING (mode 2 only, low phase) */
         float s = dt * P->+0x0c;                                    /* 400 */
         if (e->bobDown) { e->bob += s;  if (e->bob >= e->bobMax) {
                               Dust(&(vec3){pos.x, pos.y - 50, pos.z}, &(vec3){0,1,0}, 0, 1.5f, 6.0f);   /* 0x476140 */
@@ -459,48 +459,48 @@ void Boss14_Height(Boss14 *e) {
     }
 }
 ```
-* **Zweefhoogtes W1B** (modus 1): hoog = **2430** (plaatsing), laag = **1634.8** (vloer 1344.8 + 290), landing: `pos.y` = vloer + **200** (≈ 1544.8 als de
-  arenavloer daar ook 1344.8 is). De lage hoogte is een **vaste** y (berekend onder de startpositie), niet grondvolgend.
-* `pos` is het logische punt van de baas; zijn **kegel** loopt van `pos.y − 250` tot `pos.y` (§6.1), zijn basis-botscilinder (`vtbl[24]` = `0x41ad80`)
-  van `pos.y` tot `pos.y + 150` met straal 240. Het model wordt op `pos` getekend met de rotatie uit H (`vtbl[44]`); de wortelknoop komt uit de
-  animatie. Blijft een port op **anim 0** staan (cinematic-spoor, wortel y ≈ 5826), dan zweeft het model ver boven de arena: in het origineel speelt
-  de klasse vanaf de eerste Update in modus 1 alleen records 2..16 (anims 5..18). Vóór het commando (modus 0) is 405 door het script verborgen.
+* **W1B hover heights** (mode 1): high = **2430** (placement), low = **1634.8** (floor 1344.8 + 290), landing: `pos.y` = floor + **200** (≈ 1544.8 if the
+  arena floor there is also 1344.8). The low height is a **fixed** y (calculated below the start position), not ground-following.
+* `pos` is the boss's logical point; his **cone** runs from `pos.y − 250` to `pos.y` (§6.1), his base collision cylinder (`vtbl[24]` = `0x41ad80`)
+  from `pos.y` to `pos.y + 150` with radius 240. The model is drawn at `pos` with the rotation from H (`vtbl[44]`); the root node comes from the
+  animation. If a port stays stuck on **anim 0** (cinematic track, root y ≈ 5826), the model hovers far above the arena: in the original, from the
+  first Update in mode 1 onward, the class only ever plays records 2..16 (anims 5..18). Before the command (mode 0), 405 is hidden by the script.
 
-### 5.1 De sweep `0x437580`: een BOL van straal 240 (de lantaarns van W1B)
+### 5.1 The sweep `0x437580`: a SPHERE of radius 240 (the lanterns of W1B)
 
-`0x41b2c0` roept `0x437580(&res, &from, &to, up, 30.0)` aan met `up = min(P+0x30, h/2) = 75` en `[0x4b3118] = P+4 = 240` (`0x41b489`):
+`0x41b2c0` calls `0x437580(&res, &from, &to, up, 30.0)` with `up = min(P+0x30, h/2) = 75` and `[0x4b3118] = P+4 = 240` (`0x41b489`):
 
 ```c
 void Sweep(vec3 *res, vec3 *from, vec3 *to, float up, float sub /*30*/) {      /* 0x437580 */
-    float h = r + up + 1.0f;                                    /* 240 + 75 + 1 = 316: bolmiddelpunt boven pos */
+    float h = r + up + 1.0f;                                    /* 240 + 75 + 1 = 316: sphere centre above pos */
     vec3 c = *from + (0,h,0), d = *to - *from;
-    int n = (int)(floor(|d| / sub) + 1.0f + 0.5f);  d /= n;     /* substappen <= 30; bij |d| = 0 precies één */
+    int n = (int)(floor(|d| / sub) + 1.0f + 0.5f);  d /= n;     /* substeps <= 30; at |d| = 0 exactly one */
     for (; n > 0; n--) {
         c += d;
-        SpherePush(&c, r, -1);                                  /* 0x407340: wereld (0x409ad0) + instanties vt[9] = 0x433ff0 */
-        if ([0x4c4bd0]) { c.x += push.x; c.z += push.z; }       /* de volle uitduw, alleen x/z */
+        SpherePush(&c, r, -1);                                  /* 0x407340: world (0x409ad0) + instances vt[9] = 0x433ff0 */
+        if ([0x4c4bd0]) { c.x += push.x; c.z += push.z; }       /* the full push-out, x/z only */
         GetHeight(&c);  if (c.y - h < groundY) c.y = groundY + h;
         *res = c - (0,h,0);
     }
 }
 ```
-* `0x407340` = bol tegen alle wereldpolygonen van de geraakte cellen (voorkant, `0.001 < d < r`, randtests) en de statische + dynamische
-  instanties via `vt[9]` = **`0x433ff0`**, dat (net als de cilindertest `vt[8]` `0x433140` en de vloertest `vt[7]` `0x432480`) de lijst
-  **`S+0x58/0x5c` = de press-nodes (vlag 0x01)** doorloopt, **niet** de hull-nodes (`S+0x38`). Per as positief maximum + negatief minimum.
-* De bol loopt dus van `pos.y + 76` tot `pos.y + 556`. **Laag** (1634.8) raakt hij de koppen van de vier lantaarns in de hoeken van de arena
-  (W1B inst 235..238, model 6, press-nodes tot y 1972); **hoog** (2430) gaat hij erover, maar raakt hij de rotswanden achter de lantaarns.
-  Een speler die in een hoek achter een lantaarn staat is zo nooit binnen de 150 (xz) die toestand 3 nodig heeft om te schudden/stompen:
-  Buzz blijft er ≈ 200 vandaan in toestand 3 hangen (port gemeten: Woody (−7983, −7567), Buzz (−7855, 2430, −7717)). Dat is het "verstoppen
-  bij de lantaarns" uit het origineel.
-* De sweep loopt **elke frame**, ook met stap 0 (Stilstaan, schudden, de val in toestand 7): de bol duwt hem dan ter plekke uit wat hij raakt.
-* Na de sweep: subtype ≥ 9 ⇒ `res.y = from.y`; vrij als `[0x4b310c]` (grondnormaal-y van GetHeight) ≥ 0.8 en de afstap < `P+0x2c`, anders
-  alleen platformdelta + `OnBlocked`. Achtervolgen-haak `[2]` `0x41bdf0`: verplaatsing < 0.01 ⇒ ±16 willekeurig in x en z (loswrikken).
-* Het uitduwen per polygoon (dichtstbijzijnde punt, `r − afstand` langs die richting) is de lezing van de port van `0x409ad0`/`0x433ff0` op
-  aanroepniveau, niet instructie voor instructie nagelopen.
+* `0x407340` = sphere against all world polygons of the affected cells (front face, `0.001 < d < r`, edge tests) and the static + dynamic
+  instances via `vt[9]` = **`0x433ff0`**, which (like the cylinder test `vt[8]` `0x433140` and the floor test `vt[7]` `0x432480`) iterates the
+  list **`S+0x58/0x5c` = the press nodes (flag 0x01)**, **not** the hull nodes (`S+0x38`). Positive maximum + negative minimum per axis.
+* The sphere thus spans from `pos.y + 76` to `pos.y + 556`. **Low** (1634.8) it touches the tops of the four lanterns in the corners of the arena
+  (W1B inst 235..238, model 6, press nodes up to y 1972); **high** (2430) it clears them, but touches the rock walls behind the lanterns.
+  A player standing in a corner behind a lantern is thus never within the 150 (xz) that state 3 needs to shake/stomp:
+  Buzz stays ≈ 200 away from him in state 3 (measured in the port: Woody (−7983, −7567), Buzz (−7855, 2430, −7717)). That is the "hiding
+  behind the lanterns" trick from the original.
+* The sweep runs **every frame**, even with step 0 (Stand, shaking, the fall in state 7): the sphere then pushes him out of place from whatever it touches.
+* After the sweep: subtype ≥ 9 ⇒ `res.y = from.y`; free if `[0x4b310c]` (ground normal y from GetHeight) ≥ 0.8 and the step-down < `P+0x2c`, otherwise
+  only platform delta + `OnBlocked`. Chase hook `[2]` `0x41bdf0`: movement < 0.01 ⇒ ±16 random in x and z (unstick).
+* The push-out per polygon (closest point, `r − distance` along that direction) is the port's reading of `0x409ad0`/`0x433ff0` at the
+  call level, not traced instruction by instruction.
 
-## 6. Schade
+## 6. Damage
 
-### 6.1 Touch `vtbl[31](cat, subtype)` = `0x410cf0` – kegel met de punt omlaag
+### 6.1 Touch `vtbl[31](cat, subtype)` = `0x410cf0` – cone pointing down
 
 ```c
 Actor *Boss14_Touch(Boss14 *e, int cat, int sub) {
@@ -508,72 +508,72 @@ Actor *Boss14_Touch(Boss14 *e, int cat, int sub) {
         if (a == e || (cat && Cat(a) != cat) || (sub && Subtype(a) != sub)) continue;   /* 0x40c340 / 0x40c350 */
         vec3 A = *a->vtbl[34](), S = *e->vtbl[34]();
         float bot = S.y - P->+0x7c;                                 /* pos.y − 250 */
-        if (A.y + a->vtbl[33]() < bot) continue;                     /* actor helemaal onder de kegel */
-        if (S.y < A.y) continue;                                     /* voeten boven pos */
-        float o = A.y - bot + a->vtbl[33]();                        /* hoe ver de actor de kegel in steekt */
-        float r = a->vtbl[32]() + (o < P->+0x7c ? o * P->+0x80 / P->+0x7c : P->+0x80);   /* straal_a + 150·min(o,250)/250 */
+        if (A.y + a->vtbl[33]() < bot) continue;                     /* actor entirely below the cone */
+        if (S.y < A.y) continue;                                     /* feet above pos */
+        float o = A.y - bot + a->vtbl[33]();                        /* how far the actor sticks into the cone */
+        float r = a->vtbl[32]() + (o < P->+0x7c ? o * P->+0x80 / P->+0x7c : P->+0x80);   /* radius_a + 150·min(o,250)/250 */
         if ((A.x-S.x)*(A.x-S.x) + (A.z-S.z)*(A.z-S.z) <= r*r) return a;
     }
     return NULL;
 }
 ```
-Alleen de klasse zelf roept dit aan (toestand 3 laag en toestand 7) met `(1, 0)` = de speler. Treffer ⇒ `Perso->vtbl[39](baas, 1.0, dir_xz, pos + dir·150 − (0,125,0), 0)`
-(PERSO_MOVE.md §4.4: 1 hartje, terugslag, onkwetsbaar). Buiten die twee toestanden doet aanraken **geen** schade.
+Only the class itself calls this (state 3 low and state 7) with `(1, 0)` = the player. A hit ⇒ `Perso->vtbl[39](boss, 1.0, dir_xz, pos + dir·150 − (0,125,0), 0)`
+(PERSO_MOVE.md §4.4: 1 heart, knockback, invulnerable). Outside those two states, touching does **no** damage.
 
 ### 6.2 TakeDamage `vtbl[39]` = `0x40fe90`
 
 ```c
 bool Boss14_TakeDamage(Boss14 *e, Actor *att, float dmg, vec3 *dir, vec3 *pt, int kind) {
-    if (e->high || e->hitT > 0) return false;                       /* hoge fase of nog "geraakt": onkwetsbaar */
+    if (e->high || e->hitT > 0) return false;                       /* high phase or still "hit": invulnerable */
     e->state = 9;
     e->hitT = e->vtbl[53](0);                                       /* AnimLen(8) = 2.1 s (W1B) */
     SoundFx(e->mode == 1 ? 42 : 47, 0);                             /* 0x40fef1 */
     if (e->mode == 1) {
-        switch ((int)e->hp) {                                       /* hp VÓÓR de treffer (fistp naar [0x4c5334]); tabel 0x410054 */
-        case 1: smokeOn[0] = smokeOn[1] = smokeOn[2] = 0;  break;   /* laatste treffer: rook uit */
+        switch ((int)e->hp) {                                       /* hp BEFORE the hit (fistp to [0x4c5334]); table 0x410054 */
+        case 1: smokeOn[0] = smokeOn[1] = smokeOn[2] = 0;  break;   /* last hit: smoke off */
         case 2: Explode(link, 0); break;   case 3: Explode(link, 1); break;   case 4: Explode(link, 2); break;
-        default: break;                                             /* hp 5 (eerste treffer): niets */
+        default: break;                                             /* hp 5 (first hit): nothing */
         }
     } else {
         vec3 v[2] = { e->pos + (0,400,0), e->pos + (0,500,0) };     /* 0x4a964c, 0x4a9998 */
         Effect_Explosion(1, v, 0);                                  /* 0x477060 */
     }
-    return Enemy_TakeDamage(e, att, 1.0f, dir, pt, kind);           /* 0x41adc0: schade ALTIJD 1.0 */
+    return Enemy_TakeDamage(e, att, 1.0f, dir, pt, kind);           /* 0x41adc0: damage ALWAYS 1.0 */
 }
 void Explode(Inst *link, int n) {                                   /* 0x40ff48 / 0x40ff7e / 0x40ffb1 */
     vec3 v[2];  GetVector(link, /*typecode*/0, v, n);               /* 0x42f6b0 */
     Effect_Explosion(1, v, 0);  Smoke_Attach(link, n);              /* 0x477060, 0x475f30 (§9.2) */
 }
 ```
-* **Wie kan hem raken**: elke `vtbl[39]`-aanroep (pik, luchtaanval, `vtbl[40]` Blast), maar alleen in de **lage fase** (`+0x224 == 0`: van de
-  landing tot hij weer opstijgt) en buiten de 2.1 s van "geraakt". Schade is altijd **1**: 5 treffers. De gekoppelde instantie 404 (type 17) heeft
-  geen `vtbl[39]`; hem raken doet niets.
-* `Enemy_TakeDamage` (ENEMY.md §6.2): `Behav_Knock` op het **actieve** gedrag (terugslag `600·t_rest` langs `dir` gedurende AnimLen(8) = 2.1 s;
-  bij `dir = 0` (pik) geen verplaatsing); als dat gedrag nog een lopende terugslag heeft ⇒ `false` **zonder** hp-verlies (toestand 9 en hitT zijn dan
-  wel al gezet – randgeval, letterlijk zo). Sterretje `0x40c2d0` op `pt` (behalve `kind == 2`). Retour `hp ≤ 0`.
-* Of de speler hem vanaf de vloer kan pikken of moet springen hangt af van de aanvalsgeometrie van de Perso (PERSO_JUMP.md) t.o.v. `pos.y` ≈
-  vloer + 290 en is statisch niet vastgesteld.
-* Na de treffer: toestand 9 (rood/wit knipperen §8, anim 14), na 2.1 s `high = 1` ⇒ omhoog. Bij de 5e treffer: toestand 9 → 12 (volgende frame).
+* **Who can hit him**: any `vtbl[39]` call (peck, air attack, `vtbl[40]` Blast), but only in the **low phase** (`+0x224 == 0`: from the
+  landing until he ascends again) and outside the 2.1 s of "hit". Damage is always **1**: 5 hits. The linked instance 404 (type 17) has
+  no `vtbl[39]`; hitting it does nothing.
+* `Enemy_TakeDamage` (ENEMY.md §6.2): `Behav_Knock` on the **active** behaviour (knockback `600·t_rest` along `dir` for AnimLen(8) = 2.1 s;
+  at `dir = 0` (peck) no displacement); if that behaviour already has a knockback in progress ⇒ `false` **without** hp loss (state 9 and hitT are
+  already set at that point – an edge case, literally like this). Star burst `0x40c2d0` at `pt` (except `kind == 2`). Return value `hp ≤ 0`.
+* Whether the player can peck him from the floor or has to jump depends on the Perso's attack geometry (PERSO_JUMP.md) relative to `pos.y` ≈
+  floor + 290 and has not been statically determined.
+* After the hit: state 9 (red/white flashing §8, anim 14), after 2.1 s `high = 1` ⇒ up. On the 5th hit: state 9 → 12 (next frame).
 
-### 6.3 Dood / einde (toestand 12)
+### 6.3 Death / end (state 12)
 
-`SetVar(mailVar, 3)`, geluidslus stoppen, `modus = 0`. **Geen** `vtbl[57]`, geen `+0x10c`-verwijdering, geen fade (`+0x15c` loopt niet op),
-typewoord-bit 0x400 blijft staan. Omdat Update in modus 0 direct stopt, valt hij ook niet (vlag 4 heeft geen effect meer): hij bevriest in de lucht
-en de HUD-balk blijft met 0 bolletjes staan (niets zet `hud+0x48` weer op 0; alleen de HUD-init `0x4471c6`).
+`SetVar(mailVar, 3)`, stop the sound loop, `mode = 0`. **No** `vtbl[57]`, no `+0x10c` removal, no fade (`+0x15c` doesn't advance),
+type word bit 0x400 stays set. Because Update stops immediately in mode 0, he also stops falling (flag 4 has no effect anymore): he freezes in the air
+and the HUD bar stays with 0 dots (nothing sets `hud+0x48` back to 0; only the HUD init `0x4471c6`).
 
-## 7. Berichten `vtbl[22]` = `0x410070`
+## 7. Messages `vtbl[22]` = `0x410070`
 
 | id | args | code | effect |
 |---|---|---|---|
-| **59** | inst, a | `0x4100d2` | `link (+0x234) = World->inst[a & 0xffffff]` (`[0x50944c]+0x6c`). Als `link && link+0x108 (u8) ≠ 0` (type 17: "gereset"): `linkAnim (+0x1c8) = new AnimCtrl14(link)` + `vtbl[4]()` reset; `link->flags8 |= 0x20` (INSTANCE.md: geen her-cellen op de geanimeerde positie); `0x40c5a0(link, this)` ⇒ `link+0x110 = baas` (eigenaar voor de render-kleur). Eén instantie, geen lijst |
+| **59** | inst, a | `0x4100d2` | `link (+0x234) = World->inst[a & 0xffffff]` (`[0x50944c]+0x6c`). If `link && link+0x108 (u8) ≠ 0` (type 17: "reset"): `linkAnim (+0x1c8) = new AnimCtrl14(link)` + `vtbl[4]()` reset; `link->flags8 |= 0x20` (INSTANCE.md: no re-cell at the animated position); `0x40c5a0(link, this)` ⇒ `link+0x110 = boss` (owner for the render colour). One instance, no list |
 | **60** | inst, var | `0x4100b0` | `mailVar (+0x230) = var & 0xffffff` |
-| overige | | `0x41a740` | `Enemy::HandleMsg` (6 aan/uit, 11 parameters, 11/4 = Reset) → Instance/FadeInst |
+| other | | `0x41a740` | `Enemy::HandleMsg` (6 on/off, 11 parameters, 11/4 = Reset) → Instance/FadeInst |
 
-Retour altijd 0. **Correctie op MESSAGES.md** ("59/60 in klassen 14-16 koppelen 8 instanties aan +0x1c8..+0x1e4 en zetten vlag 0x40"): dat is de
-handler van klasse **15** (`0x40e781..0x40e7d8`: 8 instanties in `+0x1c8..+0x1e4`, OR in `inst+8`, dan Reset; bericht 60 ⇒ `+0x24c` op `0x40e7e3`).
-Klasse 14 koppelt **één** instantie aan `+0x234`, zet vlag **0x20** en maakt er een AnimCtrl voor.
+Always returns 0. **Correction to MESSAGES.md** ("59/60 in classes 14-16 link 8 instances to `+0x1c8..+0x1e4` and set flag 0x40"): that is the
+handler of class **15** (`0x40e781..0x40e7d8`: 8 instances in `+0x1c8..+0x1e4`, OR into `inst+8`, then Reset; message 60 ⇒ `+0x24c` at `0x40e7e3`).
+Class 14 links **one** instance to `+0x234`, sets flag **0x20**, and creates an AnimCtrl for it.
 
-## 8. Render-kleur `vtbl[26]` = `0x40fde0` (ook voor de gekoppelde instantie)
+## 8. Render colour `vtbl[26]` = `0x40fde0` (also for the linked instance)
 
 ```c
 void Boss14_RenderColour(Boss14 *e) {
@@ -587,122 +587,122 @@ void Boss14_RenderColour(Boss14 *e) {
     } else { g_colMode = 0; [0x5ac860] = 0; }
 }
 ```
-Kleurmodus 1 = vermenigvuldigen (MENU_LOAD.md, LIGHTING.md) ⇒ afwisselend **rood** (1,0,0) en normaal (1,1,1), elk 8 render-aanroepen. De teller
-is globaal en wordt per getekend model opgehoogd (baas + 404 ⇒ ongeveer 4 frames rood, 4 frames normaal). Type 17 roept via `vtbl[26]` = `0x40c5c0`
-de eigenaar aan, dus 404 knippert mee.
+Colour mode 1 = multiply (MENU_LOAD.md, LIGHTING.md) ⇒ alternating **red** (1,0,0) and normal (1,1,1), 8 draw calls each. The counter
+is global and is incremented per model drawn (boss + 404 ⇒ roughly 4 frames red, 4 frames normal). Type 17 calls the owner via `vtbl[26]` = `0x40c5c0`,
+so 404 flashes along with him.
 
-## 9. De gekoppelde instantie (W1B 404, type 17) en effecten
+## 9. The linked instance (W1B 404, type 17) and effects
 
-### 9.1 Meeslepen `vtbl[55]` = `0x41b1b0` (basis, actief omdat `vtbl[54]` de link teruggeeft)
+### 9.1 Drag-along `vtbl[55]` = `0x41b1b0` (base, active because `vtbl[54]` returns the link)
 
 ```c
 void Enemy_SyncLinked(Enemy *e) {
     Inst *l = e->vtbl[54]();  if (!l) return;
     l->colCenter = e->pos + (0, P->+0x28*0.5f, 0);   /* +0x60..0x68 */
     l->pos = e->pos;  Instance_SetCell(l, &(e->pos + (0,75,0)));   /* 0x4077f0 */
-    memcpy(&l->rot /*+0x28*/, &e->rot, 9*4);                         /* rotatiematrix */
+    memcpy(&l->rot /*+0x28*/, &e->rot, 9*4);                         /* rotation matrix */
 }
 ```
-Elke frame (via `Enemy::Update`, dus alleen in modus ≠ 0) staat 404 op **exact dezelfde positie en rotatie** als 405 en speelt via `+0x1c8` hetzelfde
-logische record met **zijn eigen** .ins-animaties (model 38 heeft 19 anims ⇒ sub 5..18 van modus 1 bestaan). Omdat 404 zijn eigen AnimCtrl heeft maar
-`AnimLen` altijd van 405 komt, lopen de twee modellen parallel. 405 = Buzz, 404 = zijn toestel/voertuig (vermoedelijk; de kegel-botsing past bij een
-toestel onder Buzz – onzeker).
+Every frame (via `Enemy::Update`, so only in mode ≠ 0) 404 sits at **exactly the same** position and rotation as 405 and plays via `+0x1c8` the same
+logical record with **its own** .ins animations (model 38 has 19 anims ⇒ sub 5..18 of mode 1 exist). Because 404 has its own AnimCtrl but
+`AnimLen` always comes from 405, the two models run in parallel. 405 = Buzz, 404 = his craft/vehicle (presumably; the cone collision matches a
+craft under Buzz – uncertain).
 
-### 9.2 Klasse 17 (kort; alleen wat de baas nodig heeft)
+### 9.2 Class 17 (brief; only what the boss needs)
 
-Ctor `0x40c3d0` (Instance-basis `0x42e1a0`; `+0x104 = 0`, `+0x108 = 0`, `+0x10c = 0` rook-emitter, `+0x110 = 0` eigenaar, `+0x114 = 1`), vtable `0x4a95dc`
-(28 slots, Instance-niveau: **geen** `vtbl[39]`): `[1]` PostLoad `0x40c440` (`0x44e7c0`, `+0x110 = 0`, `+0x108 = 0`), `[3]` Think `0x44e810` (FadeInst),
-`[17]` Reset `0x40c460` (`0x42e250`; **`+0x110 = 0`**, `+0x108 = 1`; alleen als `+0x114 == 0`: eenmalig een rook-emitter over zijn markers met typecode 9
-(lijst `0x5e8564`)), `[22]` `0x40c5e0`: bericht **63** `[inst, v]` ⇒ `+0x114 = v`, Reset; rest → `0x44e8f0`. `[26]` `0x40c5c0`: eigenaar ? `eigenaar->vtbl[26]()` :
-`0x430010`. W1B stuurt geen 63 ⇒ `+0x114 = 1` ⇒ geen emitter ⇒ de regel `link->smoke->on = 1` in de Update-proloog doet in W1B niets. Volgorde in W1B
-klopt: 1200 (PostLoad + Reset ⇒ `+0x108 = 1`) vóór bericht 59 (0.05 s later); een latere Reset van 404 zou de eigenaar wissen.
+Ctor `0x40c3d0` (Instance base `0x42e1a0`; `+0x104 = 0`, `+0x108 = 0`, `+0x10c = 0` smoke emitter, `+0x110 = 0` owner, `+0x114 = 1`), vtable `0x4a95dc`
+(28 slots, Instance level: **no** `vtbl[39]`): `[1]` PostLoad `0x40c440` (`0x44e7c0`, `+0x110 = 0`, `+0x108 = 0`), `[3]` Think `0x44e810` (FadeInst),
+`[17]` Reset `0x40c460` (`0x42e250`; **`+0x110 = 0`**, `+0x108 = 1`; only if `+0x114 == 0`: once, a smoke emitter over its markers with typecode 9
+(list `0x5e8564`)), `[22]` `0x40c5e0`: message **63** `[inst, v]` ⇒ `+0x114 = v`, Reset; rest → `0x44e8f0`. `[26]` `0x40c5c0`: owner ? `owner->vtbl[26]()` :
+`0x430010`. W1B doesn't send 63 ⇒ `+0x114 = 1` ⇒ no emitter ⇒ the line `link->smoke->on = 1` in the Update prologue does nothing in W1B. Order in W1B
+is correct: 1200 (PostLoad + Reset ⇒ `+0x108 = 1`) before message 59 (0.05 s later); a later Reset of 404 would clear the owner.
 
-**Rookpluim** `0x475f30(inst, n)` (bij de treffers met hp 4/3/2 vóór de treffer ⇒ marker n = 2/1/0): partikel-emitter (pool `[0x5e823c]+0xdb8`, max 2000,
-levensduur 100000 s, callback `0x475d90`) aan marker typecode 0 nr. n van 404, zet `smokeOn[n] = [0x5e857c + n] = 1`. Zolang die byte 1 is: **300 deeltjes/s**
-(`0x4a986c`) langs het pad van de marker, ±15 jitter in x/z, deeltje `0x475cd0`: 0.5 s, sprite `0x1000e`, stijgt 50·t, grootte ≈ `rand·10 + 20`. De laatste
-treffer (hp 1) en Reset zetten de drie bytes op 0 ⇒ de emitters sterven. Explosie `0x477060(1, v, 0)` op dezelfde marker (zelfde effect als script-bericht 1509
-modus 4/5).
+**Smoke plume** `0x475f30(inst, n)` (on hits with hp 4/3/2 before the hit ⇒ marker n = 2/1/0): particle emitter (pool `[0x5e823c]+0xdb8`, max 2000,
+lifetime 100000 s, callback `0x475d90`) at typecode-0 marker no. n of 404, sets `smokeOn[n] = [0x5e857c + n] = 1`. As long as that byte is 1: **300 particles/s**
+(`0x4a986c`) along the marker's path, ±15 jitter in x/z, particle `0x475cd0`: 0.5 s, sprite `0x1000e`, rises 50·t, size ≈ `rand·10 + 20`. The last
+hit (hp 1) and Reset set the three bytes to 0 ⇒ the emitters die out. Explosion `0x477060(1, v, 0)` at the same marker (same effect as script message 1509
+mode 4/5).
 
-## 10. Geluid, camera, HUD, events
+## 10. Sound, camera, HUD, events
 
-| wat | id (ref) modus 1 / modus 2 | adres | wanneer |
+| what | id (ref) mode 1 / mode 2 | address | when |
 |---|---|---|---|
-| lus (2D, bron `+0x248`) | **39** (76) / **44** (81) | `0x410553` / `0x410569` | elke Update in toestanden ≠ 10/11/12; gestopt in 10 (`0x40fcf3`) en 12 (`0x40fc9d`) |
-| landing stomp | **40** (77) / 45 (82) | `0x40f9e5` | toestand 7, geland |
-| speler geraakt | **41** (78) / 46 (83) | `0x40f291`, `0x40fb78` | kegel-contact (toestand 3 laag, 7) |
-| baas geraakt | **42** (80) / 47 (85) | `0x40fef1` | TakeDamage geaccepteerd |
-| speler verslagen | **43** (79) / 48 (84) | `0x40fcc6` / `0x40fcde` | toestand 10 |
-| hups-bodem | – / **49** (12, vol 100) | `0x410a77` | modus 2, lage fase |
+| loop (2D, source `+0x248`) | **39** (76) / **44** (81) | `0x410553` / `0x410569` | every Update in states ≠ 10/11/12; stopped in 10 (`0x40fcf3`) and 12 (`0x40fc9d`) |
+| landing stomp | **40** (77) / 45 (82) | `0x40f9e5` | state 7, landed |
+| player hit | **41** (78) / 46 (83) | `0x40f291`, `0x40fb78` | cone contact (state 3 low, 7) |
+| boss hit | **42** (80) / 47 (85) | `0x40fef1` | TakeDamage accepted |
+| player defeated | **43** (79) / 48 (84) | `0x40fcc6` / `0x40fcde` | state 10 |
+| bob bottom | – / **49** (12, vol 100) | `0x410a77` | mode 2, low phase |
 
-Alle SoundFx met `inst = 0` (2D). Camera-schok `0x41fbb0(cam, 1.5 s)` bij de landing (`0x40f946`) en bij contact tijdens de val (`0x40fb88`).
-HUD: `0x4484d0(1, hp, 5)` elke Update (modus ≠ 0) ⇒ de baasbalk schuift in bij de eerste aanroep (HUD_TEXT.md §4.4). Events: msgmask **0x200** (op de
-grond, `0x410993`/`0x4109ab`), 0x10 gewist in `Enemy::Reset`; **script-var**: `mailVar := −1` (elke Update), `:= 3` (verslagen).
+All SoundFx with `inst = 0` (2D). Camera shake `0x41fbb0(cam, 1.5 s)` on landing (`0x40f946`) and on contact during the fall (`0x40fb88`).
+HUD: `0x4484d0(1, hp, 5)` every Update (mode ≠ 0) ⇒ the boss bar slides in on the first call (HUD_TEXT.md §4.4). Events: msgmask **0x200** (on the
+ground, `0x410993`/`0x4109ab`), 0x10 cleared in `Enemy::Reset`; **script var**: `mailVar := −1` (every Update), `:= 3` (defeated).
 
-## 11. Het W1B-script rond de baas (ter controle van de port)
+## 11. The W1B script around the boss (for checking the port)
 
-* **Object 405** (baas): init `var51 = −1; var49 = 0; var51 = 3`; `1200 [405, 14]`, `45 [405, 33]`; na 0.05 s `59 [405, 404]`, `60 [405, var51]`;
-  na 1 s `6 [405, 0]` (verbergen). Wachters:
-  * `var0 == 1 && var49 == 1` ⇒ `var0 = 0; var51 = 3; var49 = 0;` na 0.1 s `var49 = 1`. **var 0** wordt geschreven door **object 8 = de Perso**
-    (`1200 [8, 1]`): init `var0 = 0`, en `MSGTEST 16` (msgmask 0x10 = "Woody verloor een leven", puls uit `0x44c730`) ⇒ `var0 = 1`. Het is dus een
-    grendel "Woody is ooit gestorven"; de tak vuurt alleen op het moment dat het gevecht start (var49 is maar één tick 1) en stelt de start 0.1 s uit.
-    `var51 = 3` is voor de baas geen commando (hij antwoordt −1). Niet de baas schrijft var 0 (behalve het −1-randgeval van §3.4).
-  * `var49 == 1` ⇒ `var49 = 2`, `6 [405, 1]`, `6 [404, 1]`, **`var51 = 1`** (⇒ modus 1 + Reset op de volgende Update), 1152/1150, na 0.5 s railcamera 403
+* **Object 405** (boss): init `var51 = −1; var49 = 0; var51 = 3`; `1200 [405, 14]`, `45 [405, 33]`; after 0.05 s `59 [405, 404]`, `60 [405, var51]`;
+  after 1 s `6 [405, 0]` (hide). Watchers:
+  * `var0 == 1 && var49 == 1` ⇒ `var0 = 0; var51 = 3; var49 = 0;` after 0.1 s `var49 = 1`. **var 0** is written by **object 8 = the Perso**
+    (`1200 [8, 1]`): init `var0 = 0`, and `MSGTEST 16` (msgmask 0x10 = "Woody lost a life", pulse from `0x44c730`) ⇒ `var0 = 1`. It is thus a
+    latch "Woody has died at least once"; the branch only fires at the moment the fight starts (var49 is only 1 for one tick) and delays the start by 0.1 s.
+    `var51 = 3` is not a command to the boss (he replies −1). It is not the boss that writes var 0 (except the −1 edge case of §3.4).
+  * `var49 == 1` ⇒ `var49 = 2`, `6 [405, 1]`, `6 [404, 1]`, **`var51 = 1`** (⇒ mode 1 + Reset on the next Update), 1152/1150, after 0.5 s rail camera 403
     (580 / 540 / 710).
-  * `var51 == 3 && var49 == 2` ⇒ `var49 = 0; var46 = 4`; na 0.5 s `6 [405, 0]`, `6 [404, 0]` ⇒ object 397 speelt cinematic 73 (1131) met 398/399,
-    explosies `1509 [405, 399, 4/5, …]` en tenslotte **1083** (EndLevel).
-* Tijdens het gevecht wordt de baas bij een dood van Woody **niet** gereset (de Perso-reset `0x445b23` raakt alleen de Perso); var49 blijft 2.
-* W2D (745 + 746, `63 [746, 1]`, var 288), W3D (775 + 776, var 318) en WWS (362 + 363, var 138) schrijven **2** ⇒ modus 2.
+  * `var51 == 3 && var49 == 2` ⇒ `var49 = 0; var46 = 4`; after 0.5 s `6 [405, 0]`, `6 [404, 0]` ⇒ object 397 plays cinematic 73 (1131) with 398/399,
+    explosions `1509 [405, 399, 4/5, …]` and finally **1083** (EndLevel).
+* During the fight, the boss is **not** reset when Woody dies (the Perso reset `0x445b23` only touches the Perso); var49 stays 2.
+* W2D (745 + 746, `63 [746, 1]`, var 288), W3D (775 + 776, var 318) and WWS (362 + 363, var 138) write **2** ⇒ mode 2.
 
-## 12. Recept voor de port (W1B speelbaar en correct in beeld)
+## 12. Recipe for the port (W1B playable and correctly on screen)
 
-Volgorde van implementeren; getallen voor modus 1 / W1B.
+Order of implementation; numbers for mode 1 / W1B.
 
-1. **Bericht 59 en 60** op type 14: `link = inst[a]`, `mail_var = var & 0xffffff`; link: `no_recell = 1`, eigen anim-toestand, eigenaar = baas.
-   Type 17 (404) krijgt verder géén gedrag: zichtbaarheid via bericht 6 zoals elke instantie.
-2. **Brievenbus** aan het begin van elke baas-update: `v = var[mail_var]`; `v == 1/2` ⇒ als modus verandert: `mode = v; boss_reset()`; altijd `var[mail_var] = -1`
-   (watchers wekken). `mode == 0` ⇒ verder niets doen (ook geen animatiekeuze, geen HUD, geen meeslepen).
-3. **Activering** als bij `Enemy::Think`: alleen updaten als de baas binnen **3000** van de camera is (of hp ≤ 0) en er geen cinematic loopt.
-4. **Reset** (`boss_reset`): pos = thuis = plaatsing (−7031, 2430, −8863), hp = 5, `high = 1`, state 0, val uit, zichtbaar maken, rook uit,
-   `walk = 400, run = 900, g = 400`; `y_high = 2430`, `y_low = vloer_onder_start + 290` (**1634.8**, eenmalig bij het laden bepalen).
-5. **Animatie**: nooit anim 0 laten staan. Tabel logisch record → (.ins-anim, speed, keten): 2 → (7, 3, lus), 4 → (9, 3, dan 10 in lus), 7 → (13, 2, lus),
-   8 → (14, 1, dan 5), 9 → (18, 1, vasthouden), 10/11/12 → (15/16/17, 3, dan 5), 15 → (12, 3, lus), 16 → (16,17,15,16, 1.5). Keuze per toestand §4.2
-   (van het vorige frame). **Zelfde record op 404** met diens eigen animaties. `AnimLen(8) = len(14)/1 = 2.1 s`, `AnimLen(2) = 0.167 s`.
-6. **Beweging**: horizontaal de bestaande wander/chase uit `src/enemy.c` (maar: y vasthouden, geen rand-/opstaptest, draaien π/4 resp. π, snelheden 400/900,
-   leash 1000 in 3D); verticaal §5: naar `home.y` met max 900 u/s, of vallen met `g = 400` (per-frame formule van ENEMY.md §3.3) met de voeten 200 onder `pos`.
-7. **Meeslepen**: na de baas-update 404.pos = 405.pos en 404.rot = 405.rot (ook de cel).
-8. **Toestandsmachine** §3A letterlijk (13 toestanden, inclusief het 60-Hz-schudden −20/+20/+20/−20 + 10 % naar de speler, de 1 %/frame-schuif tijdens de val,
-   het terugwijken 1300 van de speler zolang die stilstaat (< 1 eenheid/frame) en de 20-eenheden-poort vóór de stomp).
-9. **Kegel-contact** §6.1 (hoogte 250 onder `pos`, straal `r_speler + 150·min(o,250)/250`) ⇒ `player_hit(1 hartje, dir_xz, pos + dir·150 − (0,125,0))`;
-   speler dood ⇒ toestand 10 (4 s juichen, SoundFx 43, lus stoppen).
-10. **Kwetsbaarheid**: `enemy_take_damage` voor type 14: alleen als `!high && hit_t <= 0`; altijd 1 hp; `state = 9; hit_t = 2.1`; SoundFx 42; bij hp-vóór 4/3/2:
-    explosie + rookpluim op marker typecode 0 nr. 2/1/0 van 404, bij hp-vóór 1 alle rook uit. Rood/wit knipperen in toestand 9 en 12.
-11. **Einde**: toestand 12 ⇒ `var[mail_var] = 3` (**vóór** de VM-tick van dezelfde frame, zodat object 405 het ziet), lus stoppen, `mode = 0` (bevriezen).
-12. **HUD**: elke actieve frame `hud_boss_bar(1, (int)hp, 5)` (balk met Buzz-gezicht, HUD_TEXT.md §4.4).
-13. **Geluid/camera**: lus 39 (2D) in alle actieve toestanden behalve 10..12; 40 landing + camera-schok 1.5 s; 41 speler geraakt (+ schok alleen tijdens de val); 42 geraakt; 43 speler verslagen.
+1. **Message 59 and 60** on type 14: `link = inst[a]`, `mail_var = var & 0xffffff`; link: `no_recell = 1`, own animation state, owner = boss.
+   Type 17 (404) gets no other behaviour: visibility via message 6 like any instance.
+2. **Mailbox** at the start of every boss update: `v = var[mail_var]`; `v == 1/2` ⇒ if the mode changes: `mode = v; boss_reset()`; always `var[mail_var] = -1`
+   (wake watchers). `mode == 0` ⇒ do nothing else (no animation choice, no HUD, no drag-along either).
+3. **Activation** as with `Enemy::Think`: only update if the boss is within **3000** of the camera (or hp ≤ 0) and no cinematic is running.
+4. **Reset** (`boss_reset`): pos = home = placement (−7031, 2430, −8863), hp = 5, `high = 1`, state 0, falling off, make visible, smoke off,
+   `walk = 400, run = 900, g = 400`; `y_high = 2430`, `y_low = floor_below_start + 290` (**1634.8**, determined once at load time).
+5. **Animation**: never leave anim 0 in place. Table logical record → (.ins anim, speed, chain): 2 → (7, 3, loop), 4 → (9, 3, then 10 looped), 7 → (13, 2, loop),
+   8 → (14, 1, then 5), 9 → (18, 1, hold), 10/11/12 → (15/16/17, 3, then 5), 15 → (12, 3, loop), 16 → (16,17,15,16, 1.5). Choice per state §4.2
+   (from the previous frame). **Same record on 404** with its own animations. `AnimLen(8) = len(14)/1 = 2.1 s`, `AnimLen(2) = 0.167 s`.
+6. **Movement**: horizontal the existing wander/chase from `src/enemy.c` (but: keep y fixed, no edge/step-up test, turning π/4 resp. π, speeds 400/900,
+   leash 1000 in 3D); vertical §5: towards `home.y` at max 900 u/s, or falling with `g = 400` (per-frame formula of ENEMY.md §3.3) with the feet 200 below `pos`.
+7. **Drag-along**: after the boss update, 404.pos = 405.pos and 404.rot = 405.rot (including the cell).
+8. **State machine** §3A literally (13 states, including the 60 Hz shaking −20/+20/+20/−20 + 10 % towards the player, the 1 %/frame slide during the fall,
+   the retreat 1300 from the player while he stands still (< 1 unit/frame), and the 20-unit gate before the stomp).
+9. **Cone contact** §6.1 (height 250 below `pos`, radius `r_player + 150·min(o,250)/250`) ⇒ `player_hit(1 heart, dir_xz, pos + dir·150 − (0,125,0))`;
+   player dead ⇒ state 10 (4 s cheering, SoundFx 43, stop the loop).
+10. **Vulnerability**: `enemy_take_damage` for type 14: only if `!high && hit_t <= 0`; always 1 hp; `state = 9; hit_t = 2.1`; SoundFx 42; at hp-before 4/3/2:
+    explosion + smoke plume at typecode-0 marker no. 2/1/0 of 404, at hp-before 1 all smoke off. Red/white flashing in states 9 and 12.
+11. **End**: state 12 ⇒ `var[mail_var] = 3` (**before** the VM tick of the same frame, so object 405 sees it), stop the loop, `mode = 0` (freeze).
+12. **HUD**: every active frame `hud_boss_bar(1, (int)hp, 5)` (bar with Buzz's face, HUD_TEXT.md §4.4).
+13. **Sound/camera**: loop 39 (2D) in all active states except 10..12; 40 landing + camera shake 1.5 s; 41 player hit (+ shake only during the fall); 42 hit; 43 player defeated.
 
-## 13. Stand van de port (`src/boss.c`)
+## 13. State of the port (`src/boss.c`)
 
-* Type 14 is een gewone `Enemy` in `g_enemies` (zodat pik, luchtaanval en auto-aim hem vinden) met de eigen velden in `Enemy.b`; `enemy.c` stuurt
-  Update, TakeDamage en `11/4` door naar `boss.c`. Motor-haken in `main_engine.c`: `game_var_get/set` (brievenbus), `game_cam_shake` (`0x41fbd0`,
-  nu in `cam_update`), `game_boss_bar` (`hud_boss_bar`), `game_explosion` (twee flitsrecords), `game_boss_smoke` (explosie + rookpluim op marker
-  typecode 0 nr. n van de schotel).
-* Beweging: `boss_sweep` = de bol-sweep §5.1 met `player_sphere_push` (wereld + press-nodes van instanties, zonder de baas zelf, zijn schotel
-  en de speler), elke frame, ook bij stap 0. Daarvoor was het een dunne straal alleen tegen wereldpolygonen en werd er bij stap 0 niets getest:
-  Buzz vloog dwars door de lantaarns en bereikte de speler in de hoeken. Niet geport: de "vrij"-test `[0x4b310c] >= 0.8` (boven de arenavloer altijd waar).
-  Test hoek: `WOODY_POSAT="24 -7990 1360 -7560"` bij de test hieronder (Woody wordt niet meer geraakt; de oude build doodt hem).
-* De gekoppelde instantie wordt door `player_set_carried` uitgesloten van de grondtest van de baas; `player_ground_query` slaat nu ook de speler zelf
-  over (de baas landde op Woodys eigen botsnode).
-* Gevonden bij het porten: de cinematic-start `0x44ecc0` roept `0x4077f0` aan op elke acteur, en die zet een verborgen instantie altijd weer in zijn
-  cel. Daardoor verschijnen Buzz (398) en zijn schotel (399) in de intro van het gevecht, hoewel het script ze bij de init verbergt (CINEMATIC.md).
-* Test: `extract/Data W1B --pos -5753 1800 -8901 --yaw -90 --walk 2` (loopt het volume 94 in; intro tot ≈ 22 s, dan het gevecht);
-  `--jump 25.2 --peck 25.5 0.1` raakt hem bij de eerste landing. Haken: `WOODY_BOSSLOG=1` (toestand per frame), `WOODY_BOSSHP=N` (start-hp),
-  `WOODY_FPS=N` (framecap, voor de per-frame-formules), `WOODY_GOD=1`. Een run tot het einde voltooit W1B in `woodyre.sav`: maak eerst een kopie.
+* Type 14 is a regular `Enemy` in `g_enemies` (so peck, air attack and auto-aim find him) with its own fields in `Enemy.b`; `enemy.c` forwards
+  Update, TakeDamage and `11/4` to `boss.c`. Engine hooks in `main_engine.c`: `game_var_get/set` (mailbox), `game_cam_shake` (`0x41fbd0`,
+  now in `cam_update`), `game_boss_bar` (`hud_boss_bar`), `game_explosion` (two flash records), `game_boss_smoke` (explosion + smoke plume at
+  typecode-0 marker no. n of the saucer).
+* Movement: `boss_sweep` = the sphere sweep §5.1 with `player_sphere_push` (world + press nodes of instances, excluding the boss himself, his
+  saucer and the player), every frame, even at step 0. Before, it was a thin ray only against world polygons and nothing was tested at step 0:
+  Buzz flew straight through the lanterns and reached the player in the corners. Not ported: the "free" test `[0x4b310c] >= 0.8` (always true above the arena floor).
+  Test corner: `WOODY_POSAT="24 -7990 1360 -7560"` for the test below (Woody is no longer hit; the old build kills him).
+* The linked instance is excluded from the boss's ground test by `player_set_carried`; `player_ground_query` now also skips the player himself
+  (the boss used to land on Woody's own collision node).
+* Found while porting: the cinematic start `0x44ecc0` calls `0x4077f0` on every actor, and that always puts a hidden instance back into its
+  cell. Because of that, Buzz (398) and his saucer (399) appear in the intro of the fight, even though the script hides them at init (CINEMATIC.md).
+* Test: `extract/Data W1B --pos -5753 1800 -8901 --yaw -90 --walk 2` (walks into volume 94; intro until ≈ 22 s, then the fight);
+  `--jump 25.2 --peck 25.5 0.1` hits him at the first landing. Hooks: `WOODY_BOSSLOG=1` (state per frame), `WOODY_BOSSHP=N` (start hp),
+  `WOODY_FPS=N` (frame cap, for the per-frame formulas), `WOODY_GOD=1`. A run to the end completes W1B in `woodyre.sav`: make a copy first.
 
-## 14. Open vragen
+## 14. Open questions
 
-* Visuele betekenis van anims 5..18 (model 37) en 5..18 van model 38; welke precies "vliegen", "lachen", "geraakt" zijn is uit het gebruik afgeleid.
-* Slot 23 (`0x45b340` = 8) en `P+0x84`/`P+0xa0` (2.0): geen lezer gevonden. `+0x1d0` (stilsta-tijd) en `+0x22c` hebben geen lezer.
-* De vergelijking in toestand 5 (`boog(doel, hoek > 0 ? 1 : 0)`) is letterlijk overgenomen; vermoedelijk een bug in het origineel.
-* Of de camera tijdens het gevecht altijd binnen 3000 van de baas blijft (anders bevriest hij en stopt zijn geluid) en of de speler hem vanaf de vloer
-  kan raken, is statisch niet vastgesteld; tracen in het origineel (`tools/wtrace.py`) op `0x40fe90` en `0x40eec0` kan dat beslissen.
-* De grondhoogte 1344.8 is alleen over wereldpolygonen bepaald; `0x435650` kan ook instantie-hulls meenemen.
+* Visual meaning of anims 5..18 (model 37) and 5..18 of model 38; which ones exactly are "flying", "laughing", "hit" is derived from usage.
+* Slot 23 (`0x45b340` = 8) and `P+0x84`/`P+0xa0` (2.0): no reader found. `+0x1d0` (still time) and `+0x22c` have no reader.
+* The comparison in state 5 (`arc(target, angle > 0 ? 1 : 0)`) is taken literally as is; presumably a bug in the original.
+* Whether the camera stays within 3000 of the boss throughout the fight (otherwise he freezes and his sound stops) and whether the player can
+  hit him from the floor is not statically determined; tracing the original (`tools/wtrace.py`) at `0x40fe90` and `0x40eec0` could settle that.
+* The ground height 1344.8 was determined only over world polygons; `0x435650` may also take instance hulls into account.
