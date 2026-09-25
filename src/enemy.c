@@ -61,6 +61,8 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     if (type == 12) { e->st = 0; e->nlong = 4; e->idle_a = 9; e->idle_t = 0; game_msgmask(inst, 0x10, 0); if (getenv("WOODY_BOSSHP")) e->hp = (float)atof(getenv("WOODY_BOSSHP"));   /* testing */ Vec3 f = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); e->ang = atan2f(f.z - inst->position.z, f.x - inst->position.x); }   /* Reset 0x411020: Stilstaan, timers 0, idle 9, state 0 (it clears msgmask 0x10); he keeps his .ins facing */
     inst->scripted = 0;
     if (type == 14) boss_init(e);
+    if (type == 15) boss15_init(e);
+    if (type == 16) boss16_init(e);
 }
 
 static int bomber_peck(Enemy *e);
@@ -68,6 +70,8 @@ static void bomber_blast(Enemy *e, Vec3 c, float r);
 int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 {
     if (e->type == 14) return boss_take_damage(e);
+    if (e->type == 15) return 0;                                       /* 0x40e720: xor al, al */
+    if (e->type == 16) return boss16_take_damage(e, dmg);
     if (e->type == 12) return bomber_peck(e);                          /* the peck / charge run of the player (kinds 0 / 1) */
     int shooter = e->type >= 7 && e->type <= 9;
     if (e->removed || e->st == (shooter ? 10 : 12) || e->hit_t > 0 || e->knock_t > 0) return 0;
@@ -78,6 +82,8 @@ int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 int enemy_hit(Enemy *e, float dmg, Vec3 dir, Vec3 pt, int kind)
 {
     if (e->type == 14) return boss_take_damage(e);                  /* 0x40fe90 passes the kind on: no star for kind 2 (the special attack) */
+    if (e->type == 15) return 0;                                     /* 0x40e720: nothing hurts him but a blast */
+    if (e->type == 16) { int r = boss16_take_damage(e, dmg); if (r && kind != 2) game_hit_star(pt); return r; }   /* 0x40d480 -> 0x41adc0 with the kind */
     if (e->type == 12) return kind == 0 || kind == 1 ? bomber_peck(e) : 0;   /* 0x411ab0 only reacts to kinds 0 / 1: the special attack does nothing */
     (void)kind;                                                      /* types 4..9, 13 call Enemy_TakeDamage with kind 0, so they always get the star */
     int shooter = e->type >= 7 && e->type <= 9;
@@ -94,6 +100,7 @@ void enemies_blast(EnemySet *s, Vec3 c, float r)
     for (int i = 0; i < s->n; i++) {
         Enemy *e = &s->e[i]; if (e->removed || !e->inst->visible || e->hp <= 0) continue;
         if (e->type == 12) { bomber_blast(e, c, r); continue; }
+        if (e->type == 15) { boss15_blast(e, c, r); continue; }       /* 0x40e800: his cylinder, 1 hp */
         float dx = e->pos.x - c.x, dy = e->pos.y - c.y, dz = e->pos.z - c.z; if (dx * dx + dy * dy + dz * dz >= r * r) continue;
         float l = sqrtf(dx * dx + dz * dz); Vec3 d = l > 1e-3f ? (Vec3){ dx / l, 0, dz / l } : (Vec3){ 0, 0, 1 };
         e->hit_t = e->knock_t = 0; enemy_take_damage(e, e->type == 14 ? 1.0f : e->hp, d);
@@ -425,7 +432,8 @@ Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, flo
 {
     for (int i = 0; i < s->n; i++) {
         Enemy *e = &s->e[i];
-        if (e->type != 12 || e == owner || e->removed || !e->inst->visible || e->st == 1 || e->st == 13) continue;   /* vtbl[47] 0x411970: no actor in states 1 / 13 */
+        if ((e->type != 12 && e->type != 15) || e == owner || e->removed || !e->inst->visible) continue;   /* subtype 8 (type 12) and 12 (class 15, actor list 1 via 0x40c080) */
+        if (e->type == 12 && (e->st == 1 || e->st == 13)) continue;   /* vtbl[47] 0x411970: no actor in states 1 / 13 */
         float R = r + e->P.radius, dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
         float t = l2 > 1e-6f ? ((e->pos.x - a.x) * dx + (e->pos.z - a.z) * dz) / l2 : 0; if (t < 0) t = 0; if (t > 1) t = 1;
         float cx = a.x + dx * t - e->pos.x, cz = a.z + dz * t - e->pos.z, y = a.y + (b.y - a.y) * t;
@@ -525,6 +533,7 @@ void enemies_msg11(EnemySet *s, Instance *inst, int n, int v)
     Enemy *e = NULL; for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst) e = &s->e[i];
     if (!e) return;
     if (e->type == 14) { if (n == 4) boss_reset(e); return; }        /* Enemy::HandleMsg 11/4 = vtbl[17]; the rest writes P fields the boss sets itself */
+    if (e->type == 15 || e->type == 16) { if (n == 4) { if (e->type == 15) boss15_reset(e); else boss16_reset(e); } return; }   /* the same for classes 15 / 16 */
     if (e->type == 12 && n == 4) { e->st = 0; e->reload = e->hit_t = e->t = e->idle_t = 0; e->nlong = 4; e->idle_a = 9; game_msgmask(inst, 0x10, 0); e->done = 0; return; }   /* Reset 0x411020 */
     switch (n) {
     case 0: e->P.leash = (float)v; break;
@@ -550,6 +559,8 @@ void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt)
     for (int i = 0; i < s->n; i++) {
         Enemy *e = &s->e[i];
         if (e->type == 14) { boss_update(e, pl, cam_pos, dt); boss_frame_end(e); }
+        else if (e->type == 15) boss15_update(e, pl, cam_pos, dt);
+        else if (e->type == 16) boss16_update(e, pl, cam_pos, dt);
         else if (e->type == 12) bomber_update(e, pl, cam_pos, dt);
         else if (e->type >= 7 && e->type <= 9) shooter_update(e, pl, cam_pos, dt); else enemy_update(e, pl, cam_pos, dt);
     }

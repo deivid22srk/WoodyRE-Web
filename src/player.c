@@ -835,6 +835,7 @@ void player_brake_charge(Player *p)
 /* ---- damage, death, respawn (docs/PERSO_MOVE.md 4.4, PERSO_FRAME.md 4.1) ------------------------------------ */
 void player_kill(Player *p, int kind)                                   /* vt[38] Kill(kind) 0x44c110 */
 {
+    if (boss15_protects(p->enemies)) return;                             /* an actor of category 2 / subtype 12 whose vtbl[36] holds: Boss2 beaten (docs/BOSS15_16.md) */
     if (p->race_char) {                                                  /* subtypes 4/5: the race kill 0x44c4c0 (docs/RACE.md 4.9) */
         if (p->dead_kind && !(kind == 7 && p->dead_kind != 7)) return;   /* only water overrides a running death */
         if (kind == 2 && p->invuln_respawn > 0) return;                   /* no invulnerability test for the other kinds */

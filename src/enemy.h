@@ -31,9 +31,33 @@ typedef struct BossState {
     int blink, loop_on, active;     /* render-colour counter [0x4c5348], sound loop 39/44 playing, updated this frame */
 } BossState;
 
+/* classes 15 and 16, Buzz's second and third fights (boss.c, docs/BOSS15_16.md): fields beyond the Enemy base */
+typedef struct BossBState {
+    int st;                         /* +0x1c0 */
+    uint32_t mail_var;              /* 15: +0x24c, 16: +0x294 (message 60) */
+    int rec, sub, ended, held, req; /* AnimCtrl +0x1c4: running record, place in its chain, "animation ended" (inst+0xc0), queued request */
+    Vec3 C;                         /* 15: +0x20c = placement + 1300 along the facing; 16: +0x254 = the placement */
+    /* class 15 ("Boss2", ctor 0x40d850) */
+    Instance *crush[4], *launch[4]; /* +0x1c8 the four crushers, +0x1d8 the four launchers (message 61) */
+    Vec3 R, U, W;                   /* +0x1e8 / +0x1f4 / +0x200: the frame 0x46d320 builds from the facing */
+    float t_intro, t_taunt, t_down, t_up, t_cycle;   /* +0x230, +0x254, +0x234, +0x238, +0x23c */
+    float down, up, hold;           /* +0x248 slam time, +0x244 rise time, +0x240 cycle length */
+    int phase, nstep, row, step, new_step, fire, phase_flag;   /* +0x218, +0x21c, +0x220, +0x224, +0x22c, +0x228, +0x250 */
+    /* class 16 (ctor 0x40c730) */
+    Instance *grp[4][7];            /* +0x1c8 pads, +0x1e4 pad tops, +0x200 light columns, +0x21c ambient volumes (message 62) */
+    float depth[7];                 /* +0x238: lowest point of each group-3 model */
+    float radius, interval;         /* +0x268 (1200), +0x26c (2.0 s, 0.2 less per hit) */
+    int cur;                        /* +0x260: the pad he appears on */
+    float t298, t29c, t2a0, t2a4, t264;
+    int glow_n[7], glow_fr[7];      /* +0x270 running wave records per column, +0x278 frame stamp of the last fade write */
+    struct { float t; int idx; } wave[16];   /* the records of 0x40c610 in the effect pool */
+    int frame;
+} BossBState;
+
 typedef struct Enemy {
     EnemyParams P; float reload; Vec3 warn, dodge_dir; int throw_hold;   /* shooters */
     BossState b;                                                         /* type 14 */
+    BossBState bb;                                                       /* types 15, 16 */
     int hand;                                                            /* ghost (type 13): fires from alternating hands */
     int nlong, big_touch, idle_a, done; float idle_t, melee_t, windup;          /* bomb thrower (type 12): +0x200, +0x1fc, +0x1f8, +0x1f4, +0x1d4, +0x1f0 */
     Instance *inst; int type;
@@ -49,7 +73,7 @@ typedef struct Enemy {
 #define MAX_ENEMIES 256
 typedef struct EnemySet { Enemy e[MAX_ENEMIES]; int n; } EnemySet;
 
-void enemies_add(EnemySet *s, Instance *inst, int type);                      /* on SetTypeInstance 4..9, 12, 13, 14 */
+void enemies_add(EnemySet *s, Instance *inst, int type);                      /* on SetTypeInstance 4..9, 12..16 */
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt);
 /* vtbl[39] 0x419480: returns 1 when the enemy died. dir = (0,0,0) for a peck (no knockback). */
 int  enemy_take_damage(Enemy *e, float dmg, Vec3 dir);
@@ -84,5 +108,22 @@ void game_cam_shake(float t);                                                 /*
 void game_boss_bar(int on, int cur, int max);                                 /* 0x4484d0 */
 void game_explosion(Vec3 p);                                                  /* 0x477060 kind 1 (two flash records) */
 void game_boss_smoke(Instance *link, int n, int on);                          /* on: explosion 0x477060 + smoke plume 0x475f30 on marker typecode 0 nr n; n = -1, on = 0: all plumes off */
+
+/* classes 15 and 16 (boss.c, docs/BOSS15_16.md) */
+void boss15_init(Enemy *e); void boss16_init(Enemy *e);                        /* ctor + PostLoad 0x40d930 / 0x40c820 + factory Reset */
+void boss15_reset(Enemy *e); void boss16_reset(Enemy *e);                      /* vtbl[17] 0x40da50 / 0x40c8f0 */
+void boss15_update(Enemy *e, struct Player *pl, Vec3 cam, float dt);           /* Update 0x40dd30 */
+void boss16_update(Enemy *e, struct Player *pl, Vec3 cam, float dt);           /* Update 0x40cb80 */
+void boss15_blast(Enemy *e, Vec3 c, float r);                                  /* vtbl[40] 0x40e800: the only way to hurt it */
+int  boss16_take_damage(Enemy *e, float dmg);                                  /* vtbl[39] 0x40d480: only while he stands visible on his pad */
+void enemies_boss_links(EnemySet *s, Instance *inst, int id, int group, Instance **li, int n);   /* 61 (class 15, 8 instances) / 62 (class 16, group + 7) */
+int  boss15_protects(const EnemySet *s);                                      /* vtbl[36] 0x40e710 = state 5: the Perso's Kill 0x44c110 is refused */
+/* implemented by the engine */
+void game_launcher_start(Instance *in);                                        /* 0x4522b0(1, 1.0, 0): one shot on the next think step */
+void game_bombs_crush(Vec3 c, float r);                                        /* 0x40ea47: every bomb in fuse state 2 within r goes off (Bomb_Explode 0x44d6e0) */
+void game_bombs_discard(void);                                                 /* 0x44db10 */
+float game_time(void);                                                         /* World+0x30, for the instance animation clock */
+/* projectile 0x4490a0 with vertical homing (T+0x44 per 1/60 s toward the target's feet + aim_h) on top of game_enemy_shot */
+void game_enemy_shot_v(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, float vsteer, float aim_h, int visual, int sound_fx);
 
 #endif
