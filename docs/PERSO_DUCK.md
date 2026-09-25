@@ -236,7 +236,7 @@ feet + 193, even while ducking).
 | **projectiles** `0x44a0a0` (`0x44a102`: `vtbl[24]` = `0x44cd60`) | swept sphere r (5) against cylinder `{pos + (0,H/2,0), r = 69, half height H/2}` ⇒ y range `[feet − 5, feet + H + 5]` | **only hits below feet + 66** (standing 198) |
 | **lasers** 50/51/52 `0x450f80` (`vtbl[24]`, `0x433de0`) | segment against cylinder radius 69·0.85 = 58.65, y range `[feet + 0.1, feet + H − 0.1]` (`0x433f84..0x433fb2`, `0x4a9008` = 0.1) | **only hits below feet + 60.9** (standing 192.9) |
 | Boss14 cone `0x410cf0` (`vtbl[33]` on `0x410d95/0x410dce`) | cone 250 tall under the boss; `o = A.y − bot + H` | smaller `o` ⇒ smaller radius; anyone lying low enough falls under it (BOSS14 §6.1) |
-| actor pushing `0x4627d0` (`vtbl[33]` of both) | `0x433d40` with both heights | pushing only on vertical overlap with the 61 cylinder (shape of `0x433d40` uncertain) |
+| actor pushing `0x4627d0` (`vtbl[33]` of both) | `0x433d40` with both heights | pushing only on vertical overlap with the 61 cylinder (`0x433d40`: both ranges `[y, y + h]` must overlap, PERSO_MOVE §6.6) |
 | crushing `0x462a40` (`0x462aa8`) | radius feet+1 → feet+H−1; scale = free/H, < 0.3 ⇒ `Kill(4)` | while ducking, only dies at free height < 18.3 (standing < 57.9) |
 | first person `0x44c080` (state 3) | eye = feet + 0.9·H | 54.9 instead of 173.7 |
 | bomb throw space test `0x463a26` | sphere at feet + H | n/a: throwing while ducking is blocked |
@@ -378,7 +378,7 @@ The Perso plays them 2D. In the port, `src/main_engine.c` (line 2060, "animation
 
 1. Whether RampA accelerates from 0 or from its old speed after standing up (`0x467130` not read); the port starts at 0.
 2. `0x497ed0`: one-sided or two-sided against polygons (§4.3); answer 2 (hit kind 3) not investigated.
-3. `0x433d40` (actor pushing): exact height condition.
+3. ~~`0x433d40` (actor pushing): exact height condition~~ – decoded in PERSO_MOVE §6.6.
 4. The edge cases of §1.3/§2.6 (ducking in state 3/4/5/7/8/9, picking up or grabbing while lying down) are only derived from the code.
 5. `P+0x14/P+0x18` (193/61): no reader found.
 6. In which levels shots or lasers actually fly between 66 and 198 above the ground (i.e. are dodgeable by ducking): not measured.

@@ -496,7 +496,7 @@ What the port does — `player_landing_ring` (`src/player.c`), `hud_world_ring` 
 | | |
 |---|---|
 | when | as long as `on_ground == 0` AND the player is falling under their own weight: not dead, no scripted action (state 5), not on the rocket (state 8), not on a wall (state 4) and not during the climb-over-root movement. Not during cinematics, in the free camera, or outside a playable level |
-| where | `GetHeight` (`world_ground`, `0x435650`) from the feet + 43 (`P+0x00`) straight down, so both world polygons and the press/hull nodes of instances (also on a moving platform). No maximum fall distance: above a pit the bottom lights up; no floor found ⇒ no ring. The ring sits directly under him, there's no forward projection using his horizontal speed |
+| where | `GetHeight` (`world_ground`, `0x435650`) from the feet + 43 (`P+0x00`) straight down, so both world polygons and the press nodes of instances (also on a moving platform). No maximum fall distance: above a pit the bottom lights up; no floor found ⇒ no ring. The ring sits directly under him, there's no forward projection using his horizontal speed |
 | how | a ring in the plane of the found floor normal, 3 units above it (otherwise it z-fights with the floor), radius **69** = the Perso's collision radius (`P+0x04`), band width ±12% of the radius, white, additive, brightness 0.7, 48 segments. Fixed size: the ring doesn't shrink or fade with height. The brightness is in the vertex colors (0 on both edges, full at the radius), so the band has no hard edge and needs no texture |
 | tuning knobs | `WOODY_RING=<radius>` sets the radius, `WOODY_RING=0` disables the ring |
 

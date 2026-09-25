@@ -353,7 +353,7 @@ Before the dispatch, every frame (unless `+0x690` is set): `0x464ef0`, `0x465e50
 
 Addition/correction to PERSO_FRAME §2.4. Everything below is in `0x4624f0` (Perso_MoveCollide) and what it calls.
 Global results of the collision routines: `[0x4c4bd0]` raw result (1 = nothing, 3 = world polygon, 4 = instance), `[0x4c4bd4]` distance,
-`[0x4c4bc0..cc]` plane, `[0x4c4bd8]` polygon index, `[0x4c4bdc]`/`[0x4c4be0]` instance index/hull node; translated by the wrappers to
+`[0x4c4bc0..cc]` plane, `[0x4c4bd8]` polygon index, `[0x4c4bdc]`/`[0x4c4be0]` instance index/press node; translated by the wrappers to
 `[0x53a554]` (0 = nothing, 1 = world, 2 = instance, 3 = "wall hit" from `0x437180`), `[0x53a558]` t/distance, `[0x53a560]` instance*,
 `[0x53a568]` **ground height**, `[0x53a58c]` node, `[0x4b3108..14]` plane (normal + d) of the ground, `[0x4b3118]` **collision radius**.
 
@@ -388,7 +388,7 @@ void Perso_MoveCollide(Perso *p)
 ```
 
 `0x436f00` additionally does: if the player is standing on an **instance** (`[0x53a554] == 2`), `0x436d80(att, inst, node, &probe)`: remember
-the local point (`0x431700` world→node) so `0x436d20` can pass on the platform movement next frame; if the hull polygon
+the local point (`0x431700` world→node) so `0x436d20` can pass on the platform movement next frame; if the press node
 has flag `(flags & 0xff00) == 0x100`, collision id = `inst+0x70[(flags >> 16) + model+0x48]` → script events **PersoPress `0x441fc0`** (new),
 **PersoIn `0x442000`** (same as previous frame, `att+0x20`), **PersoUnpress `0x442040`** (released). Not on an instance ⇒ `att` cleared (`0x436d10`).
 
@@ -466,7 +466,7 @@ void GetHeight(vec3 *p)                                   /* 0x435650(p, cell=-1
         else { g_raw = 1; break; }                        /* no more cell beneath us */
     }
     /* afterwards (0x498475): all instances in the visited cells (cell+0x40/+0x44, id & 0xffff → world+0x40[]) and all dynamic
-       instances 0x4c3bb4[0x4c4bec]: inst->vt[7](p, id) = 0x432480 (hull floor test; sets g_raw = 4 if closer) */
+       instances 0x4c3bb4[0x4c4bec]: inst->vt[7](p, id) = 0x432480 (floor test over the PRESS nodes S+0x58/0x5c; sets g_raw = 4 if closer) */
     if (g_raw == 1) { g_groundY = p->y; g_type = 0; g_plane = (0,1,0,0); }   /* log 'GetHeight return : NotFound !!!!!!' */
     if (g_raw == 3) { g_type = 1; g_groundY = p->y - g_dist; }
     if (g_raw == 4) { g_type = 2; g_groundY = p->y - g_dist; g_hitInst = world->inst[g_instIdx]; g_node = [0x4c4be0];
@@ -500,14 +500,22 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
    a positive (max) and negative (min) accumulator. If the center lies inside the xz projection without an edge intersection ⇒ hit with vector 0.
 3. Per cell the static instances (`cel+0x40/+0x44`) and then all dynamic ones (`0x4c3bb4[]`, id `| 0xffff0000`):
    `inst->vt[8](c, r, up, down, &pos, &neg, id)` = **`0x433140`**: skipped if the instance has no cell (`+0x1c == −1`), was already tested,
-   **flag `+8 & 0x40` set** (non-collidable), the model has no hull (`model+0x58 == 0`), or `inst+0xd0 & id & 0xffff0000 == 0` (collision mask);
-   skeleton updated if needed (`vt[2](1)`); per hull node the center is transformed into node space (uniform scale: r/scale) and
+   **flag `+8 & 0x40` set** (non-collidable), the model has no press node (`model+0x58 == 0`), or `inst+0xd0 & id & 0xffff0000 == 0` (collision mask);
+   skeleton updated if needed (`vt[2](1)`); per **press node** (list `model+0x5c`, node flag 0x01; `0x433245`) the center is transformed into node space (uniform scale: r/scale) and
    the same polygon test `0x435b90` is used; result type 4 with `[0x4c4bdc]` = instance, `[0x4c4be0]` = node.
 4. Result: `push.x = max⁺.x + min⁻.x`, `push.z = max⁺.z + min⁻.z`, `push.y = 0` → `[0x4c4bb4..bc]`.
 
 ### 6.6 Other
 
-* **Actors** (`0x4627d0`): circle-circle in xz against the previous frame's list `0x4c5258[0x4c5324]` (`0x433d40`), added to `disp` before the sweep.
+* **Actors** (`0x4627d0`): for every other actor `a` of the previous frame's list `0x4c5258[0x4c5324]` (RegisterActor2: the living enemies)
+  `0x433d40(a->vt[34]() /*pos*/, a->vt[32]() − 5.0 /*0x4a9884*/, a->vt[33]() /*height*/, &P+0x1f4, P->vt[32]() /*radius*/, P->vt[33]() /*height*/, &out)`,
+  and on a hit `disp.x += out.x`, `disp.z += out.z` (before the sweep). `0x433d40(A, rA, hA, B, rB, hB, out)`:
+  ```c
+  float d2 = (A.x-B.x)² + (A.z-B.z)², R = rA + rB;
+  if (!(d2 < R*R) || A.y + hA <= B.y || B.y + hB <= A.y) return 0;     /* circles in xz, then both height ranges [y, y+h] */
+  float k = 1.0f - sqrt(d2) / R;  out = ((B.x-A.x)·k, 0, (B.z-A.z)·k);  return 3;
+  ```
+  Not a penetration depth: the push is `dist·(1 − dist/R)` per **frame** (R/4 at half the distance), not scaled by dt.
 * **Crushing** (`0x462a40`, after the dispatch): ray `0x4359b0` from feet+1 upward to feet+H−1; a hit (t < 1) while the player is on the ground
   and either the touching instance is animating (`inst+0xa0 ≠ 0`) or the player is standing on a platform (`att298 ≠ 0`) ⇒ `P+0x2e8` (z scale of the model)
   `= clamp(max(free height, 2.0) / H, …, 1)`; **< 0.3 (`0x4aab98`) ⇒ `Kill(4)`**.
@@ -552,7 +560,13 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   push-out vector); the 14 clip cases have not been checked one by one. For the reimplementation, a custom cylinder/cone-polygon test with the same
   output (pen·n.xz, per axis max⁺ + min⁻) suffices.
 * Behavior without a floor (GetHeight "NotFound", §6.6) is derived from the code but not seen in the game.
-* `0x432480` (hull floor test, vt[7]) and the non-uniform-scale branch of `0x433140` (`0x4335d7`) have not been read.
+* `0x432480` (press-node floor test, vt[7]) and the non-uniform-scale branch of `0x433140` (`0x4335d7`) have not been read in detail.
+* **Press nodes, not hulls.** All four instance tests (floor vt[7] `0x432480`, cylinder vt[8] `0x433140`, sphere vt[9] `0x433ff0`,
+  ray `0x4359b0`) walk only the press node list `model+0x58/0x5c` (node flag 0x01). The hull list `model+0x38/0x3c` (flag 0x04) is only
+  read by the draw function `0x42e2b0` (`0x42e7e8`): hull nodes are the visible meshes of characters and props (Woody: 43 hull nodes,
+  no press node) and never collide. Consequences: Woody passes through props that have only hull nodes (the traffic cones of K2R/S2R,
+  type 70, model 13) and collides with ones that have press nodes but little or no visible mesh there (the hovering saucer at the W1A
+  start, the statue plinth in W3D, model 37). Enemies do not block him with their meshes but through the actor push §6.6.
 * States 1, 4, 6, 8, 9 (own movement code `0x456210`, `0x4651d0`, `0x463530`, `0x4657f0`, `0x454090`) and altMode `0x459c70`/`0x45a7b0` fall outside this
   document; likewise the attack controller `0x457a50` (PERSO_JUMP.md) and the spring correction `+0x244` (`0x45848c`).
 * `P+0x474` = `M+0xec` (0x388+0xec), the Mover's **knockback timer** (0.2 s after a hit, `0x45a140`): so no input during knockback. `P+0x750` (blocks the special attack): writer not searched for.

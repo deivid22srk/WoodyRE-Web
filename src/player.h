@@ -62,7 +62,7 @@ typedef struct Player {
     int special_st, special_prev; float special_t;   /* special attack 0x458bf0: +0x750 (0 free, 1 charging up to the hit at 1.5 s, 2 after the hit), key state, +0x74c */
     int duck, duck_anim; float duck_t;   /* ducking 0x465b10: sub-state +0x694 (0 up, 1 going down, 2 down, 3 getting up), its logical anim, timer +0x698 */
     float floor_y;                  /* last floor height found under the player */
-    int floor_is_hull;              /* floor came from an instance node (press kind 1 or hull kind 4) */
+    int floor_is_hull;              /* floor came from an instance press node (kind 1) */
     const Instance *att_inst; uint32_t att_node; Vec3 att_local, att_world;   /* platform attachment (Perso+0x298) */
     uint32_t cur_col;               /* world_collision id currently pressed, 0xffffffff = none (Probe+0x20) */
     /* volume tracking: one flag per (instance, volume node) */

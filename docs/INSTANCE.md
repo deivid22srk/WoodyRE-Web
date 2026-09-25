@@ -264,7 +264,7 @@ W1A: `43 [inst, 1, 2500, 0]` = loop of 25 s forward; type 51: `43 [inst, 1, 550,
   and if the cell ≠ −1: link it in at the front of the cell list.
 - `0x4077f0(p)` = hide + show again (re-cell after movement).
 The renderer/updater `0x42e2b0` returns immediately if `+0x1c == −1` (`0x42e2c3`): no clock, no drawing, no volume/press update.
-Everything that iterates `cell+0x44` (drawing, player collision against hulls) no longer sees a hidden instance.
+Everything that iterates `cell+0x44` (drawing, player collision against press nodes) no longer sees a hidden instance.
 Hidden = invisible AND without collision. Animation time keeps running (the clock uses absolute time).
 
 ## 5. Messages 56 / 57: transparency fade (`+0x6c`)

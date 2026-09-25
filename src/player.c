@@ -93,10 +93,10 @@ float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, i
     return best;
 }
 
-/* floor provided by the press nodes (kind 1) and collision hulls (kind 4) of visible instances:
- * highest upward-facing polygon under p within [p.y - max_drop, p.y + step_up]. The original's
- * GetHeight (0x435650) reports press nodes as hit type 2 and hulls as type 3 (docs/EVENTS.md 3.1);
- * hit_inst/hit_node return what was hit so the caller can raise world_collision events. */
+/* floor provided by the press nodes (kind 1) of visible instances (inst->vt[7] = 0x432480 walks S+0x58/0x5c only):
+ * highest upward-facing polygon under p within [p.y - max_drop, p.y + step_up]. GetHeight (0x435650) reports it
+ * as hit type 4 against 3 for a world polygon (docs/PERSO_MOVE.md 6.3); hit_inst/hit_node return what was hit so
+ * the caller can raise world_collision events. */
 static int point_in_tri_xz(Vec3 a, Vec3 b, Vec3 c, Vec3 q)
 {
     float d1 = (b.x - a.x) * (q.z - a.z) - (b.z - a.z) * (q.x - a.x);
@@ -196,7 +196,7 @@ static void poly_push_accum(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q, float r
  * 0x408600: front side only, penetration r - dist along the polygon normal in xz, accumulated per axis as a positive
  * maximum plus a negative minimum. Simplifications: no band clipping / edge-circle intersection and no conical bottom
  * (the contact point is the centre projected onto the plane), walkable polygons (n.y > 0.71) are left to the floor code,
- * instance hulls are not tested yet. */
+ * instances are ins_push(). */
 static Vec3 gel_push(const GelFile *g, Vec3 c, float r, float lo, float hi)
 {
     float acc[4] = { 0, 0, 0, 0 }, box[6]; Vec3 v[32];
@@ -217,8 +217,10 @@ static Vec3 gel_push(const GelFile *g, Vec3 c, float r, float lo, float hi)
     Vec3 out = { acc[0] + acc[1], 0, acc[2] + acc[3] }; return out;
 }
 
-/* Same push-out against the collision hulls (kind 4 nodes) of visible instances, after inst->vt[8] = 0x433140.
- * Hull polygons are taken in world space; their outward side is the one facing away from the node's centroid. */
+/* Same push-out against the press nodes (kind 1) of visible instances, after inst->vt[8] = 0x433140, which walks the
+ * press node list S+0x58/0x5c and not the hull nodes (flags 0x04, the visible meshes: with those Woody walked under the
+ * W1A saucer, whose press node hangs only 97 above the floor, and every enemy body was a wall). Polygons are taken in world space;
+ * their outward side is the one facing away from the node's centroid. */
 static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, float lo, float hi)
 {
     float acc[4] = { 0, 0, 0, 0 }; Vec3 v[16];
@@ -229,7 +231,7 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
             if (inst_dist2_xz(in, c) > 3000.0f * 3000.0f) continue;
             uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
-                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 4 || !nd->npoints) continue;
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->npoints) continue;
                 float nb[6];                                              /* the node's own box against the body cylinder */
                 if (ins_node_world_box(in, ni, nb) && (nb[0] > c.x + r || nb[1] < c.x - r || nb[4] > c.z + r || nb[5] < c.z - r || nb[3] < lo || nb[2] > hi)) continue;
                 Vec3 cen = { 0, 0, 0 };
@@ -252,6 +254,22 @@ static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, 
         }
     }
     Vec3 out = { acc[0] + acc[1], 0, acc[2] + acc[3] }; return out;
+}
+
+/* Actor pushing 0x4627d0: for every other actor of the previous frame's list 0x4c5258 (RegisterActor2: the living
+ * enemies) 0x433d40(other pos, other vt[32] - 5, other vt[33], own pos, own radius, own height): when the circles overlap in
+ * xz (dist < R = r_other - 5 + r_own) and the height ranges [feet, feet + h] overlap, disp.xz += (own - other).xz *
+ * (1 - dist / R). Once per frame and not scaled by dt: a soft push (R/4 at half the distance), per frame as in the original. */
+static void actor_push(const Player *p, float r, float h, Vec3 *disp)
+{
+    if (!p->enemies) return;
+    for (int i = 0; i < p->enemies->n; i++) {
+        const Enemy *e = &p->enemies->e[i]; if (e->removed || !e->inst->visible || e->hp <= 0) continue;
+        float R = enemy_radius(e) - 5.0f + r, dx = p->pos.x - e->pos.x, dz = p->pos.z - e->pos.z, d2 = dx * dx + dz * dz;
+        if (!(d2 < R * R) || e->pos.y + enemy_height(e) <= p->pos.y || p->pos.y + h <= e->pos.y) continue;
+        float k = 1.0f - sqrtf(d2) / R; disp->x += dx * k; disp->z += dz * k;
+        if (getenv("WOODY_ACTORLOG")) printf("  ACTOR push from inst %u (type %d): dist %.1f of %.1f -> %.1f %.1f\n", e->inst->index, e->type, sqrtf(d2), R, dx * k, dz * k);
+    }
 }
 
 /* Sphere push-out 0x407340(c, r, cell -1), used by the actors' sweep 0x437580: every world polygon the sphere touches
@@ -320,7 +338,7 @@ Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r)
 }
 
 /* GetHeight 0x435650 -> 0x498520: nearest surface below the point: world polygons with n.y > 1e-5 (any slope) that
- * contain the point in xz, and the press / hull nodes of instances (hit_node != NULL then). */
+ * contain the point in xz, and the press nodes of instances (hit_node != NULL then). */
 static const Instance *g_ground_skip;      /* set by player_ground_query(): instance to ignore instead of the player */
 static float world_ground(const Player *p, Vec3 pt, int *found, const Instance **hit_inst, const InsNode **hit_node)
 {
@@ -1296,8 +1314,10 @@ static void race_check_crash(Player *p, Vec3 old_pos, Vec3 disp, float body_h)
     Vec3 n40 = { 0, 0, 0 }; int both = 1;
     const float hs[2] = { body_h - 10.0f, 40.0f };                        /* 0x4a9750 */
     for (int k = 0; k < 2; k++) {
-        Vec3 a = { p->pos.x, p->pos.y + hs[k], p->pos.z }, b = { end.x, end.y + hs[k], end.z }, n;
-        if (gel_ray_hit(p->gel, a, b, &n) > 1.0f) both = 0; else if (k == 1) n40 = n;
+        Vec3 a = { p->pos.x, p->pos.y + hs[k], p->pos.z }, b = { end.x, end.y + hs[k], end.z }, n, ni;
+        float f = gel_ray_hit(p->gel, a, b, &n), fi;                     /* 0x4359b0: world polygons, then instance press nodes */
+        if (player_ray_instances(p, NULL, a, b, &fi, &ni, NULL) && fi <= 1.0f && fi < f) { f = fi; n = ni; }
+        if (f > 1.0f) both = 0; else if (k == 1) n40 = n;
     }
     if (both && p->race_sub != 2 && !getenv("WOODY_GOD")) {
         if (n40.x * n40.x + n40.z * n40.z > 1e-6f) p->yaw = atan2f(-n40.x, -n40.z);   /* Mover_SetFacing(-hitN) */
@@ -1469,6 +1489,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     Vec3 np, old_pos = p->pos;
     /* P+0x08 = 160 standing / 81 crouched for the race columns (0x462490), wall radius halved while crouched in state 1 (0x462517) */
     const float body_h = player_body_height(p), radius = racing && p->race_crouch ? P_RADIUS * 0.5f : P_RADIUS;
+    actor_push(p, radius, body_h, &disp);
     {
         const float half = body_h * 0.5f;
         Vec3 cur = { p->pos.x, p->pos.y + half, p->pos.z };
@@ -1479,7 +1500,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         d.x /= n; d.y /= n; d.z /= n;
         float margin = 5.0f;
         /* the original probes from the body centre here; feet + 43 (as in the final ground test) keeps objects of up to
-         * half the body height from counting as floor while the hull push-out is still approximate */
+         * half the body height from counting as floor while the instance push-out is still approximate */
         #define SWEEP_PROBE(c) ((Vec3){ (c).x, (c).y - half + P_PROBE_Y, (c).z })
         float gy = world_ground(p, SWEEP_PROBE(cur), &found, &hit_inst, &hit_node);
         if (found && cur.y - half - 1.0f < gy) { margin = P_STEP + 1.0f; if (mode == 0) mode = 1; }

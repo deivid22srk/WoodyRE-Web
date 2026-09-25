@@ -732,16 +732,19 @@ int ins_point_owner(const Model *m, uint32_t pi)
     }
     return pi < m->npoints ? (int)m->owner[pi] : -1;
 }
-/* The nodes the collision code has to consider at all. Models without any (most scenery) are then dropped in one
- * test instead of walking their whole node list on every ground query. */
+/* The nodes the collision code has to consider at all: the press nodes (flags 0x01, list S+0x58/0x5c). Every instance
+ * collision test of the original walks that list and only that one - floor vt[7] 0x432480, cylinder vt[8] 0x433140,
+ * sphere vt[9] 0x433ff0 and the ray 0x4359b0. The hull nodes (flags 0x04, S+0x38) are the visible meshes of characters and
+ * props (Woody is 43 of them and no press node) and never collide. Models without any press node are then dropped in
+ * one test instead of walking their whole node list on every ground query. */
 const uint32_t *ins_collision_nodes(const Model *m, uint32_t *count)
 {
     if (!m->coll_ok) {
         Model *mm = (Model *)m;
-        for (uint32_t i = 0; i < m->nnodes; i++) if ((m->nodes[i].kind == 1 || m->nodes[i].kind == 4) && m->nodes[i].polys) mm->ncoll++;
+        for (uint32_t i = 0; i < m->nnodes; i++) if (m->nodes[i].kind == 1 && m->nodes[i].polys) mm->ncoll++;
         if (mm->ncoll) {
             mm->coll = (uint32_t *)malloc((size_t)mm->ncoll * 4); mm->ncoll = 0;
-            for (uint32_t i = 0; i < m->nnodes; i++) if ((m->nodes[i].kind == 1 || m->nodes[i].kind == 4) && m->nodes[i].polys) mm->coll[mm->ncoll++] = i;
+            for (uint32_t i = 0; i < m->nnodes; i++) if (m->nodes[i].kind == 1 && m->nodes[i].polys) mm->coll[mm->ncoll++] = i;
         }
         mm->coll_ok = 1;
     }
