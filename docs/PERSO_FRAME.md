@@ -472,6 +472,9 @@ After that, always: `0x44f0a0(Game+0x64, dt)` (mode automaton 1..4 with timers `
 camera `0x41f9f0(2)`, `cam+0x368 = 0`, `0x41f410(0, 0)`.
 
 ### 4.2 `0x451cc0(dt)` – "thunderstorm"/periodic hazard with safe zones (class 80)
+**Superseded by STORM.md** (full decompilation and port, `src/storm.c`). Two corrections to the summary below: `+0x108` is
+the radius itself (default 1000, the test squares it) and the zone is a **3D sphere** around `pos + (0, +0x10c·0.5, 0)`,
+not a circle in xz.
 Globals: `0x5e59ec` active, `0x5e59e4` timer, `0x5e59e8` interval (set by `0x451ba0(interval)`
 from the game message handler `0x444b79`, argument ×0.01; id in 1010..1050), `0x5e58cc[0x5e59e0]`
 = list of class-80 instances (ctor `0x451a90`, vtable `0x4ab0c4`, message 54: `+0x108` = radius²

@@ -22,7 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
-    GLuint fx[20];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow, shared by the rocket (docs/ROCKET.md 5) and the missiles (docs/PROJECTILES.md 5.3); slot 10 = the footstep mark (docs/FOOTSTEPS.md); slot 11 = image 58, the wake on the water (docs/WATER.md 4.1); 12 = image 18, the spark of a bomb's fuse, 13 = image 24, the smoke of the bomb blast (docs/BOMB.md 3.4, 4.3); 14 = image 57, the drop of the water splash (docs/SPLASH.md 4); 15..17 = images 7, 8, 9, the hit star (0x4750e0), 18 = image 33, the fire ring of the special attack (docs/PERSO_SPECIAL.md 3) */
+    GLuint fx[20];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow, shared by the rocket (docs/ROCKET.md 5) and the missiles (docs/PROJECTILES.md 5.3); slot 10 = the footstep mark (docs/FOOTSTEPS.md); slot 11 = image 58, the wake on the water (docs/WATER.md 4.1); 12 = image 18, the spark of a bomb's fuse, 13 = image 24, the smoke of the bomb blast (docs/BOMB.md 3.4, 4.3); 14 = image 57, the drop of the water splash (docs/SPLASH.md 4); 15..17 = images 7, 8, 9, the hit star (0x4750e0), 18 = image 33, the fire ring of the special attack (docs/PERSO_SPECIAL.md 3), 19 = image 30, a segment of the storm's lightning bolt (docs/STORM.md 5) */
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint env[4];                                        /* bank 0 images 53..56: the butterflies of the environment instances (0x47e050 picks one of the four) */
@@ -70,7 +70,7 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
 /* which bank 0 image the footstep mark uses. 0x47cba0 is not decompiled, so its image is unknown: the port takes
  * the soft cloud (image 14) and WOODY_STEPIMG=<n> tries another one (docs/FOOTSTEPS.md 4). */
 int hud_step_image(void) { static int v = -1; if (v < 0) { const char *e = getenv("WOODY_STEPIMG"); v = e ? atoi(e) : 14; if (v < 0) v = 14; } return v; }
-static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : image == hud_step_image() ? 10 : image == 0x3a ? 11 : image == 18 ? 12 : image == 24 ? 13 : image == 57 ? 14 : image == 7 ? 15 : image == 8 ? 16 : image == 9 ? 17 : image == 33 ? 18 : -1; }
+static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : image == hud_step_image() ? 10 : image == 0x3a ? 11 : image == 18 ? 12 : image == 24 ? 13 : image == 57 ? 14 : image == 7 ? 15 : image == 8 ? 16 : image == 9 ? 17 : image == 33 ? 18 : image == 30 ? 19 : -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
@@ -1078,7 +1078,13 @@ int hud_sky_images(uint32_t out[5])
     return 1;
 }
 
+static void world_line_uv(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, GLuint tex, int flip);
 static void world_line(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, GLuint tex)
+{
+    world_line_uv(a, b, eye, hw, rgb, alpha_a, alpha_b, tex, 0);
+}
+/* flip = the uv mode of 0x470d80: bit 0 mirrors v (across the line), bit 1 mirrors u (along it) */
+static void world_line_uv(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, GLuint tex, int flip)
 {
     if (!H.ok) return;
     float d[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, m[3] = { (a[0] + b[0]) * 0.5f - eye[0], (a[1] + b[1]) * 0.5f - eye[1], (a[2] + b[2]) * 0.5f - eye[2] };
@@ -1089,11 +1095,12 @@ static void world_line(const float *a, const float *b, const float *eye, float h
     if (tex) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tex); } else glDisable(GL_TEXTURE_2D);
     glBegin(GL_QUADS);
     glColor3f(rgb[0] * alpha_a, rgb[1] * alpha_a, rgb[2] * alpha_a);
-    glTexCoord2f(0, 0); glVertex3f(a[0] - s[0], a[1] - s[1], a[2] - s[2]);
-    glTexCoord2f(0, 1); glVertex3f(a[0] + s[0], a[1] + s[1], a[2] + s[2]);
+    float u0 = flip & 2 ? 1.0f : 0.0f, u1 = 1.0f - u0, v0 = flip & 1 ? 1.0f : 0.0f, v1 = 1.0f - v0;
+    glTexCoord2f(u0, v0); glVertex3f(a[0] - s[0], a[1] - s[1], a[2] - s[2]);
+    glTexCoord2f(u0, v1); glVertex3f(a[0] + s[0], a[1] + s[1], a[2] + s[2]);
     glColor3f(rgb[0] * alpha_b, rgb[1] * alpha_b, rgb[2] * alpha_b);
-    glTexCoord2f(1, 1); glVertex3f(b[0] + s[0], b[1] + s[1], b[2] + s[2]);
-    glTexCoord2f(1, 0); glVertex3f(b[0] - s[0], b[1] - s[1], b[2] - s[2]);
+    glTexCoord2f(u1, v1); glVertex3f(b[0] + s[0], b[1] + s[1], b[2] + s[2]);
+    glTexCoord2f(u1, v0); glVertex3f(b[0] - s[0], b[1] - s[1], b[2] - s[2]);
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
 }
@@ -1109,6 +1116,7 @@ void hud_world_quad(int image, const float v[4][3], const float uv[4][2], const 
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }
 void hud_world_streak(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b) { int k = fx_slot(image); if (k >= 0 && H.fx[k]) world_line(a, b, eye, hw, rgb, alpha_a, alpha_b, H.fx[k]); }
+void hud_world_streak_flip(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, int flip) { int k = fx_slot(image); if (k >= 0 && H.fx[k]) world_line_uv(a, b, eye, hw, rgb, alpha_a, alpha_b, H.fx[k], flip); }
 
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha)
 {
