@@ -1356,6 +1356,7 @@ static void bombs_draw(const float *eye, float dt)
         if (x->kind == 0) {
             float u = x->t / 0.25f, s = sinf(6.2831853f * (u < 1 ? u : 1)); s = fabsf(s * s * s);
             if (u < 1) hud_world_fx(4, &x->pos.x, 500.0f * s, 0, yellow, 1.0f);
+            if (u < 1) { float sn = sinf(6.2831853f * u); static const float wh[3] = { 255, 255, 255 }; rnd_light_add(0, x->pos, wh, 500.0f * sn * sn * sn + 100.0f); }   /* 0x4766ee: radius = signed size + 100 (docs/LIGHTING.md 7) */
             float w = x->t / 0.3f; if (w < 1) hud_world_fx_plane(24, &x->pos.x, &x->n.x, 1300.0f * w, grey, cosf(w * 1.5707963f));
             if ((x->t += dt) >= 0.3f) x->t = 0;
         } else {

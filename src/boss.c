@@ -453,7 +453,8 @@ void enemies_boss_msg(EnemySet *s, Instance *inst, int id, uint32_t arg, Instanc
  * attacker's damage, 10 hp); every hit ends that round and shortens the wave by 0.2 s. At 0 hp: mailbox := 3 every
  * frame, death animation, the columns gone.
  *
- * Not ported: the dynamic lights 0x498790 of the columns and the wave (the port has no dynamic lights), actor list 1
+ * The dynamic lights 0x498790 of the columns and the wave are registered (rnd_light_add); the original never draws
+ * them (docs/LIGHTING.md 7), the port only with WOODY_DYNLIGHT=1. Not ported: actor list 1
  * (0x40c080, only the rocket explosion reads it), the turning sense of class 15's intro spin (not verified), and
  * class 90 mode 1, so class 16's group-3 volumes show nothing. */
 
@@ -654,6 +655,11 @@ void boss15_update(Enemy *e, Player *pl, Vec3 cam, float dt)
 /* ---- class 16 ------------------------------------------------------------------------------------------------------ */
 static Vec3 pad_top(const BossBState *b, int i) { Vec3 p = b->grp[0][i]->position; p.y += 30.0f; return p; }   /* 0x4a9740 */
 static void col_fade(Instance *c, float f) { if (c) c->fade = c->fade_target = f; }   /* +0x6c; a scripted instance: its fade target must follow */
+static void col_light(const Instance *c, float r)                    /* 0x498790([0x4c4cac], 0, &col->pos, white, r) */
+{
+    static const float white[3] = { 255.0f, 255.0f, 255.0f };
+    if (c) rnd_light_add(0, c->position, white, r);
+}
 static void face_player(Enemy *e, const Player *pl) { e->ang = e->want_ang = ang_to(e->pos, pl->pos); }   /* 0x41b230: H snapped to the target */
 static void loop_anim0(Instance *g, float now)                       /* 0x436ca0(inst, 0.3, 0, 0, 0, 0): anim 0 in all slots, speed 0.3 * 3 */
 {
@@ -709,6 +715,7 @@ static void wave_tick(Enemy *e, float dt)                            /* the reco
             float v = f * 0.4f + 0.6f;                               /* 0x4a9654, 0x4a9650: from 0.6 to faded out */
             if (b->glow_fr[i] == b->frame) { if (c && v < c->fade) col_fade(c, v); }   /* two records on one column: the brighter wins */
             else { col_fade(c, v); b->glow_fr[i] = b->frame; }
+            col_light(c, (1.0f - f) * 400.0f);                       /* 0x40c6dc: radius 400 shrinking to 0 */
         } else {
             if (--b->glow_n[i] == 0 && b->st == 6 && c) { col_fade(c, 0.6f); c->visible = 0; }   /* 0x407850 */
             b->wave[k].t = -1;
@@ -733,16 +740,16 @@ void boss16_update(Enemy *e, Player *pl, Vec3 cam, float dt)
     case 2: {                                                        /* appear 0x40cc73: 1.5 s, in his column */
         b->t298 += dt; float f = b->t298 * 0.6666667f;               /* 0x4a975c */
         if (col) col->visible = 1;                                   /* 0x4077f0 */
-        col_fade(col, 0.6f);
+        col_fade(col, 0.6f); col_light(col, 400.0f);                 /* 0x40cce7 */
         if (f < 1.0f) { face_player(e, pl); in->fade = 1.0f - f; }
         else { b->st = 3; b->t29c = 0; audio_fx(66, NULL, NULL); }
         break; }
     case 3:                                                          /* taunt 0x40cd3a for AnimLen(1) */
-        b->t29c += dt; ac_request(b, g_r16, 1); col_fade(col, 0.6f); face_player(e, pl);
+        b->t29c += dt; ac_request(b, g_r16, 1); col_fade(col, 0.6f); col_light(col, 400.0f); face_player(e, pl);   /* 0x40cd9d */
         if (ac_len(in, g_r16, 1) < b->t29c) { b->t2a0 = 0; b->st = 4; }
         break;
     case 4:                                                          /* throw 0x40cdde: at 62 % of AnimLen(3) (0x4a9758) */
-        ac_request(b, g_r16, 3); col_fade(col, 0.6f); b->t2a0 += dt;
+        ac_request(b, g_r16, 3); col_fade(col, 0.6f); b->t2a0 += dt; col_light(col, 400.0f);   /* 0x40cea4 */
         if (ac_len(in, g_r16, 3) * 0.62f < b->t2a0) {
             audio_fx(67, NULL, NULL);
             Vec3 o = { e->pos.x, e->pos.y + 150.0f, e->pos.z }, d = { pl->pos.x - o.x, 0, pl->pos.z - o.z };   /* 0x4a9754; flat */
@@ -756,7 +763,7 @@ void boss16_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         break;
     case 5: {                                                        /* vanish 0x40d15e: 1.5 s */
         b->t298 += dt; float f = b->t298 * 0.6666667f;
-        ac_request(b, g_r16, 0); col_fade(col, f * 0.4f + 0.6f);
+        ac_request(b, g_r16, 0); col_fade(col, f * 0.4f + 0.6f); col_light(col, (1.0f - f) * 400.0f);   /* 0x40d1da */
         if (f < 1.0f) in->fade = f;
         else { if (col) col->visible = 0; b->st = 6; b->t2a4 = 0; b->t264 = 0; in->fade = 1.0f; }
         if (find_target(e, pl)) face_player(e, pl);                  /* vtbl[48](1, 0) */
