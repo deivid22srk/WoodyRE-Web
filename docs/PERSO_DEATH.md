@@ -55,7 +55,8 @@ al/nog gedaan). Anders: `P.pos (+0x1f4) = pos`; `0x462990(P)` (grond-snap); `ani
 idem voor `P+0x498` als die bestaat. Geen wijziging van health, checkpoint/spawn, onkwetsbaarheid of toestand.
 
 **`0x462990(P)` grond-snap**: `0x44bf10(P, 0)`; `pos.y += P+0x110 (43)`; `0x435650(&pos, P+0x200, 1)` (GetHeight) ⇒
-`pos.y = [0x53a568]`; `onGround (+0x22c) = 1`; `+0x588 = 0`; `+0x580 = 1.0`; `0x462c90(J)` (springer reset);
+`pos.y = [0x53a568]` (ook bij NotFound: dan staat daar de zoekhoogte zelf, dus voeten + 43 - live gemeten op het einde van
+de W2B-baasintro, GetHeight-type 0, y −3194 → −3151; het volgende frame stapt hij 10 omhoog op de vloer); `onGround (+0x22c) = 1`; `+0x588 = 0`; `+0x580 = 1.0`; `0x462c90(J)` (springer reset);
 `0x44bd00(P)` (matrix/oriëntatie); `P+0x200 = 0x428ce0(level, pos + (0,43,0))` (wereldcel).
 
 **`0x458f90(F)` camera-reset** (`F = [0x5e5a74]`: `F+0` CamMgr, `F+4` Perso): `0x41df70(CamMgr)` (overgang/letterbox/

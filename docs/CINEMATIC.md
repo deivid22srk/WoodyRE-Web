@@ -362,9 +362,13 @@ void cam_update_mode80(void) {                                        // na de i
 
 1. `music->vt[0x98]` (`0x46cc20`) zet `t0` alleen op 0 en geeft altijd 1; de lus en `var = t0·100` wijzen op een
    (console-?)variant waarin het openen van de stream tijd kost. In deze PC-build is `var` altijd 0. Niet live geverifieerd.
-2. `0x44edb0`: de tussenstap `p = C.t · inverse(A, schaal)` gevolgd door `p · A + A.t` (`0x44ee42..0x44efb2`) is niet
-   cijfer-voor-cijfer uitgeschreven; aangenomen dat dit netto `C.t` oplevert (evt. met schaalcorrectie van de instantie).
-   Idem voor de overeenkomstige stap in `0x44e290`. Bij Woody is B (wortel in rustpose) vermoedelijk alleen een y-offset.
+2. (opgelost, live gemeten) `0x44edb0` levert netto `C.t`: W2B-baasintro, eindpunt origineel (9911.3, −3194.0, 11017.7) = port.
+   A gebruikt de instantiematrix **op het moment van het einde**: stuurt het script vóór het einde een teleport (bericht 26;
+   W2B doet dat 0,37 s vóór het einde naar marker 535), dan heeft `0x44bf10` de instantiepositie al verzet en ligt het eindpunt
+   relatief tot de teleportplek. Anim 72 van W2B eindigt in de rustpose (T-pose) met de wortel 53 lager dan in anim 0, dus
+   onder de vloer; de grond-snap vindt dan niets en zet `y = voeten + 43` (PERSO_DEATH.md §1.1), de stap-omhoog van het
+   volgende frame zet hem op de vloer. De T-pose zelf is nooit te zien: het script stuurt vanaf de teleport 0,5 s lang elke
+   tick `1152` (`DURING 50`, VM.md). Idem voor de overeenkomstige stap in `0x44e290` (niet gemeten).
 3. `0x44e690` (hoofdlus `0x401d16`, alleen in **House**, `App+0x68 == 0`): houdt Woody in menu-pose (actie 0x49, bericht
    1141) en zet het transparantie-doel van de Perso (`+0xfc` -> `+0x6c`, INSTANCE.md par. 5; 0 = dekkend) op **0 tijdens de
    intro-cinematic en 1.0 (onzichtbaar) daarbuiten**, snelheid 10000/s = direct. Of de menu-pose zelf zichtbaar is

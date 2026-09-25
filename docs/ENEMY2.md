@@ -301,6 +301,10 @@ Geen `SoundFx`-aanroep in de klasse (alleen SoundFx 20 van het projectiel). Beri
 
 ## 4. Type 12 – stilstaande bommengooier (volledig)
 
+Geport in `src/enemy.c` (`bomber_update`, `bomber_peck`, `bomber_blast`, `enemies_bomb_contact`); de bom-eigenaar en het sturen van een
+teruggegooide bom zitten in `bombs_fly` (`src/main_engine.c`). Getest met de W2B-start (`WOODY_SETVAR="1 1 1"`): gooien, oppakken,
+teruggooien, 1 hp per explosie, dood ⇒ msgmask 0x10 ⇒ `1083`.
+
 ### 4.1 Velden (size 0x204) en Reset
 
 | off | type | betekenis |

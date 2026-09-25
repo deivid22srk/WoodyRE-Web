@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include "enemy.h"
 #include "player.h"
+#include "audio.h"
 
 /* constants that no message changes */
 #define E_ACC      1000.0f
@@ -23,6 +24,7 @@ static EnemyParams params_for(int type)
     if (type == 8) { p.height = 130; p.hp = 2; p.cool = 1.0f; p.reload = 1.5f; p.steer = 0; p.shot_visual = 1; p.shot_fx = 18; }
     if (type == 13) { p.walk = 100; p.run = 300; p.dash = 500; p.dy = 10000; p.hp = 3; p.bite = 2; p.cool = 0.5f; p.shot_dmg = 2; p.reload = 1.0f; p.leash = 1000; p.melee = 300; p.shot_visual = 3; p.shot_fx = 20; }   /* docs/ENEMY2.md 2 */
     if (type == 9) { p.leash = 1000; p.hp = 3; p.bite = 3; p.shot_dmg = 2; p.melee = 10; p.steer = 0; p.shot_visual = 3; p.shot_fx = 20; }
+    if (type == 12) { p.radius = 60; p.see = 2400; p.dy = 1000; p.height = 280; p.hp = 5; p.bite = 3; p.shot_dmg = 4; p.reload = 3.5f; p.melee = 300; }   /* subtype 8, docs/ENEMY2.md 2 */
     return p;
 }
 
@@ -56,13 +58,17 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     e->cool = -1; e->attackable = 1; e->speed = e->want_speed = e->P.walk; e->path_dir = 1; e->path_to = 1;
     e->st = inst->traj.npoints > 1 ? 0 : (type >= 7 && type <= 9 ? 3 : 8); e->hand = rand() & 1;
     if (e->st == 0) { Vec3 a = inst->traj.points[0], b = inst->traj.points[1]; e->ang = atan2f(b.z - a.z, b.x - a.x); }
+    if (type == 12) { e->st = 0; e->nlong = 4; e->idle_a = 9; e->idle_t = 0; game_msgmask(inst, 0x10, 0); if (getenv("WOODY_BOSSHP")) e->hp = (float)atof(getenv("WOODY_BOSSHP"));   /* testing */ Vec3 f = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); e->ang = atan2f(f.z - inst->position.z, f.x - inst->position.x); }   /* Reset 0x411020: Stilstaan, timers 0, idle 9, state 0 (it clears msgmask 0x10); he keeps his .ins facing */
     inst->scripted = 0;
     if (type == 14) boss_init(e);
 }
 
+static int bomber_peck(Enemy *e);
+static void bomber_blast(Enemy *e, Vec3 c, float r);
 int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 {
     if (e->type == 14) return boss_take_damage(e);
+    if (e->type == 12) return bomber_peck(e);                          /* the peck / charge run of the player (kinds 0 / 1) */
     int shooter = e->type >= 7 && e->type <= 9;
     if (e->removed || e->st == (shooter ? 10 : 12) || e->hit_t > 0 || e->knock_t > 0) return 0;
     e->st = shooter ? 4 : 9; e->hit_t = e->knock_t = 0.25f; e->knock_dir = dir; e->hp -= dmg;
@@ -72,6 +78,7 @@ int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 int enemy_hit(Enemy *e, float dmg, Vec3 dir, Vec3 pt, int kind)
 {
     if (e->type == 14) return boss_take_damage(e);                  /* 0x40fe90 passes the kind on: no star for kind 2 (the special attack) */
+    if (e->type == 12) return kind == 0 || kind == 1 ? bomber_peck(e) : 0;   /* 0x411ab0 only reacts to kinds 0 / 1: the special attack does nothing */
     (void)kind;                                                      /* types 4..9, 13 call Enemy_TakeDamage with kind 0, so they always get the star */
     int shooter = e->type >= 7 && e->type <= 9;
     if (e->removed || e->st == (shooter ? 10 : 12) || e->hit_t > 0 || e->knock_t > 0) return 0;
@@ -86,6 +93,7 @@ void enemies_blast(EnemySet *s, Vec3 c, float r)
 {
     for (int i = 0; i < s->n; i++) {
         Enemy *e = &s->e[i]; if (e->removed || !e->inst->visible || e->hp <= 0) continue;
+        if (e->type == 12) { bomber_blast(e, c, r); continue; }
         float dx = e->pos.x - c.x, dy = e->pos.y - c.y, dz = e->pos.z - c.z; if (dx * dx + dy * dy + dz * dz >= r * r) continue;
         float l = sqrtf(dx * dx + dz * dz); Vec3 d = l > 1e-3f ? (Vec3){ dx / l, 0, dz / l } : (Vec3){ 0, 0, 1 };
         e->hit_t = e->knock_t = 0; enemy_take_damage(e, e->type == 14 ? 1.0f : e->hp, d);
@@ -383,6 +391,127 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     enemy_place(e);
 }
 
+/* ---- type 12, the bomb thrower = the W2B end boss (docs/ENEMY2.md 4): Update 0x4110c0, animation table 0x411c40 ----------
+ * He never walks (only the behaviour Stilstaan). He turns to the player at 2 pi rad/s, throws a bomb from his marker 1 as soon
+ * as he faces him (template 0 at 800 u/s, fuse 7.5 s four times, then 1.3 s once), swipes within 300, cannot be pecked (a peck
+ * only breaks his rhythm for 3.6 s) and loses 1 of his 5 hp per bomb blast, with 3.6 s of immunity after each. When he is dead
+ * msgmask 0x10 tells the script to end the level (W2B object 533: MSGTEST 16 -> 1083). Port: Touch is the 3D distance. */
+enum { BA_AIM, BA_THROW, BA_WIND, BA_AFTER, BA_BACK, BA_WIN, BA_STUN, BA_DEAD, BA_HIT };
+static const struct { int anim; float speed; int hold; } g_ba[] = {    /* logical 0, 14, 3, 5, 4, 6, 15, 8, 7 (records 0x4b1d10) */
+    { 0, 3, 0 }, { 6, 3, 1 }, { 3, 3, 1 }, { 4, 2, 1 }, { 5, 3, 1 }, { 7, 3, 1 }, { 8, 3, 1 }, { 10, 1, 1 }, { 9, 3, 1 } };
+static float ba_len(const Enemy *e, int a) { const Model *m = e->inst->model; int s = g_ba[a].anim; return (uint32_t)s < m->nanims ? m->anims[s].duration_s / g_ba[a].speed : 0.5f; }
+static void ba_play(Enemy *e, int s, float speed, int hold)
+{
+    Instance *in = e->inst; const Model *m = in->model; if ((uint32_t)s >= m->nanims) return;
+    if (in->anim != s) { in->anim = s; in->anim_time = 0; }
+    in->anim_speed = speed;
+    if (hold && in->anim_time > m->anims[s].duration_s - 0.15f) { in->anim_time = m->anims[s].duration_s * 0.999f; in->anim_speed = 0; }
+}
+static int bomber_peck(Enemy *e)                                        /* vtbl[39] 0x411ab0: never damage, always "not dead" */
+{
+    if (e->removed || e->st == 13 || e->hit_t > 0) return 0;
+    e->hit_t = ba_len(e, BA_STUN); audio_fx(54, NULL, NULL); e->st = 11;
+    return 0;
+}
+static void bomber_blast(Enemy *e, Vec3 c, float r)                    /* vtbl[40] 0x4119b0: 1 hp per explosion */
+{
+    float dx = e->pos.x - c.x, dy = e->pos.y - c.y, dz = e->pos.z - c.z;
+    if (e->st == 13 || e->hit_t > 0 || dx * dx + dy * dy + dz * dz >= r * r) return;
+    audio_fx(52, NULL, NULL); e->st = 14; e->hit_t = ba_len(e, BA_STUN);
+    e->hp -= 1.0f; game_hit_star(c);                                   /* Enemy_TakeDamage(0, 1.0, 0, pos, 0): the star on the blast point */
+    if (getenv("WOODY_BOSSLOG")) printf("  THROWER %u blast: hp %.0f", e->inst->index, e->hp), puts("");
+}
+Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, float r)
+{
+    for (int i = 0; i < s->n; i++) {
+        Enemy *e = &s->e[i];
+        if (e->type != 12 || e == owner || e->removed || !e->inst->visible || e->st == 1 || e->st == 13) continue;   /* vtbl[47] 0x411970: no actor in states 1 / 13 */
+        float R = r + e->P.radius, dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
+        float t = l2 > 1e-6f ? ((e->pos.x - a.x) * dx + (e->pos.z - a.z) * dz) / l2 : 0; if (t < 0) t = 0; if (t > 1) t = 1;
+        float cx = a.x + dx * t - e->pos.x, cz = a.z + dz * t - e->pos.z, y = a.y + (b.y - a.y) * t;
+        if (cx * cx + cz * cz <= R * R && y > e->pos.y - r && y < e->pos.y + e->P.height + r) return e;   /* 0x433920: swept sphere against the cylinder */
+    }
+    return NULL;
+}
+static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
+{
+    Instance *in = e->inst;
+    if (e->removed || !in->visible) return;
+    { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != 13) return; }   /* Think 0x41a320 */
+    Vec3 tp = pl->pos; float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z, d3 = sqrtf(dx * dx + dy * dy + dz * dz);
+    int see = !pl->dead_kind && d3 < e->P.see && fabsf(dy) < e->P.dy;   /* FindTarget(1, 0) */
+    if (e->reload > 0) e->reload -= dt;
+    if (e->hit_t > 0) e->hit_t -= dt;
+    if (see && d3 < e->P.melee && e->st != 4 && e->st != 5 && e->st != 13 && e->st != 14) e->st = 4;   /* byte table 0x4117f0 */
+    int anim = -1; float speed = 3; int hold = 1;
+    switch (e->st) {
+    case 0:                                                             /* idle 0x4111db: variations 9..13 (.ins 11..15, speed 2) */
+        if (see) { e->st = 2; break; }
+        if ((e->idle_t -= dt) <= 0) {
+            int n = 9 + rand() % 5; if (n == e->idle_a) n = 9 + (n - 8) % 5;
+            e->idle_a = n; const Model *m = in->model; int s = n + 2; e->idle_t = (uint32_t)s < m->nanims ? m->anims[s].duration_s / 2.0f : 1.0f;
+            in->anim = -1;                                              /* restart even when the same one comes again */
+        }
+        anim = e->idle_a + 2; speed = 2; hold = 1;
+        break;
+    case 2: {                                                           /* aim 0x4111ff: turn at P+0x14 = 2 pi, throw once he faces the player */
+        if (!see) { e->st = 0; break; }
+        float want = atan2f(dz, dx); steer(e, want, 6.2831853f, dt);
+        anim = g_ba[BA_AIM].anim; hold = 0;
+        if (e->reload > 0 || fabsf(ang_diff(want, e->ang)) > 1e-4f) break;
+        Vec3 m0; if (!shooter_vector(in, 1, &m0)) break;               /* GetVector(typecode 1) = his throwing hand */
+        Vec3 d = { tp.x - m0.x, tp.y - m0.y, tp.z - m0.z }; float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l < 1e-3f) break;
+        float fuse; if (e->nlong) { fuse = 7.5f; e->nlong--; } else { fuse = 1.3f; e->nlong = 4; }   /* P+0x94 / P+0x90 / P+0x98 */
+        if (!game_enemy_bomb(e, m0, (Vec3){ d.x / l, d.y / l, d.z / l }, 800.0f, fuse)) break;   /* no free bomb: the fuse count is spent anyway */
+        e->reload = ba_len(e, BA_THROW); e->st = 3; audio_fx(50, NULL, NULL);
+        if (getenv("WOODY_BOSSLOG")) printf("  THROWER %u throws a bomb (fuse %.1f)", in->index, fuse), puts("");
+        break; }
+    case 3:                                                             /* throw 0x411341 */
+        anim = g_ba[BA_THROW].anim;
+        if (e->reload > 0) break;
+        e->reload += e->P.reload - 0.5f * floorf((e->P.hp - e->hp) * 0.333333f); e->st = 2;   /* 0.5 s faster from 3 damage on */
+        break;
+    case 4:                                                             /* swipe start 0x4113b2 */
+        if (!see) { e->st = 0; break; }
+        e->windup = ba_len(e, BA_WIND); e->melee_t = ba_len(e, BA_WIND) + ba_len(e, BA_AFTER); e->st = 5; audio_fx(51, NULL, NULL);
+        in->anim = -1; anim = g_ba[BA_WIND].anim;
+        break;
+    case 5:                                                             /* swipe 0x411412 */
+        anim = g_ba[BA_WIND].anim;
+        if (!see || e->melee_t < 0) { e->st = 7; break; }
+        e->melee_t -= dt; e->windup -= dt;
+        if (e->windup > 0) break;
+        e->big_touch = 1;
+        if (d3 >= e->P.radius + 69.0f + 300.0f) { e->big_touch = 0; e->st = 0; break; }   /* Touch 0x411840 with the reach P+0x8c */
+        e->big_touch = 0;
+        { float l = sqrtf(dx * dx + dz * dz); Vec3 d = l > 1e-3f ? (Vec3){ dx / l, 0, dz / l } : (Vec3){ 1, 0, 0 };
+          if (player_hit(pl, e->P.bite, d)) { player_kill(pl, 3); e->st = 9; } else { e->t = ba_len(e, BA_AFTER); e->st = 6; } }
+        break;
+    case 6: anim = g_ba[BA_AFTER].anim; speed = 2; if (e->t > 0) e->t -= dt; else e->st = 11; break;
+    case 7: e->t = ba_len(e, BA_BACK); e->st = 8; in->anim = -1; /* fallthrough */
+    case 8: anim = g_ba[BA_BACK].anim; if ((e->t -= dt) <= 0) e->st = 0; break;
+    case 9: e->t = ba_len(e, BA_WIN); e->st = 10; in->anim = -1; /* fallthrough */
+    case 10: anim = g_ba[BA_WIN].anim; if ((e->t -= dt) <= 0) e->st = 0; break;
+    case 11: e->t = ba_len(e, BA_STUN); e->st = 12; in->anim = -1; /* fallthrough */
+    case 12: anim = g_ba[BA_STUN].anim; if ((e->t -= dt) <= 0) e->st = 0; break;
+    case 13:                                                            /* dead 0x4116ec */
+        anim = g_ba[BA_DEAD].anim; speed = 1; e->dead_t += dt;
+        if (e->dead_t >= ba_len(e, BA_DEAD) + 1.0f && !e->done) { e->done = 1; game_msgmask(in, 0x10, 1); if (getenv("WOODY_BOSSLOG")) printf("  THROWER %u dead: msgmask 0x10", in->index), puts(""); }
+        break;
+    case 14:                                                            /* hit by a blast 0x411759 */
+        anim = g_ba[BA_HIT].anim;
+        if (e->hp <= 0) { e->dead_t = 0; game_enemy_stars(e); e->attackable = 0; e->st = 13; audio_fx(53, NULL, NULL); in->anim = -1; }
+        else if (e->hit_t <= 0) e->st = 0;
+        break;
+    }
+    if (e->st == 4 || e->st == 7 || e->st == 9 || e->st == 11) anim = -1;   /* the set-up states have no animation of their own */
+    { int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);   /* ground following 0x41a4e0 */
+      e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
+      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; } }
+    if (anim >= 0) ba_play(e, anim, speed, hold);
+    enemy_place(e);
+}
+
 void enemy_warn_dive(Enemy *e, Vec3 d) { if (e->type == 9 && !e->removed && e->st != S_DEAD && e->st != S_HIT) { e->warn = d; e->st = S_DODGE0; } }
 void enemy_player_killed(Enemy *e)
 {
@@ -396,6 +525,7 @@ void enemies_msg11(EnemySet *s, Instance *inst, int n, int v)
     Enemy *e = NULL; for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst) e = &s->e[i];
     if (!e) return;
     if (e->type == 14) { if (n == 4) boss_reset(e); return; }        /* Enemy::HandleMsg 11/4 = vtbl[17]; the rest writes P fields the boss sets itself */
+    if (e->type == 12 && n == 4) { e->st = 0; e->reload = e->hit_t = e->t = e->idle_t = 0; e->nlong = 4; e->idle_a = 9; game_msgmask(inst, 0x10, 0); e->done = 0; return; }   /* Reset 0x411020 */
     switch (n) {
     case 0: e->P.leash = (float)v; break;
     case 1: e->P.see = (float)v; break;
@@ -420,6 +550,7 @@ void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt)
     for (int i = 0; i < s->n; i++) {
         Enemy *e = &s->e[i];
         if (e->type == 14) { boss_update(e, pl, cam_pos, dt); boss_frame_end(e); }
+        else if (e->type == 12) bomber_update(e, pl, cam_pos, dt);
         else if (e->type >= 7 && e->type <= 9) shooter_update(e, pl, cam_pos, dt); else enemy_update(e, pl, cam_pos, dt);
     }
 }

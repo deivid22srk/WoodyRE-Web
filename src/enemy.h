@@ -35,6 +35,7 @@ typedef struct Enemy {
     EnemyParams P; float reload; Vec3 warn, dodge_dir; int throw_hold;   /* shooters */
     BossState b;                                                         /* type 14 */
     int hand;                                                            /* ghost (type 13): fires from alternating hands */
+    int nlong, big_touch, idle_a, done; float idle_t, melee_t, windup;          /* bomb thrower (type 12): +0x200, +0x1fc, +0x1f8, +0x1f4, +0x1d4, +0x1f0 */
     Instance *inst; int type;
     int st;                         /* state machine 0x418cf0: 0 patrol, 1 chase, 2 notice, 3 miss, 4 dash, 6 brake, 8 wander, 9 hit, 11 win, 12 dead */
     Vec3 pos, home; float ang;      /* ang: movement angle, direction = (cos, 0, sin) */
@@ -48,7 +49,7 @@ typedef struct Enemy {
 #define MAX_ENEMIES 256
 typedef struct EnemySet { Enemy e[MAX_ENEMIES]; int n; } EnemySet;
 
-void enemies_add(EnemySet *s, Instance *inst, int type);                      /* on SetTypeInstance 4..9, 13, 14 */
+void enemies_add(EnemySet *s, Instance *inst, int type);                      /* on SetTypeInstance 4..9, 12, 13, 14 */
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt);
 /* vtbl[39] 0x419480: returns 1 when the enemy died. dir = (0,0,0) for a peck (no knockback). */
 int  enemy_take_damage(Enemy *e, float dmg, Vec3 dir);
@@ -63,6 +64,11 @@ void enemy_player_killed(Enemy *e);                                           /*
 void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, int visual, int sound_fx);
 float enemy_radius(const Enemy *e); float enemy_height(const Enemy *e);
 void enemy_place(Enemy *e);                                                   /* vtbl[44] 0x41a680: pos and the H angle into the instance placement */
+
+/* type 12, the bomb thrower (W2B end boss, docs/ENEMY2.md 4) */
+Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, float r);   /* HitActors 0x44a0a0 for a bomb: the first thrower whose cylinder the swept sphere touches */
+int  game_enemy_bomb(Enemy *e, Vec3 pos, Vec3 dir, float speed, float fuse);  /* Fire 0x411e80: 0 = no free bomb in the pool (in main_engine.c) */
+void game_msgmask(Instance *in, uint32_t bits, int on);                      /* MsgMask_Set 0x443e50 / _Clear 0x443e90 on the instance's script object (in main_engine.c) */
 
 /* class 14, the Buzz boss (boss.c, docs/BOSS14.md) */
 void boss_init(Enemy *e);                                                     /* ctor 0x40eb50 + PostLoad 0x40ec50 + factory Reset */

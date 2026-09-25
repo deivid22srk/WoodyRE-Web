@@ -62,6 +62,15 @@ python tools/tracecmp.py out/trace/live_House.txt      # vergelijk met de C-VM
 
 Berichten 1200..1300 (SetTypeInstance/flags) lopen niet via `0x401370` maar rechtstreeks via `0x403440` en verschijnen dus niet in de live trace; `tracecmp.py` filtert ze uit de emulatorstream. De init-berichten worden in het origineel pas na de eerste tick gerouteerd (de pomp draait na de VM-tick van elk frame).
 
+### 3.1 Een gescripte scène in het origineel starten: `tools/wsetvar.py`
+
+`python tools/wsetvar.py game --level W2B --var 1 --val 1 --at 3 --from 15 --out out/trace/w2b_boss.txt` start het level
+(zoals `wiris.py`, logo overgeslagen; reken op ~70 s voor INIT), roept 3 s na INIT de eigen `SetVar 0x443ca0(var, val)` aan
+(via een nepframe vanaf de VM-tick, gadget `add esp, 8; ret` op `0x41a4bd`, dus de watchers worden gewekt zoals in het spel)
+en logt vanaf `--from` s daarna elke tick de Perso (pos `+0x1f4`, instantie `+0xc`, toestand `+0x21c`, anim-slot 0, onGround),
+de cameramodus-index, `0x44a650`-aanroepen met hun positie en het GetHeight-resultaat na de snap aan het einde van een cinematic.
+Het ISO moet gemount zijn (E:).
+
 ## 4. Resultaat
 
 House, 854 ticks (~21 s), zonder invoer: de berichtenstroom van de C-VM ([src/ekovm.c](../src/ekovm.c)) is identiek aan die van het origineel, inclusief het `DELAY`-getimede bericht 1141 op tick 3 (time=10). Twee afwijkingen zijn daarbij gevonden en gefixt: de emulators gaven de berichten van de eerste init-pass door (het origineel gooit die weg), en de `TICK`-uitvoer van `ekorun` moest vóór de tick komen om diffbaar te zijn.
