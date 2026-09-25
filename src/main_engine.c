@@ -1392,7 +1392,7 @@ static void chests_blast(Vec3 c, float r)                                       
  * on template 0, docs/BOMB.md 6); homing, bounces, gravity of the plain shots and the fireball of visual 3 (which is
  * drawn as the bolt) are not. */
 typedef struct { Instance *inst, *target; int active, count, aim, kind, visual, anim; float T, t0, last, life, anim_dur, speed, gravity; } Launcher;   /* anim/anim_dur: 1002 [7] / [8] (+0x17c / +0x180); speed/gravity: 1002 [0] / [1] (T+0x20 / T+0x1c) */
-typedef struct { int active, visual; const Instance *owner; Vec3 pos, dir, dir0, origin; float age, life, dying, speed, damage, steer; Enemy *enemy; Missile *missile; } Shot;
+typedef struct { int active, visual; const Instance *owner; Vec3 pos, dir, dir0, origin; float age, life, dying, speed, damage, steer, vsteer, aim_h; Enemy *enemy; Missile *missile; } Shot;   /* vsteer / aim_h: T+0x44 / T+0x3c (class 16) */
 typedef struct { Vec3 pos; float t; int kind; } Flash;                             /* kind 0 = the flash of visual 2 (0x46f180), 1 = the muzzle flash of the missile (0x46fa40) */
 static Launcher g_launchers[32]; static int g_nlaunchers;
 static Shot g_shots[200]; static Flash g_flashes[64];
@@ -1440,6 +1440,14 @@ void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage
         shot_begin(s, owner->inst, sound_fx); return;
     }
 }
+void game_enemy_shot_v(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, float vsteer, float aim_h, int visual, int sound_fx)
+{
+    for (int i = 0; i < 200; i++) if (!g_shots[i].active) {
+        game_enemy_shot(owner, pos, dir, speed, damage, steer, visual, sound_fx);
+        if (g_shots[i].active && g_shots[i].enemy == owner) { g_shots[i].vsteer = vsteer; g_shots[i].aim_h = aim_h; }
+        return;
+    }
+}
 static void launchers_update(float now, float dt, Player *pl, const GelFile *gel, int player_ok)
 {
     for (int i = 0; i < g_nlaunchers; i++) {                                       /* think step 0x452780 */
@@ -1454,6 +1462,13 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
         if (s->steer > 0 && player_ok) {                                           /* xz homing 0x4493c0: k = (1 - steer)^(dt * 60), never turns back past the launch direction */
             float k = powf(1.0f - s->steer, dt * 60.0f), tx = pl->pos.x - s->pos.x, tz = pl->pos.z - s->pos.z, tl = sqrtf(tx * tx + tz * tz);
             if (tl > 1e-3f) { float nx = tx / tl * (1 - k) + s->dir.x * k, nz = tz / tl * (1 - k) + s->dir.z * k, nl = sqrtf(nx * nx + nz * nz); if (nl > 1e-4f && (nx * s->dir0.x + nz * s->dir0.z) >= 0) { s->dir.x = nx / nl; s->dir.z = nz / nl; } }
+        }
+        if (s->vsteer > 0 && player_ok && s->age < 15.0f) {                       /* vertical homing 0x44969d (T+0x4c = 15 s): a point one second ahead, vsteer per 1/60 s up or down */
+            float ty = pl->pos.y + s->aim_h, dy = s->pos.y - ty, stp = dt * 60.0f * s->vsteer; if (dy > 0) stp = -stp;
+            Vec3 q = { s->pos.x + s->dir.x * s->speed, s->pos.y + s->dir.y * s->speed + stp, s->pos.z + s->dir.z * s->speed };
+            int reached = dy > 0 ? q.y < ty : q.y > ty; if (reached) q.y = ty;
+            Vec3 v = { q.x - s->pos.x, q.y - s->pos.y, q.z - s->pos.z }; float vl = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+            if (vl > 1e-4f && dy != 0) { v.x /= vl; v.y /= vl; v.z /= vl; if (reached) { v.y *= 4.0f; vl = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); v.x /= vl; v.y /= vl; v.z /= vl; } s->dir = v; }
         }
         s->age += dt; Vec3 a = s->pos, b = { a.x + s->dir.x * s->speed * dt, a.y + s->dir.y * s->speed * dt, a.z + s->dir.z * s->speed * dt }; int end = s->age >= s->life;
         if (!end && player_ok) {                                                   /* swept sphere r 5 against the cylinder r 69: 74, feet - 5 .. feet + 198 */
@@ -1490,6 +1505,20 @@ void game_msgmask(Instance *in, uint32_t bits, int on) { if (g_vm && in) { if (o
 static struct { int on, cur, max; float t; } g_bossbar;      /* hud+0x48, +0x4c, +0x50 and the bar's slide-in clock */
 void game_boss_bar(int on, int cur, int max) { if (on && !g_bossbar.on) g_bossbar.t = 0; g_bossbar.on = on; g_bossbar.cur = cur; g_bossbar.max = max; }   /* 0x4484d0: 0x462470 starts the slide-in */
 void game_explosion(Vec3 p) { blast_add(p, 1400.0f); blast_add(p, 400.0f); }
+/* classes 15 / 16 (boss.c, docs/BOSS15_16.md) */
+float game_time(void) { return g_now; }
+void game_launcher_start(Instance *in)                                         /* 0x4522b0(1, 1.0, 0) = message 1000 [inst, -1]: one shot on the next think step */
+{
+    Launcher *l = in ? launcher_of(in) : NULL; if (!l) return;
+    l->target = NULL; l->count = 1; l->T = 1.0f; l->t0 = (float)g_now + 1e-3f; l->last = (float)g_now - 1.0f; l->active = 1;
+}
+void game_bombs_crush(Vec3 c, float r)                                         /* Boss2 0x40e9fd: the bombs in state 2 near a crusher go off */
+{
+    for (int i = 0; i < g_nbombs; i++) { Bomb *b = &g_bombs[i]; if (!b->in_use || b->state != 2) continue;
+        Vec3 d = { b->inst->position.x - c.x, b->inst->position.y - c.y, b->inst->position.z - c.z };
+        if (d.x * d.x + d.y * d.y + d.z * d.z < r * r) { if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u crushed", b->inst->index), puts(""); bomb_explode(b); } }
+}
+void game_bombs_discard(void) { bombs_discard_all(); }
 static struct { Instance *link; int on, has_prev; Vec3 prev; float acc; } g_bplume[3];
 static struct { Vec3 pos; float t, size, rot; } g_bsmoke[512]; static int g_bsmoke_next;
 void game_boss_smoke(Instance *link, int n, int on)
@@ -2247,7 +2276,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
      * authentic: Woody in Blackbox/Credits/Lang, the W2B end boss (type 12) and the W3B ghosts (type 13). The port used
      * to set the bit here on every actor class because Buzz came out without a rim, but that was the outline distance
      * being measured from the .ins position instead of the animated root inst+0x60 (issue #35, ins_anim_centre). */
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 12 || in->type == 13 || in->type == 14) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if ((in->type == 20 || in->type == 21) && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->type = in->type; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890; 21 = the bomb cannon */ if (in->type == 40 && !bomb_of(in) && g_nbombs < 16) { Bomb *b = &g_bombs[g_nbombs++]; memset(b, 0, sizeof *b); b->inst = in; b->var = -1; }   /* ctor 0x44d250: into the pool, parked visible where the .ins has it */ if ((in->type == 120 || in->type == 121) && g_nchests < 32) { int k = 0; while (k < g_nchests && g_chests[k] != in) k++; if (k == g_nchests) g_chests[g_nchests++] = in; }   /* ctor 0x451650, list 0x5e581c */ if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 80) storm_add(in);   /* the lightning rod (storm.c, docs/STORM.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; l->anim = -1; l->speed = 1000.0f; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || (in->type >= 12 && in->type <= 16)) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if ((in->type == 20 || in->type == 21) && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->type = in->type; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890; 21 = the bomb cannon */ if (in->type == 40 && !bomb_of(in) && g_nbombs < 16) { Bomb *b = &g_bombs[g_nbombs++]; memset(b, 0, sizeof *b); b->inst = in; b->var = -1; }   /* ctor 0x44d250: into the pool, parked visible where the .ins has it */ if ((in->type == 120 || in->type == 121) && g_nchests < 32) { int k = 0; while (k < g_nchests && g_chests[k] != in) k++; if (k == g_nchests) g_chests[g_nchests++] = in; }   /* ctor 0x451650, list 0x5e581c */ if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 80) storm_add(in);   /* the lightning rod (storm.c, docs/STORM.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; l->anim = -1; l->speed = 1000.0f; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1505: if (in && m->nargs > 1) game_splash(in->position, 1000.0f, (float)(int32_t)m->args[1] * 0.01f); break;   /* splash 0x46cdfd -> 0x478660 (docs/SPLASH.md 1) */
     case 1506: if (in && m->nargs > 4) water_param(in, (int32_t)m->args[1], (int32_t)m->args[2], (int32_t)m->args[3], (int32_t)m->args[4]); break;   /* SetWaterVolumeParameter 0x46ce38 */
     case 1500: if (in && m->nargs > 4) game_bubble(in, (int32_t)m->args[1], (int32_t)m->args[2] * 0.01f, (float)(int32_t)m->args[3], (float)(int32_t)m->args[4], NULL); break;   /* speech bubble 0x46ccc0: [inst, kind, duration cs, offY, offX] (K2R, S2R) */
@@ -2256,7 +2285,12 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
         break; }
     case 59: case 60:                                                               /* class 14 (the Buzz boss, 0x410070): 59 couples an instance, 60 names its mailbox var */
-        if (in && in->type == 14 && m->nargs > 1) enemies_boss_msg(&g_enemies, in, (int)m->id, m->args[1], m->id == 59 ? slot_instance(m->args[1]) : NULL);
+        if (in && (in->type == 14 || (m->id == 60 && (in->type == 15 || in->type == 16))) && m->nargs > 1) enemies_boss_msg(&g_enemies, in, (int)m->id, m->args[1], m->id == 59 ? slot_instance(m->args[1]) : NULL);
+        break;
+    case 61: case 62:                                                               /* classes 15 / 16 (docs/BOSS15_16.md): 61 links 8 instances, 62 a group number and 7 */
+        if (in && (in->type == 15 || in->type == 16)) { Instance *li[8] = { 0 }; int k0 = m->id == 62 ? 2 : 1, n = 0;
+            for (uint32_t k = (uint32_t)k0; k < m->nargs && n < 8; k++) li[n++] = slot_instance(m->args[k]);
+            enemies_boss_links(&g_enemies, in, (int)m->id, m->id == 62 && m->nargs > 1 ? (int)m->args[1] : 0, li, n); }
         break;
     case 15: case 16: case 17: case 18: case 19:                                    /* texture overrides (docs/INSTANCE.md 2): 16/18 frames - the level-select doors turn their
                                                                                      * red cross into a green tick with it -, 15/17 UV scroll (no level sends those); 0x42db50

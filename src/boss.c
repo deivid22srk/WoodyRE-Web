@@ -1,5 +1,6 @@
 /* boss.c - enemy class 14, Buzz Buzzard (docs/BOSS14.md): the end boss of W1B (mode 1, his flying machine) and of
  * W2D / W3D / WWS (mode 2, hopping). ctor 0x40eb50, vtable 0x4a98a8, Update 0x40eec0.
+ * The second half of the file: classes 15 and 16, Buzz's crusher fight (W2D, W3D) and his pad fight (W3D), docs/BOSS15_16.md.
  *
  * The class does nothing until the level script writes 1 or 2 into its mailbox variable (message 60); every update it
  * answers -1, and 3 once it is beaten. Mode 1: it chases the player HIGH (at its placement height, invulnerable), shakes
@@ -419,11 +420,391 @@ void boss_frame_end(Enemy *e)
 
 void enemies_boss_msg(EnemySet *s, Instance *inst, int id, uint32_t arg, Instance *linked)
 {
-    Enemy *e = NULL; for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst && s->e[i].type == 14) e = &s->e[i];
+    Enemy *e = NULL; for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst && s->e[i].type >= 14 && s->e[i].type <= 16) e = &s->e[i];
     if (!e) return;
+    if (e->type != 14) { if (id == 60) e->bb.mail_var = arg & 0xffffff; return; }   /* class 15 0x40e7e3 (+0x24c), class 16 0x40d7aa (+0x294) */
     if (id == 60) { e->b.mail_var = arg & 0xffffff; return; }        /* 0x4100b0 */
     if (id == 59 && linked) {                                        /* 0x4100d2: one instance, its own AnimCtrl, owner = the boss */
         e->b.link = linked; linked->scripted = 0; e->b.lrec = -1; e->b.lsub = 0;
         player_set_carried(inst, linked);                            /* it moves with the boss: never the boss's floor */
+    }
+}
+
+/* ==== classes 15 and 16: Buzz's second and third fights (docs/BOSS15_16.md) ==========================================
+ * Both are the Buzz model (43 animations: class 14 mode 2 plays 19..32, class 15 33..37, class 16 38..42) and both
+ * stand still (only the behaviour Stilstaan, flag 4 = ground following). The fight is in the instances the script links.
+ *
+ * Class 15 ("Boss2" in its debug string; W2D 762, W3D 790; ctor 0x40d850, vtable 0x4a9778, Update 0x40dd30): message 61
+ * links four crushers and four launchers (type 42, bomb throwers). PostLoad puts the centre C 1300 in front of him;
+ * Reset hangs the crushers 1000 above the corners (+-750, +-750) of a square around C and the launchers on a ring of 300
+ * around C, facing out. Command 4 in his mailbox (message 60) starts a 3 s spin of the crushers, then a 14 s cycle over
+ * and over: 2 s wait, then four crushers one after the other (pattern 0x4b1898) slam down in 0.3 s and rise in 1.0 s;
+ * with the first slam of a cycle the launcher in line with it throws one bomb (after the first hit: all four). A crusher
+ * costs the player a heart within 200 of its origin and sets off every bomb whose fuse is still in state 2 there. He
+ * cannot be pecked (vtbl[39] is `return 0`); only a bomb blast (radius 400 against his cylinder, or a bomb flying into
+ * him) takes 1 of his 6 hp. After the first hit the slams are 0.2 / 0.9 s, from 3 hp on 0.2 / 0.7 s. At 0 hp: mailbox
+ * := 3 every frame, death animation, every bomb in play discarded.
+ *
+ * Class 16 (W3D 801; ctor 0x40c730, vtable 0x4a9658, Update 0x40cb80): message 62 links four groups of seven instances
+ * (pads, pad tops, light columns, ambient volumes) that Reset puts on a circle of 1200 around his placement. Command 5
+ * makes him appear on a pad in a light column (fading in over 1.5 s), taunt, throw three homing fireballs (straight at
+ * the player and +-45 degrees, 2000 u/s, 4 damage), fade out (1.5 s), send a wave of light round the columns for
+ * `interval` s (2.0) and come back three pads further on. Only while he taunts or throws does a hit count (with the
+ * attacker's damage, 10 hp); every hit ends that round and shortens the wave by 0.2 s. At 0 hp: mailbox := 3 every
+ * frame, death animation, the columns gone.
+ *
+ * Not ported: the dynamic lights 0x498790 of the columns and the wave (the port has no dynamic lights), actor list 1
+ * (0x40c080, only the rocket explosion reads it), the turning sense of class 15's intro spin (not verified), and
+ * class 90 mode 1, so class 16's group-3 volumes show nothing. */
+
+typedef struct { int sub[4]; int prio; float speed; } PRec;
+static const PRec g_r15[5] = {                                       /* AnimCtrl records 0x4b18a8 (getter 0x40eb30), all restart 1 */
+    { { 36, 36, 36, 36 }, 1000, 1 }, { { 33, 36, 36, 36 }, 1001, 1 }, { { 34, 36, 36, 36 }, 1001, 1 }, { { 35, 36, 36, 36 }, 1002, 1 },
+    { { 37, -1, -1, -1 }, 1003, 1 } };
+static const PRec g_r16[5] = {                                       /* records 0x4b17a8 (getter 0x40d810), all restart 1 */
+    { { 41, 41, 41, 41 }, 1000, 3 }, { { 40, 41, 41, 41 }, 1001, 3 }, { { 39, 41, 41, 41 }, 1002, 3 }, { { 38, 41, 41, 41 }, 1001, 3 },
+    { { 42, -1, -1, -1 }, 1003, 3 } };
+/* Request 0x436b70 queues; of a frame's requests the highest priority wins, the last one among equals */
+static void ac_request(BossBState *b, const PRec *tab, int n) { if (b->req < 0 || tab[n].prio >= tab[b->req].prio) b->req = n; }
+/* Tick 0x436a50: the winner replaces the running record if its priority is not lower, or once the instance animation has
+ * ended (inst+0xc0 == 1: the end of one animation of the chain, or the held last frame); then the chain plays on, the
+ * last entry looping, -1 = hold */
+static void ac_tick(Instance *in, const PRec *tab, BossBState *b)
+{
+    const Model *m = in->model; int n = b->req; b->req = -1;
+    if (n >= 0 && n != b->rec && (b->rec < 0 || tab[b->rec].prio <= tab[n].prio || b->ended)) {
+        b->rec = n; b->sub = 0; b->held = 0; in->anim = tab[n].sub[0]; in->anim_time = 0;   /* restart byte: inst+0xa8 = now */
+    }
+    b->ended = b->held;
+    if (b->rec < 0 || (uint32_t)in->anim >= m->nanims) return;
+    const PRec *r = &tab[b->rec]; float L = m->anims[in->anim].duration_s;
+    if (b->held) { in->anim_time = L * 0.999f; in->anim_speed = 0; return; }   /* the clock advances after this: stop just before the end */
+    in->anim_speed = r->speed;
+    if (in->anim_time < L) return;
+    int nx = r->sub[b->sub < 3 ? b->sub + 1 : 3]; b->ended = 1;
+    if (nx < 0 || (uint32_t)nx >= m->nanims) { b->held = 1; in->anim_time = L * 0.999f; in->anim_speed = 0; }
+    else { in->anim_time -= L; in->anim = nx; if (b->sub < 3) b->sub++; }
+}
+static float ac_len(const Instance *in, const PRec *tab, int n)      /* AnimLen 0x436b90(n, 0) = duration(sub[0]) / speed */
+{
+    const Model *m = in->model; int s = tab[n].sub[0];
+    return (uint32_t)s < m->nanims ? m->anims[s].duration_s / tab[n].speed : 0;
+}
+
+static float frand(void) { return (float)rand() / (float)RAND_MAX; }  /* 0x43ff40 */
+static float start_angle(const Instance *in)                         /* PostLoad 0x419ec1: the H angle from the placement, as in boss_init */
+{
+    Quat q = in->quat; float l = sqrtf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w); if (l > 1e-6f) { q.x /= l; q.y /= l; }
+    return PI_F * 0.5f - 2.0f * atan2f(-q.y, q.x);
+}
+static void link_place(Instance *l, Vec3 p)                          /* +0xc and the placement matrix; posed again for the marker queries */
+{
+    l->position = p; mat4_from_trs(&l->world, p, l->quat, l->scale); ins_pose(l, l->anim, l->anim_time);
+}
+/* rows (d x up, d, up) = the images of the model's x, y, z axes: local +y along d, local +z up. The .ins default quat
+ * (rotx -90) sends local y to -z, so this is enemy_place's yaw quaternion for -d (enemy_place sends local y to -dir). */
+static void link_face(Instance *l, Vec3 d)
+{
+    float yaw = atan2f(-d.x, -d.z), c = cosf(yaw * 0.5f), s = sinf(yaw * 0.5f);
+    l->quat.x = 0.70710678f * c; l->quat.y = -0.70710678f * s; l->quat.z = -0.70710678f * s; l->quat.w = -0.70710678f * c;
+}
+static void ground_follow(Enemy *e, Player *pl, float dt)            /* Enemy::Update -> vtbl[43] 0x41a4e0 (flag 4): v += 200 dt - 0.2 v per frame */
+{
+    int found; float gy = player_ground_query(pl, e->inst, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+    e->vfall += e->P.fall_g * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
+    if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; }
+}
+/* 0x40ea70(c, r, base, R, H): a sphere against an upright cylinder: the y gap to [base, base + H], then 3D against r + R */
+static int sphere_cyl(Vec3 c, float r, Vec3 base, float R, float H)
+{
+    float dy = c.y > base.y + H ? c.y - (base.y + H) : c.y < base.y ? c.y - base.y : 0, dx = c.x - base.x, dz = c.z - base.z;
+    return dx * dx + dy * dy + dz * dz - R * R - 2.0f * r * R - r * r < 0;
+}
+
+/* ---- class 15 ------------------------------------------------------------------------------------------------------ */
+static const float g_T15[4][3] = { { 750, 1000, 750 }, { 750, 1000, -750 }, { -750, 1000, -750 }, { -750, 1000, 750 } };   /* 0x4b1838 */
+static const unsigned char g_pat15[16] = { 0, 1, 2, 3, 1, 2, 3, 0, 2, 3, 0, 1, 3, 0, 1, 2 };                            /* 0x4b1898 */
+static const Player *g_b15_pl;
+static Vec3 frame_pt(const BossBState *b, float x, float y, float z)   /* C + x R + y U + z W */
+{
+    return (Vec3){ b->C.x + x * b->R.x + y * b->U.x + z * b->W.x, b->C.y + x * b->R.y + y * b->U.y + z * b->W.y, b->C.z + x * b->R.z + y * b->U.z + z * b->W.z };
+}
+void boss15_reset(Enemy *e)                                          /* vtbl[17] 0x40da50 (Enemy::Reset 0x41a010 first) */
+{
+    BossBState *b = &e->bb;
+    e->pos = e->home; e->vfall = 0; e->inst->visible = 1;           /* 0x407790: back in the world */
+    e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
+    b->st = 1; e->hit_t = 1.0f; b->t_intro = 0; b->row = 0; b->phase = 0; b->t_taunt = 5.0f; b->phase_flag = 0;
+    if (b->crush[0]) for (int i = 0; i < 4; i++) {
+        const float *T = g_T15[i];
+        if (b->crush[i]) link_place(b->crush[i], frame_pt(b, T[0], T[1], T[2]));
+        float a = 2.0f * PI_F * (float)((0x40 - 0x80 * i) & 0x1ff) / 512.0f, s = sinf(a), c = cosf(a);   /* sine table [0x5e823c], 512 steps */
+        Instance *l = b->launch[i]; if (!l) continue;
+        link_face(l, (Vec3){ s * b->R.x - c * b->W.x, 0, s * b->R.z - c * b->W.z });   /* row 1 (+0x34) points away from C */
+        link_place(l, frame_pt(b, 300.0f * s, 15.0f, -300.0f * c));
+    }
+    b->rec = -1; b->req = -1; b->ended = b->held = 0; ac_request(b, g_r15, 0);   /* AnimCtrl vtbl[4] and Request(0) */
+}
+void boss15_init(Enemy *e)
+{
+    BossBState *b = &e->bb; Instance *in = e->inst;
+    e->P.radius = 50; e->P.height = 140; e->P.hp = 6; e->P.see = 1000; e->P.dy = 1000; e->P.active_d = 3500; e->P.fall_g = 200;   /* subtype 12, 0x41db5f */
+    e->attackable = 1;
+    e->ang = e->want_ang = start_angle(in);
+    b->W = (Vec3){ cosf(e->ang), 0, sinf(e->ang) }; b->U = (Vec3){ 0, 1, 0 }; b->R = (Vec3){ b->W.z, 0, -b->W.x };   /* 0x41b860, then 0x46d320 */
+    b->C = (Vec3){ in->position.x + b->W.x * 1300.0f, in->position.y, in->position.z + b->W.z * 1300.0f };           /* +0x20c (0x4a9860) */
+    b->mail_var = 0;
+    boss15_reset(e);
+}
+/* 0x40e930: crusher i against the player (sphere 200 around its origin against the Perso's cylinder: 1 heart, no push)
+ * and against the bombs whose fuse is still in state 2 */
+static void crush_hit(Enemy *e, Player *pl, int i)
+{
+    Vec3 c = e->bb.crush[i]->position;
+    if (!pl->dead_kind && sphere_cyl(c, 200.0f, pl->pos, B_PL_R, player_body_height(pl)))
+        if (player_hit(pl, 1.0f, (Vec3){ 0, 0, 0 })) player_kill(pl, 3);   /* direction [0x53a4c0]: never written, so no push */
+    game_bombs_crush(c, 200.0f);                                     /* |bomb - crusher|^2 < 40000 (0x4a9890) */
+}
+void boss15_blast(Enemy *e, Vec3 c, float r)                         /* vtbl[40] 0x40e800, no state or immunity test */
+{
+    BossBState *b = &e->bb;
+    if (!sphere_cyl(c, r, e->pos, e->P.radius, e->P.height)) return;
+    e->hp -= 1.0f;
+    if (e->hp == 0) {
+        if (g_b15_pl && g_b15_pl->dead_kind) { e->hp = 1.0f; return; }   /* an Npc of category 1 whose vtbl[36] (dead) holds: no double knock-out */
+        b->st = 5;
+    } else if (e->hp <= 3.0f) { if (b->phase == 1) { b->phase_flag = 1; b->phase = 2; } }
+    else if (e->hp <= 6.0f) { if (b->phase == 0) { b->phase_flag = 1; b->phase = 1; } }
+    ac_request(b, g_r15, 3); audio_fx(47, NULL, NULL);
+    printf("  BOSS2 %u blast: hp %.0f", e->inst->index, e->hp), puts("");
+}
+int boss15_protects(const EnemySet *s)                               /* the Perso's Kill 0x44c110: any category-2 / subtype-12 actor whose vtbl[36] 0x40e710 holds */
+{
+    for (int i = 0; s && i < s->n; i++) if (s->e[i].type == 15 && s->e[i].bb.st == 5 && s->e[i].inst->visible) return 1;
+    return 0;
+}
+void boss15_update(Enemy *e, Player *pl, Vec3 cam, float dt)
+{
+    BossBState *b = &e->bb; Instance *in = e->inst;
+    g_b15_pl = pl;
+    if (!in->visible) return;                                        /* out of the world (0x407850): no Think */
+    if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;    /* Think 0x41a320: 3500 */
+    ground_follow(e, pl, dt); enemy_place(e);                        /* Enemy::Update 0x41a3e0; its vtbl[45] is empty */
+    if (!b->crush[0]) return;
+    game_boss_bar(1, (int)e->hp, (int)e->P.hp);                      /* 0x40dd80 */
+    switch (b->st) {
+    case 1:                                                          /* waiting for command 4, 0x40dda0 (no answer is written) */
+        if (game_var_get(b->mail_var) == 4) { b->st = 2; ac_request(b, g_r15, 0); audio_fx(44, NULL, NULL); break; }
+        /* fallthrough: the same taunts as state 4 */
+    case 4:
+        if ((b->t_taunt -= dt) < 0) { b->t_taunt = frand() * 10.0f + 5.0f; ac_request(b, g_r15, frand() * 2.0f < 1.0f ? 1 : 2); }   /* every 5..15 s */
+        else ac_request(b, g_r15, 0);
+        if (b->st == 1) break;
+        {   /* the attack cycle 0x40e2a6 */
+            int idx = g_pat15[b->nstep * b->row + b->step]; const float *T = g_T15[idx];
+            if (b->new_step) {
+                if (b->fire == 1) game_launcher_start(b->launch[(idx + 3) & 3]);   /* the launcher on the crusher's diagonal */
+                else if (b->fire == 4) for (int k = 0; k < b->fire; k++) game_launcher_start(b->launch[k]);
+                b->new_step = 0;
+            }
+            b->t_cycle += dt;
+            if (b->t_cycle > 2.0f) { if (b->t_down < b->down) b->t_down += dt; else if (b->t_up < b->up) b->t_up += dt; }   /* 0x4a9870 */
+            if (b->t_down < b->down) {                               /* slamming down to C's height */
+                link_place(b->crush[idx], frame_pt(b, T[0], T[1] - T[1] * (b->t_down / b->down), T[2])); b->crush[idx]->visible = 1;   /* 0x4077f0 */
+                crush_hit(e, pl, idx);
+            } else if (b->t_up < b->up) {                            /* rising again */
+                if (b->t_up == 0) { audio_fx(38, NULL, NULL); game_cam_shake(0.7f); }   /* the impact */
+                link_place(b->crush[idx], frame_pt(b, T[0], b->t_up / b->up * T[1], T[2]));
+                crush_hit(e, pl, idx);
+            } else if (b->t_cycle > b->hold) {                       /* the cycle is over: the next row of the pattern */
+                b->row = (b->row + 1) % b->nstep; b->t_down = b->t_up = 0; b->new_step = 1;
+                if (b->phase_flag) { b->st = 3; b->phase_flag = 0; }
+                audio_fx(48, NULL, NULL); b->t_cycle = 0; b->step = 0;
+            } else {                                                 /* back on top: the next crusher of the row */
+                link_place(b->crush[idx], frame_pt(b, T[0], T[1], T[2]));
+                if (b->step < b->nstep - 1) { b->step++; b->t_down = b->t_up = 0; }
+            }
+            if (getenv("WOODY_BOSSLOG")) printf("  Boss2 -> Vie:%f   AttackPhase:%d  (t %.2f crusher %d down %.2f up %.2f cycle %.2f)", e->hp, b->phase, game_time(), idx, b->t_down, b->t_up, b->t_cycle), puts("");   /* 0x4b1934 */
+        }
+        break;
+    case 2: {                                                        /* the crushers spin 0x40de59: a turn in 2.4 s, a quarter back in 0.6 s */
+        b->t_intro += dt; float f = b->t_intro * (1.0f / 3.0f), a;
+        if (f <= 0.8f) a = (float)(int)(f * 1.25f * 512.0f);
+        else if (f < 1.0f) a = (float)(int)(512.0f - (f - 0.8f) * 1.25f * 512.0f);
+        else a = 0;                                                  /* 90 degrees off, which the square does not show */
+        float c = cosf(a * 2.0f * PI_F / 512.0f), s = sinf(a * 2.0f * PI_F / 512.0f);   /* 0x46d220(0, a, 0): about the frame's up axis */
+        for (int i = 0; i < 4; i++) if (b->crush[i]) { const float *T = g_T15[i]; link_place(b->crush[i], frame_pt(b, T[0] * c + T[2] * s, T[1], T[2] * c - T[0] * s)); }
+        if (f >= 1.0f) { b->t_intro = 0; b->st = 3; audio_fx_stop(44, NULL, 0); }
+        break; }
+    case 3:                                                          /* set up the phase 0x40e151 */
+        b->nstep = 4; b->new_step = 1; b->hold = 14.0f;
+        if (b->phase == 0) { b->step = 0; b->t_down = b->t_up = b->t_cycle = 0; b->fire = 1; b->up = 1.0f; b->down = 0.3f; }
+        else if (b->phase == 1) { b->fire = 4; b->up = 0.9f; b->down = 0.2f; }
+        else { b->fire = 4; b->up = 0.7f; b->down = 0.2f; }
+        b->st = 4;
+        break;
+    case 5:                                                          /* beaten 0x40e6bf, every frame */
+        game_var_set(b->mail_var, 3); ac_request(b, g_r15, 4); game_bombs_discard();
+        break;
+    }
+    ac_tick(in, g_r15, b);
+    if (getenv("WOODY_BOSSLOG") && b->st != 4) printf("  boss15 st %d hp %.0f pos %.0f %.0f %.0f rec %d anim %d", b->st, e->hp, e->pos.x, e->pos.y, e->pos.z, b->rec, in->anim), puts("");
+}
+
+/* ---- class 16 ------------------------------------------------------------------------------------------------------ */
+static Vec3 pad_top(const BossBState *b, int i) { Vec3 p = b->grp[0][i]->position; p.y += 30.0f; return p; }   /* 0x4a9740 */
+static void col_fade(Instance *c, float f) { if (c) c->fade = c->fade_target = f; }   /* +0x6c; a scripted instance: its fade target must follow */
+static void face_player(Enemy *e, const Player *pl) { e->ang = e->want_ang = ang_to(e->pos, pl->pos); }   /* 0x41b230: H snapped to the target */
+static void loop_anim0(Instance *g, float now)                       /* 0x436ca0(inst, 0.3, 0, 0, 0, 0): anim 0 in all slots, speed 0.3 * 3 */
+{
+    g->slot[0] = g->slot[1] = g->slot[2] = g->slot[3] = 0; g->a_speed = g->a_base_speed = 0.9f; g->a_start = now; g->a_ended = 0;
+}
+void boss16_reset(Enemy *e)                                          /* vtbl[17] 0x40c8f0 (Enemy::Reset 0x41a010 first) */
+{
+    BossBState *b = &e->bb; float now = game_time();
+    e->pos = e->home; e->vfall = 0; e->inst->visible = 1;
+    e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
+    b->st = 1; b->cur = 0; b->interval = 2.0f;
+    for (int i = 0; i < 7; i++) {
+        float a = (float)i * 0.8975979f, x = b->C.x + cosf(a) * b->radius, z = b->C.z + sinf(a) * b->radius;   /* 2 pi / 7 (0x4a9744) */
+        Instance *g;
+        if ((g = b->grp[0][i])) link_place(g, (Vec3){ x, b->C.y, z });                 /* the pads */
+        if ((g = b->grp[2][i])) { link_place(g, (Vec3){ x, b->C.y + 30.0f, z }); g->visible = 0; b->glow_n[i] = 0; loop_anim0(g, now); }   /* the columns: out of the world */
+        if ((g = b->grp[1][i])) { link_place(g, (Vec3){ x, b->C.y + 30.0f, z }); loop_anim0(g, now); }
+        if ((g = b->grp[3][i])) link_place(g, (Vec3){ x, b->C.y - b->depth[i], z });  /* bottom on C.y */
+    }
+    if (b->grp[0][0]) e->pos = pad_top(b, 0);
+    for (int k = 0; k < 16; k++) b->wave[k].t = -1;
+    b->rec = -1; b->req = -1; b->ended = b->held = 0; ac_request(b, g_r16, 0);
+}
+void boss16_init(Enemy *e)
+{
+    BossBState *b = &e->bb; Instance *in = e->inst;
+    e->P.radius = 50; e->P.height = 140; e->P.hp = 10; e->P.see = 4600; e->P.dy = 3000; e->P.active_d = 3000; e->P.fall_g = 200;   /* subtype 13, 0x41dba7 */
+    e->attackable = 1;
+    e->ang = e->want_ang = start_angle(in);
+    b->C = in->position; b->radius = 1200.0f;                        /* +0x254, +0x268 */
+    b->mail_var = 0;
+    boss16_reset(e);
+}
+int boss16_take_damage(Enemy *e, float dmg)                          /* vtbl[39] 0x40d480 */
+{
+    BossBState *b = &e->bb;
+    if (b->st != 3 && b->st != 4) return 0;                          /* only while he stands on his pad, visible */
+    b->interval -= 0.2f; b->t298 = 0; b->st = 5;                     /* 0x4a9760 */
+    e->hp -= dmg;                                                     /* Enemy_TakeDamage 0x41adc0: his vtbl[53] is 0, so no knockback refuses it */
+    audio_fx_stop(66, NULL, 0); audio_fx(65, NULL, NULL);
+    printf("  BOSS3 %u hit, hp %.0f", e->inst->index, e->hp), puts("");
+    if (e->hp <= 0) { b->st = 7; return 1; }
+    ac_request(b, g_r16, 2);
+    return 1;                                                         /* "dead" whatever the hp (mov al, 1), literally */
+}
+static void wave_tick(Enemy *e, float dt)                            /* the records 0x40c610 (effect pool [0x5e823c]+0xdb8), 0.9 s each */
+{
+    BossBState *b = &e->bb;
+    for (int k = 0; k < 16; k++) {
+        if (b->wave[k].t < 0) continue;
+        int i = b->wave[k].idx; Instance *c = b->grp[2][i]; float f = (b->wave[k].t += dt) / 0.9f;
+        if (f < 1.0f) {
+            float v = f * 0.4f + 0.6f;                               /* 0x4a9654, 0x4a9650: from 0.6 to faded out */
+            if (b->glow_fr[i] == b->frame) { if (c && v < c->fade) col_fade(c, v); }   /* two records on one column: the brighter wins */
+            else { col_fade(c, v); b->glow_fr[i] = b->frame; }
+        } else {
+            if (--b->glow_n[i] == 0 && b->st == 6 && c) { col_fade(c, 0.6f); c->visible = 0; }   /* 0x407850 */
+            b->wave[k].t = -1;
+        }
+    }
+}
+void boss16_update(Enemy *e, Player *pl, Vec3 cam, float dt)
+{
+    BossBState *b = &e->bb; Instance *in = e->inst;
+    if (!in->visible) return;
+    if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;    /* Think 0x41a320: 3000 */
+    ground_follow(e, pl, dt); enemy_place(e);
+    if (!b->grp[0][0]) return;
+    b->frame++;
+    game_boss_bar(1, (int)e->hp, (int)e->P.hp);                      /* 0x40cbf1 */
+    Instance *col = b->grp[2][b->cur];
+    switch (b->st) {
+    case 1:                                                          /* invisible, waiting for command 5, 0x40cc0d */
+        in->fade = 1.0f;
+        if (game_var_get(b->mail_var) == 5) { b->t298 = 0; b->st = 2; e->pos = pad_top(b, b->cur); e->vfall = 0; }
+        break;
+    case 2: {                                                        /* appear 0x40cc73: 1.5 s, in his column */
+        b->t298 += dt; float f = b->t298 * 0.6666667f;               /* 0x4a975c */
+        if (col) col->visible = 1;                                   /* 0x4077f0 */
+        col_fade(col, 0.6f);
+        if (f < 1.0f) { face_player(e, pl); in->fade = 1.0f - f; }
+        else { b->st = 3; b->t29c = 0; audio_fx(66, NULL, NULL); }
+        break; }
+    case 3:                                                          /* taunt 0x40cd3a for AnimLen(1) */
+        b->t29c += dt; ac_request(b, g_r16, 1); col_fade(col, 0.6f); face_player(e, pl);
+        if (ac_len(in, g_r16, 1) < b->t29c) { b->t2a0 = 0; b->st = 4; }
+        break;
+    case 4:                                                          /* throw 0x40cdde: at 62 % of AnimLen(3) (0x4a9758) */
+        ac_request(b, g_r16, 3); col_fade(col, 0.6f); b->t2a0 += dt;
+        if (ac_len(in, g_r16, 3) * 0.62f < b->t2a0) {
+            audio_fx(67, NULL, NULL);
+            Vec3 o = { e->pos.x, e->pos.y + 150.0f, e->pos.z }, d = { pl->pos.x - o.x, 0, pl->pos.z - o.z };   /* 0x4a9754; flat */
+            float l = sqrtf(d.x * d.x + d.z * d.z); if (l > 1e-4f) { d.x /= l; d.z /= l; } else d = (Vec3){ 0, 0, 1 };
+            Vec3 R = { d.z, 0, -d.x };                               /* 0x46d320(d): rows R, up, d */
+            static const float D[3][2] = { { 0.70710677f, 0.70710677f }, { -0.70710677f, 0.70710677f }, { 0, 1 } };   /* (x, z) of the three local directions */
+            for (int k = 0; k < 3; k++)                              /* template 1, speed P+0x60, damage P+0x40, steer P+0x68, vertical P+0x70, visual P+0x74 */
+                game_enemy_shot_v(e, o, (Vec3){ D[k][0] * R.x + D[k][1] * d.x, 0, D[k][0] * R.z + D[k][1] * d.z }, 2000.0f, 4.0f, 0.1f, 30.0f, 30.0f, 3, 20);
+            b->t298 = 0; b->st = 5;
+        }
+        break;
+    case 5: {                                                        /* vanish 0x40d15e: 1.5 s */
+        b->t298 += dt; float f = b->t298 * 0.6666667f;
+        ac_request(b, g_r16, 0); col_fade(col, f * 0.4f + 0.6f);
+        if (f < 1.0f) in->fade = f;
+        else { if (col) col->visible = 0; b->st = 6; b->t2a4 = 0; b->t264 = 0; in->fade = 1.0f; }
+        if (find_target(e, pl)) face_player(e, pl);                  /* vtbl[48](1, 0) */
+        break; }
+    case 6:                                                          /* the wave 0x40d24a: ten columns light up, one after the other, in `interval` s */
+        b->t2a4 += dt; b->t264 += dt; in->fade = 1.0f;
+        if (b->t2a4 < b->interval) {
+            int n = (int)(b->t264 * 10.0f / b->interval); b->t264 -= b->interval * 0.1f * (float)n;
+            int k = (int)(b->t2a4 * -10.0f / b->interval), first = (b->cur - k - n) % 7 + 1;
+            for (int j = 0; j < n; j++) {
+                int s = 0; while (s < 16 && b->wave[s].t >= 0) s++; if (s == 16) break;   /* the original's pool holds 2000 */
+                int i = (first + j) % 7; b->wave[s].t = 0; b->wave[s].idx = i;
+                if (b->grp[2][i]) b->grp[2][i]->visible = 1;          /* 0x4077f0 */
+                b->glow_n[i]++; b->glow_fr[i] = b->frame;
+            }
+        } else { b->cur = (b->cur + 3) % 7; b->st = 2; b->t298 = 0; e->pos = pad_top(b, b->cur); e->vfall = 0; }   /* three pads on */
+        break;
+    case 7:                                                          /* beaten 0x40d3f6, every frame */
+        game_var_set(b->mail_var, 3); ac_request(b, g_r16, 4);
+        for (int i = 0; i < 7; i++) if (b->grp[2][i]) b->grp[2][i]->visible = 0;
+        break;
+    }
+    wave_tick(e, dt);
+    ac_tick(in, g_r16, b);
+    if (getenv("WOODY_BOSSLOG")) printf("  boss16 t %.2f st %d cur %d hp %.0f fade %.2f pos %.0f %.0f %.0f rec %d anim %d", game_time(), b->st, b->cur, e->hp, in->fade, e->pos.x, e->pos.y, e->pos.z, b->rec, in->anim), puts("");
+}
+
+/* messages 61 (class 15, 0x40e749) and 62 (class 16, 0x40d55d): every linked instance gets +8 |= 0x20 (no re-cell on
+ * animation; the port has no cells), class 15's four crushers also 0x40 (not collidable), class 16's columns and volumes
+ * go out of the world (0x407850). Then Reset puts everything in place (class 16: after every group). */
+void enemies_boss_links(EnemySet *s, Instance *inst, int id, int group, Instance **li, int n)
+{
+    Enemy *e = NULL; for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst && (s->e[i].type == 15 || s->e[i].type == 16)) e = &s->e[i];
+    if (!e) return;
+    BossBState *b = &e->bb;
+    if (id == 61 && e->type == 15) {
+        for (int i = 0; i < 8 && i < n; i++) { if (i < 4) { b->crush[i] = li[i]; if (li[i]) li[i]->noncollide = 1; } else b->launch[i - 4] = li[i]; }
+        boss15_reset(e);
+    } else if (id == 62 && e->type == 16 && group >= 0 && group < 4) {
+        for (int i = 0; i < 7 && i < n; i++) {
+            Instance *g = li[i]; b->grp[group][i] = g; if (!g) continue;
+            if (group == 2 || group == 3) g->visible = 0;
+            if (group == 3) {                                          /* 0x40d6be: the lowest point of the model, rotated and scaled */
+                Mat4 w; mat4_from_trs(&w, (Vec3){ 0, 0, 0 }, g->quat, g->scale); const Model *m = g->model; float lo = 0;
+                for (uint32_t k = 0; k < m->npoints; k++) { Vec3 p = m->points[k].pos; float y = w.m[1] * p.x + w.m[5] * p.y + w.m[9] * p.z; if (k == 0 || y < lo) lo = y; }
+                b->depth[i] = lo;
+            }
+        }
+        boss16_reset(e);
     }
 }
