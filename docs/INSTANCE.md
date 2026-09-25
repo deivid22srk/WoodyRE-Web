@@ -168,6 +168,41 @@ forward offset += frac(su·t); mode 5 (17, arg2=0): endless backward. The offset
 the caller restores the old values after drawing (`0x43c369`).
 Message 19 (`0x42db86`): `+0xd8 &= 0xc0` = both overrides off.
 
+**Handlers 15..18, decompiled** (`0x42d9c3`, `0x42da32`, `0x42daae`, `0x42db0f`; `edi` = message, `+0xc` = arg1 …; `[0x4aa0ac]` = 0.01):
+```c
+case 15: inst->b_da = arg1;                                   /* byte, never read */
+         if (arg2 == 1) d8 = (d8 & 0xcf) | 0x08;              /* bits 3-5 = 1 */
+         else if (arg2 == 0) d8 = (d8 & 0xd7) | 0x10;         /* bits 3-5 = 2; any other arg2: bits unchanged */
+         inst->t_a = now;  inst->f_a = arg3 * 0.01f;  inst->T2 = arg4 * 0.01f;       /* +0xe4, +0xe8, +0xec */
+case 17: same with (d8 & 0xe7) | 0x20 (mode 4) and (d8 & 0xef) | 0x28 (mode 5); +0xec is left alone
+case 16: inst->b_d9 = arg1; arg2 1/0/2 -> (d8 & 0xf9)|1, (d8 & 0xfa)|2, (d8 & 0xfb)|3 (modes 1/2/3); +0xdc = now; +0xe0 = arg3 * 0.01f
+case 18: arg2 1/0/2 -> (d8 & 0xfc)|4, (d8 & 0xfd)|5, (d8 & 0xfe)|6 (modes 4/5/6); +0xdc, +0xe0 as 16
+```
+(`now` = `[0x509adc]+0x30`.) The and/or masks do not clear the whole field, but whatever it held before, it ends in the mode named, because each
+mask clears exactly the bits of the field that its own pattern leaves 0. The scroll part of `0x47f290` (`0x47f495`..`0x47f5f7`, jump table
+`0x47f61c` = `0x47f50a`, `0x47f530`, `0x47f5f7`, `0x47f556`, `0x47f5ad`): mode 3 (unreachable) does nothing; `frac` is `x − floor(x)` (`0x499ede`);
+the function returns 1 whenever the scroll part is entered, so the caller restores `material+0xc/+0x1c`. The material in memory is 0x24 bytes:
+`+0x00..+0x0c` = file floats f0, f3, f6, f9 (the u row, +0xc = the constant term f9), `+0x10..+0x1c` = f1, f4, f7, f10 (+0x1c = f10),
+`+0x20` = texture (FORMAT_TEX_COL_VIS_LIT.md §1).
+
+**Where it applies.** `0x47f290` has one caller, `0x43c341` in the model renderer `0x43b3f0`, in the loop over the collected **node polygons**
+(`0x43c303`, drawn by `0x43d790`). The skinned triangles (`0x43e0f0`) take the texture straight from `material+0x20` (`0x43e13f`): neither
+override reaches them (the port used to apply the frame override there too; corrected). World polygons never go through it. Without an
+override bit, **nothing scrolls a model texture**: the scroll speed of the `.tex` group (`tex+0x48/+0x4c`, which FORMAT_TEX_COL_VIS_LIT.md
+could not confirm) has no other reader (a scan of the float reads of `+0x48/+0x4c` in the renderer range found only camera and instance fields; uncertain). Only three groups have a speed at all: K3A 76, S3A 75, W3A 77 (32×32, 17 frames, 0.05/0.05), each on
+one material used by model 34 / 31 / 32 (two textured triangles of a box, 4 instances, at y −1489 and −901/−916, under the slime surface).
+
+**Who sends 15/17.** Nobody: every `SEND` of all 28 level scripts starts with a constant id (`tools/ekodisasm.py`), and none is 15 or 17
+(16: 156× in K1A/S1A/W1A, K1R/K2R/K3R/S1R/S2R/S3R and KWS/SWS/WWS; 18: 68× in K1A/S1A/W1A/W1B and the three WS levels; 19: 14× in the WS levels). There is no other writer of `+0xda/+0xe4/+0xec`
+in the instance base. So 15/17 are dead in the shipped game; ported for completeness.
+
+**Port** (`src/instance.c` `inst_msg`, `src/render_gl.c` `tex_scroll`/`draw_node_polys`): `uv_mode/uv_t0/uv_fac/uv_t2` = bits 3-5, +0xe4, +0xe8,
++0xec; the offset is added to the planar UV of every vertex of a node polygon whose group has a speed (not to the helper-projected eye UVs,
+whose reader of `material+0xc` has not been checked). Verification: as no level sends the message and the only scrolling textures sit under the
+slime, a scratch build that forced `scroll_u = 0.05` on every group and `uv_mode 4`, factor 20 on every instance showed the textures of the W1A
+start instances (the start pad, the green lamp bases) moving by a quarter tile between two shots 0.25 s apart, and the world unchanged. Test hook
+for any message: `WOODY_MSGAT="T id a0 a1 …[; T id …]"`, e.g. `WOODY_MSGAT="1 17 216 255 1 100"` in W3A.
+
 W1A example: `16 [inst, 0xffff, 1, 0x28]` = play the texture frames once forward over 0.4 × the texture duration;
 `18 [inst, 0xffff, 1, 0x64]` = loop forward at normal speed.
 

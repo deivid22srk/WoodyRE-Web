@@ -146,6 +146,7 @@ typedef struct Instance {
     int tint_mode; float tint_rgb[3];            /* the same hook in general: [0x5ac850] 1 = lit vertex colour times rgb, 2 = plus rgb (1.0 = 255), 0 = off: the bomb, black with red flashes (0x44d9a0) */
     Vec3 ldir; float lcol[3]; int l_init, light, l_seen;   /* model lighting: smoothed light vector, light colour, chosen light, seen by it (0x43b912, 0x42e3e4) */
     int tex_mode; float tex_t0, tex_fac;                   /* +0xd8 bits 0-2, +0xdc, +0xe0: texture frame override, messages 16 / 18 / 19 (docs/INSTANCE.md 2) */
+    int uv_mode; float uv_t0, uv_fac, uv_t2;               /* +0xd8 bits 3-5, +0xe4, +0xe8, +0xec: UV scroll override, messages 15 / 17 / 19 (docs/INSTANCE.md 2) */
     int drawn;                                             /* set by the renderer each frame: this instance survived the visibility pass */
 } Instance;
 

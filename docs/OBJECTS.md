@@ -406,6 +406,25 @@ Type 51 segment `0x4512c0(i)`: `v = GetVector(this, 0, ·, i)`; `dir = normalize
 `Ray(&a, &b, −1)` (`0x4359b0`); on a hit (`[0x53a554] != 0`): `b = a + (b − a)·[0x53a558]`, `rec+0x2c = 1`, normal from `0x4b3108..`;
 otherwise `rec+0x2c = 0`. So the segment follows the (possibly moved-by-path-follower) emitter every frame and stops at walls AND instances.
 
+**What the beam ray tests (checked line by line, ported).** Type 51 calls `0x4359b0(&a, &b, −1)` (`0x4513aa`), type 50 the endless variant
+`0x435810(&a, &(a + dir), −1)` (`0x45118c`, `dir` normalized, so `[0x53a558]` is the distance; `rec+0x2c = 1` is written whether or not
+anything was hit, `0x45122d`), type 52 casts no ray at all. Both rays go to the world query (`0x497ed0` segment, `0x497a30` endless) and
+translate its raw answer the same way: 3 = world polygon (kind 1, plane from `0x4c4bc0`), 4 = **press node of an instance** (kind 2, node
+`[0x4c4be0]`, instance via `[0x4c4c0c]+0x40`), 2 = kind 3 without plane or instance. The third argument −1 is **the start cell** (`0x497fb0`
+at `0x49802b`: −1 → look it up with `0x408180`), not an instance to leave out: nothing is skipped, not even the laser's own model. The
+instance part walks, per visited cell, the instances linked into it (`cell+0x40/+0x44`, i.e. not hidden by message 6) and then the dynamic
+list `0x4c3bb4[0x4c4bec]` (EVENTS.md §3.1); every instance answers through its `vtbl[5]` with its press nodes (kind 1). **Woody and the
+enemies are not hit**: their models have no press node (W1A model 0 and 42), so the beam passes through them and only the separate hit test
+`0x450f80` below reacts, and only to the player. Consequences seen in the port (`WOODY_FXLOG=1` prints `laser … stops on instance …`):
+- The fences of class 50 end on the far post **of their own model**: W2D 41/42/43/444/445 (model 9, four beams each, 627..666 long),
+  W3C 100..149 (model 5, ≈ 395), W2B 370/371 (model 39, 1279), K3A 120..131 (model 22) and 169/291 (model 31), W3D 1/2/3 and 853/854.
+  Before, with the world alone, those beams went through the far post into the rock behind it (W2D: clearly visible).
+- Moving platforms cut beams while they pass: W1B laser 150 by the shuttle (model 42), W3D 220/251/252/449 by the lifts of model 8.
+- The own housing is not hit because the marker starts just outside it (W1A model 33: marker start z −62.9, tip of the press node z −60.4).
+Port: `laser_segment` (main_engine.c) = `gel_ray_frac` + `inst_ray_press` (instance.c; the instance half of `0x4359b0`, the same test as
+`player_ray_instances` in player.c but without its 4000-unit horizontal reject, so an endless beam also finds a post far away). Not
+ported: kind 3 (raw answer 2, unidentified), the stale `[0x53a558]` of a type-50 ray that finds nothing (the port ends it 100000 away).
+
 Hit test `0x450f80(i)`: for each actor in `0x4c52d8[0x4c531c]` (list 1 of the previous frame, `0x40c080`: Perso only if
 `+0x26c == 0` and state ≠ 5, `0x44b699`) with **category 1** (`0x40c340`, = the player; enemies are 2): `actor->vtbl[24](&cyl)`
 (Perso `0x44cd60`: center = pos + (0, h/2, 0), radius = `perso+0x114` (= P+4 = 69), half-height h/2), then
@@ -588,7 +607,7 @@ Verification without game data: `tools/native/switchtest.c` (the header of that 
 1. `1200` with type 50/51/52: mark the instance as a laser, `on = 0`, `length = 400`, `has_fader = 1`. Instance messages: 50 → `on = (v == 1)`,
    52 → `length = v`, 53 → target instance, 51 → store.
 2. Per frame per laser with `on` (even if the instance is hidden; the think step always runs): per marker type code 0: `a, dir` via `ins_vector`,
-   `b = a + dir·length`, raycast against world + instances → shorten, `kind = hit`. Hit test: segment against the player cylinder (center pos + h/2,
+   `b = a + dir·length`, raycast against world + instance press nodes (`gel_ray_frac` + `inst_ray_press`, ported) → shorten, `kind = hit`. Hit test: segment against the player cylinder (center pos + h/2,
    radius 69·0.85, half-height h/2; reuse the `0x433de0` port of the charge run) → `player_kill(p, 2)` unless dead or invulnerable.
 3. Draw after the 3D scene, before the 2D layer, next to the pickup sprites: new `hud_world_beam(a, b, half_width, rgba0, rgba1, image)` = camera-facing quad
    (perpendicular of the projected segment, or `cross(b − a, cam_pos − mid)` normalized × half_width), additive `GL_ONE, GL_ONE`, depth test on,
@@ -597,7 +616,7 @@ Verification without game data: `tools/native/switchtest.c` (the header of that 
    arc and impact sprite (image 5) from §2.1.
 4. Test: from the start (537, −1800, −2450) facing +z; three horizontal red beams 350 long at z ≈ 166, y = −1462 / −1690 / −1917.
 
-**D. Small**: hide type-41 instances at level start (`0x472530`); add 15..19 to `src/instance.c`; correct 1000..1004 in MESSAGES.md
+**D. Small**: hide type-41 instances at level start (`0x472530`); add 15..19 to `src/instance.c` (done: INSTANCE.md §2); correct 1000..1004 in MESSAGES.md
 (launcher, not camera) and the radius of the laser test in INSTANCE.md §7.
 
 ## 5. Open questions

@@ -77,7 +77,9 @@ implements this.
 
 Static-group test in the loader (`0x426e5a`): `tex+0x00 = 0` if `frame_count == 1` and
 both floats `+0x0c/+0x10 == 0.0`, otherwise `1` ("needs updating"). Hence the interpretation
-of `+0x0c/+0x10` as UV scroll speed is plausible but not confirmed by render code.
+of `+0x0c/+0x10` as UV scroll speed is plausible; the render code confirms it: `0x47f290` multiplies `tex+0x48/+0x4c` by the
+factor of messages 15/17 and adds the fraction to the material's constant terms (INSTANCE.md §2). No other reader was found (a scan of the float reads of `+0x48/+0x4c` in the renderer range found only camera and instance fields; uncertain), and no
+level sends 15/17, so in the shipped game nothing ever scrolls.
 
 Faces in `.ins` reference this material table (`level+0x5c + idx*0x24`) with a u16;
 the renderer (`0x43b3f0`) picks the frame `min(frame, frame_count-1)` from the group per face.
@@ -105,7 +107,7 @@ stack (`esp+0x3a0`) holds the pointer to frame 0 of each group.
 
 ### Uncertain
 - Meaning of dword 8 (`+0x5c`) and dword 9 (`+0x50`): no reader found in the code.
-- `+0x0c/+0x10` as UV scroll: only indirectly (static test) substantiated.
+- `+0x0c/+0x10` as UV scroll: confirmed by `0x47f290` (INSTANCE.md §2), only used by the unused messages 15/17.
 - Flag bytes 1–3 only partly understood.
 
 ---

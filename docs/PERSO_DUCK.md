@@ -286,7 +286,7 @@ The Perso plays them 2D. In the port, `src/main_engine.c` (line 2060, "animation
   "y+61 … y+193": wrong (FPU stack `0x465cd8..0x465d09` line by line: `fld P10; fld y; fadd st1` ⇒ a.y; `fld P0c; fsub st1; fadd y` ⇒ b.y).
 * `0x4359b0` clears `[0x53a554]`, `[0x53a560]`, `[0x53a55c]` and calls `0x497ed0(a, b, −1)`; raw result `[0x4c4bd0]`: 3 (world polygon) ⇒
   `[0x53a554] = 1`; 4 (instance polygon, node `[0x4c4be0]`: the press nodes, BOMB.md §5.2 correction) ⇒ 2; 2 ⇒ 3; otherwise 0. `[0x53a558]` = t.
-  **Any** value ≠ 0 blocks standing up. Id −1 = no instance to skip.
+  **Any** value ≠ 0 blocks standing up. The −1 is the start cell (`0x497fb0` looks it up with `0x408180`, `0x49802b`), not an instance to skip (OBJECTS.md §2.1).
 * Uncertain: whether `0x497ed0` hits polygons from both sides (the ray goes upward and so would hit the underside of a ceiling); the port
   functions `gel_ray_frac` and `player_ray_instances` are two-sided, which gives the expected behavior for this test.
 * A ceiling between 132 and 193 does not block: he then ends up standing "inside" the ceiling (the wall sweep only pushes in xz). Derived.

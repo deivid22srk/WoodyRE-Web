@@ -1,6 +1,7 @@
 /* instance.c - generic instance behaviour of the base class (docs/INSTANCE.md): animation clock 0x43eee0,
  * PlayAnim messages 1..5/12/13, path follower 42/43/44/46, transparency fade 56/57, show/hide 6.
- * texture frame override 16/18/19. Not ported: the UV scroll override 15/17, SetFlags 45 (stored only), orientation along the path (46). */
+ * texture frame override 16/18/19, UV scroll override 15/17, the instance half of the ray 0x4359b0 (inst_ray_press).
+ * Not ported: SetFlags 45 (stored only), orientation along the path (46). */
 #include <math.h>
 #include "instance.h"
 
@@ -19,6 +20,7 @@ void inst_init(Instance *I)                                                     
     I->fade = 0; I->fade_target = 0; I->fade_rate = 100.0f; I->noncollide = 0; I->setflags = 0;
     I->traj_flags = 0; I->traj_start = 0; I->traj_dur = 1.0f; I->scripted = 1;
     I->tex_mode = 0; I->tex_t0 = 0; I->tex_fac = 1.0f;
+    I->uv_mode = 0; I->uv_t0 = 0; I->uv_fac = 1.0f; I->uv_t2 = 0;
 }
 
 /* returns 1 when the message must be offered again next frame (12/13 waiting for the running animation to end) */
@@ -71,10 +73,17 @@ int inst_msg(Instance *I, uint32_t id, const uint32_t *arg, uint32_t nargs, floa
         I->position = I->traj.points[a1 == 1 ? 0 : I->traj.npoints - 1]; return 0;
     case 44: I->traj_flags &= ~T_ACTIVE; return 0;
     case 16: case 18:                                             /* texture frame override B (docs/INSTANCE.md 2): 16 = one shot, 18 = loop; a2 = 1 forward, 0 backward,
-                                                                   * 2 there and back; a3 x 0.01 = factor on the texture duration, a1 (0xffff) is stored but never read */
-        I->tex_mode = (id == 16 ? 1 : 4) + (a2 == 1 ? 0 : a2 == 0 ? 1 : 2);
+                                                                   * 2 there and back; a3 x 0.01 = factor on the texture duration, a1 (0xffff) is stored but never read.
+                                                                   * 0x42da32 / 0x42db0f: any other a2 leaves the mode bits alone, the clock and factor are still set */
+        if (a2 >= 0 && a2 <= 2) I->tex_mode = (id == 16 ? 1 : 4) + (a2 == 1 ? 0 : a2 == 0 ? 1 : 2);
         I->tex_t0 = now; I->tex_fac = a3 * 0.01f; return 0;
-    case 19: I->tex_mode = 0; return 0;                           /* 0x42db86: override off, back to the frame of the global texture animation */
+    case 15: case 17:                                             /* UV scroll override A (0x42d9c3 / 0x42daae, docs/INSTANCE.md 2): 15 = scroll for a4 x 0.01 s and
+                                                                   * stop there, 17 = endless; a2 = 1 forward, 0 backward, anything else leaves the mode bits alone;
+                                                                   * a3 x 0.01 = factor on the texture's scroll speed, a1 (byte +0xda) is stored but never read.
+                                                                   * No level script sends either message. */
+        if (a2 == 1) I->uv_mode = id == 15 ? 1 : 4; else if (a2 == 0) I->uv_mode = id == 15 ? 2 : 5;
+        I->uv_t0 = now; I->uv_fac = a3 * 0.01f; if (id == 15) I->uv_t2 = a4 * 0.01f; return 0;
+    case 19: I->tex_mode = 0; I->uv_mode = 0; return 0;          /* 0x42db86: +0xd8 &= 0xc0, both overrides off */
     case 45: I->setflags |= (uint32_t)a1 & 0x23; return 0;
     case 56:                                                      /* transparency: direct on the base class, a target on classes behind 0x44e8f0 */
         if (I->type == 0 || I->type == 41 || I->type == 90) I->fade = I->fade_target = a1 * 0.01f; else I->fade_target = a1 * 0.01f;
@@ -145,4 +154,51 @@ void inst_tick(Instance *I, float now, float dt)
     } else phase = I->a_pos / L;
     if (phase > 0.9999f) phase = 0.9999f; if (phase < 0) phase = 0;   /* ins_pose() wraps at 1 */
     I->anim = I->slot[0]; I->anim_time = phase * L;
+}
+
+/* ---- the instance half of the ray 0x4359b0 (and of the endless ray 0x435810): 0x497ed0 / 0x497a30 answering 4 is hit kind 2,
+ * node [0x4c4be0] -> [0x53a58c], instance [0x4c4c0c]+0x40 -> [0x53a560]. Like every instance test of the original it walks the
+ * PRESS nodes (kind 1) of the instances in the cells the ray visits plus the dynamic list 0x4c3bb4 (docs/EVENTS.md 3.1, BOMB.md
+ * 5.2); a hidden instance (message 6: no cell) and a non-collidable one (+8 & 0x40, the fade) take no part. The actors do not
+ * take part either: the Perso and enemy models have no press node. Same test as player_ray_instances() in player.c, but
+ * without its 4000-unit horizontal reject, so that an endless laser (class 50) still finds an instance far down its beam;
+ * the segment's bounding box does the culling instead. Two-sided, like gel_ray_frac. Returns 1 on a hit with the fraction
+ * of a->b, the normal turned towards a and the instance. */
+static Vec3 v3sub(Vec3 a, Vec3 b) { Vec3 r = { a.x - b.x, a.y - b.y, a.z - b.z }; return r; }
+static float v3dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+static Vec3 v3cross(Vec3 a, Vec3 b) { Vec3 r = { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; return r; }
+int inst_ray_press(const InsFile *ins, const Instance *skip, Vec3 a, Vec3 b, float *frac, Vec3 *n_out, const Instance **inst_out)
+{
+    float best = 2.0f; int hit = 0; Vec3 v[16];
+    float sb[6] = { fminf(a.x, b.x) - 1, fmaxf(a.x, b.x) + 1, fminf(a.y, b.y) - 1, fmaxf(a.y, b.y) + 1, fminf(a.z, b.z) - 1, fmaxf(a.z, b.z) + 1 };
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
+        const Model *m = &ins->models[mi]; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+        if (!ncn) continue;
+        for (uint32_t k = 0; k < m->ninstances; k++) {
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || !in->node_world) continue;
+            for (uint32_t ci = 0; ci < ncn; ci++) {
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys) continue;
+                float nb[6]; if (ins_node_world_box(in, ni, nb) && (nb[0] > sb[1] || nb[1] < sb[0] || nb[2] > sb[3] || nb[3] < sb[2] || nb[4] > sb[5] || nb[5] < sb[4])) continue;
+                for (uint32_t pi = 0; pi < nd->npolys; pi++) {
+                    const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 16) continue;
+                    for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
+                    Vec3 nrm = v3cross(v3sub(v[1], v[0]), v3sub(v[2], v[0])); float l = sqrtf(v3dot(nrm, nrm)); if (l < 1e-6f) continue;
+                    nrm.x /= l; nrm.y /= l; nrm.z /= l;
+                    float da = v3dot(v3sub(a, v[0]), nrm), db = v3dot(v3sub(b, v[0]), nrm); if ((da > 0) == (db > 0)) continue;
+                    float t = da / (da - db); if (t >= best) continue;
+                    Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
+                    int sign = 0, in_poly = 1;                                  /* inside: every edge turns the same way round the normal */
+                    for (uint32_t c = 0; c < pl->nverts && in_poly; c++) {
+                        float s = v3dot(v3cross(v3sub(v[(c + 1) % pl->nverts], v[c]), v3sub(q, v[c])), nrm);
+                        int sg = s > 1e-3f ? 1 : (s < -1e-3f ? -1 : 0);
+                        if (sg) { if (!sign) sign = sg; else if (sg != sign) in_poly = 0; }
+                    }
+                    if (!in_poly) continue;
+                    if (da < 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }
+                    best = t; hit = 1; if (n_out) *n_out = nrm; if (inst_out) *inst_out = in;
+                }
+            }
+        }
+    }
+    *frac = best; return hit;
 }
