@@ -45,7 +45,7 @@ Update it every round. "Analysis done" = the named doc contains a recipe; "not a
 
 | type | what | status | where |
 |---|---|---|---|
-| 42 | launcher: template 1 (straight line), visual from message 1002 param 18, **bomb thrower (kind 0, class-40 bomb)** and firing animation (param 7/8) ported; not: homing, bouncing and gravity of ordinary shots, ray against instances for ordinary shots, ribbon colour possibly too dark | mostly | PROJECTILES.md, BOMB.md §6 |
+| 42 | launcher: template 1 (straight line), visual from message 1002 param 18, **bomb thrower (kind 0, class-40 bomb)** and firing animation (param 7/8) ported; ordinary shots (launcher and enemy) now also stop on instance press nodes (Ray 0x4359b0, `inst_ray_press`); not: homing, bouncing and gravity of ordinary shots, ribbon colour possibly too dark | mostly | PROJECTILES.md, BOMB.md §6 |
 | 41 | missile visual ported (`0x4700e0`: model from the type-41 pool with `0x46d320` orientation, ribbon 20×25, head, muzzle flash, exhaust with smoke, explosion kind 2). Not: fireball (`0x470af0`), ribbon along the path actually flown, the three crossed flame quads | mostly | PROJECTILES.md §5.3-5.4, §7.1 |
 | 7 / 8 / 9 | shooters: ported, including the missile projectile of types 7/8. Not: fireball visual of type 9 (the energy bolt for now), obstacle sensor, wander weights (message 11/19..27), message 11/4 reset and 11/5-6, message 6 (on/off) | mostly | ENEMY.md §8 |
 | 13 | ghost: ported (half transparent, hovers at player height, shoots alternately, dives). Not: fireball visual (the energy bolt for now), patrol animations | mostly | ENEMY2.md §3 |
@@ -62,8 +62,8 @@ Update it every round. "Analysis done" = the named doc contains a recipe; "not a
 | 80 | periodic hazard with shelter zones (`0x451cc0`, "storm"); its type word is category 7, which the camera ray ignores (CAMERA.md §3.6) | not ported | PERSO_FRAME.md §4.2 |
 | 90 | ambient volume: mode 0 (1501/1504) ported - the butterflies of the title screen, with their wandering, landing and wing beat. Not: mode 1 (`0x47e160`, along the ground normal) and 2. Only House uses class 90 | mostly | TITLE.md §3.1, OBJECTS.md §2.4 |
 | 60 | water volume: grid with two wobbling layers, glint line, wake, Kill(7) ported (`src/water.c`); the splash `0x478660` (Kill(7), race kill and message 1505: drop streaks, ripples, 5 rings) ported as `game_splash` | mostly | WATER.md, SPLASH.md |
-| 50 / 51 / 52 | laser: core, glow, travelling pulse, lightning arc and impact ported; the beam still only stops on world polygons, not on instances | mostly | OBJECTS.md §2.1 |
-| messages 16/18/19 (texture frame override) ported; 15/17 (UV scroll override) not | texture frame / UV override per instance | mostly | INSTANCE.md §2 |
+| 50 / 51 / 52 | laser: core, glow, travelling pulse, lightning arc and impact ported; the beam (Ray 0x4359b0 for 51, endless 0x435810 for 50) now stops on world polygons AND instance press nodes (`inst_ray_press`), its own model included (the class-50 fences end on their far post), never on Woody/enemies (no press nodes). Not: hit kind 3 (raw answer 2), the stale distance of a type-50 ray that hits nothing | mostly | OBJECTS.md §2.1 |
+| messages 15/17 (UV scroll, `0x42d9c3`/`0x42daae` → `0x47f290`) and 16/18/19 (texture frame) ported, node polygons only as in the original; 15/17 are sent by no level script (the three scrolling textures sit under the W3A/K3A/S3A slime). Test hook `WOODY_MSGAT` | texture frame / UV override per instance | ported | INSTANCE.md §2 |
 | 1201 / 1202 | type word bit 0x400 (attackable target) | analysis done | OBJECTS.md §3 |
 | 110 | figures of the world-select carousel: the port hides them (see TITLE.md §3.2). Not ported: the page itself, the carousel angle (`0x451890`) and the per-frame transform (`0x489210`) | hidden | TITLE.md §3.2 |
 
