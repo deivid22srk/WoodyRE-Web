@@ -50,7 +50,7 @@ thus comes back through a script variable (watchers get woken).
 | 50 / 51 | inst, v | 279 / 44 | tilde classes 50-52: `0x45108a` / `0x451059` |
 | 52 | inst, v | 158 | ? |
 | 53 | inst, v | 3 | ? |
-| 54 | inst, mode, v | 98 | check class 80: mode 1 → `0x451b74`; mode 2 → float +0x10c = v; then base |
+| 54 | inst, mode, v | 98 | check class 80 (lightning rod, STORM.md §2): mode 1 → float +0x108 = v (radius of the shelter sphere, raw); mode 2 → float +0x10c = v (rod height, raw); then the fade handler `0x44e8f0` |
 | 55 | inst, a, b | 34 | check rocket/cannon parameters class 20/21 (ROCKET.md §2.1) |
 | 56 | inst, v | 606 | check base: float +0x6c = v·0.01; in `0x44e8f0` (most classes) first `0x44e91b` |
 | 57 | inst, v | 643 | tilde `0x44e907` (class-common) |
@@ -80,7 +80,7 @@ thus comes back through a script variable (watchers get woken).
 | 1085 | level, var | 4 | check **LevelIsDone**: var = done flag `0x4509e0(saved, level)` |
 | 1088 | inst, v | 0 | check `0x459960(inst, v)` |
 | 1090 | inst, other, f | 0 | check effect (particles) from inst to other, `0x44d5d0` |
-| 1100 / 1101 | f / – | 0 | check `0x451ba0(f·0.01)` / `0x451bd0()` |
+| 1100 / 1101 | f / – | 0 | check thunderstorm on (`0x451ba0(f·0.01)`, f = strike interval ×100: 1500 in W3A/W3D/K3A/S3A, 1200 in W3B) / off (`0x451bd0()`); sent by trigger volumes, so "usage 0" at init; STORM.md §1 |
 | 1110 | n, v | 0 | check parameter n (1..9) of the side-view camera mode 0x20 (CAMERA_SCRIPT.md §4.2); 1088 starts that mode |
 | 1120 | inst, other | 6 | check **SetRaceInfo**: `0x455dc0(inst, other->0x28)` if other is type 3 (camera with polyline): the board `inst` rides along with Perso (`+0x4b4`), polyline = the track (RACE.md §2) |
 | 1121 | inst, a, f | 0 | check **StartBoostSurf**(vector of inst, a, f·0.01): `0x456000`, RACE.md §3.3 |
