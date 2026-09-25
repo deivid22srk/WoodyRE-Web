@@ -186,12 +186,11 @@ class EkoVM:
         # delays (kept sorted by insertion)
         while self.delays and self.delays[0][0] <= self.time:
             t, target, owner = self.delays.pop(0); self.run(target); ran += 1
-        # durings
-        keep = []
-        for t, target, owner in self.durings:
-            if t < self.time: self.run(target); ran += 1
-            else: keep.append((t, target, owner))
-        self.durings = keep
+        # durings (0x444150): every entry runs each tick; one whose time has passed runs a last time and is dropped
+        cur, self.durings = self.durings, []
+        for t, target, owner in cur:
+            if t >= self.time: self.durings.append((t, target, owner))
+            self.run(target); ran += 1
         wake, self.wake = self.wake, []
         for o in reversed(wake):
             if self.stamp[o] == self.frame: continue

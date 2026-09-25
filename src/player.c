@@ -1724,7 +1724,9 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
 void player_ground_snap(Player *p)
 {
     int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
-    if (found) p->pos.y = gy;
+    p->pos.y = found ? gy : p->pos.y + P_PROBE_Y;                      /* pos.y = [0x53a568] always: with nothing below it still holds the probe height
+                                                                         * (traced: the W2B boss intro ends 53 under the floor, NotFound -> feet + 43,
+                                                                         * and the next frame's step-up puts him on the floor 10 higher) */
     p->floor_y = p->pos.y; jumper_reset(&p->jumper); p->on_ground = 1; player_apply_transform(p);
 }
 

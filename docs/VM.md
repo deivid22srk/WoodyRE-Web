@@ -53,7 +53,7 @@ Loader in de exe: `0x4424b0` (leest bestand, versiecheck), `0x442570` (bouwt tab
 
 ### Tick (`0x442240`, aangeroepen uit de game-loop `0x4019c0`)
 1. `0x442350`: voer alle verlopen **DELAY**-entries uit (gesorteerde lijst `0x5d24d8..`, entry = {tijd, doel}).
-2. `0x4423a0`: voer alle verlopen **DURING**-entries uit (ongesorteerde lijst `0x5d0578..`).
+2. `0x4423a0` → `0x444150`: voer **alle** DURING-entries uit, elke tick (ongesorteerde lijst `0x5d0578..`); een entry waarvan de tijd verstreken is (`tijd < now`) wordt eerst ontkoppeld en draait dan nog één laatste keer. `DURING d t` = "voer t elke tick uit, d honderdsten lang" (live geverifieerd: W2B-baasintro stuurt 0,5 s lang elke tick `1152`).
 3. `0x442320`: wissel de dubbele wake-lijst (`0x4b3578`/`0x4b357c`, max 1000).
 4. Voor elk gewekt object (dedupe via frame-stempel per object `0x5d0550`): `run(codestart)`.
 5. `0x4423f0`/`0x442450`: wis de per-frame flags van gewijzigde volumes/collisions.
@@ -83,7 +83,7 @@ Handler-signatuur: `uint32* handler(uint32* pc)` geeft de volgende pc terug. Opc
 | 23 | JF | t | if !bpop: pc = t |
 | 24 | DELAY | d, t | plan run(t) op tijd now+d |
 | 25 | SKIP1 | x | nop met operand |
-| 26 | DURING | d, t | plan run(t) op tijd now+d (tweede lijst) |
+| 26 | DURING | d, t | run(t) **elke tick** tot now+d verstreken is (tweede lijst, zie Tick stap 2) |
 | 27 | PUSHTIME | | push now |
 | 28 | SEND | n | pop n waarden; bericht {id=eerste, args=rest} in de wachtrij |
 | 29,31,32,48,49 | VOL_FLAGb | v | bpush(bit 5/4/3/6/2 van volume[v].flags) |

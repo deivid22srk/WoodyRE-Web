@@ -1161,6 +1161,8 @@ typedef struct Bomb {
     int in_use, held, ridden;                      /* +0x131 +0x132 +0x133 */
     BombT T; int p_active, press, grounded, bounced; Vec3 p, vel, n;   /* the carrying projectile: point, velocity, plane of the last bounce */
     int puffed;                                    /* the fuse record 0x478e40: the muzzle smoke of a launcher's bomb, once */
+    Enemy *owner_e; int owner_pl;                  /* T.owner (+0x58): the bomb thrower (type 12) or the Perso; neither = a launcher (b->launcher) or nobody */
+    Instance *target; float age; Vec3 dir0;        /* T.target (+0x38: the previous owner after a throw), projectile age, T.dir0 */
 } Bomb;
 static Bomb g_bombs[16]; static int g_nbombs;
 typedef struct { Vec3 pos, n; float t; int kind; } BombFx;                 /* explosion kind 0 (0x4765f0 + 0x476710) and the muzzle smoke (0x478aa0) */
@@ -1186,7 +1188,7 @@ static Bomb *bomb_start(const BombT *T, Vec3 pos, Vec3 dir, int ground, int32_t 
     if (ground && g_player) { int f; float gy = gel_floor_below(g_player->gel, pos, 0, 1e5f, &f); if (f) pos.y = gy + 1.0f; }   /* 0x435650 */
     b->p = pos; b->vel = (Vec3){ dir.x * T->speed, dir.y * T->speed, dir.z * T->speed };
     b->inst->position = (Vec3){ pos.x, pos.y + 1.0f, pos.z }; b->inst->visible = 1; b->inst->fade = b->inst->fade_target = 0;
-    b->var = var; b->kind = kind; b->launcher = NULL; b->in_use = 1; b->held = b->ridden = 0;
+    b->var = var; b->kind = kind; b->launcher = NULL; b->in_use = 1; b->held = b->ridden = 0; b->owner_e = NULL; b->owner_pl = 0; b->target = NULL; b->age = 0; b->dir0 = dir;
     b->t = 0; b->state = 1; b->blink_acc = 0; b->blink_n = 0; b->puffed = 0;
     b->p_active = 1; b->press = b->grounded = b->bounced = 0; b->n = (Vec3){ 0, 1, 0 };
     bomb_place(b);
@@ -1198,6 +1200,14 @@ void game_bomb_launch(struct Bomb *b, Vec3 dir, float speed)
 {
     if (!b || !b->p_active) return;
     b->held = 0; b->p = b->inst->position; b->vel = (Vec3){ dir.x * speed, dir.y * speed, dir.z * speed }; b->press = b->grounded = 0;
+    b->target = b->owner_e ? b->owner_e->inst : b->launcher; b->owner_e = NULL; b->owner_pl = 1; b->age = 0; b->dir0 = dir;   /* 0x463894: T.target = the old owner, T.owner = the Perso */
+}
+/* Fire 0x411e80 of the bomb thrower (type 12, docs/ENEMY2.md 4.3): template 0 with his speed and fuse, owner = him, no target */
+int game_enemy_bomb(Enemy *e, Vec3 pos, Vec3 dir, float speed, float fuse)
+{
+    BombT t = BOMB_T0; t.speed = speed; t.life = fuse;
+    Bomb *b = bomb_start(&t, pos, dir, 0, -1, 0); if (!b) return 0;
+    b->owner_e = e; return 1;
 }
 /* 0x463430: the pick-up test does not look at the bomb's state; the port leaves out the invisible 0.5 s after a blast */
 struct Bomb *game_bomb_pick(Vec3 pos, float r)
@@ -1262,6 +1272,7 @@ static void bombs_update(float dt)
  * terrain (hit kind 1) and the press nodes of instances (2) are a bounce with no loss. Hit kind 3 (0x497ed0 answering 2,
  * no plane and no instance recorded) would kill the projectile and set the bomb off 2 frames later (CheckProj); it is not
  * a hull test (BOMB.md 5.2 reads it so) and the port has no counterpart. A floor within 1 unit for 5 frames running is "lying". */
+static float vdot3(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static void bombs_fly(float dt, const GelFile *gel)
 {
     for (int i = 0; i < g_nbombs; i++) {
@@ -1270,7 +1281,28 @@ static void bombs_fly(float dt, const GelFile *gel)
         if (!b->grounded) { b->vel.y -= dt * b->T.gravity * 200.0f; if (b->vel.y < -800.0f) b->vel.y = -800.0f; damp = b->T.damp_a; }
         else { b->vel.y = 0; damp = b->T.damp_g; }
         float k = powf(damp, dt * 60.0f); b->vel.x *= k; b->vel.y *= k; b->vel.z *= k;
+        b->age += dt;
+        if (b->target && b->age < 2.0f) {                                          /* 0x4494df, template 0: xz steer 0.025 per 1/60 s for 2 s at target + 125, limits 0.7 */
+            Vec3 old = b->vel, tg = { b->target->position.x, b->target->position.y + 125.0f, b->target->position.z };
+            float s = sqrtf(vdot3(b->vel, b->vel)), dx = tg.x - b->p.x, dz = tg.z - b->p.z, dl = sqrtf(dx * dx + dz * dz);
+            if (s > 1e-3f && dl > 1e-3f) {
+                float kk = powf(1.0f - 0.025f, dt * 60.0f); Vec3 v = { b->vel.x / s, b->vel.y / s, b->vel.z / s };
+                v.x = dx / dl * (1 - kk) + v.x * kk; v.z = dz / dl * (1 - kk) + v.z * kk;
+                float vl = sqrtf(vdot3(v, v)); b->vel = (Vec3){ v.x / vl * s, v.y / vl * s, v.z / vl * s };
+                if (1.0f + b->vel.y * b->dir0.y < 0.7f) { b->vel.y = old.y; float l2 = sqrtf(vdot3(b->vel, b->vel)); if (l2 > 1e-6f) b->vel = (Vec3){ b->vel.x / l2 * s, b->vel.y / l2 * s, b->vel.z / l2 * s }; }   /* 0x4498ec, literally */
+                if (b->vel.x * b->dir0.x + b->vel.z * b->dir0.z < 0.7f) { b->vel.x = old.x; b->vel.z = old.z; float l2 = sqrtf(vdot3(b->vel, b->vel)); if (l2 > 1e-6f) b->vel = (Vec3){ b->vel.x / l2 * s, b->vel.y / l2 * s, b->vel.z / l2 * s }; }
+            }
+        }
         Vec3 a = b->p, e = { a.x + b->vel.x * dt, a.y + b->vel.y * dt, a.z + b->vel.z * dt }, n, ni; float fi = 2.0f;
+        {   /* HitActors 0x44a0a0 before the ray: template 0 only tests category 2 subtype 8 / 12 = the bomb thrower (type 12); sphere 2 * 30 */
+            Enemy *hit = enemies_bomb_contact(&g_enemies, b->owner_e, a, e, 2.0f * b->T.radius);
+            if (hit) {
+                if (!b->owner_e && !b->owner_pl) enemy_hit(hit, b->T.damage, (Vec3){ 0, 0, 0 }, e, 0);   /* a launcher's or nobody's bomb: vtbl[39](0, 1000) = his "pecked" stun; owner Perso / enemy: carried, no damage */
+                b->p = e; b->inst->position = (Vec3){ e.x, e.y + 1.0f, e.z }; bomb_explode(b);
+                if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u hits the thrower %u", b->inst->index, hit->inst->index), puts("");
+                continue;
+            }
+        }
         float f = gel_ray_hit(gel, a, e, &n);
         if (g_player && player_ray_instances(g_player, b->inst, a, e, &fi, &ni, NULL) && fi < f) { f = fi; n = ni; }   /* a press node: the same bounce */
         if (f <= 1.0f) {                                                           /* Bounce 0x449eb0: mirror the end point in the plane, keep the speed */
@@ -1438,6 +1470,7 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
 int  game_var_get(uint32_t var) { var &= 0xffffff; return g_vm && var < g_vm->nvars ? g_vm->varval[var] : 0; }
 void game_var_set(uint32_t var, int v) { if (g_vm) eko_set_var(g_vm, var, v); }
 void game_cam_shake(float t) { g_cam.shake = t; }
+void game_msgmask(Instance *in, uint32_t bits, int on) { if (g_vm && in) { if (on) eko_msgmask_set(g_vm, in->id, bits); else eko_msgmask_clear(g_vm, in->id, bits); } }
 static struct { int on, cur, max; float t; } g_bossbar;      /* hud+0x48, +0x4c, +0x50 and the bar's slide-in clock */
 void game_boss_bar(int on, int cur, int max) { if (on && !g_bossbar.on) g_bossbar.t = 0; g_bossbar.on = on; g_bossbar.cur = cur; g_bossbar.max = max; }   /* 0x4484d0: 0x462470 starts the slide-in */
 void game_explosion(Vec3 p) { blast_add(p, 1400.0f); blast_add(p, 400.0f); }
@@ -2198,7 +2231,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
      * authentic: Woody in Blackbox/Credits/Lang, the W2B end boss (type 12) and the W3B ghosts (type 13). The port used
      * to set the bit here on every actor class because Buzz came out without a rim, but that was the outline distance
      * being measured from the .ins position instead of the animated root inst+0x60 (issue #35, ins_anim_centre). */
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 13 || in->type == 14) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if ((in->type == 20 || in->type == 21) && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->type = in->type; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890; 21 = the bomb cannon */ if (in->type == 40 && !bomb_of(in) && g_nbombs < 16) { Bomb *b = &g_bombs[g_nbombs++]; memset(b, 0, sizeof *b); b->inst = in; b->var = -1; }   /* ctor 0x44d250: into the pool, parked visible where the .ins has it */ if ((in->type == 120 || in->type == 121) && g_nchests < 32) { int k = 0; while (k < g_nchests && g_chests[k] != in) k++; if (k == g_nchests) g_chests[g_nchests++] = in; }   /* ctor 0x451650, list 0x5e581c */ if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; l->anim = -1; l->speed = 1000.0f; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || in->type == 12 || in->type == 13 || in->type == 14) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if ((in->type == 20 || in->type == 21) && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->type = in->type; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890; 21 = the bomb cannon */ if (in->type == 40 && !bomb_of(in) && g_nbombs < 16) { Bomb *b = &g_bombs[g_nbombs++]; memset(b, 0, sizeof *b); b->inst = in; b->var = -1; }   /* ctor 0x44d250: into the pool, parked visible where the .ins has it */ if ((in->type == 120 || in->type == 121) && g_nchests < 32) { int k = 0; while (k < g_nchests && g_chests[k] != in) k++; if (k == g_nchests) g_chests[g_nchests++] = in; }   /* ctor 0x451650, list 0x5e581c */ if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; l->anim = -1; l->speed = 1000.0f; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1505: if (in && m->nargs > 1) game_splash(in->position, 1000.0f, (float)(int32_t)m->args[1] * 0.01f); break;   /* splash 0x46cdfd -> 0x478660 (docs/SPLASH.md 1) */
     case 1506: if (in && m->nargs > 4) water_param(in, (int32_t)m->args[1], (int32_t)m->args[2], (int32_t)m->args[3], (int32_t)m->args[4]); break;   /* SetWaterVolumeParameter 0x46ce38 */
     case 1500: if (in && m->nargs > 4) game_bubble(in, (int32_t)m->args[1], (int32_t)m->args[2] * 0.01f, (float)(int32_t)m->args[3], (float)(int32_t)m->args[4], NULL); break;   /* speech bubble 0x46ccc0: [inst, kind, duration cs, offY, offX] (K2R, S2R) */
@@ -2457,6 +2490,7 @@ static void *read_all(const char *path, size_t *sz) { FILE *f = fopen(path, "rb"
 
 int main(int argc, char **argv)
 {
+    if (getenv("WOODY_UNBUF")) setvbuf(stdout, NULL, _IONBF, 0);                  /* debugging a crash: every line reaches the log */
     const char *dir = argc > 1 ? argv[1] : "extract/Data", *lvl = argc > 2 && argv[2][0] != '-' ? argv[2] : "House";   /* no level: boot to the title (House, level 0) */
     const char *shot_path = NULL; double shot_after = 0;                          /* --shot file.ppm seconds: screenshot then quit */
     int have_cam = 0; float cam_args[5] = {0, 0, 0, 0, 0};                          /* --cam x y z yaw pitch (degrees) */
@@ -2601,7 +2635,7 @@ int main(int argc, char **argv)
         if (L.have_player && !paused) {
             PlayerInput pin = { 0 };
             pin.forward = win.keys[VK_UP] || (!fly && win.keys['W']) || (now - t0 >= walk_at && now - t0 < walk_at + walk_for);
-            if (getenv("WOODY_INSTLOG") && (int)(now - t0) != (int)(now - t0 - dt)) { Instance *qi = slot_instance((uint32_t)atoi(getenv("WOODY_INSTLOG"))); if (qi) printf("instlog %u: visible %d fade %.2f type %d scripted %d anim %d pos %.0f %.0f %.0f model %d", qi->index, qi->visible, qi->fade, qi->type, qi->scripted, qi->anim, qi->position.x, qi->position.y, qi->position.z, (int)(qi->model - g_ins.models)), printf(" nw0 %.0f %.0f %.0f cull_r %.0f anim_time %.2f speed %.2f alpha? setflags %x", qi->node_world[0].m[12], qi->node_world[0].m[13], qi->node_world[0].m[14], qi->model->cull_r, qi->anim_time, qi->anim_speed, qi->setflags), puts(""); }
+            if (getenv("WOODY_INSTLOG") && (getenv("WOODY_INSTLOG2") || (int)(now - t0) != (int)(now - t0 - dt))) { Instance *qi = slot_instance((uint32_t)atoi(getenv("WOODY_INSTLOG"))); if (qi) printf("instlog %u: visible %d fade %.2f type %d scripted %d anim %d pos %.0f %.0f %.0f model %d", qi->index, qi->visible, qi->fade, qi->type, qi->scripted, qi->anim, qi->position.x, qi->position.y, qi->position.z, (int)(qi->model - g_ins.models)), printf(" nw0 %.0f %.0f %.0f cull_r %.0f anim_time %.2f speed %.2f alpha? setflags %x", qi->node_world[0].m[12], qi->node_world[0].m[13], qi->node_world[0].m[14], qi->model->cull_r, qi->anim_time, qi->anim_speed, qi->setflags), puts(""); }
             /* WOODY_UVLOG=<slot> or =stand (the instance the player is standing on, Perso+0x298): one UV report per
              * instance, to tell a wrong texture from a wrong projection on a surface that looks untextured */
             if (getenv("WOODY_UVLOG")) {
@@ -2805,6 +2839,8 @@ int main(int argc, char **argv)
         { static int side_done; if (getenv("WOODY_SIDE") && now - t0 >= 1.0 && !side_done && L.have_player) { side_done = 1; Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(getenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); } }   /* testing: force the side view on a marker instance */
         { static int posat_done; float pa[4]; const char *e = getenv("WOODY_POSAT"); int k = 0, used;   /* testing: WOODY_POSAT="T x y z [T x y z ...]" = --pos, but T s into the level (moving platforms, carrying a bomb somewhere) */
             while (e && L.have_player && sscanf(e, "%f %f %f %f%n", &pa[0], &pa[1], &pa[2], &pa[3], &used) == 4) { if (!(posat_done >> k & 1) && now - t0 >= pa[0]) { posat_done |= 1 << k; L.player.pos = (Vec3){ pa[1], pa[2], pa[3] }; L.player.floor_y = pa[2] - 1000.0f; L.player.on_ground = 0; } e += used; k++; } }
+        { static int setvar_done; float sv[3]; const char *e = getenv("WOODY_SETVAR"); int k = 0, used;   /* testing: WOODY_SETVAR="T var val [...]" = SetVar T s into the level (W2B boss fight: "1 1 1") */
+            while (e && L.have_player && sscanf(e, "%f %f %f%n", &sv[0], &sv[1], &sv[2], &used) == 3) { if (!(setvar_done >> k & 1) && now - t0 >= sv[0]) { setvar_done |= 1 << k; game_var_set((uint32_t)sv[1], (int)sv[2]); } e += used; k++; } }
         {   /* testing: WOODY_KILLAT="T" = the pit message 1020 (Kill(1) + death camera) T s into the level, once; for the respawn */
             static int killat_done; if (getenv("WOODY_KILLAT") && !killat_done && L.have_player && now - t0 >= atof(getenv("WOODY_KILLAT"))) {
                 killat_done = 1; EkoMsg em; memset(&em, 0, sizeof em); em.id = 1020; on_msg(&L.vm, &em, NULL); } }

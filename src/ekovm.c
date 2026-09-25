@@ -514,13 +514,13 @@ int eko_tick(EkoVM *vm, int32_t time)      /* 0x444050 then 0x442240 */
     int ran = 0;
     uint32_t target;
     while (delay_pop_expired(vm, vm->time, &target)) { vm->stat_delays_run++; eko_run(vm, target); }   /* 0x442350 */
-    for (int i = 0; i < vm->ndurings; ) {                                                             /* 0x4423a0 */
-        if (vm->durings[i].time < vm->time) {
-            uint32_t t = vm->durings[i].target;
-            memmove(&vm->durings[i], &vm->durings[i + 1], (vm->ndurings - i - 1) * sizeof(EkoTimer));
-            vm->ndurings--;
-            vm->stat_durings_run++; eko_run(vm, t);
-        } else i++;
+    /* 0x4423a0 -> 0x444150: EVERY entry runs on every tick; one whose time has passed is unlinked first and runs a last time.
+     * So DURING d t = "run t each tick for d" (W2B's boss intro blacks out the picture for 0.5 s with 1152 this way). */
+    for (int i = 0; i < vm->ndurings; ) {
+        uint32_t t = vm->durings[i].target;
+        if (vm->durings[i].time < vm->time) { memmove(&vm->durings[i], &vm->durings[i + 1], (vm->ndurings - i - 1) * sizeof(EkoTimer)); vm->ndurings--; }
+        else i++;
+        vm->stat_durings_run++; eko_run(vm, t);
     }
     /* swap wake lists (0x442320) */
     { uint32_t *t = vm->wake_run; vm->wake_run = vm->wake_cur; vm->wake_cur = t;
