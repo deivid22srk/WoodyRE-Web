@@ -364,8 +364,9 @@ world time, `+0x50` t within the substate, `+0x58` duration of the substate.
 Range `+4` oscillates ±10 per frame between **100 and 200**; 16 directions (multiples of π/8 = `0x4aa15c`), per direction
 a ray test (`0x41d010`: cell `0x428cc0`, ray `0x435810`) whose hit kind goes into `+0x1c + i·8`; `0x41d430(mode)` sets
 a free flag (`+0xa4 + i`) per direction: mode bit 1 blocks on hit kind 2, bit 2 on hit kind 3 (enemies: mode 3 =
-both). Query functions: `0x41d2a0(angle)` free?, `0x41d310(angle)` nearest free direction, `0x41d2c0()` / `0x41d390()`
-random free direction (< 0 = none). Not traced down to the instruction level.
+both). Query functions: `0x41d2a0(angle)` free?, `0x41d310(angle)` nearest free direction, `0x41d2c0()` random free
+direction, `0x41d390()` the free direction with the widest free gap (< 0 = none). Decompiled in full, with the probe geometry
+(45° down from R above the feet; kind 3 = drop > `P+0x2c`, kind 2 = wall or rise > `P+0x30`) and the port: OBSTACLE.md §3.
 
 ## 6. Damage
 
@@ -789,7 +790,7 @@ bool enemy_take_damage(Enemy *e, void *att, float dmg, vec3 *dir, vec3 *pt, int 
   world + press nodes of instances (BOSS14.md §5.1). `[0x4b310c]` is not a fraction but the ground-normal y from GetHeight (≥ 0.8 = flat enough).
   `0x437040` (push-out relative to other actors?) has only been examined from the
   caller side; `0x436d20/0x436d80` (platform) likewise.
-* The obstacle sensor (§5.6) has not been traced at the instruction level. Type 7/8/9: `vtbl[42]` (`0x417ff0`) has no caller found; `P+0x48` and `P+0x6c`
+* The obstacle sensor (§5.6) is decompiled in OBSTACLE.md §3. Type 7/8/9: `vtbl[42]` (`0x417ff0`) has no caller found; `P+0x48` and `P+0x6c`
   have no reader in the class; animation record 22 (sub 20) is never requested (§8).
 * Parameter `P+0x44` (600) is proven to be the knockback factor; `P+0x48, +0x50, +0x58, +0x84..0xbc` belong to types 10..13 (not read).
 * Types 10..13 (own Update `0x415490`, `0x412310`, `0x4110c0`, `0x413ab0`; type 12 with msgmask 0x10 in `0x411729` and own
