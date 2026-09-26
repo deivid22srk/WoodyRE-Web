@@ -36,6 +36,11 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         static int lx = -1, ly = -1; int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         if (w && w->mouse_right && lx >= 0) { w->mouse_dx += x - lx; w->mouse_dy += y - ly; }
         lx = x; ly = y; return 0; }
+    case WM_INPUT: {                                              /* relative mouse counts (RegisterRawInputDevices in win_open) */
+        RAWINPUT ri; UINT sz = sizeof ri;
+        if (w && GetRawInputData((HRAWINPUT)lp, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 && ri.header.dwType == RIM_TYPEMOUSE
+            && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) { w->raw_dx += ri.data.mouse.lLastX; w->raw_dy += ri.data.mouse.lLastY; }
+        break; }                                                  /* DefWindowProc cleans up after WM_INPUT */
     }
     return DefWindowProcA(h, msg, wp, lp);
 }
@@ -53,10 +58,13 @@ int win_open(Window *w, const char *title, int width, int height)
     int pf = ChoosePixelFormat(hdc, &pfd); SetPixelFormat(hdc, pf, &pfd);
     HGLRC rc2 = wglCreateContext(hdc); wglMakeCurrent(hdc, rc2);
     w->hwnd = hwnd; w->hdc = hdc; w->hglrc = rc2; w->width = width; w->height = height;
+    /* the mouse as raw input (usage page 1, usage 2): relative counts, delivered only while the window is in the foreground, the
+     * cursor left alone - like the original's DirectInput mouse, cooperative level 6 = non-exclusive + foreground (0x467be5) */
+    { RAWINPUTDEVICE rid = { 0x01, 0x02, 0, hwnd }; RegisterRawInputDevices(&rid, 1, sizeof rid); }
     printf("OpenGL: %s / %s\n", (const char *)glGetString(GL_RENDERER), (const char *)glGetString(GL_VERSION));
     return 0;
 }
-void win_poll(Window *w) { MSG m; w->mouse_dx = w->mouse_dy = 0; while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageA(&m); } }
+void win_poll(Window *w) { MSG m; w->mouse_dx = w->mouse_dy = 0; w->raw_dx = w->raw_dy = 0; while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageA(&m); } }
 void win_swap(Window *w) { SwapBuffers((HDC)w->hdc); }
 void win_mode(Window *w, int width, int height, int full)
 {

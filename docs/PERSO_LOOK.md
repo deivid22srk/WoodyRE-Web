@@ -23,9 +23,11 @@ Notation: `p` = Perso, `M` = Mover `p+0x388`, `C` = CamMgr `[0x4c737c]`, `L` = t
   (`0x44bb20(0)`: the Mover runs out in 0.1 s, no jump, gravity/knockback/platforms still act), collision as usual, logical anim 0.
   Woody is **faded out** (`+0x6c = 1.0`, frame step 24 `0x44b4a0`) — no model, no shadow, no outline. The HUD stays.
 * **Camera** (`0x459050`, then mode **0x200**, hard cut): eye at the feet + **0.9 × body height** (193 → **173.7**; ducked 61 → **54.9**),
-  no forward offset. Yaw starts at Woody's facing, pitch 0. Direction keys / mouse turn the view: **56.25°/s** per key
+  no forward offset. Yaw starts at Woody's facing, pitch 0. The direction keys turn the view: **56.25°/s** per key
   (5 counts × π/16 rad per count per second); **yaw unlimited**, **pitch ±72°** (±1.2566). Right/left turn right/left; the
   **forward key looks down and the back key up** (the keys are worth +5/−5 "mouse counts" and a mouse moved forward gives negative Y).
+  The code also reads the DirectInput mouse, but the game never polls it (INPUT.md §1.3): its counts are always 0, **the mouse
+  does nothing**.
   Woody turns with the view (his facing = the view's horizontal direction, one frame late), so he faces where you looked when it ends.
 * **End**: action 7 released again, **or** automatically as soon as the camera is no longer in mode 0x200 (a script camera, the
   teleport camera reset, the free debug camera). The Perso goes back to the **previous** state (`+0x220`, 0 or 6) without SetState, is
@@ -113,7 +115,8 @@ Runs after the Perso update each frame. On a change of `p->state` (compared with
 Then, because `SetMode` has already written `idx = 9`, the **index-9 input block `0x459346` runs in the entry frame too**:
 
 ```c
-L->dx = mouse ? mouse->vt[2]() : 0;  L->dy = mouse ? mouse->vt[3]() : 0;   /* [0x5e6190]: DirectInput mouse (0x467bb5), relative X/Y */
+L->dx = mouse ? mouse->vt[2]() : 0;  L->dy = mouse ? mouse->vt[3]() : 0;   /* [0x5e6190]: DIMOUSESTATE lX/lY (0x467d00/0x467d10), never
+                                                                            polled (0x467cc0 has no caller, INPUT.md 1.3): always 0 */
 if      (Held(1)) L->dx = ftol(Value(1) * 5.0f);       /* right,   value +1 -> +5  (0x4a9884) */
 else if (Held(0)) L->dx = ftol(fabs(Value(0)) * -5.0f);/* left,    value -1 -> -5  (0x4ab2c8) */
 if      (Held(3)) L->dy = ftol(Value(3) * -5.0f);      /* back,    value +1 -> -5 */
@@ -125,8 +128,12 @@ Look_Init(p, L, 0);                                    /* 0x44c080(.., 0): eye o
 ```
 
 The Mover write uses the matrix of the previous update, so Woody's facing trails the view by one frame. In the entry frame that
-matrix is left over from the previous look-around (all zero the first time ⇒ `(1, 0, 0)`): for one frame the Perso's facing is
-wrong. He is invisible then and the next frame repairs it, so nothing shows (derived).
+matrix is left over from the previous look-around: `L+0x30..0x50` is written only by `0x425b80` (`0x440b40` at `0x425dcb`/`0x425de3`), not by `0x44c080`,
+`0x425b60` or the CamMgr ctor (`0x41dca0` → `0x41dd30` clears other fields only; the CamMgr comes from `new` at `0x458ef2`), so
+the first time it is whatever the heap held — zero on a fresh block ⇒ `(1, 0, 0)` (`0x4594a4`). For one frame the Perso's facing
+(`M+0x10`, `+0x1c`, `+0x34`) is that stale direction; he is invisible then and the next frame repairs it, but the frame's Perso
+update uses it: if he walked into the look-around, the Mover's run-out moves him one frame's worth along the stale direction
+(derived; in the port a walk into the look-around at 600 u/s moves him 3.7 units along +x the first time).
 
 ### 3.2 `0x44c080(p, L, init)` — eye and start values
 
@@ -176,10 +183,11 @@ The `(-1, 1)` limit pair on the yaw fails both clamp guards (`max > 0`, `min < 0
 | left key (0) | −5 | yaw +, left | 56.25°/s |
 | forward key (2) | +5 on Y | pitch −, **looks down** | 56.25°/s, stops at −72° after 1.28 s |
 | back key (3) | −5 on Y | pitch +, **looks up** | 56.25°/s, stops at +72° |
-| mouse | its counts, clamped ±64 | right / down on positive counts | counts · dt · π/16 per frame, at most π/10 per frame |
+| mouse | its counts, clamped ±64 — **always 0**: never polled (INPUT.md §1.3) | right / down on positive counts | counts · dt · π/16 per frame, at most π/10 per frame |
 
-The mouse term multiplies counts **per frame** by `dt`, so the mouse gets slower as the frame rate goes up; the π/10 cap only bites
-below 40 fps at the ±64 limit. A key held overrides the mouse on that axis.
+The mouse term multiplies counts **per frame** by `dt`, so the mouse would get slower as the frame rate goes up; the π/10 cap
+would only bite below 40 fps at the ±64 limit. A key held overrides the mouse on that axis. The keys' counts are `ftol(Value·5)`
+(`0x499580` truncates), so a joystick turns the view at its deflection (0.5 → 2 counts).
 
 No transition (entry and exit are cuts), no shake (0x41fbd0 only runs for modes 1, 2, 4, 8, 0x10, 0x20), no letterbox, the normal
 projection (zoom 1.2, vfov 83.97°). There is no collision for the eye: it is inside Woody's body, which is inside the level anyway.
@@ -218,19 +226,26 @@ No state test; it works dead or alive. While `+0x238 > 0` Perso_Move has no inpu
 (PERSO_DUCK.md 2.2). A scan of all 28 level scripts (every `SEND` whose first pushed value is 30) finds **no** use; neither is
 message 550 (camera mode 0x200 from a script) used.
 
-## 7. Port (`src/player.c`, `src/main_engine.c`)
+## 7. Port (`src/player.c`, `src/main_engine.c`, `src/render_gl.c`)
 
-* Keys: **Enter** (the original's default) or **V**, on release; direction keys (arrows / WASD) turn the view; the mouse turns it
-  while the **right button** is held (the port has no DirectInput mouse; `win.mouse_dx/dy` only count with the right button).
+* Keys: **Enter** (the original's default) or **V**, on release; direction keys (arrows / WASD) or the stick turn the view
+  (`ftol(Value·5)` counts). The mouse gives 0 counts, as in the original (INPUT.md §1.3). Port extra: `WOODY_LOOKMOUSE=1` feeds
+  the relative mouse (raw input, `Window.raw_dx/dy`, counts since the last frame) into the same formula, no button needed;
+  `WOODY_MOUSE="T:DX:DY[:D]"` injects counts for tests.
 * `look_update()` = `0x44b980` + the fade of `0x44b4a0` (one frame late, as in the original); `Player.look` is state 3,
   `Player.state6` is state 6 itself (so the bug's "state 6 without a bomb" exists), `Player.cam_mode` = `C+0x134` written by the app.
+  It runs in `perso_keys_tail()` together with `special_update()` (`0x458bf0`) and `side_update()` (`0x459c70`), after the attack
+  controller, the pick-up and ducking, as `0x44b7a8` does — so an attack that starts in the frame of the release (a ground
+  attack starts on the attack key's release) refuses the entry with sound 9 (checked: `WOODY_KEYS="1.875:CTRL:0.25 2:RET:0.125"`).
 * `player_look_start()` = `0x459050`, `player_look_camera()` = `0x459346` + `0x425b80`, called by `cam_update()` for `g_cam.mode == 0x200`;
-  the state-change block of `0x459090` sits in the main loop next to the other camera requests (`g_cam.look_prev`).
+  the state-change block of `0x459090` sits in the main loop next to the other camera requests (`g_cam.look_prev`). The facing
+  written back is the view of the last update, kept in `s_look_fwd` for the whole run (never reset, zero at start): the entry
+  frame writes the stale direction, `(1, 0, 0)` = yaw 90° the first time (`WOODY_LOOKLOG` prints each such write).
 * `player_lock()` = message 30 (`case 30` in `on_msg`).
-* Deviations: `look_update` runs at the top of the Perso update, before the attack controller (the original runs it after
-  `0x457a50`/`0x44ba70`/`0x465b10`: an attack started in the very frame of the release would refuse the entry there); the one-frame
-  stale facing of the entry frame (§3.1) is not reproduced; the mouse counts are window pixels.
+* Deviation left: `s_look_fwd` starts at zero once per process, where the original's first value depends on the heap (§3.1).
 * Test: `extract/Data W1A` + `WOODY_KEYS="2:RET 3:LEFT:1 4.5:UP:0.8 5.8:DOWN:1.6 8:RET"`, log `WOODY_LOOKLOG=1`.
+  Stale facing: `WOODY_KEYS="1.2:UP:1.0 2:RET 3:RET 3.5:LEFT:0.5 4:RET 5:RET"` (facing −6 → 90 → −6 at the first entry, 108 → −6 →
+  108 at the second). Mouse formula: add `WOODY_MOUSE="6.0:-20:0:0.5"` (+112° left in 0.5 s).
   Bomb bug: `extract/Data W2A --pos 8225 280 -17322 --yaw 90` + `WOODY_PECKS="0.7 3.0 9.0" WOODY_POSAT="2.5 8150 200 -17350"
   WOODY_KEYS="5:RET 6.5:RET 7:UP:1" WOODY_BOMBLOG=1`.
 
@@ -238,8 +253,9 @@ message 550 (camera mode 0x200 from a script) used.
 
 1. Certain: §1, §2 table, §3.1–3.3, §6 (instruction by instruction). The sign of the pitch (positive = up) rests on the camera
    convention of CAMERA.md §1 (camera column 1 = −row 2 = screen down, so row 2 = world up); the port's screenshots agree.
-2. Derived, not replayed: the one-frame fade lag, the stale facing in the entry frame, the invisible death/scripted action after
-   leaving state 3 that way, the script camera being overwritten by the forced exit, the whole bomb bug.
-3. The mouse object's vtable slots 2/3 are taken to be the relative X/Y of the DirectInput mouse (created at `0x467bb5` with
-   `SetCooperativeLevel(6)`); not read in detail.
+2. Derived, not replayed: the one-frame fade lag, the stale facing in the entry frame (and its first value, heap contents),
+   the invisible death/scripted action after leaving state 3 that way, the script camera being overwritten by the forced exit,
+   the whole bomb bug.
+3. ~~The mouse object's vtable slots 2/3~~ settled (INPUT.md §1.3): `lX`/`lY` of a `DIMOUSESTATE` that is never polled; live
+   they are 0 (`tools/wmouse.py`). The look-around with the mouse is therefore key-only in the original.
 4. Which joystick button is action 7 by default (`0x44fed0` table) was not looked up.

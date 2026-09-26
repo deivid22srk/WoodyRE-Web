@@ -58,6 +58,7 @@ static uint32_t msvc_rand(void *user);
 /* ---- camera manager: follow camera (mode 1, player.c) + the fixed script cameras (docs/CAMERA_SCRIPT.md, CAMERA.md 4 and 6.1)
  * mode 2 (message 510) / mode 4 (520, letterbox, player frozen): camera at the .ins camera position looking at
  * target origin + (0, f, 0). A mode change blends linearly from the frozen old camera unless the script asked for a cut. */
+typedef struct { float t, T, diff, start, tgt; } SvRamp;       /* one ramp of the side view: elapsed, duration, target - start, start, target */
 static struct {
     int mode; Vec3 fix_pos; Instance *fix_target; float fix_f;
     float dur, speed; int dur_from_speed, cut;                  /* 570 / 560 / 580 */
@@ -66,7 +67,9 @@ static struct {
     const Trajectory *rail; float rail_d, rail_y; Vec3 rail_pt; int rail_first;   /* mode 8 (540): camera on a TRAJ at distance d from the player */
     /* mode 0x20 (game messages 1088 + 1110, CAMERA_SCRIPT.md 4.2): side view of a section where the player is kept on a vertical plane */
     int plane_on, side; Vec3 plane_a, plane_d; float sv_par[8];   /* sv_par: lat 1000, ahead 300, h 340, h_up 500, h_down 0, rate_h 400, rate_a 700, rate_lat 200 */
-    float sv_a, sv_h, sv_lat, sv_s;
+    float sv_a, sv_h, sv_lat, sv_htarget;                        /* S+0x28c A, +0x290 H, +0x294 Lat; p+0x24 the height target */
+    SvRamp sv_ra, sv_rh, sv_rl;                                  /* the linear ramps of A (S+0x368..0x378), H (+0x354..0x364), Lat (+0x37c..0x38c) */
+    float sv_blend, sv_bt, sv_bstart, sv_bT; int sv_bsign;        /* 0x4250b0: S+0x340 blend, +0x348 t, +0x34c start, +0x350 duration, +0x344 sign byte */
     int death_cam;                                               /* engine use of mode 2 (0x41fb50 from 0x459030): the camera stops and watches the player fall */
     /* mode 0x80 (docs/CAMERA_SCRIPT.md 4.3): the camera comes from a camera track in the animation an instance plays */
     Instance *anim_inst; int anim_letterbox; Vec3 anim_eye, anim_tgt;   /* CamMgr+0x5d4, +0x618 & 2, +0x1d0, +0x5d8 */
@@ -78,6 +81,17 @@ static struct {
 } g_cam = { 1 };
 static const float k_sv_defaults[8] = { 1000, 300, 340, 500, 0, 400, 700, 200 };
 static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
+/* 0x424b30, the init of mode 0x20 that SetMode (0x41f56b -> 0x41e4e0) runs on EVERY SetMode(5), also the re-entry of 0x459960:
+ * flip byte p+0x20 = 0, A = p+0x2c and H = Htarget = p+0x30 and Lat = p+0x28 at once (no ramp at the start), blend 1.0 with the
+ * sign byte 1 (look ahead along +p->dir), the flip blend and the three ramps zeroed */
+static void cam_side_init(void)
+{
+    const float *q = g_cam.sv_par;
+    if (g_player) g_player->side_flip = 0;
+    g_cam.sv_a = q[1]; g_cam.sv_htarget = q[2]; g_cam.sv_h = g_cam.sv_htarget; g_cam.sv_lat = q[0];
+    g_cam.sv_blend = 1.0f; g_cam.sv_bsign = 1; g_cam.sv_bt = g_cam.sv_bstart = g_cam.sv_bT = 0;
+    memset(&g_cam.sv_ra, 0, sizeof g_cam.sv_ra); memset(&g_cam.sv_rh, 0, sizeof g_cam.sv_rh); memset(&g_cam.sv_rl, 0, sizeof g_cam.sv_rl);
+}
 static void cam_set_mode(int mode)                               /* SetMode 0x41f410 + 0x41eaa0 */
 {
     if (getenv("WOODY_CAMLOG") && mode != g_cam.mode) printf("  CAM mode %d -> %d (%s)\n", g_cam.mode, mode, g_cam.cut ? "cut" : "travelling");
@@ -87,12 +101,12 @@ static void cam_set_mode(int mode)                               /* SetMode 0x41
     } else g_cam.active = 0;
     g_cam.mode = mode; if (mode != 0x80) g_cam.anim_inst = NULL;
     if (mode == 1 && g_player) g_player->cam_init = 0;
+    if (mode == 0x20) cam_side_init();                           /* 0x41f56b: 0x41e4e0 -> 0x424b30 */
 }
 /* 0x41df70, the camera reset of 0x458f90 (teleport 26, respawn) and of the level start 0x402b0d: shake off (+0x67c), zoom 1.2
  * (0x41f680), auto-zoom off (+0x66c &= ~4), follow camera state CENTER (0x422350, the cam_init of the mode switch) */
 static void cam_reset(void) { g_cam.shake = 0; g_cam.autozoom = 0; if (g_player) g_player->cam_zoom = 1.2f; }
 static void cam_hard_reset(void) { cam_reset(); g_cam.cut = 1; cam_set_mode(1); }   /* 0x458f90: the reset, then the hard cut to the follow camera */
-static float ramp_to(float v, float target, float step) { return v < target ? (v + step > target ? target : v + step) : (v - step < target ? target : v - step); }
 /* 0x44de44: a Perso state change (scripted action, teleport, cinematic, death) ends the side view's plane lock */
 static void plane_release(void) { if (!g_cam.plane_on) return; g_cam.plane_on = 0; if (g_cam.mode == 0x20) { g_cam.cut = 1; cam_set_mode(1); } puts("  side view: plane lock released"); }
 static void cam_side_start(Instance *in, int v)                   /* Perso::0x459960 */
@@ -105,9 +119,9 @@ static void cam_side_start(Instance *in, int v)                   /* Perso::0x45
     Vec3 A = ins_point_world(in, mo->nodes[node].point_base), B = ins_point_world(in, mo->nodes[node].point_base + 1), d = { B.x - A.x, 0, B.z - A.z };
     float l = sqrtf(d.x * d.x + d.z * d.z); if (l < 0.01f) d = (Vec3){ 1, 0, 0 }; else { d.x /= l; d.z /= l; }
     g_cam.plane_on = 1; g_cam.plane_a = A; g_cam.plane_d = d; g_cam.side = v == 1 ? 0 : 1;
+    if (g_player) { g_player->side_l = v == 1; g_player->side_r = v != 1; }   /* 0x459ae9: v == 1 -> +0x4ed = 1 (facing d = the left key), else +0x4ee = 1 */
     memcpy(g_cam.sv_par, k_sv_defaults, sizeof k_sv_defaults);
-    g_cam.sv_a = 0; g_cam.sv_h = g_cam.sv_par[2]; g_cam.sv_lat = g_cam.sv_par[0]; g_cam.sv_s = 1;
-    g_cam.cut = 1; cam_set_mode(0x20);
+    g_cam.cut = 1; cam_set_mode(0x20);                             /* 0x459baf / 0x459bba; the mode init 0x424b30 sets A, H, Lat and the blend */
 }
 /* WOODY_MSGUNK=1: every message id the port does not handle, once per id (with the args of that first send) */
 static void msg_unknown(const EkoMsg *m, const char *what)
@@ -198,6 +212,46 @@ static Vec3 rail_nearest(const Trajectory *tr, Vec3 c, Vec3 R)
     }
     return cand;
 }
+/* 0x425300 (A) = 0x425220 (H) = 0x4253e0 (Lat): a linear ramp in time, restarted from the current value when it is idle (t == 0)
+ * or the target moved; the first call leaves the value where it is. f = t / T; f > 1 snaps to the target and idles the ramp
+ * (0x4253c4), otherwise value = start + (target - start) f and t += dt. Called only while value != target. */
+static void sv_ramp(float *v, float target, float rate, SvRamp *r, float dt)
+{
+    if (r->t == 0 || r->tgt != target) {                                          /* 0x425300..0x425386 */
+        r->t = 0; r->tgt = target; r->diff = target - *v; r->T = r->diff / rate; if (r->T < 0) r->T = -r->T; r->start = *v;
+    }
+    float f = r->t / r->T;
+    if (f > 1.0f) { r->t = 0; *v = target; return; }                              /* 0x42539a: C0 / C3 clear */
+    *v = f * r->diff + r->start; r->t += dt;
+}
+/* 0x4250b0(dt, &ahead), ahead = the unit walking direction p->dir on entry. A < 0.001: ahead stays the unit vector (unscaled, no
+ * sign) and a flip only toggles the sign byte. Otherwise ahead = (x A, 0, z A); on p->flip (p+0x20, one frame, 0x459c70) the sign
+ * byte S+0x344 toggles, start = -blend (0x425141; the 1.0 test at 0x42512b gives the same -1), blend = -1, t = 0, duration
+ * T = |ahead| / p+0x40 * (1 - start): so s = +-blend is continuous across the flip, and the look point then sweeps linearly from
+ * where it was to the other side at the rate of A (700 u/s). While blend != 1.0 (bitwise, 0x425194): blend = start + (1 - start)
+ * t / T, capped at 1 (0x4251ce), t += dt AFTER the use (the flip frame itself shows start). ahead *= (sign ? blend : -blend). */
+static void sv_ahead(Vec3 *ahead, int flip, float rate, float dt)
+{
+    if (!(g_cam.sv_a >= 0.001f)) { if (flip) g_cam.sv_bsign = !g_cam.sv_bsign; return; }   /* 0x4250b0..0x4250e5 (0x4a94c4 = 0.001) */
+    ahead->x *= g_cam.sv_a; ahead->y = 0; ahead->z *= g_cam.sv_a;
+    if (flip) {                                                                   /* 0x42510c */
+        g_cam.sv_bsign = !g_cam.sv_bsign;
+        g_cam.sv_bstart = g_cam.sv_blend == 1.0f ? -1.0f : -g_cam.sv_blend;
+        g_cam.sv_blend = -1.0f; g_cam.sv_bt = 0;
+        g_cam.sv_bT = sqrtf(ahead->x * ahead->x + ahead->z * ahead->z) / rate * (1.0f - g_cam.sv_bstart);
+    }
+    if (g_cam.sv_blend != 1.0f) {                                                 /* 0x42518d */
+        /* T = 0 happens when the flip byte stays up for a second frame (0x459c70 skipped under a move lock): start = -(-1) = 1, and
+         * the original divides 0 / 0 at 0x4251a1 - a NaN that then sticks in the blend until the next SetMode(5) (derived). The
+         * port takes t / T = 1 there: blend 1, s unchanged */
+        float f = g_cam.sv_bT != 0 ? g_cam.sv_bt / g_cam.sv_bT : 1.0f;
+        float v = f * (1.0f - g_cam.sv_bstart) + g_cam.sv_bstart;
+        g_cam.sv_blend = v > 1.0f ? 1.0f : v;
+        g_cam.sv_bt += dt;
+    }
+    float s = g_cam.sv_bsign ? g_cam.sv_blend : -g_cam.sv_blend;                  /* 0x4251e8 */
+    ahead->x *= s; ahead->y *= s; ahead->z *= s;
+}
 static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 {
     Vec3 P, T;
@@ -219,13 +273,20 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
     }
     if (g_cam.mode == 0x20 && g_cam.plane_on) {                  /* 0x424bf0 */
         const float *q = g_cam.sv_par; Vec3 d = g_cam.plane_d, sidev = { -d.z, 0, d.x };   /* (0,-1,0) x dir */
-        float htarget = behind_key == 2 ? q[3] : behind_key == 3 ? q[4] : q[2];
-        g_cam.sv_a = ramp_to(g_cam.sv_a, q[1], q[6] * dt); g_cam.sv_h = ramp_to(g_cam.sv_h, htarget, q[5] * dt); g_cam.sv_lat = ramp_to(g_cam.sv_lat, q[0], q[7] * dt);
-        float face = sinf(p->yaw) * d.x + cosf(p->yaw) * d.z;    /* the look-ahead follows the walking direction; the reversal blends at the look-ahead rate */
-        g_cam.sv_s = ramp_to(g_cam.sv_s, face >= 0 ? 1.0f : -1.0f, (g_cam.sv_a > 1 ? q[6] / g_cam.sv_a : 10.0f) * dt);
-        Vec3 C = { p->pos.x + d.x * g_cam.sv_a * g_cam.sv_s, p->pos.y + g_cam.sv_h, p->pos.z + d.z * g_cam.sv_a * g_cam.sv_s };
-        float lat = g_cam.side == 0 ? -g_cam.sv_lat : g_cam.sv_lat;
+        /* 0x424d4e: p->h (p+4, written by the Perso in 0x459c70) picks the height target p+0x24: 0 (up key) -> p+0x34, 1 -> p+0x30,
+         * 2 (down / duck) -> p+0x38 */
+        g_cam.sv_htarget = behind_key == 2 ? q[3] : behind_key == 3 ? q[4] : q[2];
+        /* each ramp only runs while the value differs from its target (0x424d7f, 0x424d9d, 0x424dbb); the same dt as the VM frame */
+        if (g_cam.sv_a != q[1]) sv_ramp(&g_cam.sv_a, q[1], q[6], &g_cam.sv_ra, dt);                            /* 0x425300, rate p+0x40 */
+        if (g_cam.sv_h != g_cam.sv_htarget) sv_ramp(&g_cam.sv_h, g_cam.sv_htarget, q[5], &g_cam.sv_rh, dt);    /* 0x425220, rate p+0x3c */
+        if (g_cam.sv_lat != q[0]) sv_ramp(&g_cam.sv_lat, q[0], q[7], &g_cam.sv_rl, dt);                        /* 0x4253e0, rate p+0x44 */
+        float lat = g_cam.side == 0 ? -g_cam.sv_lat : g_cam.sv_lat;                                          /* 0x424dd3 */
+        Vec3 ahead = d; sv_ahead(&ahead, p->side_flip, q[6], dt);                                              /* 0x4250b0 */
+        Vec3 C = { p->pos.x + ahead.x, p->pos.y + ahead.y + g_cam.sv_h, p->pos.z + ahead.z };                  /* 0x424e30 / 0x424e35 */
         P = (Vec3){ C.x + sidev.x * lat, C.y, C.z + sidev.z * lat }; T = p->pos; g_cam.look_off = (Vec3){ C.x - T.x, C.y - T.y, C.z - T.z };
+        if (getenv("WOODY_SIDELOG") && (p->side_flip || (int)(p->play_time * 10) != (int)((p->play_time - dt) * 10)))
+            printf("  SIDE t %.2f flip %d A %.1f H %.1f Lat %.1f blend %.3f sign %d s %+.3f ahead %.1f %.1f\n", p->play_time, p->side_flip, g_cam.sv_a, g_cam.sv_h, g_cam.sv_lat,
+                   g_cam.sv_blend, g_cam.sv_bsign, g_cam.sv_bsign ? g_cam.sv_blend : -g_cam.sv_blend, ahead.x, ahead.z);
     } else if (g_cam.mode == 8 && g_cam.rail) {
         /* 0x421570. c = p+0x20 = the player's position (vt[34], his feet) that 0x459090 writes every frame, its y filtered
          * y = (1-k) y + k y_prev with k = 0.95^(30 dt) and frozen while he rises or falls (p+0x50 bits 2/3) */
@@ -3612,7 +3673,22 @@ int main(int argc, char **argv)
             pin.jump = in_held(4) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = in_held(6) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
             pin.special = in_held(11) || (special_at >= 0 && now - t0 >= special_at - 0.1 && now - t0 < special_at);   /* action 11 (RCtrl in the original); it fires on the release */
             pin.duck = in_held(L.player.race_char ? 8 : 5) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);   /* action 5, while riding action 8 (0x465b10; Space / LShift in the original's Woody.cfg, X in the port) */
-            pin.look = !fly && in_held(7); pin.mouse_dx = win.mouse_dx; pin.mouse_dy = win.mouse_dy;   /* action 7 (Enter / V / joystick button 4 by default, docs/INPUT.md), on release; mouse with the right button */
+            pin.look = !fly && in_held(7);                                          /* action 7 (Enter / V / joystick button 4 by default, docs/INPUT.md), on release */
+            {   /* the look-around's mouse counts (0x459346 reads [0x5e6190] vt[2] / vt[3] = DIMOUSESTATE lX / lY). The original never polls
+                 * its mouse (docs/INPUT.md 1.3: nothing calls vt[1] 0x467cc0 = GetDeviceState), so its counts never change and the mouse
+                 * does nothing: the port gives 0 too. WOODY_LOOKMOUSE=1 (port extra) feeds the raw relative counts of this frame in
+                 * instead, through the original's formula; WOODY_MOUSE="T:DX:DY[:D] ..." adds DX, DY counts per frame for D s (default
+                 * 0.5) from T s on (testing, implies WOODY_LOOKMOUSE) */
+                static int lm = -1; if (lm < 0) lm = (getenv("WOODY_LOOKMOUSE") && atoi(getenv("WOODY_LOOKMOUSE"))) || getenv("WOODY_MOUSE");
+                if (lm) { pin.mouse_dx = win.raw_dx; pin.mouse_dy = win.raw_dy; }
+                for (const char *e = getenv("WOODY_MOUSE"); e && *e; ) {
+                    double t, d = 0.5; int dx, dy, n = 0;
+                    if (sscanf(e, "%lf:%d:%d%n", &t, &dx, &dy, &n) < 3) break;
+                    e += n; if (*e == ':') { int n2 = 0; sscanf(e + 1, "%lf%n", &d, &n2); e += 1 + n2; }
+                    if (now - t0 >= t && now - t0 < t + d) { pin.mouse_dx += dx; pin.mouse_dy += dy; }
+                    while (*e == ' ') e++;
+                }
+            }
             {   /* WOODY_PECKS="T1 T2 ...": more attack taps of 0.1 s (testing: dispenser, pick up, throw) */
                 static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = getenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
                 for (int k = 0; k < npk; k++) if (now - t0 >= pk[k] && now - t0 < pk[k] + 0.1) pin.action = 1;
@@ -3636,6 +3712,7 @@ int main(int argc, char **argv)
             rockets_update(dt, &L.player, L.have_player && !fly);
             L.player.idle_hold = g_res.on || g_level == 0 || (g_cam.mode == 4 && !fly);   /* Perso state 9 / title / frozen (0x459090): no idle count, no sleeping */
             L.player.cam_mode = fly ? 0x100 : g_cam.mode;                         /* CamMgr+0x134 as the Perso sees it (0x44b9a6, 0x44ba26); F5 = the debug camera 0x100 */
+            L.player.side_on = g_cam.plane_on;                                     /* Perso+0x4ec: 0x459c70 runs while it is set (0x44b7be) */
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             if (!paused && !cin_running()) bombs_update(dt);                        /* 0x44d820, frame step 18: after the Perso */
             if (!fly) {                                                             /* 0x4459c0 (frame step 33), also during a cinematic: iris, death, respawn */
