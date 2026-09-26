@@ -547,10 +547,12 @@ static int jumper_tick(Jumper *j, float dt, int on_ground)
     j->h_prev = h;
     return !(u < 0.45f && !j->short_hop);
 }
-static void jumper_update(Jumper *j, int jump_held, int on_ground, float height_above_ground, float dt)
+static void jumper_update(Jumper *j, int jump_held, int allowed, int on_ground, float height_above_ground, float dt)
 {
     if (j->state == 2) { j->dy = 0; j->fallen = 0; j->hard_fall = 0; }
-    if (height_above_ground <= J_REARM_H && !jump_held) j->armed = 1;
+    if (!allowed) jump_held = 0;                                  /* 0x462d9c: Perso_Move's input flag off = the key counts as up */
+    if (height_above_ground <= J_REARM_H && !jump_held && allowed) j->armed = 1;   /* 0x462dc0: but it re-arms only with input allowed (a lock,
+                                                                   * an attack or the knockback timer keep a held key from firing on release of the lock) */
     if (j->coyote) { j->coyote_t += dt; if (j->coyote_t > J_COYOTE) j->coyote = 0; }
     switch (j->state) {
     case 2:
@@ -573,6 +575,44 @@ static void jumper_update(Jumper *j, int jump_held, int on_ground, float height_
     case 5: if (jumper_tick(j, dt, on_ground) && on_ground) j->state = 6; return;
     case 6: j->state = 2; return;
     }
+}
+
+/* ---- the second air action (docs/PERSO_JUMP.md 1.5) ------------------------------------------------------------
+ * 0x465e50, a pre-step of every Perso state (0x44b764): back on the ground (+0x22c) it may be used again; action 4 JUST pressed
+ * while the air-move window +0x6f8 is open (the jumper opens it with the attack window at t >= -0.15, the recoil of a peck at
+ * T < 0.5), more than P+0x84 = 100 above the ground and not used since the ground starts it once per air time, by subtype:
+ * 3 (Knothead, script type 2) an air dash along the facing, 0.15 s at 3000 u/s; 2 (Splinter, type 3) a double jump straight up,
+ * 0.25 s at 1200 u/s less 1 % per 1/60 s; SoundFx 0x3a. Woody (1) and the riders (4/5) only get the "used" flag. No animation
+ * request and no controller reset: whatever the Jumper state asks for (the somersault, anim 5) plays on. */
+static void air_move_start(Player *p, const PlayerInput *in)
+{
+    int pressed = in->jump && !p->am_jprev; p->am_jprev = in->jump;      /* 0x467420(4) */
+    if (p->on_ground) p->am_used = 0;                                    /* 0x465e62 */
+    if (!(p->am_win > 0) || !pressed || p->am_on || p->am_used || !(p->pos.y - p->floor_y > J_REARM_H)) return;   /* 0x465e68..0x465eb5 */
+    p->am_acc = 0; p->am_on = 1; p->am_used = 1;
+    if (p->subtype == 3) {                                               /* 0x465ee3: M+0x10, normalised when longer than 0 */
+        p->am_dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) }; p->am_t = 0; p->am_dur = 0.15f; p->am_speed = 3000.0f;
+    } else if (p->subtype == 2) {                                        /* 0x465f8b */
+        p->am_dir = (Vec3){ 0, 1, 0 }; p->am_t = 0; p->am_dur = 0.25f; p->am_speed = 1200.0f;
+    } else { p->am_on = 0; return; }                                     /* 0x465fcf */
+    audio_fx(0x3a, NULL, NULL);
+    if (getenv("WOODY_JUMPLOG")) printf("  AIR MOVE %s (jumper %d t %.3f, %.0f above the floor, anim %d)\n", p->subtype == 3 ? "dash" : "double jump", p->jumper.state, p->jumper.t, p->pos.y - p->floor_y, p->lanim);
+}
+/* 0x465fe0, the head of Perso_Move (states 0/6/2/3): the window runs down; while active, +0x204 = dir * step * speed with
+ * step = the part of this frame inside the length, the direction keeping the last displacement; returns 1 = Perso_Move stops */
+static int air_move_tick(Player *p, float dt, Vec3 *disp)
+{
+    if (p->am_win > 0) p->am_win -= dt;
+    if (!p->am_on) return 0;
+    if (p->am_t >= p->am_dur) { p->am_on = 0; return 0; }               /* 0x466026: the frame after the end is a normal one */
+    float t0 = p->am_t; p->am_t += dt; if (p->am_t > p->am_dur) p->am_t = p->am_dur;
+    float step = p->am_t - t0;
+    if (p->subtype == 2) { p->am_acc += step; while (p->am_acc >= 1.0f / 60.0f) { p->am_speed *= 0.99f; p->am_acc -= 1.0f / 60.0f; } }   /* 0x4a9990, 0x4ab7d8 */
+    float l = sqrtf(vdot(p->am_dir, p->am_dir)), k = step * p->am_speed;
+    if (l > 0) { p->am_dir.x /= l; p->am_dir.y /= l; p->am_dir.z /= l; }
+    p->am_dir = (Vec3){ p->am_dir.x * k, p->am_dir.y * k, p->am_dir.z * k };
+    *disp = p->am_dir;
+    return 1;
 }
 
 /* ---- volumes ------------------------------------------------------------------ */
@@ -611,6 +651,7 @@ void player_bind(Player *p, Instance *inst)
     p->yaw = atan2f(fwd.x, fwd.z);
     p->spawn_pos = p->start_pos = p->pos; p->spawn_yaw = p->yaw;        /* +0x318 = +0x30c (0x44a44a) */
     p->race_char = inst->type == 18 || inst->type == 19;                  /* subtypes 5/4: Reset 0x44ab20 enters state 1 through SurfEnter */
+    p->subtype = inst->type == 2 ? 3 : inst->type == 3 ? 2 : inst->type == 18 ? 5 : inst->type == 19 ? 4 : 1;   /* the Perso ctor's argument per script type (0x403560..0x403607) */
     g_jH = p->race_char ? 400.0f : J_HEIGHT; g_jP68 = p->race_char ? 1250.0f : J_P68; g_jV = p->race_char ? 1250.0f : J_V;
     if (p->race_char) race_enter(p, 0);                                   /* SetTypeInstance, inside the init tick; the Game ctor's SurfEnter follows (player_race_start) */
 }
@@ -916,7 +957,7 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
         }
         p->dash_start = p->pos; audio_fx(55 + rand() % 3, NULL, NULL);          /* 0x45752b: air attack cry, 0x37 + rand(0,3) */
         { float l = sqrtf(vdot(p->atk_dir, p->atk_dir)); p->atk_dir.x /= l; p->atk_dir.y /= l; p->atk_dir.z /= l; }
-        p->jumper.fallen = 0; p->jumper.hard_fall = 0; p->air_win = 0; p->atk = 2; return; }
+        p->jumper.fallen = 0; p->jumper.hard_fall = 0; p->air_win = 0; p->am_win = 0; p->atk = 2; return; }   /* 0x457560(0, 1), 0x465e00(0, 1) */
     case 2:
         p->atk_disp = (Vec3){ p->atk_dir.x * dt * 1500.0f, p->atk_dir.y * dt * 1500.0f, p->atk_dir.z * dt * 1500.0f }; p->use_atk_disp = 1;
         if (!attack_probe(p, (Vec3){ p->atk_dir.x * 50.0f, p->atk_dir.y * 50.0f, p->atk_dir.z * 50.0f }))
@@ -933,7 +974,7 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
         p->atk_t = 0.75f; p->atk = 5; return;
     case 5:
         p->atk_t -= dt; { float v = dt * p->atk_t * 1000.0f; p->atk_disp = (Vec3){ p->atk_dir.x * v, p->atk_dir.y * v, p->atk_dir.z * v }; } p->use_atk_disp = 1;
-        if (p->atk_t < 0.5f && !(p->air_win > 0)) p->air_win = 0.5f;          /* chained attack possible */
+        if (p->atk_t < 0.5f && !(p->air_win > 0)) { p->air_win = 0.5f; if (p->am_win < 0.5f) p->am_win = 0.5f; }   /* chained attack possible (0x458873: 0x465e00(0.5) too) */
         if (p->atk_t <= 0) { jumper_force_fall(&p->jumper, 1); p->atk = 0; }
         return;
     case 6:
@@ -1116,6 +1157,7 @@ static void player_reset(Player *p)                                     /* vt[17
     p->crush = 1.0f;                                                     /* 0x44ab3b: +0x2e8 = 1 (and the scale +0x4c..+0x54) */
     p->look = 0; p->look_show = 0; p->inst->fade = p->inst->fade_target = 0; p->inst->fade_rate = 100.0f;   /* 0x44ac15 +0x268 = 0; 0x44ad6a: 0x44e7f0(0, 1), visible again after a death in state 3 */
     p->special_st = 0; p->special_t = 0;                                 /* 0x44ad5e / 0x44ad64 */
+    p->am_win = 0; p->am_used = 0; p->am_on = 0;                         /* 0x44ad34 / 0x44ad3a / 0x44ad40 */
     p->follow = NULL;                                                    /* 0x44ac84: +0x55c = 0; Reset's SetState(0) (0x44ac3f) ends state 7 */
     if (p->race_char) race_enter(p, 1);                                /* 0x44ac33: SurfEnter + state 1 */
     player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
@@ -1488,7 +1530,7 @@ static Vec3 race_ride(Player *p, const PlayerInput *in, float dt)
         if (p->race_crash_t == 0.0f) { p->cam_dist = 400.0f; race_request(p, 0x70); jumper_force_fall(&p->jumper, 0); }
         p->race_crash_t += dt;
         float L = anim_len(p, 0x70, 1) + anim_len(p, 0x70, 0);
-        if (p->race_crash_t >= L) { jumper_update(&p->jumper, 0, p->on_ground, p->pos.y - p->floor_y, dt); disp.y = p->jumper.dy; }   /* before L he hangs where he crashed */
+        if (p->race_crash_t >= L) { jumper_update(&p->jumper, 0, 1, p->on_ground, p->pos.y - p->floor_y, dt); disp.y = p->jumper.dy; }   /* before L he hangs where he crashed */
         if ((p->race_crash_t >= L && p->on_ground) || p->race_crash_t >= 2.0f) player_kill(p, 8);
         return disp; }
     case 1: disp = p->race_dir; break;                                     /* 0x456cf0: M+0x1c, the direction of the previous frame */
@@ -1519,7 +1561,7 @@ static Vec3 race_ride(Player *p, const PlayerInput *in, float dt)
     if (disp.x * disp.x + disp.z * disp.z < 1e-4f) disp = (Vec3){ 1, 0, 0 };   /* M_SetRideDir: |dir| < 0.01 -> x = 1 */
     p->race_dir = xz_unit(disp); p->yaw = atan2f(p->race_dir.x, p->race_dir.z);   /* M+0x1c = M+0x10: the facing */
     disp = (Vec3){ p->race_dir.x * step, 0, p->race_dir.z * step };
-    jumper_update(&p->jumper, in->jump, p->on_ground, p->pos.y - p->floor_y, dt);   /* 0x462d70 with action 4 */
+    jumper_update(&p->jumper, in->jump, 1, p->on_ground, p->pos.y - p->floor_y, dt);   /* 0x462d70 with action 4, input allowed */
     disp.y = p->jumper.dy;
     p->bfx.active = 1;                                                     /* 0x4567d1: the app ticks the spray emitter this frame */
     p->race_snd |= 1;                                                      /* 0x468e40 */
@@ -1635,7 +1677,7 @@ static void look_update(Player *p, const PlayerInput *in)
         p->look = 1;
         if (getenv("WOODY_LOOKLOG")) printf("  LOOK on (from state %d), facing %.0f\n", p->look_prev6 ? 6 : 0, p->yaw * 57.2958f);
     } else {
-        audio_fx(9, NULL, NULL);                                            /* 0x44ba5f: "can't" (only while the App is in a game) */
+        if (!p->app_menu) audio_fx(9, NULL, NULL);                          /* 0x44ba5f: "can't" (only while the App is in a game, App+0 != 0, 0x44ba52) */
         if (getenv("WOODY_LOOKLOG")) printf("  LOOK refused (ground %d, camera mode %d)\n", p->on_ground, p->cam_mode);
     }
 }
@@ -1996,6 +2038,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->bonus_inv > 0) p->bonus_inv -= dt;                             /* 0x44b1fa */
     bonus_blink(p, dt);
     if (p->game_state == 0) return;                                      /* waiting for the respawn */
+    air_move_start(p, in);                                               /* 0x465e50: pre-step of every Perso state, after 0x464ef0 (0x44b764) */
     if (!p->dead_kind && !p->race_char && (p->script_act || p->ride || p->climb_sub || p->follow)) duck_update(p, in, dt, 1, p->ride ? 1 : p->on_ground);   /* 0x465b10 also in the states 5 / 8 / 4, which return early below; before 0x44b980 as in 0x44b797 */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
@@ -2074,15 +2117,20 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     perso_keys_tail(p, in, dt);                                           /* 0x44b980, 0x458bf0, 0x459c70 after 0x457a50 / 0x44ba70 / 0x465b10 (0x44b7a8) */
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
+    else if (air_move_tick(p, dt, &disp)) { }                              /* 0x465fe0 returned 1: the air dash / double jump owns +0x204, Perso_Move
+                                                                            * stops there (no Mover, no Jumper, no +0x244) */
     else {
     /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking; states 2 and 3 call it with arg 0 (0x44b8a3) */
     int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind || p->look);
+    /* ... and while the knockback timer M+0xec (+0x474, 0.2 s from the hit, 0x45a140) runs (0x44bb48): no input either, but the Mover is
+     * not stopped - RampA just gets no key and runs out as on a release (the knockback does not touch it) */
+    int input = allow && !(p->push_t > 0);
     /* 0x45a850 loads RampA's times every frame: P+0x2c / P+0x30 (0.25 / 0.1 s), on slippery ground (Perso+0x308 == 1) P+0x34 / P+0x38 */
     const int ice = p->ground_kind == 1;
     const float acc_T = ice ? P_ICE_ACC_TIME : P_ACC_TIME, dec_T = ice ? P_ICE_DEC_TIME : P_DEC_TIME;
     /* input direction relative to the camera */
-    float ix = allow ? (float)(in->right - in->left) : 0, iz = allow ? (float)(in->forward - in->back) : 0, stick = 1.0f;
-    if (allow && (in->ax != 0 || in->az != 0)) { ix = in->ax; iz = in->az; stick = sqrtf(ix * ix + iz * iz); if (stick > 1.0f) stick = 1.0f; }   /* 0x45a4b0: the deflection scales speed and turn */
+    float ix = input ? (float)(in->right - in->left) : 0, iz = input ? (float)(in->forward - in->back) : 0, stick = 1.0f;
+    if (input && (in->ax != 0 || in->az != 0)) { ix = in->ax; iz = in->az; stick = sqrtf(ix * ix + iz * iz); if (stick > 1.0f) stick = 1.0f; }   /* 0x45a4b0: the deflection scales speed and turn */
     float len = sqrtf(ix * ix + iz * iz);
     if (p->side_on) {
         /* 0x45b292..0x45b2af: with flag 2 (allow) and Perso+0x4ec the Mover runs the side walk 0x45a7b0 instead of 0x45a4b0. It clears
@@ -2149,8 +2197,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     /* vertical motion comes from the Jumper; air control is the unchanged Mover (docs/PERSO_JUMP.md 1.4) */
     if (p->dead_kind == 7) jumper_reset(&p->jumper);                       /* 0x4649bf: the water death never falls further */
     if (p->nograv_t > 0) { p->nograv_t -= dt; p->jumper.dy = 0; if (p->dead_kind == 1 && p->nograv_t <= 0) p->dead_cam_req = 1; }
-    else if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, allow && in->jump, p->on_ground, p->pos.y - p->floor_y, dt);
-    if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
+    else if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, in->jump, input, p->on_ground, p->pos.y - p->floor_y, dt);
+    if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; if (p->am_win < 0.5f) p->am_win = 0.5f; }   /* 0x463002: 0x457560(0.5) + 0x465e00(0.5) */
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
     disp = p->use_atk_disp ? p->atk_disp : (Vec3){ p->move_dir.x * p->speed * dt, p->jumper.dy, p->move_dir.z * p->speed * dt };
     int hlock = p->move_lock > 0;                                          /* 0x44bc16: ANY LockMove (+0x238 > 0: ducking, hard landing, special attack, bomb pick-up/throw,

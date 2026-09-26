@@ -448,7 +448,8 @@ static void save_auto(void) { if (g_slot >= 0) { g_file.slot[g_slot] = g_save; f
  * written back at exit) and a copy per save slot. The port keeps them in its own woodyre.cfg, key=value lines, so
  * port-only settings (aspect ratio, resolution, issue #12) can be added later without a format bump. The master
  * volumes are linear amplitude v / 100: -2000 log10(100 / v) mB in 0x48bf50 is exactly that. */
-static struct { int sfx, music, vib; } g_opt = { 100, 70, 0 };   /* port defaults (audio.c's 1.0 / 0.7); vibration: no joystick = 0% (0x4674b0), rumble is a no-op on PC */
+static struct { int sfx, music, vib; int have_sfx, have_music; } g_opt = { 100, 70, 0, 0, 0 };   /* port defaults (audio.c's 1.0 / 0.7); vibration: no joystick = 0% (0x4674b0), rumble is a no-op on PC;
+                                                                   * have_*: woodyre.cfg has the key (else setup_import may take Woody.cfg +0x80 / +0x84) */
 static void opt_apply(void) { audio_master(g_opt.sfx * 0.01f, g_opt.music * 0.01f); }   /* 0x469570 / 0x4695a0 */
 /* two switches of Detect.exe's Sound page that the game reads (docs/SETUP.md 3): "Invert Left/Right" = Woody.cfg +0x74 ->
  * [0x5e81c0] = reverse stereo (0x46b7e0), and "Cinematic" = +0x70 -> [0x5e81bc], which only gates the sound of the HNM films
@@ -472,7 +473,7 @@ static void opt_read(void)
 {
     FILE *f = fopen("woodyre.cfg", "r"); char line[128];
     if (f) { while (fgets(line, sizeof line, f)) { int v, v2; char s[16];
-        if (sscanf(line, "sfx=%d", &v) == 1) g_opt.sfx = v; else if (sscanf(line, "music=%d", &v) == 1) g_opt.music = v; else if (sscanf(line, "vibration=%d", &v) == 1) g_opt.vib = v;
+        if (sscanf(line, "sfx=%d", &v) == 1) { g_opt.sfx = v; g_opt.have_sfx = 1; } else if (sscanf(line, "music=%d", &v) == 1) { g_opt.music = v; g_opt.have_music = 1; } else if (sscanf(line, "vibration=%d", &v) == 1) g_opt.vib = v;
         else if (sscanf(line, "aspect=%15s", s) == 1) g_disp.wide = strcmp(s, "4:3") != 0;
         else if (sscanf(line, "window=%dx%d", &v, &v2) == 2) { if (v >= 320 && v2 >= 240 && v <= 7680 && v2 <= 4320) { g_disp.w = v; g_disp.h = v2; } }
         else if (sscanf(line, "fullscreen=%d", &v) == 1) g_disp.full = v != 0; else if (sscanf(line, "vsync=%d", &v) == 1) g_disp.vsync = g_setup.vsync = v != 0;
@@ -557,7 +558,7 @@ static int wcfg_read(const char *data_dir, unsigned char *b, const char **used)
  * - vsync: +0x50 is Detect's "Activate VSync" box, which the game inverts at device creation on Windows NT (0x47ee0e:
  *   [0x4c2c20] = 1 - flag when [0x4c3aa0], GetVersionExA platform 2) and then flips on vsync when the result is not 0
  *   (0x47eea0); the port only runs on the NT line, so vsync = (flag != 1): the Setup default 0 gives vsync.
- * - reverse stereo +0x74, film sound +0x70: only from a live sound section (one of the switches +0x68/+0x6c/+0x70 on);
+ * - reverse stereo +0x74, film sound +0x70, the sfx / music volumes +0x80 / +0x84: only from a live sound section (one of the switches +0x68/+0x6c/+0x70 on);
  *   the cfg that tools/native/mkcfg.c wrote before it stopped calling CoInitialize has the whole section 0 (Setup's
  *   0x10002770 returns early on S_FALSE), which the original plays without any sound - not something to copy.
  * WOODY_REVSTEREO=0/1 overrides the reverse stereo for a run without saving it (testing, main). */
@@ -569,8 +570,15 @@ static void setup_import(const char *data_dir)
         if (g_setup.vsync < 0) g_disp.vsync = CFG32(0x50) != 1;
         if (live && g_setup.rev < 0) g_setup.rev = CFG32(0x74) != 0;
         if (live && g_setup.film < 0) g_setup.film = CFG32(0x70) != 0;
-        printf("setup: %s: vsync flag %d%s, sound section %s (fx %d music %d cinematic %d invert %d, volumes %d %d %d)\n", path, CFG32(0x50),
-               g_setup.vsync >= 0 ? " (woodyre.cfg has vsync=)" : CFG32(0x50) != 1 ? " -> vsync on" : " -> vsync off", live ? "live" : "off (ignored)", CFG32(0x68), CFG32(0x6c), CFG32(0x70), CFG32(0x74), CFG32(0x80), CFG32(0x84), CFG32(0x88));
+        /* the Sound Fx / Music sliders +0x80 / +0x84 (0..100; Setup's defaults 100 / 30): the original's master volumes [0x4c2c50] /
+         * [0x4c2c54] -> [0x5e81ec] / [0x5e81f0] = v / 100 (0x4691e2..0x4692b9, SOUND.md 2.4). Same rule: only from a live section and only
+         * while woodyre.cfg has no sfx= / music= - opt_write puts both in at the first exit, after which woodyre.cfg leads */
+        int vs = CFG32(0x80), vm = CFG32(0x84);
+        if (live && !g_opt.have_sfx) g_opt.sfx = vs < 0 ? 0 : vs > 100 ? 100 : vs;
+        if (live && !g_opt.have_music) g_opt.music = vm < 0 ? 0 : vm > 100 ? 100 : vm;
+        printf("setup: %s: vsync flag %d%s, sound section %s (fx %d music %d cinematic %d invert %d, volumes %d %d %d%s)\n", path, CFG32(0x50),
+               g_setup.vsync >= 0 ? " (woodyre.cfg has vsync=)" : CFG32(0x50) != 1 ? " -> vsync on" : " -> vsync off", live ? "live" : "off (ignored)", CFG32(0x68), CFG32(0x6c), CFG32(0x70), CFG32(0x74), CFG32(0x80), CFG32(0x84), CFG32(0x88),
+               !live ? "" : g_opt.have_sfx && g_opt.have_music ? ", woodyre.cfg has sfx= / music=" : g_opt.have_sfx ? " -> music imported" : g_opt.have_music ? " -> sfx imported" : " -> sfx / music imported");
     }
     if (g_setup.rev < 0) g_setup.rev = 0;                                           /* Setup defaults 0x100032a0 */
     if (g_setup.film < 0) g_setup.film = 1;
@@ -3618,7 +3626,9 @@ int main(int argc, char **argv)
                 static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = getenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
                 for (int k = 0; k < npk; k++) if (now - t0 >= pk[k] && now - t0 < pk[k] + 0.1) pin.action = 1;
             }
-            if (g_res.on) memset(&pin, 0, sizeof pin);                              /* Perso state 9: the results screen has the controls */
+            /* Perso state 9 (the results sequence, docs/PERSO_STATE9.md) keeps its input, as in the original: the Perso is in a scripted action
+             * there (player_script_action), so jump / walk / attack do nothing, but ducking, the look-around and special refusals and the
+             * key tests of the script messages 1048..1050 see the keys, while the page reads the same ones as its confirm */
             if (g_level == 0 && !fly) {                                             /* title: House is the backdrop of the menu pages (docs/GAMEFLOW.md 5) */
                 memset(&pin, 0, sizeof pin);
                 if (g_pose && !g_cin.state) { L.player.pos = g_pose->position; L.player.yaw = inst_yaw(g_pose); L.player.vel = (Vec3){ 0, 0, 0 }; }
@@ -3636,6 +3646,8 @@ int main(int argc, char **argv)
             cin_update(&L.vm, dt, g_now);
             rockets_update(dt, &L.player, L.have_player && !fly);
             L.player.idle_hold = g_res.on || g_level == 0 || (g_cam.mode == 4 && !fly);   /* Perso state 9 / title / frozen (0x459090): no idle count, no sleeping */
+            L.player.app_menu = (g_res.on && g_res.state < 5) || M.page >= 0;      /* App+0 == 0: 1140 opens page 0x1e with App_SetState(0) (0x404df0), the save
+                                                                                     * pages keep it, "No" / Continue go back to 1 with 0x454050 (results state 5) */
             L.player.cam_mode = fly ? 0x100 : g_cam.mode;                         /* CamMgr+0x134 as the Perso sees it (0x44b9a6, 0x44ba26); F5 = the debug camera 0x100 */
             L.player.side_on = g_cam.plane_on;                                     /* Perso+0x4ec: 0x459c70 runs while it is set (0x44b7be) */
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);

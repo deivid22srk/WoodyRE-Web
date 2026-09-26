@@ -163,15 +163,16 @@ Minimum (a tap on the key): 36 frames = 0.6 s blocked. Height 61 applies from fr
   and leaves it lying if the key is still held.
 * **Coming out of the state still ducking:** nothing clears `+0x694` on a state switch. Holding the key through a door action (1040) he comes
   out lying (0x32 from the first frame of state 0 on), and gets up only when the key is released and the segment above him is clear.
-* State 9 (results): the port blanks the Perso's input while the results screen runs (`g_res.on`, port simplification, GAMEFLOW.md §5.2), so it
-  never ducks there. State 7 (carried by a marker, never reached by a shipped level, PERSO_STATE7.md) is ported and calls `duck_update`
+* State 9 (results, PERSO_STATE9.md): the input is live there in the original too; `0x44dda0` gives `+0x22c = 1`, so he goes down unseen
+  (every request of `0x454090` is a scripted action, prio 6000) and can come out of the sequence lying. The port no longer blanks the input
+  while `g_res.on`: the results run as scripted actions (`script_act`), so the duck runs as in state 5. State 7 (carried by a marker, never reached by a shipped level, PERSO_STATE7.md) is ported and calls `duck_update`
   like the states 4/5/8 (anim_owned: the controller is not ticked there, so the duck set is never seen).
 
 Port (`src/player.c`): `duck_update(p, in, dt, anim_owned)` is also called at the top of `player_update` for the port's states 5
 (`script_act`), 8 (`ride`) and 4 (`climb_sub`), which return early, before `look_update` (the original's order duck → look → special);
 `anim_owned = 1` there keeps it from resetting `lanim` (which would restart the scripted animation: the port's controller has no priorities),
-and `ground` is 1 on the rocket (the port's `on_ground` is 0 there). State 3 already ran it. State 9 is left to the input blanking above
-(which of its requests outrank 1750 in every sub-state of `0x454090` was not checked). Test: `WOODY_MSGAT="2 1040 0 18" --duck 2.2 3` on W1A (`WOODY_DUCKLOG=1 WOODY_ANIMLOG=1`): the door exit plays on
+and `ground` is 1 on the rocket (the port's `on_ground` is 0 there). State 3 already ran it. State 9 is the port's state 5 (a
+scripted action in every sub-state of `0x454090`, all 6000 > 1750). Test: `WOODY_MSGAT="2 1040 0 18" --duck 2.2 3` on W1A (`WOODY_DUCKLOG=1 WOODY_ANIMLOG=1`): the door exit plays on
 (anim 25 untouched), the duck goes 0 → 1 at 2.20 and 1 → 2 at 2.58 underneath it, and after the action ends he lies (0x32) until the key
 is released at 5.2 (0x33, then 0).
 

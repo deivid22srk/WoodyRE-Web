@@ -119,6 +119,12 @@ typedef struct Player {
      * action 7 last frame, cam_mode = the camera manager's active mode (CamMgr+0x134, 0x100 = the free camera), written by the app
      * before every update. Mode 0x200 block CamMgr+0x540: facing at the start (+0x54), yaw +0x78, pitch +0x7c, deltas +0x28/+0x2c */
     int look, look_prev6, look_key, look_show, cam_mode, look_dx, look_dy; float look_yaw0, look_yaw, look_pitch;   /* look_show = +0x268 */
+    int app_menu;                   /* App+0 == 0 (the App's menu state, set by the app): the look-around refusal 0x44ba4c stays silent; the
+                                     * results sequence (Perso state 9) runs in it from 1140 until the save pages close (docs/PERSO_STATE9.md) */
+    /* second air action 0x465e50 / 0x465fe0 (docs/PERSO_JUMP.md 1.5): subtype (typeword bits 5..9: 1 Woody, 3 Knothead = air dash,
+     * 2 Splinter = double jump, 4/5 the race riders), window +0x6f8, active +0x6e4, used since the ground +0x6fd, clock +0x6ec,
+     * length +0x6e8, speed +0x6f0, the 1/60 s accumulator +0x6f4, direction / last displacement +0x6d8, action 4 last frame */
+    int subtype, am_on, am_used, am_jprev; float am_win, am_t, am_dur, am_speed, am_acc; Vec3 am_dir;
     /* side view (camera mode 0x20, docs/CAMERA_SCRIPT.md 4.2): side_on = Perso+0x4ec (the app copies its plane lock in before every
      * update), side_l / side_r = +0x4ed / +0x4ee (facing the left / right key's way), side_flip = CamMgr+0x63c (p+0x20), written by 0x459c70;
      * side_walk = +0x500 (the walking vector: d at the start, negated on every turn, the facing snaps to it), side_n / side_pd = the plane

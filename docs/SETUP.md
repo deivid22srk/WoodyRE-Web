@@ -181,6 +181,19 @@ device is on the primary driver (`0x100038e5`). With it set, `0x100027c4..0x1000
 install whose default 3D device sits on a secondary driver starts with all sound off. `0x10002770` also returns early,
 without filling the sound page at all, when `CoInitialize` does not return S_OK (`0x10002783`).
 
+### 3.5 The Sound Fx / Music volumes (+0x80 / +0x84)
+The two sliders of Detect's Sound page (0..100, Setup defaults **100 / 30**, §1) are the game's master volumes: `0x4691e2..0x4692b9`
+copies `[0x4c2c50]` / `[0x4c2c54]` to `[0x5e81cc]` / `[0x5e81d0]` and sets `[0x5e81ec]` / `[0x5e81f0]` = v / 100 (SOUND.md §2.4); the
+in-game Options page changes the same globals, and they are written back to Woody.cfg at exit (MENU_OPTIONS.md).
+**Port**: `setup_import` takes them the same way as reverse stereo and film sound: only from a **live** sound section (one of the
+switches `+0x68` / `+0x6c` / `+0x70` on; the all-zero section of the old mkcfg cfg is ignored), clamped to 0..100, and only while
+`woodyre.cfg` has no `sfx=` / `music=` line (each key on its own). `opt_write` puts both keys in at the first exit (and on the Options
+page's Continue), so from then on woodyre.cfg leads and Woody.cfg is never read for them again; the port still never writes Woody.cfg.
+Without a live Woody.cfg the port's own defaults stay (100 / 70). The two switches themselves (Sound Fx / Music off = that part
+silent in the original) are not mapped. Verified with `WOODY_CFG=` test files (run from a scratch directory): a dead section keeps
+100 / 70; a live 100 / 30 gives `sfx=100 music=30` in the new woodyre.cfg; a second run with a live 55 / 45 keeps 100 / 30; a
+woodyre.cfg with only `music=80` takes sfx 55 from Woody.cfg and keeps music 80. The boot line `setup: ...` says what was imported.
+
 ## 4. mkcfg.c and the silent game
 
 `tools/native/mkcfg.c` called `CoInitialize(NULL)` before `Detect`. Setup's `0x10002770` then gets S_FALSE from its own
