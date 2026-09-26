@@ -380,7 +380,7 @@ untextured chips on the projectile gravity and a sawdust puff; before that, the 
 ## 2. Classes
 
 Common: all classes below except 41 and 90 fall through to the FadeInst handler `0x44e8f0` (56/57) and, in their
-think step (`vtbl[3]`, from `0x42b400` for ALL instances, even hidden ones) call `0x44e810` first. `vtbl[4]` = `0x403fe0` returns the
+think step (`vtbl[3]`, from `0x42b400` for the instances of the frame's list `world+0x64` only, INSTANCE.md §4.1) call `0x44e810` first. `vtbl[4]` = `0x403fe0` returns the
 type word `&inst+0x104` (bits 0-4 category, 5-9 subtype).
 
 ### 2.1 Types 50 / 51 / 52 — **laser** ("lazer")

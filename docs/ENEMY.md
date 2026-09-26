@@ -174,6 +174,14 @@ void Enemy_Think(Enemy *e) {
 }
 ```
 So enemies further than **3000** from the camera stand still (unless they're already dead: the death animation still plays out).
+And the Think itself is only called by `0x42b400` for the instances of the frame's list `world+0x64` (INSTANCE.md §4.1): an
+enemy whose sector is not in the camera's `.vis` entry, or whose floor group (`+0x18`, taken at its collision centre
+`pos + (0, h/2, 0)` by every re-cell) is not marked, does nothing at all this frame - no Npc_Tick, no RegisterActor2, no
+Update - however close it is; it stays where it is until its sector becomes visible again. Enemies carry flag 0x20 (PostLoad
+`0x419e4d`), so their bounding sphere is never cached and the frustum test of `0x42a840` does not apply to them. The same
+holds for the bosses 14/15/16 (their `vtbl[3]` is `0x41a320` too, BOSS14.md §1, BOSS15_16.md): no exemption.
+Port: `game_enemy_thinks` (= `Instance.listed`, `rnd_instance_list`) gates `enemy_update`, `shooter_update`, `bomber_update`,
+`boss_update`, `boss15_update`, `boss16_update` and the actor list 1, before the 3000 test.
 
 ### 3.2 FindTarget `vtbl[48](cat, subtype)` = `0x41af80` → `0x40c0d0`
 Center `c` = own position (`vtbl[34]`), or `+0x134` if flag 2. Iterates list 1 (`0x4c52d8[0x4c531c]`, pairs of

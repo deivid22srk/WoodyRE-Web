@@ -274,7 +274,9 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
     r->face_stamp = (uint32_t *)calloc(gel->npolys ? gel->npolys : 1, 4);
     r->sec_vis = (uint8_t *)calloc(gel->nsectors ? gel->nsectors : 1, 1);
     r->sec_prev = (uint8_t *)calloc(gel->nsectors ? gel->nsectors : 1, 1);
-    r->sec_dirty = 1;
+    r->sec_dirty = 1; r->sky_on = 1;
+    for (int k = 0; k < 6; k++) r->race[k] = -1;                                  /* no race region list: the plain .vis path */
+    for (uint32_t z = 0, i = 0; z < gel->ngroups; z++) for (; i < gel->groups[z].end && i < gel->npolys; i++) r->face_batch[i].zone = z;
     for (uint32_t g = 0; g < tex->ngroups; g++) {
         TexGroup *tg = &tex->groups[g]; tg->gl_frames = (uint32_t *)calloc(tg->frame_count ? tg->frame_count : 1, 4);
         for (uint32_t f = 0; f < tg->frame_count; f++) tg->gl_frames[f] = upload_texture(tg, (int)f);
@@ -298,6 +300,7 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
         uint32_t grp = m->group; uint32_t gflags = tex->groups[grp].flags;
         if (((gflags >> 8) & 0xff) == 2) {                                         /* sky group (0x42acea): the face is never drawn, it only switches the sky cube on */
             TexGroup *sg = &tex->groups[grp];
+            r->face_batch[i].sky = 1;
             if (!r->have_sky) { r->have_sky = 1; r->sky_hu = 0.5f / (float)sg->width; r->sky_hv = 0.5f / (float)sg->height; for (int f = 0; f < 5; f++) r->sky_tex[f] = sg->gl_frames[(uint32_t)f < sg->frame_count ? f : 0]; }
             continue;
         }
@@ -408,8 +411,10 @@ static void idx_reserve(struct WorldBatch *b, uint32_t extra)
 static void add_face(Renderer *r, uint32_t f)
 {
     if (f >= r->gel->npolys || r->face_stamp[f] == r->stamp_gen) return;
+    const struct FaceBatch *fb = &r->face_batch[f];
+    if (r->race_vis && (int32_t)fb->zone != r->race_zone[0] && (int32_t)fb->zone != r->race_zone[1]) return;   /* 0x42ac32: only the polygons of a marked group carry the frame stamp */
     r->face_stamp[f] = r->stamp_gen;
-    const struct FaceBatch *fb = &r->face_batch[f]; if (!fb->ntris) return;
+    if (!fb->ntris) return;
     struct WorldBatch *b = (fb->lit ? r->litb : r->batches) + fb->group;
     idx_reserve(b, fb->ntris * 3);
     for (uint32_t k = 0; k < fb->ntris * 3; k++) b->idx[b->nidx++] = fb->tri0 * 3 + k;
@@ -417,12 +422,36 @@ static void add_face(Renderer *r, uint32_t f)
 static void world_visibility(Renderer *r, const FreeCamera *cam, const float pl[6][4])
 {
     const GelFile *g = r->gel; uint32_t ns = g->nsectors;
-    r->pvs_on = 0;
+    r->pvs_on = 0; r->race_vis = 0; r->sky_on = 1; r->race_zone[0] = r->race_zone[1] = -2;
     if (!r->cull || !ns || !g->sectors) { r->drawn_tris = r->total_tris; r->nsec_vis = ns; return; }
     memset(r->sec_vis, 0, ns);
     int32_t cs = r->cull >= 2 && r->vis ? gel_sector(g, cam->pos) : -1;
     uint32_t npairs = 0;
-    if (cs >= 0 && (uint32_t)cs < r->vis->nsectors) {                          /* 0x42a980: the .vis list of that sector */
+    const VisList *E = r->race[0] != -1 && cs >= 0 ? vis_entry(r->vis, g, cam->pos) : NULL;   /* 0x401c36: race list given and its first entry != -1 */
+    if (E) {
+        /* Race path of 0x42a980 (docs/RACE.md 2.1): the sectors are still every pair's first word of the camera's .vis entry
+         * (0x408210: the entry whose id is the floor group under the camera), but the groups are not the pairs' second words:
+         * only z = the floor group under the camera (0x42aae2) and the region list entry after z (0x42ab25). z = -1 marks no
+         * group at all (0x42aaed), so no world face is drawn. The original searches z in the list without a bound
+         * (0x42aaef..0x42aafb, past the -1 at +0xd4 into whatever follows); the port stops at the 5 entries and then takes z alone. */
+        int32_t z = gel_floor_group(g, cam->pos), z2 = -1;
+        if (z != -1) { int k = 0; while (k < 5 && r->race[k] != z) k++; if (k < 5) z2 = r->race[k + 1]; }
+        r->race_vis = 1; r->pvs_on = 1; r->race_zone[0] = z; r->race_zone[1] = z2;
+        for (uint32_t k = 0; k < E->npairs; k++) r->sec_vis[E->pairs[2 * k]] = 1;   /* no "own sector" here: the original takes the pairs only */
+        npairs = E->npairs;
+        /* The sky cube needs a sky face among the stamped faces of those sectors (0x42acea), before any frustum test:
+         * with only two groups stamped it can go off. Recomputed when the entry or the two groups change. */
+        if (E != (const VisList *)r->race_entry || z != r->race_prev[0] || z2 != r->race_prev[1]) {
+            int sky = 0;
+            for (uint32_t k = 0; k < E->npairs && !sky; k++) { const GelCell *S = &g->sectors[E->pairs[2 * k]];
+                for (uint32_t q = 0; q < S->npolys && !sky; q++) { uint32_t f = S->polys[q]; if (f >= g->npolys) continue;
+                    const struct FaceBatch *fb = &r->face_batch[f]; sky = fb->sky && ((int32_t)fb->zone == z || (int32_t)fb->zone == z2); } }
+            r->race_entry = E; r->race_sky = sky; r->sec_dirty = 1;
+        }
+        r->sky_on = r->race_sky;
+        if ((z != r->race_prev[0] || z2 != r->race_prev[1]) && getenv("WOODY_RACEVISLOG"))
+            printf("  RACEVIS camera (%.0f %.0f %.0f) sector %d entry id %u (%u pairs): groups %d + %d, sky %d\n", cam->pos.x, cam->pos.y, cam->pos.z, cs, E->id, E->npairs, z, z2, r->race_sky);
+    } else if (cs >= 0 && (uint32_t)cs < r->vis->nsectors) {                   /* 0x42a980: the .vis list of that sector */
         const VisSector *S = &r->vis->sectors[cs];
         for (uint32_t e = 0; e < S->nlists; e++) {
             const VisList *L = &r->vis->pool[S->first + e];
@@ -431,17 +460,18 @@ static void world_visibility(Renderer *r, const FreeCamera *cam, const float pl[
                                                      * meaning of the list id is not confirmed, and a union can only show too much */
         }
     }
-    if (npairs) { r->sec_vis[cs] = 1; r->pvs_on = 1; }                         /* the camera's own sector is always in */
+    if (r->race_vis) {}
+    else if (npairs) { r->sec_vis[cs] = 1; r->pvs_on = 1; }                    /* the camera's own sector is always in */
     else memset(r->sec_vis, 1, ns);                                            /* no sector, or an empty list: show everything */
     r->nsec_vis = 0;
     for (uint32_t i = 0; i < ns; i++) if (r->sec_vis[i]) { if (aabb_in_frustum(pl, g->sectors[i].bbox)) r->nsec_vis++; else r->sec_vis[i] = 0; }
     /* the index lists only have to be rebuilt when the set of sectors changed */
-    if (!r->sec_dirty && !memcmp(r->sec_vis, r->sec_prev, ns)) return;
-    memcpy(r->sec_prev, r->sec_vis, ns); r->sec_dirty = 0;
+    if (!r->sec_dirty && !memcmp(r->sec_vis, r->sec_prev, ns) && r->race_zone[0] == r->race_prev[0] && r->race_zone[1] == r->race_prev[1]) return;
+    memcpy(r->sec_prev, r->sec_vis, ns); r->sec_dirty = 0; r->race_prev[0] = r->race_zone[0]; r->race_prev[1] = r->race_zone[1];
     for (uint32_t i = 0; i < r->nbatches; i++) { r->batches[i].nidx = 0; r->litb[i].nidx = 0; }
     if (++r->stamp_gen == 0) { memset(r->face_stamp, 0, (size_t)g->npolys * 4); r->stamp_gen = 1; }
     for (uint32_t i = 0; i < ns; i++) if (r->sec_vis[i]) { const GelCell *S = &g->sectors[i]; for (uint32_t k = 0; k < S->npolys; k++) add_face(r, S->polys[k]); }
-    for (uint32_t k = 0; k < g->nloose; k++) add_face(r, g->loose[k]);         /* faces no sector lists: always drawn */
+    for (uint32_t k = 0; k < g->nloose; k++) add_face(r, g->loose[k]);         /* faces no sector lists: always drawn (race path: if in a marked group) */
     r->drawn_tris = 0;
     for (uint32_t i = 0; i < r->nbatches; i++) r->drawn_tris += (r->batches[i].nidx + r->litb[i].nidx) / 3;
     for (int t = 0; t < 16; t++) {              /* the .lit light polygons follow the face they lie on */
@@ -692,6 +722,11 @@ static int shadow_caster(const Instance *inst)
     return inst->type == 1 || inst->type == 2 || inst->type == 3 || inst->type == 18 || inst->type == 19 || (inst->setflags & 1) || (inst->type >= 4 && inst->type <= 13);
 }
 static Vec3 g_cam_pos;                 /* the camera of this frame, for the per polygon back-face test and the culling */
+/* Drawn only as a member of the frame's instance list (0x42a840 vtbl[2](0x81), 0x42b380 vtbl[2](5/7)): the base-class instances
+ * and the enemies. Not the Perso (0x42b380 draws it first, outside the loop), not the bomb pool (0x44d820 ticks it with vtbl[2](1))
+ * and not the links an actor draws itself (boss saucer, pads, race board: not scripted). The sector/group part of the list
+ * (in_zone) is what gates here; the cone test stays instance_visible's, on this frame's camera. */
+static int list_drawn(const Instance *in) { return (in->scripted && in->type != 40) || (in->type >= 4 && in->type <= 16); }
 
 /* Is this instance drawn at all this frame? The cone test on the model's bounding sphere is what the port already
  * did. On top of it, 0x42aa0b only walks the instances that belong to the sectors the visibility pass kept, so an
@@ -810,15 +845,11 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
     static int log = -1; if (log < 0) { const char *e = getenv("WOODY_VISLOG"); log = e ? atoi(e) : 0; if (e && !log) log = 1; }
     if (!r->list_sec && g->nsectors) r->list_sec = (uint8_t *)calloc(g->nsectors, 1);
     if (!r->list_grp && g->ngroups) r->list_grp = (uint8_t *)calloc(g->ngroups, 1);
-    r->nlist = 0;                                                               /* 0x42a98f: +0x60 = 0 */
+    r->nlist = 0; r->list_on = 1;                                               /* 0x42a98f: +0x60 = 0 */
     /* 0x408210: the camera's .vis list */
-    int32_t cs = gel_sector(g, cam->pos), cg = gel_floor_group(g, cam->pos), ent = -1;
-    const VisList *L = NULL;
-    if (r->vis && cs >= 0 && (uint32_t)cs < r->vis->nsectors && r->vis->sectors[cs].nlists) {
-        const VisSector *S = &r->vis->sectors[cs]; ent = 0;
-        for (uint32_t e = 0; e < S->nlists; e++) if ((int32_t)r->vis->pool[S->first + e].id == cg) { ent = (int32_t)e; break; }
-        L = &r->vis->pool[S->first + ent];
-    }
+    int32_t cs = gel_sector(g, cam->pos), cg = gel_floor_group(g, cam->pos);
+    const VisList *L = r->vis ? vis_entry(r->vis, g, cam->pos) : NULL;
+    int32_t ent = L ? (int32_t)(L - &r->vis->pool[r->vis->sectors[cs].first]) : -1;
     int all = !L || !r->list_sec || !r->list_grp;                                /* port: no .vis, or a camera outside every sector: everything is listed */
     int racing = race && race[0] != -1;                                         /* 0x42a9d3..0x42a9f8: the flag of 0x42a840 */
     if (!all) {
@@ -835,7 +866,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
         }
     }
     /* message 34 (0x42aa0b): the linked instances of a volume that holds the camera get this frame's stamp first */
-    for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins->models[mi].instances[k].listed = 0;
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins->models[mi].instances[k].listed = ins->models[mi].instances[k].in_zone = 0;
     for (uint32_t i = 0; i < r->nlinks; i++) {
         const Instance *v = r->links[2 * i]; int in = link_inside(v, cam->pos);
         for (; i < r->nlinks && r->links[2 * i] == v; i++) if (in) r->links[2 * i + 1]->listed = -1;
@@ -859,6 +890,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
             if (in->cell_sec < 0 || (uint32_t)in->cell_sec >= g->nsectors || !r->list_sec[in->cell_sec]) { n_sec++; continue; }
             if (in->cell_grp < 0 || (uint32_t)in->cell_grp >= g->ngroups || !r->list_grp[in->cell_grp]) { n_grp++; continue; }   /* 0x42a85e: +0x18 == -1 is never listed */
         }
+        in->in_zone = 1;
         Vec3 c; float rad;
         if (sphere_cached(in) && inst_sphere(in, &c, &rad)) {                   /* 0x42a891 */
             Vec3 d = { c.x - cam->pos.x, c.y - cam->pos.y, c.z - cam->pos.z };
@@ -886,7 +918,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
                 printf("  VIS ids:"); for (uint32_t i = 0; i < r->nlist; i++) printf(" %u", r->list[i]->index); puts("");
                 for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {   /* the actors, listed or not */
                     const Instance *in = &ins->models[mi].instances[k];
-                    if (in->type >= 4 && in->type <= 16 && in->visible) printf("  VIS actor %u type %d %s at %.0f %.0f %.0f sector %d group %d", in->index, in->type, in->listed ? "listed" : "out", in->position.x, in->position.y, in->position.z, in->cell_sec, in->cell_grp), puts("");
+                    if (in->type >= 4 && in->type <= 16 && in->visible) printf("  VIS actor %u type %d %s at %.0f %.0f %.0f sector %d group %d (drawn last frame %d)", in->index, in->type, in->listed ? "listed" : "out", in->position.x, in->position.y, in->position.z, in->cell_sec, in->cell_grp, in->drawn), puts("");
                 }
             }
             mx = 0;
@@ -1457,7 +1489,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k];
             if (!inst->visible || inst->fade > 0.98f) continue;
-            inst->drawn = instance_visible(r, inst, aspect, f, fw, rt, up);
+            inst->drawn = (!r->list_on || inst->in_zone || !list_drawn(inst)) && instance_visible(r, inst, aspect, f, fw, rt, up);
             if ((inst->drawn || shadow_caster(inst)) && r->lit) instance_light(r, inst, dt); } }   /* a caster off screen still needs its light for the shadow */
         if (r->nlinks) links_hide(r, cam->pos);                                /* message 34: 0x42aa0b runs before the sector walk 0x42a840 */
     }
@@ -1479,7 +1511,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     float view[16] = { rt.x, up.x, -fw.x, 0, rt.y, up.y, -fw.y, 0, rt.z, up.z, -fw.z, 0,          /* GL camera looks along -z */
                        -(rt.x * cam->pos.x + rt.y * cam->pos.y + rt.z * cam->pos.z), -(up.x * cam->pos.x + up.y * cam->pos.y + up.z * cam->pos.z), (fw.x * cam->pos.x + fw.y * cam->pos.y + fw.z * cam->pos.z), 1 };
     glLoadMatrixf(view);
-    if (r->have_sky && r->show_world) {                                             /* 0x42ad40..0x42b373: five quads of a cube around the camera, white, unlit, drawn behind everything */
+    if (r->have_sky && r->show_world && r->sky_on) {                               /* 0x42ad40..0x42b373: five quads of a cube around the camera, white, unlit, drawn behind everything */
         static const signed char q[5][4][3] = {
             { {-1,-1, 1}, {-1, 1, 1}, { 1, 1, 1}, { 1,-1, 1} }, { { 1,-1, 1}, { 1, 1, 1}, { 1, 1,-1}, { 1,-1,-1} },
             { { 1,-1,-1}, { 1, 1,-1}, {-1, 1,-1}, {-1,-1,-1} }, { {-1,-1,-1}, {-1, 1,-1}, {-1, 1, 1}, {-1,-1, 1} },
@@ -1629,4 +1661,15 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     (void)time_s;
 }
 
+void rnd_set_race(Renderer *r, const Trajectory *path)
+{
+    if (!path || !path->npoints) { for (int k = 0; k < 6; k++) r->race[k] = -1; }
+    else gel_race_regions(r->gel, path->points, path->npoints, r->race);   /* 0x455f3d..0x455fed -> renderer+0xc0..+0xd4 */
+    r->sec_dirty = 1; r->race_entry = NULL;
+    if (getenv("WOODY_RACEVISLOG")) printf("  RACEVIS region list %d %d %d %d %d (%u points)\n", r->race[0], r->race[1], r->race[2], r->race[3], r->race[4], path ? path->npoints : 0);
+    if (path && getenv("WOODY_RACEVISLOG")) for (uint32_t i = 0; i < path->npoints; i++) { Vec3 q = path->points[i];
+        int32_t f = gel_floor_poly(r->gel, q); const float *pl = f >= 0 ? r->gel->polys[f].plane : NULL;
+        printf("    point %2u (%.0f %.0f %.0f): floor group %d at y %.0f\n", i, q.x, q.y, q.z, gel_floor_group(r->gel, q),
+               pl && pl[1] > 0 ? -(pl[0] * q.x + pl[2] * q.z + pl[3]) / pl[1] : q.y); }
+}
 void rnd_set_sky(Renderer *r, const uint32_t tex[5]) { if (r->have_sky) for (int f = 0; f < 5; f++) if (tex[f]) r->sky_tex[f] = tex[f]; }

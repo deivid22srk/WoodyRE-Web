@@ -48,7 +48,9 @@ typedef struct { int32_t axis, sector; float d; int32_t le, gt; } KdNode;   /* 0
  * the sectors. Both carry the polygons that cross them, which is how the original answers every geometry question
  * without looking at the whole level: the floor under a point (0x40a0c0), the collision push-out (0x407000) and
  * which part of the world to draw (0x42a980) all start from the cell or sector the point falls in. */
-typedef struct { uint32_t npolys; const uint32_t *polys; float bbox[6]; } GelCell;   /* bbox order xmin xmax ymin ymax zmin zmax (0x406e50) */
+typedef struct { uint32_t npolys; const uint32_t *polys; float bbox[6];              /* bbox order xmin xmax ymin ymax zmin zmax (0x406e50) */
+                 int32_t link[6]; uint32_t nnodes; const uint8_t *nodes; } GelCell;   /* neighbour per face -x +x -y +y -z +z (+0x10..+0x24): INT_MIN none,
+                                                                                      * < 0 cell ~link, >= 0 root of a local subtree in nodes (16 B each, +0x48) */
 typedef struct { uint32_t first, end; } GelGroup;                                    /* section 3: the polygons [first, end) of one zone */
 typedef struct { uint32_t n; const uint32_t *polys; } GelPolySet;                    /* result of a query below; valid until the next one */
 struct GelQuery;
@@ -152,7 +154,7 @@ typedef struct Instance {
      * frame's list, so its Think vtbl[3] runs (0x42b400) and its 3D sounds play (0x401ee7). cell_sec / cell_grp = +0x1c / +0x18, the
      * sector and the floor group of the cell point (0x407790), recomputed when cell_ref moves; cell_dy > 0: the cell point is
      * position + (0, cell_dy, 0) (an enemy's collision centre, 0x4077f0 in 0x41b2c0), otherwise the animated root inst+0x60 (the clock 0x43f2f1) */
-    int listed; int32_t cell_sec, cell_grp; Vec3 cell_ref; int cell_ok; float cell_dy;
+    int listed, in_zone; int32_t cell_sec, cell_grp; Vec3 cell_ref; int cell_ok; float cell_dy;   /* in_zone: passed the sector / group / link part (the draw gate) */
 } Instance;
 
 typedef struct Model {
@@ -190,6 +192,14 @@ int  lit_point_lit(const LitLight *l, const GelFile *g, Vec3 p);   /* BSP point 
 int32_t lit_bsp_face(const LitLight *l, const GelFile *g, Vec3 p); /* 0x40b540 itself: the leaf face, -1 = none */
 int32_t gel_sector(const GelFile *g, Vec3 p);                      /* 0x4081c0: the kd sector a point is in, -1 = none */
 int32_t gel_cell(const GelFile *g, Vec3 p);                        /* 0x408180: the kd leaf cell a point is in, -1 = none */
+/* 0x40a0c0(p, -1): the polygon of the floor under p (last match in the first cell down the -y links that has one), -1 = none;
+ * gel_floor_group = 0x40a26a of that polygon: the section-3 group it lies in, -1 = none (docs/RACE.md 2.1) */
+int32_t gel_floor_poly(const GelFile *g, Vec3 p);
+int32_t gel_floor_group(const GelFile *g, Vec3 p);
+/* 0x408210: the .vis list of p - the entry of p's sector whose id is the floor group under p, else the sector's first entry. NULL = none */
+const VisList *vis_entry(const VisFile *v, const GelFile *g, Vec3 p);
+/* SetRaceInfo 0x455dc0 tail: the distinct floor groups under the points of the race polyline, in track order, at most 5, -1 terminated */
+void gel_race_regions(const GelFile *g, const Vec3 *pts, uint32_t n, int32_t out[6]);
 /* Every polygon that crosses a kd leaf meeting the box / the segment, each one once, plus the loose polygons.
  * The set lives in the level's own scratch buffer and is replaced by the next query on the same level. */
 GelPolySet gel_polys_in_box(const GelFile *g, const float box[6]);   /* box: xmin xmax ymin ymax zmin zmax */
