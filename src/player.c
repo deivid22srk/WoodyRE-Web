@@ -405,17 +405,22 @@ static uint32_t hit_collision(const Instance *hi, const InsNode *hn)
     const Model *hm = hi->model; uint32_t k = hm->nvolume_nodes + hn->sub_index;
     return hm->ncollision_ids && k < hi->nids ? hi->ids[k] : 0xffffffffu;
 }
-/* GetHeight for another actor (skip = its own instance); col (may be NULL) = the world_collision it stands over, for the
- * generic probe 0x436dc0 of enemies and bombs */
-float player_ground_query_col(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col)
+/* GetHeight for another actor (skip = its own instance). col (may be NULL) = the world_collision it stands over, for the
+ * generic probe 0x436dc0 of enemies and bombs; n (may be NULL) = the floor normal ([0x4b3108..], GetHeight 0x435650:
+ * (0, 1, 0) and y = pt.y when nothing is found) */
+static float ground_query_full(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col, Vec3 *n)
 {
     const Instance *hi; const InsNode *hn; Vec3 keep = g_ground_n;
     int32_t keep_mat = g_ground_mat;
-    g_ground_skip = skip; g_skip_self = skip ? p->inst : NULL; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_skip_self = NULL; g_ground_n = keep; g_ground_mat = keep_mat;
+    g_ground_skip = skip; g_skip_self = skip ? p->inst : NULL; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_skip_self = NULL;
+    if (n) *n = g_ground_n;
+    g_ground_n = keep; g_ground_mat = keep_mat;
     if (col) *col = *found ? hit_collision(hi, hn) : 0xffffffffu;
     return y;
 }
-float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found) { return player_ground_query_col(p, skip, pt, found, NULL); }
+float player_ground_query_col(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col) { return ground_query_full(p, skip, pt, found, col, NULL); }
+float player_ground_query_n(const Player *p, const Instance *skip, Vec3 pt, int *found, Vec3 *n) { return ground_query_full(p, skip, pt, found, NULL, n); }
+float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found) { return ground_query_full(p, skip, pt, found, NULL, NULL); }
 
 /* Landing ring 0x44af90 (docs/PERSO_JUMP.md 5), run by the Perso post-render update 0x44b4a0 every frame that is not
  * paused. Not in Perso state 2 (dead), 4 (climbing), 5 (scripted) or 8 (rocket), nor while the game's mode object is in a
@@ -800,39 +805,40 @@ static void beak_vector(const Player *p, Vec3 *a, Vec3 *b)
         *a = ins_point_world(in, mo->nodes[i].point_base); *b = ins_point_world(in, mo->nodes[i].point_base + 1); return; }
     *a = *b = in->position;
 }
-/* hit loop 0x457ceb: dash = swept circle (radius 100 + target radius) along dash start -> position in xz plus a height
- * overlap; charge run = 50 long beak segment against the target's vertical cylinder. The target handles the hit itself:
- * vtbl[39](p, 1.0, &dir, &hitpoint, isPeck) (0x458b53), whose Enemy_TakeDamage 0x41adc0 puts the hit star 0x4750e0 on the
- * hit point - the beak tip p+0x59c for the dash, the middle of the beak segment for the charge run (docs/PERSO_JUMP.md 3). */
+/* hit loop 0x457ceb..0x458b96 (docs/PERSO_JUMP.md 3), over every actor of the list (t != p), tp = t->vtbl[34]() = its feet:
+ *  dash (substate 2): 0x433920(&dash start p+0x5e4, &p+0x1f4 (the position), 100, &tp, t->vtbl[32]() radius, t->vtbl[33]() height)
+ *    = a sphere of 100 swept along the dash against the target's capsule-shaped cylinder; hit point = the beak tip p+0x59c, dir 0;
+ *  otherwise (the charge run 9/10, and every actor after a dash hit, whose substate is 3 by then): the beak segment
+ *    a = p+0x59c, b = a + normalize(p+0x5a8 - a) * 50 (0x4a9030, written back to p+0x5a8) against 0x433de0(a, b, tp + (0, h/2, 0),
+ *    radius, h); a hit writes [0x53a558] = 0.5, hit point = lerp(a, b, [0x53a558]), dir = normalize_xz(tp - p+0x1f4); in
+ *    substate 10 also Mover_SetDir(M, dir) 0x459ff0 (he turns to the target at once).
+ * The loop does not stop on a hit. The target handles it: vtbl[39](p, 1.0, &dir, &hitpoint, isPeck) (0x458b53), whose
+ * Enemy_TakeDamage 0x41adc0 puts the hit star 0x4750e0 on the hit point; a true answer = vtbl[38](3) (inside enemy_hit). */
 static void attack_hit_loop(Player *p)
 {
     if (!p->enemies) return;
+    Vec3 ba, bb; beak_vector(p, &ba, &bb);                               /* 0x457ceb: without the marker both are the instance position */
+    { Vec3 d = vsub(bb, ba); float l = sqrtf(vdot(d, d)); if (l > 0) d = (Vec3){ d.x / l, d.y / l, d.z / l };   /* 0x4588af..0x458987 */
+      bb = (Vec3){ ba.x + d.x * 50.0f, ba.y + d.y * 50.0f, ba.z + d.z * 50.0f }; }
     for (int i = 0; i < p->enemies->n; i++) {
         Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible) continue;
-        float r = enemy_radius(e), h = enemy_height(e); int hit = 0; Vec3 dir = { 0, 0, 0 };
-        if (p->atk == 2) {
-            float ax = p->dash_start.x, az = p->dash_start.z, bx = p->pos.x - ax, bz = p->pos.z - az, l2 = bx * bx + bz * bz;
-            float t = l2 > 1e-6f ? ((e->pos.x - ax) * bx + (e->pos.z - az) * bz) / l2 : 0; if (t < 0) t = 0; if (t > 1) t = 1;
-            float cx = ax + bx * t - e->pos.x, cz = az + bz * t - e->pos.z, R = 100.0f + r;
-            hit = cx * cx + cz * cz <= R * R && p->pos.y < e->pos.y + h + 100.0f && p->pos.y + P_BODY_H > e->pos.y;
+        float r = enemy_radius(e), h = enemy_height(e); Vec3 tp = e->pos, dir = { 0, 0, 0 }, pt;
+        int peck = p->atk == 2;
+        if (peck) {
+            if (!sweep_sphere_cyl(p->dash_start, p->pos, 100.0f, tp, r, h)) continue;   /* 0x457dcb */
+            pt = ba;                                                                     /* 0x458a10 */
         } else {
-            Vec3 f = { sinf(p->yaw), 0, cosf(p->yaw) };
-            for (int k = 0; k <= 2 && !hit; k++) {                        /* beak segment: from the body surface 50 forward, at head height */
-                float s = P_RADIUS * 0.5f + 25.0f * k, qx = p->pos.x + f.x * s - e->pos.x, qz = p->pos.z + f.z * s - e->pos.z;
-                hit = qx * qx + qz * qz <= (r + 15.0f) * (r + 15.0f) && p->pos.y + P_BODY_H * 0.6f > e->pos.y && p->pos.y < e->pos.y + h;
-            }
-            if (hit) { float dx = e->pos.x - p->pos.x, dz = e->pos.z - p->pos.z, l = sqrtf(dx * dx + dz * dz); if (l > 1e-3f) dir = (Vec3){ dx / l, 0, dz / l }; }
+            if (!(seg_cyl(ba, bb, (Vec3){ tp.x, tp.y + h * 0.5f, tp.z }, r, h) >= 0)) continue;   /* 0x4589d0 */
+            g_hit_frac = 0.5f;                                                           /* 0x4589e9: the answer, always 0.5 */
+            float dx = tp.x - p->pos.x, dz = tp.z - p->pos.z, l = sqrtf(dx * dx + dz * dz);   /* 0x458a3c */
+            dir = l > 0 ? (Vec3){ dx / l, 0, dz / l } : (Vec3){ dx, 0, dz };
+            pt = (Vec3){ ba.x * (1 - g_hit_frac) + bb.x * g_hit_frac, ba.y * (1 - g_hit_frac) + bb.y * g_hit_frac, ba.z * (1 - g_hit_frac) + bb.z * g_hit_frac };
+            if (p->atk == 10) p->yaw = atan2f(dir.x, dir.z);                            /* 0x458b07: Mover_SetDir */
         }
-        if (!hit) continue;
-        int was = p->atk; if (p->atk == 2) p->atk = 3;
-        Vec3 ba, bb; beak_vector(p, &ba, &bb);
-        if (was != 2) {                                                    /* charge: b = a + normalize(p+0x5a8 - a) * 50, hit point = lerp(a, b, 0.5) */
-            Vec3 d = vsub(bb, ba); float l = sqrtf(vdot(d, d)); if (l > 1e-4f) { ba.x += d.x / l * 25.0f; ba.y += d.y / l * 25.0f; ba.z += d.z / l * 25.0f; }
-        }
-        /* no SoundFx 6 here: that is the bomb explosion (0x44d730 is in Bomb_Explode 0x44d6e0), the hit loop plays nothing */
-        int died = enemy_hit(e, 1.0f /* P+0x90 */, dir, ba, was == 2);    /* isPeck = 1 for the dash, 0 for the charge run */
-        printf("  ATTACK hit enemy %u (%s)%s at %.0f %.0f %.0f (feet %.0f %.0f %.0f)\n", e->inst->index, was == 2 ? "peck" : "charge", died ? " - dead" : "", ba.x, ba.y, ba.z, p->pos.x, p->pos.y, p->pos.z);
-        if (was == 2) return;
+        if (peck) p->atk = 3;                                                            /* 0x458b18 */
+        /* rumble 0x44d1b0 (0.5, 0.3) not ported; no SoundFx 6 here: that is the bomb explosion (0x44d730 is in Bomb_Explode 0x44d6e0) */
+        int died = enemy_hit(e, 1.0f /* P+0x90 */, dir, pt, peck);         /* isPeck = 1 for the dash, 0 otherwise */
+        printf("  ATTACK hit enemy %u (%s)%s at %.0f %.0f %.0f (feet %.0f %.0f %.0f)\n", e->inst->index, peck ? "peck" : "charge", died ? " - dead" : "", pt.x, pt.y, pt.z, p->pos.x, p->pos.y, p->pos.z);
     }
 }
 

@@ -9,8 +9,7 @@
  * (message 59, W1B 404 = its machine) gets its position, rotation and animation record every frame.
  *
  * Simplified: no actor avoidance; the obstacle sensor runs (enemy.c, docs/OBSTACLE.md 3) but with P+0x2c/0x30 = 15000 it
- * never reports a direction blocked, so it only quantises the wander directions to its 16 slots; the hit star
- * 0x40c2d0 is not drawn; mode 2 (W2D/W3D/WWS) is ported with the same
+ * never reports a direction blocked, so it only quantises the wander directions to its 16 slots; mode 2 (W2D/W3D/WWS) is ported with the same
  * state machine (its dust is the smoke ring 0x476140(pos - 50 up, up, 0, 1.5, 6.0), docs/PARTICLES.md 3) and it is not verified in those levels. */
 #include <math.h>
 #include <stdlib.h>
@@ -135,7 +134,7 @@ static void h_speed(Enemy *e, float dt)
  * (model 6, press nodes up to y 1972) and away from the rock walls behind them: in the low phase (pos.y 1635) the sphere
  * meets the lantern heads, in the high phase (2430) it passes over them but meets the walls, so he never gets within the
  * 150 (xz) he needs to stomp a player who hides in the corner behind a lantern (docs/BOSS14.md 5.1). */
-static Vec3 boss_sweep(Enemy *e, Player *pl, Vec3 from, Vec3 to)
+static Vec3 boss_sweep(Enemy *e, Player *pl, Vec3 from, Vec3 to, float *ground_y, float *ground_ny)
 {
     float r = e->P.radius, up = e->P.height * 0.5f, h = r + up + 1.0f;
     Vec3 d = { to.x - from.x, to.y - from.y, to.z - from.z };
@@ -145,15 +144,19 @@ static Vec3 boss_sweep(Enemy *e, Player *pl, Vec3 from, Vec3 to)
     for (; n > 0; n--) {
         c.x += d.x; c.y += d.y; c.z += d.z;
         Vec3 push = player_sphere_push(pl, e->inst, c, r); c.x += push.x; c.z += push.z;
-        int found; float gy = player_ground_query(pl, e->inst, c, &found);
-        if (found && c.y - h < gy) c.y = gy + h;
+        int found; Vec3 gn; float gy = player_ground_query_n(pl, e->inst, c, &found, &gn);   /* GetHeight 0x435650(&c, -1, 1): nothing found = c.y, normal (0, 1, 0) */
+        if (c.y - h < gy) c.y = gy + h;                              /* 0x4376bf (with nothing found that lifts the sphere by h) */
         res = (Vec3){ c.x, c.y - h, c.z };
+        *ground_y = gy; *ground_ny = gn.y;                           /* [0x53a568] / [0x4b310c] of the last substep */
     }
     return res;
 }
 /* common move 0x41b2c0 for subtype >= 9: y is kept, no ledge or step test (P+0x2c/0x30 = 15000); the sweep slides the
- * sphere along whatever it touches. The "free" test ([0x4b310c] = ground normal y >= 0.8) always holds over the arena
- * floor and is not ported. */
+ * sphere along whatever it touches. Then the "free" test 0x41b514..0x41b54a: the step is taken only when the floor under
+ * the sphere of the last substep has a normal y >= 0.8 (0x4a987c) and lies less than P+0x2c below the feet; otherwise he
+ * stays (plus the platform delta, 0 for Buzz) and the behaviour's OnBlocked vtbl[3] runs: Wander 0x41c420 turns to the
+ * widest free sensor direction (action 5), Chase 0x41be90 to the free direction nearest its angle with the turn timer 0.
+ * Over the W1B arena floor the test always passes; it refuses steps over steep slopes (and over nothing: no normal) */
 static void behav_move(Enemy *e, Player *pl, float step, float dt)
 {
     BossState *b = &e->b;
@@ -162,12 +165,18 @@ static void behav_move(Enemy *e, Player *pl, float step, float dt)
     if (b->knock[b->behav] > 0) { b->knock[b->behav] -= dt; if (b->knock[b->behav] < 0) b->knock[b->behav] = 0; step = 0; }   /* a peck knocks with dir 0: no step */
     if (step < 0) step = 0;
     Vec3 d = { cosf(e->ang), 0, sinf(e->ang) };
-    Vec3 res = boss_sweep(e, pl, e->pos, (Vec3){ e->pos.x + d.x * step, e->pos.y, e->pos.z + d.z * step });
+    float gy = e->pos.y, ny = 1.0f;
+    Vec3 res = boss_sweep(e, pl, e->pos, (Vec3){ e->pos.x + d.x * step, e->pos.y, e->pos.z + d.z * step }, &gy, &ny);
     if (b->behav == 1 && step > 0) {                                /* Achtervolgen hook [2] 0x41bdf0: stuck (< 0.01) => wriggle -16..15 */
         float mx = res.x - e->pos.x, mz = res.z - e->pos.z;
         if (sqrtf(mx * mx + mz * mz) < 0.01f) { res.x += (float)(rand() % 32 - 16); res.z += (float)(rand() % 32 - 16); }
     }
-    e->pos.x = res.x; e->pos.z = res.z;                              /* subtype >= 9: res.y = from.y */
+    if (ny >= 0.8f && !(e->pos.y - gy >= e->P.drop)) { e->pos.x = res.x; e->pos.z = res.z; return; }   /* subtype >= 9: res.y = from.y */
+    if (b->behav == 0) {                                             /* Wander OnBlocked 0x41c420 */
+        float a = enemy_sensor_widest_free(e); if (a >= 0) e->want_ang = a;
+        b->w_act = 5; int n = wander_rec(e, 5); b->w_t = n < 0 ? 0 : anim_len(e, n);
+    } else if (b->behav == 1) { e->want_ang = enemy_sensor_nearest_free(e, e->ang); b->c_turn_t = 0; }   /* Chase OnBlocked 0x41be90 */
+    if (getenv("WOODY_BOSSLOG")) printf("  boss blocked at %.0f %.0f %.0f: floor normal y %.2f, %.0f below (behav %d)", e->pos.x, e->pos.y, e->pos.z, ny, e->pos.y - gy, b->behav), puts("");
 }
 static void behav_tick(Enemy *e, Player *pl, float dt)
 {
@@ -287,7 +296,7 @@ void boss_init(Enemy *e)
     in->visible = 1;                                                 /* the factory hangs it in the world; the W1B script hides it 1 s later */
 }
 
-int boss_take_damage(Enemy *e)                                       /* vtbl[39] 0x40fe90 */
+int boss_take_damage(Enemy *e, const Vec3 *pt, int kind)             /* vtbl[39] 0x40fe90 */
 {
     BossState *b = &e->b;
     if (b->mode == 0 || b->high || e->hit_t > 0) return 0;          /* high phase or still "hit": invulnerable */
@@ -303,6 +312,7 @@ int boss_take_damage(Enemy *e)                                       /* vtbl[39]
     /* Enemy_TakeDamage 0x41adc0 with 1.0 whatever the attacker says: a knockback still running on the active behaviour refuses the hit */
     if (b->knock[b->behav] > 0) return 0;
     b->knock[b->behav] = state_len(e);
+    if (pt && kind != 2) game_hit_star(*pt);                         /* 0x41adea: star 0x40c2d0 -> 0x4750e0 at pt; none for the special attack (2) or a blast (pt NULL, 0x41aeec) */
     e->hp -= 1.0f;
     printf("  BOSS %u hit, hp %.0f", e->inst->index, e->hp), puts("");
     return e->hp <= 0;
@@ -461,8 +471,10 @@ void enemies_boss_msg(EnemySet *s, Instance *inst, int id, uint32_t arg, Instanc
  *
  * The dynamic lights 0x498790 of the columns and the wave are registered (rnd_light_add); the original never draws
  * them (docs/LIGHTING.md 7), the port only with WOODY_DYNLIGHT=1. Not ported: actor list 1
- * (0x40c080, only the rocket explosion reads it), the turning sense of class 15's intro spin (not verified), and
- * class 90 mode 1, so class 16's group-3 volumes show nothing. */
+ * (0x40c080, only the rocket explosion reads it) and class 90 mode 1, so class 16's group-3 volumes show nothing.
+ * The turning sense of class 15's intro spin is verified (round 30): 0x46d220(0, a, 0) builds rows (c, 0, -s), (0, 1, 0),
+ * (s, 0, c) from the cos table 0x5e823c (s = -cos[a + 0x80]), 0x40deaf takes T.x row0 + T.y row1 + T.z row2 = (T.x c + T.z s,
+ * T.y, T.z c - T.x s) in R/U/W - what state 2 below does. */
 
 typedef struct { int sub[4]; int prio; float speed; } PRec;
 static const PRec g_r15[5] = {                                       /* AnimCtrl records 0x4b18a8 (getter 0x40eb30), all restart 1 */
@@ -641,7 +653,7 @@ void boss15_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         if (f <= 0.8f) a = (float)(int)(f * 1.25f * 512.0f);
         else if (f < 1.0f) a = (float)(int)(512.0f - (f - 0.8f) * 1.25f * 512.0f);
         else a = 0;                                                  /* 90 degrees off, which the square does not show */
-        float c = cosf(a * 2.0f * PI_F / 512.0f), s = sinf(a * 2.0f * PI_F / 512.0f);   /* 0x46d220(0, a, 0): about the frame's up axis */
+        float c = cosf(a * 2.0f * PI_F / 512.0f), s = sinf(a * 2.0f * PI_F / 512.0f);   /* 0x46d220(0, a, 0): about the frame's up axis (sense verified) */
         for (int i = 0; i < 4; i++) if (b->crush[i]) { const float *T = g_T15[i]; link_place(b->crush[i], frame_pt(b, T[0] * c + T[2] * s, T[1], T[2] * c - T[0] * s)); }
         if (f >= 1.0f) { b->t_intro = 0; b->st = 3; audio_fx_stop(44, NULL, 0); }
         break; }

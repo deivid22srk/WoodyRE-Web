@@ -143,6 +143,7 @@ void player_race_start(Player *p);                     /* level start (Game ctor
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
 float player_ground_query_col(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col);   /* + the world_collision id under pt (0x436dc0), 0xffffffff none */
 void  player_leave_all(Player *p, EkoVM *vm);                  /* 0x443ff0 leave_all: PersoLeave on every volume he is in */
+float player_ground_query_n(const Player *p, const Instance *skip, Vec3 pt, int *found, Vec3 *n);   /* with the floor normal (Buzz's free test) */
 float player_body_height(const Player *p);            /* 0x462490 -> P+0x08: 193 standing / 61 ducked (Woody), race 160 / 81 */
 void player_set_carried(const Instance *owner, const Instance *follower);   /* follower moves with owner: a query that skips owner skips it too */
 /* landing ring 0x44af90 (docs/PERSO_JUMP.md 5): runs the fade by dt and gives the floor point, its normal and the sprite
