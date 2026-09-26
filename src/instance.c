@@ -202,3 +202,37 @@ int inst_ray_press(const InsFile *ins, const Instance *skip, Vec3 a, Vec3 b, flo
     }
     *frac = best; return hit;
 }
+
+/* the hit kind 3 of the ray 0x4359b0 (0x4330c0 in the instance test 0x432ab0): the START of the segment lies inside a press node --
+ * behind every one of its planes -- and then the answer is that instance at t = 0, whatever else the ray meets. The port takes the
+ * side of each polygon's plane that the node's own centre lies on as "behind", so the winding does not matter, and wants the
+ * point at least 1 unit deep (the original: strictly behind every plane). */
+int inst_point_in_press(const InsFile *ins, const Instance *skip, Vec3 p, const Instance **inst_out)
+{
+    Vec3 v[16];
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
+        const Model *m = &ins->models[mi]; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+        if (!ncn) continue;
+        for (uint32_t k = 0; k < m->ninstances; k++) {
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || !in->node_world) continue;
+            for (uint32_t ci = 0; ci < ncn; ci++) {
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys || nd->npolys < 4) continue;
+                float nb[6]; if (ins_node_world_box(in, ni, nb) && (p.x < nb[0] || p.x > nb[1] || p.y < nb[2] || p.y > nb[3] || p.z < nb[4] || p.z > nb[5])) continue;
+                Vec3 c = { 0, 0, 0 }; int nc = 0;
+                for (uint32_t pi = 0; pi < nd->npolys; pi++) for (uint32_t q = 0; q < nd->polys[pi].nverts; q++) { Vec3 w = ins_point_world(in, nd->polys[pi].indices[q]); c.x += w.x; c.y += w.y; c.z += w.z; nc++; }
+                if (!nc) continue; c.x /= nc; c.y /= nc; c.z /= nc;
+                int inside = 1;
+                for (uint32_t pi = 0; pi < nd->npolys && inside; pi++) {
+                    const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 16) continue;
+                    for (uint32_t q = 0; q < 3; q++) v[q] = ins_point_world(in, pl->indices[q]);
+                    Vec3 nrm = v3cross(v3sub(v[1], v[0]), v3sub(v[2], v[0])); float nl = sqrtf(v3dot(nrm, nrm)); if (nl < 1e-6f) continue;
+                    float dp = v3dot(v3sub(p, v[0]), nrm) / nl, dc = v3dot(v3sub(c, v[0]), nrm) / nl;
+                    if (dc < 0) { dp = -dp; dc = -dc; }
+                    if (dp < 1.0f) inside = 0;                                  /* port tolerance: at least 1 unit inside, so a bomb lying on a press node is not "in" it */
+                }
+                if (inside) { if (inst_out) *inst_out = in; return 1; }
+            }
+        }
+    }
+    return 0;
+}
