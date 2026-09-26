@@ -28,7 +28,7 @@ double win_time(void);                        /* seconds, high resolution */
 struct WorldBatch { uint32_t group; uint32_t ntris; float *pos; float *uv; uint8_t *col;
                     uint32_t *idx, nidx, idx_cap; uint32_t *face; };   /* face: per triangle, only for the light batches */
 /* Where a world face ended up in the batches, so the visibility pass can put its triangles back in. */
-struct FaceBatch { uint32_t tri0, ntris, group; uint8_t lit; };
+struct FaceBatch { uint32_t tri0, ntris, group, zone; uint8_t lit, sky; };   /* zone = the .gel section-3 group of the face; sky = a sky-group face (never drawn) */
 
 typedef struct {
     TexFile *tex; GelFile *gel; InsFile *ins;
@@ -49,6 +49,9 @@ typedef struct {
     uint32_t *face_stamp, stamp_gen;                   /* the frame stamp of poly+4: one face is collected once */
     uint8_t *sec_vis, *sec_prev; int pvs_on, sec_dirty;/* per sector: visible now / last frame */
     uint32_t drawn_tris, total_tris; uint32_t nsec_vis;
+    /* race levels (Perso subtype 4/5, 0x401c36): the region list renderer+0xc0 of SetRaceInfo 0x455dc0; with race[0] != -1
+     * 0x42a980 draws only the zone (.gel group) of the floor under the camera and the list entry after it (docs/RACE.md 2.1) */
+    int32_t race[6]; int race_vis; int32_t race_zone[2], race_prev[2]; const void *race_entry; int race_sky, sky_on;
     /* drawn after the models and before the fade list: texture list 8 of the flush 0x4293f0 (docs/LIGHTING.md 1.5),
      * where the water surfaces of class 60 go (water.c) */
     void (*post_models)(const TexFile *tex, Vec3 eye);
@@ -62,6 +65,8 @@ void rnd_fade(float brightness);             /* darken the finished frame: 1 = n
 void rnd_free(Renderer *r);
 /* message 34 [inst, other] (0x42dc21): while the camera is inside one of inst's volume nodes, `other` is not drawn (0x42aa0b) */
 void rnd_link(Renderer *r, Instance *inst, Instance *other);
+/* message 1120 SetRaceInfo (0x455f10..0x455fed): the region list from the race polyline; NULL = none (the full .vis path) */
+void rnd_set_race(Renderer *r, const Trajectory *path);
 void rnd_set_sky(Renderer *r, const uint32_t tex[5]);   /* level bank images 3,0,1,2,4 replace the group's own frames when the bank has >= 5 images (0x5e8670) */
 int  rnd_screenshot(const Window *w, const char *path);   /* binary PPM of the current back buffer */
 /* an HNM film frame (RGB565, docs/HNM.md) over the whole window, 4:3 kept with black bars; px NULL frees the texture */
