@@ -213,7 +213,11 @@ for (i = 0; i < [0x4c531c]; i++) {                       /* actor list 1 of the 
 ```
 `Perso::vtbl[39]` = `0x44ca00` (PERSO_MOVE.md §4.4): ignored while invulnerable; knockback 500 u/s for 0.2 s along `P->dir` (i.e. **with the shot**),
 hit animation, 0.6 s invulnerable, `health −= 1.0`. The result is discarded here, but the Perso update itself kills at `health ≤ 0` (`vtbl[38](3)`, PERSO_FRAME.md line 168).
-In the port: `if (player_hit(p, dmg, dir)) player_kill(p, 3);`. Effective hit radius against the player: 5 + 69 = **74** in xz, y from feet − 5 to feet + 193 + 5.
+In the port: `if (player_hit(p, dmg, dir)) player_kill(p, 3);`. `0x433920` is decompiled in PERSO_JUMP.md §3.1 and ported exactly
+(`sweep_sphere_cyl`, round 30; also for the bombs against the thrower / Boss2): the "cylinder" is a capsule. Against the player
+(R 69, H 193) a shot that does not cross the whole band feet + 69 .. feet + 124 in y is decided by two spheres of 74 around
+feet + 69 and feet + 124: a level shot hits within 74 (xz) between those heights, within `sqrt(74² − dy²)` above/below them, not at all
+above feet + 198 or below feet − 5 (earlier port: a flat 74 over the whole height).
 
 ## 3. Message 1002: all 20 parameters (`0x452360`, jump table `0x4524fc`)
 

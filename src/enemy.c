@@ -77,7 +77,7 @@ static int bomber_peck(Enemy *e);
 static void bomber_blast(Enemy *e, Vec3 c, float r);
 int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 {
-    if (e->type == 14) return boss_take_damage(e);
+    if (e->type == 14) return boss_take_damage(e, NULL, 0);          /* vtbl[40] 0x41ae20: vtbl[39](0, hp, &dir, NULL, 0) */
     if (e->type == 15) return 0;                                       /* 0x40e720: xor al, al */
     if (e->type == 16) return boss16_take_damage(e, dmg);
     if (e->type == 12) return bomber_peck(e);                          /* the peck / charge run of the player (kinds 0 / 1) */
@@ -89,7 +89,7 @@ int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 
 int enemy_hit(Enemy *e, float dmg, Vec3 dir, Vec3 pt, int kind)
 {
-    if (e->type == 14) return boss_take_damage(e);                  /* 0x40fe90 passes the kind on: no star for kind 2 (the special attack) */
+    if (e->type == 14) return boss_take_damage(e, &pt, kind);       /* 0x40fe90 passes pt and the kind on: no star for kind 2 (the special attack) */
     if (e->type == 15) return 0;                                     /* 0x40e720: nothing hurts him but a blast */
     if (e->type == 16) { int r = boss16_take_damage(e, dmg); if (r && kind != 2) game_hit_star(pt); return r; }   /* 0x40d480 -> 0x41adc0 with the kind */
     if (e->type == 12) return kind == 0 || kind == 1 ? bomber_peck(e) : 0;   /* 0x411ab0 only reacts to kinds 0 / 1: the special attack does nothing */
@@ -691,16 +691,89 @@ void enemies_actor_blast(EnemySet *s, Vec3 c, float r)
         if (e->type == 12) bomber_blast(e, c, r); else if (e->type == 15) boss15_blast(e, c, r);
     }
 }
+/* ---- the engine's actor hit tests (0x433920 / 0x433bc0 / 0x433de0), literally. The comparisons keep the x87 jumps: a NaN
+ * (a zero-length sweep divides 0.5 by 0) goes the way `fcom; test ah, 1/0x41` sends it. g_hit_frac mirrors the one global
+ * hit fraction [0x53a558]: 0x433920/0x433bc0 write it on a hit, the charge loop writes 0.5 (0x4589e9), the laser rays their
+ * answer; the laser of type 50 reads it back when its ray finds nothing. In the original every ray and collision sweep of the
+ * frame also writes it (19 writers, 0x424a69..0x4589e9); the port's other rays do not (port simplification). */
+float g_hit_frac;
+/* 0x433bc0(a, b, r, s, R): a sphere r swept from a to b against the sphere (s, R) in 3D. The entry fraction when it lies in
+ * [0, 1], else the exit fraction when that does (a start inside the sphere); a sweep that starts and ends inside misses */
+static int sweep_sphere_sphere(Vec3 a, Vec3 b, float r, Vec3 s, float R)
+{
+    float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, ex = a.x - s.x, ey = a.y - s.y, ez = a.z - s.z;
+    float A = dz * dz + dy * dy + dx * dx, B = (ez * dz + ey * dy + ex * dx) * 2.0f, Rs = r + R;
+    float disc = B * B - (ez * ez + ey * ey + ex * ex - Rs * Rs) * A * 4.0f;               /* 0x4a94c0 = 4 */
+    if (!(disc >= 0)) return 0;                                                             /* 0x433c7c */
+    float sq = sqrtf(disc), inv = 0.5f / A, t0 = (-B - sq) * inv, t1 = (sq - B) * inv;     /* 0x4a9014 = 0.5 */
+    if (t0 > t1) { float q = t0; t0 = t1; t1 = q; }                                         /* 0x433cbd */
+    if (!(t0 > 1.0f) && t0 >= 0) { g_hit_frac = t0; return 2; }                             /* 0x433ccf..0x433cf7 */
+    if (t1 > 1.0f || !(t1 >= 0)) return 0;                                                  /* 0x433cf8..0x433d1a */
+    g_hit_frac = t1; return 2;
+}
+/* 0x433920(a, b, r, c, R, H): a sphere r swept from a to b against the upright cylinder with its FOOT at c, radius R, height H.
+ * xz quadratic with R + r (a start inside the circle with no xz motion = the whole segment), the y span of the part inside the
+ * circle against [c.y - r, c.y + H + r]; the straight wall only counts when that span crosses the whole of [c.y + R, c.y + H - R],
+ * otherwise the two end spheres (c.y + R and c.y + H - R, radius R) decide: a capsule. Returns 2 (hit, g_hit_frac = entry) or 0 */
+int sweep_sphere_cyl(Vec3 a, Vec3 b, float r, Vec3 c, float R, float H)
+{
+    float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, ex = a.x - c.x, ez = a.z - c.z;
+    float A = dz * dz + dx * dx, B = (ez * dz + ex * dx) * 2.0f, Rs = r + R, C = ez * ez + ex * ex - Rs * Rs;
+    float disc = B * B - C * A * 4.0f, t0, t1;
+    if (!(disc >= 0)) return 0;                                                             /* 0x4339c6 */
+    if (!(A > 0.001f)) {                                                                    /* 0x4339db, 0x4a94c4: no xz motion */
+        if (C >= 0) return 0;                                                               /* 0x433b2a: the start is outside the circle */
+        t0 = 0; t1 = 1.0f;
+    } else {
+        float sq = sqrtf(disc), inv = 0.5f / A;
+        t0 = (-B - sq) * inv; t1 = (sq - B) * inv;
+        if (t0 > t1) { float q = t0; t0 = t1; t1 = q; }                                     /* 0x433a18 */
+        if (t0 > 1.0f || !(t1 >= 0)) return 0;                                              /* 0x433a39, 0x433a4a */
+        if (!(t0 >= 0)) t0 = 0;                                                             /* 0x433a61 */
+        if (t1 > 1.0f) t1 = 1.0f;                                                           /* 0x433a78 */
+    }
+    float y0 = dy * t0 + a.y, y1 = dy * t1 + a.y;
+    if (y0 > y1) { float q = y0; y0 = y1; y1 = q; }                                         /* 0x433aa9 */
+    if (c.y - r > y1 || !(r + H + c.y >= y0)) return 0;                                     /* 0x433acb, 0x433ae5 */
+    if (H + c.y - R > y0 && !(R + c.y >= y1)) { g_hit_frac = t0; return 2; }                /* 0x433aff, 0x433b11: through the straight part */
+    if (sweep_sphere_sphere(a, b, r, (Vec3){ c.x, R + c.y, c.z }, R)) return 2;             /* 0x433b6d: lower cap */
+    return sweep_sphere_sphere(a, b, r, (Vec3){ c.x, H + c.y - R, c.z }, R);                /* 0x433ba2: upper cap */
+}
+/* 0x433de0(a, b, c, R, h): the segment a..b against the upright cylinder around the CENTRE c, radius R, y range
+ * [c.y - h + 0.1, c.y + h - 0.1] (0x4a9008 = 0.1): the xz quadratic clipped to [0, 1], then the y span of that part.
+ * 0.5 (0x4a9014) on a hit, -1 (0x4a9500) otherwise - never the fraction. The laser 0x450f80 passes h = half the height,
+ * the charge run 0x4589d0 the whole height around feet + h/2 (so there the range is feet - h/2 + 0.1 .. feet + 1.5 h - 0.1) */
+float seg_cyl(Vec3 a, Vec3 b, Vec3 c, float R, float h)
+{
+    float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, ex = a.x - c.x, ez = a.z - c.z;
+    float A = dz * dz + dx * dx, B = (ez * dz + ex * dx) * 2.0f, C = ez * ez + ex * ex - R * R;
+    float disc = B * B - C * A * 4.0f, t0, t1;
+    if (!(disc >= 0)) return -1.0f;                                                         /* 0x433e7c */
+    if (!(A > 0.001f)) {                                                                    /* 0x433e91 */
+        if (C >= 0) return -1.0f;                                                           /* 0x433fbe */
+        t0 = 0; t1 = 1.0f;
+    } else {
+        float sq = sqrtf(disc), inv = 0.5f / A;
+        t0 = (-B - sq) * inv; t1 = (sq - B) * inv;
+        if (t0 > t1) { float q = t0; t0 = t1; t1 = q; }                                     /* 0x433ed8 */
+        if (!(t1 > 0) || t0 >= 1.0f) return -1.0f;                                         /* 0x433ef9, 0x433f0a */
+        if (!(t0 >= 0)) t0 = 0;                                                             /* 0x433f1d */
+        if (t0 > 1.0f) t0 = 1.0f;                                                           /* 0x433f32 */
+        if (t1 > 1.0f) t1 = 1.0f;                                                           /* 0x433f4b */
+    }
+    float y0 = t0 * dy + a.y, y1 = dy * t1 + a.y;
+    if (y0 > y1) { float q = y0; y0 = y1; y1 = q; }                                         /* 0x433f72 */
+    if (y0 > h + c.y - 0.1f || c.y - h + 0.1f > y1) return -1.0f;                           /* 0x433f9a, 0x433fb2 */
+    return 0.5f;
+}
 Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, float r)
 {
     for (int i = 0; i < s->n; i++) {
         Enemy *e = &s->e[i];
         if ((e->type != 12 && e->type != 15) || e == owner || e->removed || !e->inst->visible) continue;   /* subtype 8 (type 12) and 12 (class 15, actor list 1 via 0x40c080) */
         if (e->type == 12 && (e->st == 1 || e->st == 13)) continue;   /* vtbl[47] 0x411970: no actor in states 1 / 13 */
-        float R = r + e->P.radius, dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
-        float t = l2 > 1e-6f ? ((e->pos.x - a.x) * dx + (e->pos.z - a.z) * dz) / l2 : 0; if (t < 0) t = 0; if (t > 1) t = 1;
-        float cx = a.x + dx * t - e->pos.x, cz = a.z + dz * t - e->pos.z, y = a.y + (b.y - a.y) * t;
-        if (cx * cx + cz * cz <= R * R && y > e->pos.y - r && y < e->pos.y + e->P.height + r) return e;   /* 0x433920: swept sphere against the cylinder */
+        /* vtbl[24] 0x41ad80 = {pos + (0, h/2, 0), radius, h/2}; 0x44a15f passes the foot (c.y - h/2) and the whole height */
+        if (sweep_sphere_cyl(a, b, r, e->pos, e->P.radius, e->P.height)) return e;
     }
     return NULL;
 }

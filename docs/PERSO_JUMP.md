@@ -416,20 +416,43 @@ version of the Woody mesh with the Vector used for Attacks").
 For each actor `t` in `0x4c5258[0x4c5324]` (actor list from the previous frame, `RegisterActor2`), `t != p`;
 `tp = *t->vtbl[34]()` (position):
 
-* **substate 2 (peck dash)**: `0x433920(&p+0x5e4 /*dashstart*/, &p->pos, 100.0, &tp, t->vtbl[32]() /*radius*/,
-  t->vtbl[33]() /*height*/)` – **swept circle in the xz plane**: segment dashstart→pos against a circle with
-  radius `100 + r_t` (quadratic equation, discriminant ≥ 0, `0 ≤ s ≤ 1`), then a y-overlap test against
-  the height (and `0x433bc0` for edge cases); ≠ 0 = hit, `[0x53a558]` = fraction.
-  Hit: `dir = (0,0,0)`, `hitpoint = p+0x59c`.
-* **substate 9/10 (charge run)**: beak segment `a = p+0x59c`, `b = a + normalize(p+0x5a8 − a)·50`
-  (b is written back into `p+0x5a8`); cylinder around `c = tp + (0, height·0.5, 0)`:
-  `0x433de0(&a, &b, &c, radius, height)` – segment against a **vertical cylinder** (xz quadratic,
-  y within `c.y ± (height − 0.1)`); returns 0.5 on hit, −1.0 on miss. Hit: `dir = normalize(tp.xz − pos.xz)`,
-  `hitpoint = lerp(a, b, 0.5)`; in state 10 also `Mover_SetDir(M, dir)`.
-  (Port, round 29: the hit point is computed from the real beak vector - the first kind-0x20 marker with typecode 0 of the
-  player's model, posed as last drawn, `beak_vector` in player.c; e.g. 124 above the feet in a W1A charge run - and passed
-  to `enemy_hit`, whose Enemy_TakeDamage puts the hit star on it. The hit tests themselves are still the port's
-  approximations of `0x433920` / `0x433de0`.)
+* **substate 2 (peck dash)**: `0x433920(&p+0x5e4 /*dashstart*/, &p+0x1f4 /*pos*/, 100.0, &tp, t->vtbl[32]() /*radius*/,
+  t->vtbl[33]() /*height*/)` (`0x457dcb`) – a **sphere of 100 swept** from the dash start to the position against the
+  target's upright cylinder (foot `tp`, radius R, height H), which the function treats as a **capsule** (decompiled, §3.1);
+  ≠ 0 = hit, `[0x53a558]` = entry fraction. Hit: `dir = (0,0,0)` (`0x43ffa0`), `hitpoint = p+0x59c` (`0x458a10`).
+* **every other substate that reaches the loop** (9/10 = the charge run, and 3 = every actor after a dash hit in the same
+  loop, because the substate is already 3 then, `0x457d8e`): beak segment `a = p+0x59c`, `b = a + normalize(p+0x5a8 − a)·50`
+  (`0x4588af..0x458987`, normalized only if the length is > 0, `0x4a9030` = 50; b is written back into `p+0x5a8`); cylinder
+  centre `c = tp + (0, height·0.5, 0)` (`0x45899f`): `0x433de0(&a, &b, &c, radius, height)` (`0x4589d0`) – returns 0.5 on hit,
+  −1.0 on miss; `≥ 0` ⇒ `[0x53a558] = 0.5` (`0x4589e9`). Because the charge run passes the WHOLE height as the half-height,
+  the y range is `tp.y − h/2 + 0.1 .. tp.y + 1.5h − 0.1` (a quirk of the original). Hit: `dir = normalize_xz(tp − p+0x1f4)`
+  (`0x458a3c`, only if the length is > 0), `hitpoint = lerp(a, b, [0x53a558])`; in substate 10 also `Mover_SetDir(M, &dir)`
+  (`0x459ff0`, `0x458b07`: he turns to the target at once).
+* The loop does **not** stop on a hit (`0x458b6d` → next actor).
+
+### 3.1 The two hit tests (decompiled; port: `sweep_sphere_cyl` / `seg_cyl` in enemy.c, round 30)
+
+`0x433920(a, b, r, c, R, H)` (sphere r swept a→b against the cylinder with its foot at c):
+```c
+d = b − a;  e = a − c;
+A = d.x² + d.z²;  B = 2(e.x d.x + e.z d.z);  C = e.x² + e.z² − (r + R)²;
+if (B² − 4AC < 0) return 0;                                   /* 0x4a94c0 = 4 */
+if (A <= 0.001) { if (C >= 0) return 0; t0 = 0; t1 = 1; }      /* 0x4a94c4: no xz motion, start inside the circle */
+else { t0,t1 = (−B ∓ sqrt)·(0.5/A) sorted;  if (t0 > 1 || t1 < 0) return 0;  t0 = max(t0, 0); t1 = min(t1, 1); }
+y0,y1 = a.y + d.y·t0, a.y + d.y·t1 sorted;
+if (c.y − r > y1 || c.y + H + r < y0) return 0;
+if (y0 < c.y + H − R && y1 > c.y + R) { [0x53a558] = t0; return 2; }       /* the span crosses the whole straight part */
+return 0x433bc0(a, b, r, c + (0, R, 0), R) || 0x433bc0(a, b, r, c + (0, H − R, 0), R);   /* the two end spheres */
+```
+`0x433bc0(a, b, r, s, R)`: the same quadratic in 3D against the sphere (s, R + r); entry fraction if `0 ≤ t0 ≤ 1`, else the exit
+fraction if `0 ≤ t1 ≤ 1` (a start inside), written to `[0x53a558]`, return 2; else 0. So the "cylinder" is a capsule: the flat part
+only counts when the swept span covers all of `[c.y + R, c.y + H − R]`; a horizontal sweep is decided by the end spheres alone.
+For Buzz (R 240 > H 150) the two spheres swap places (centres `pos.y + 240` and `pos.y − 90`).
+
+`0x433de0(a, b, c, R, h)` (segment against the cylinder around the centre c): the same xz quadratic with R alone
+(`A <= 0.001`: `C >= 0` ⇒ miss, else `[0, 1]`), then `t1 <= 0 || t0 >= 1` ⇒ miss, clip to [0, 1], y span of the clipped part,
+miss if `y0 > c.y + h − 0.1` or `y1 < c.y − h + 0.1` (`0x4a9008`); **0.5** on a hit (`0x4a9014`), −1 (`0x4a9500`) otherwise.
+NaN (a zero-length sweep divides 0.5 by 0) follows the x87 jumps; the port writes the comparisons so that it does too.
 
 On a hit:
 1. substate 2 ⇒ **`p+0x5b4 = 3`**, `isPeck = 1` (otherwise 0).

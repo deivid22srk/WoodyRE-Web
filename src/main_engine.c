@@ -1216,28 +1216,35 @@ static int laser_segment(const Laser *z, uint32_t marker, const GelFile *gel, Ve
          * press node of an instance (kind 2), and the -1 is the start cell (look it up), not an instance to leave out: the beam's own
          * housing is not skipped, the marker simply starts outside its press node (W1A model 33: marker z -62.9, press tip z -60.4).
          * Woody and the enemies have no press nodes, so the beam passes through them; only the hit test below kills (the player) */
-        float t = gel_ray_frac(gel, *a, *b), tw = t < 1.0f ? t : 1.0f, ti; const Instance *hi = NULL;   /* the instances only up to the wall: a small box to cull with */
+        const Instance *hi = NULL;
+        if (z->type == 51 && inst_point_in_press(&g_ins, NULL, *a, &hi)) {       /* hit kind 3 (raw answer 2, 0x4330c0 in the instance test 0x432ab0 = vtbl[5]): the
+                                                                                    * start lies inside a press node; [0x53a558] = 0 (0x4330d4), so 0x4513cd puts b on a,
+                                                                                    * rec+0x2c = 1 and the normal 0x4b3108 stays stale: no beam, only the impact at a. The
+                                                                                    * endless test 0x431de0 (vtbl[6], type 50) has no such answer */
+            g_hit_frac = 0; *b = *a; *kind = 1;
+            if (getenv("WOODY_FXLOG")) { static const Instance *last3[64][8]; int zi = (int)(z - g_lasers); if (zi >= 0 && zi < 64 && marker < 8 && last3[zi][marker] != hi) { last3[zi][marker] = hi; printf("laser %u marker %u starts inside instance %u (hit kind 3)", z->inst->index, marker, hi->index), puts(""); } }
+            return 1;
+        }
+        float t = gel_ray_frac(gel, *a, *b), tw = t < 1.0f ? t : 1.0f, ti;       /* the instances only up to the wall: a small box to cull with */
         Vec3 bw = { a->x + (b->x - a->x) * tw, a->y + (b->y - a->y) * tw, a->z + (b->z - a->z) * tw };
         if (inst_ray_press(&g_ins, NULL, *a, bw, &ti, NULL, &hi) && ti * tw < t) t = ti * tw; else hi = NULL;
-        if (t <= 1.0f) { b->x = a->x + (b->x - a->x) * t; b->y = a->y + (b->y - a->y) * t; b->z = a->z + (b->z - a->z) * t; *kind = 1; }
+        if (t <= 1.0f) { b->x = a->x + (b->x - a->x) * t; b->y = a->y + (b->y - a->y) * t; b->z = a->z + (b->z - a->z) * t; *kind = 1; g_hit_frac = z->type == 50 ? t * len : t; }   /* [0x53a558]: 50 = the distance (unit dir) */
+        else if (z->type == 50) {                                                   /* 0x4511a2: nothing hit, b = a + dir * [0x53a558] with the STALE value (the last writer's) */
+            b->x = a->x + d.x / l * g_hit_frac; b->y = a->y + d.y / l * g_hit_frac; b->z = a->z + d.z / l * g_hit_frac;
+            if (getenv("WOODY_FXLOG")) printf("laser %u marker %u: the endless ray finds nothing, stale length %.1f", z->inst->index, marker, g_hit_frac), puts("");
+        }
         if (z->type == 50) *kind = 1;                                               /* 0x45122d: rec+0x2c = 1 whether or not the ray found anything */
         if (hi && getenv("WOODY_FXLOG")) { static const Instance *last[64][8]; int zi = (int)(z - g_lasers); if (zi >= 0 && zi < 64 && marker < 8 && last[zi][marker] != hi) { last[zi][marker] = hi; printf("laser %u (type %d) marker %u stops on instance %u (model %d) at %.0f %.0f %.0f, %.0f long", z->inst->index, z->type, marker, hi->index, (int)(hi->model - g_ins.models), b->x, b->y, b->z, sqrtf((b->x - a->x) * (b->x - a->x) + (b->y - a->y) * (b->y - a->y) + (b->z - a->z) * (b->z - a->z))), puts(""); } }
         return 1;
     }
     return 0;
 }
-/* hit test 0x450f80: segment against the player's cylinder (radius 69 * 0.85, centre at half height) */
+/* hit test 0x450f80: vtbl[24] 0x44cd60 of the Perso = {pos + (0, H/2, 0), 69, H/2}; 0x433de0(a, b, centre, 69 * 0.85 (0x4aa3d8), H/2)
+ * answers 0.5 or -1, and 0 <= t <= 1 kills: y range feet + 0.1 .. feet + H - 0.1 (H = 61 while ducked: he ducks under the beam) */
 static int laser_hits_player(Vec3 a, Vec3 b, const Player *p)
 {
-    const float R = 69.0f * 0.85f, H = player_body_height(p);             /* 61 while ducked: he ducks under the beam */
-    Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float best = 1e30f;
-    for (int i = 0; i <= 16; i++) {                                                 /* closest approach in xz, sampled (beams are short next to the player) */
-        float t = i / 16.0f, x = a.x + d.x * t - p->pos.x, y = a.y + d.y * t - p->pos.y, zz = a.z + d.z * t - p->pos.z;
-        if (y < 0 || y > H) continue; float q = x * x + zz * zz; if (q < best) best = q;
-    }
-    float l2 = d.x * d.x + d.z * d.z;
-    if (l2 > 1e-6f) { float t = ((p->pos.x - a.x) * d.x + (p->pos.z - a.z) * d.z) / l2; t = t < 0 ? 0 : t > 1 ? 1 : t; float y = a.y + d.y * t - p->pos.y, x = a.x + d.x * t - p->pos.x, zz = a.z + d.z * t - p->pos.z; if (y >= 0 && y <= H && x * x + zz * zz < best) best = x * x + zz * zz; }
-    return best <= R * R;
+    float hh = player_body_height(p) * 0.5f, t = seg_cyl(a, b, (Vec3){ p->pos.x, p->pos.y + hh, p->pos.z }, 69.0f * 0.85f, hh);
+    return t >= 0 && !(t > 1.0f);                                                   /* 0x450ff2, 0x451002 */
 }
 static float fx_rnd(void);
 static void laser_fx_init(LaserFx *fx)                                             /* 0x46e4a0 */
@@ -1257,10 +1264,12 @@ static void laser_fx_draw(LaserFx *fx, Vec3 a, Vec3 b, int kind, float g, const 
     if (fx->s >= 0 && fx->s < 1.0f) {
         fx->s += dt * 4.0f;
         if (fx->s < 1.0f) {
+            if (len > 0) {                                                         /* a zero-length beam (hit kind 3): degenerate quads, nothing to see */
             static const float pc[3] = { 1, 0.6f, 0.6f };
             Vec3 p = { a.x + d.x * fx->s, a.y + d.y * fx->s, a.z + d.z * fx->s };
             Vec3 p1 = { a.x + d.x * (fx->s + 0.1f), a.y + d.y * (fx->s + 0.1f), a.z + d.z * (fx->s + 0.1f) }, p2 = { a.x + d.x * (fx->s - 0.1f), a.y + d.y * (fx->s - 0.1f), a.z + d.z * (fx->s - 0.1f) };
             hud_world_beam(&p.x, &p1.x, eye, 25.0f, pc, g, 0); hud_world_beam(&p.x, &p2.x, eye, 25.0f, pc, g, 0);
+            }
         } else fx->s = -1.0f;
     } else fx->s = -1.0f;
     /* 0x100, 0x46ebd4: every 2 s a 0.9 s salvo of lightning; its zigzag is new at 0, 0.3 and 0.6 s */
@@ -1803,10 +1812,11 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
             s->speed = v3len(s->vel); if (s->speed > 0) s->dir = (Vec3){ s->vel.x / s->speed, s->vel.y / s->speed, s->vel.z / s->speed };
             b = (Vec3){ a.x + s->vel.x * dt, a.y + s->vel.y * dt, a.z + s->vel.z * dt };
         }
-        if (!end && player_ok && s->T.hits_all) {                                  /* HitActors 0x44a0a0: swept sphere r 5 against the cylinder r 69: 74, feet - 5 .. feet + 198 */
-            Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float l2 = d.x * d.x + d.z * d.z, t = l2 > 1e-6f ? ((pl->pos.x - a.x) * d.x + (pl->pos.z - a.z) * d.z) / l2 : 0; t = t < 0 ? 0 : t > 1 ? 1 : t;
-            float x = a.x + d.x * t - pl->pos.x, y = a.y + d.y * t - pl->pos.y, z = a.z + d.z * t - pl->pos.z, R = s->T.radius + 69.0f;
-            if (x * x + z * z <= R * R && y >= -s->T.radius && y <= player_body_height(pl) + s->T.radius) { if (player_hit(pl, s->damage, s->dir)) { player_kill(pl, 3); enemy_player_killed(s->enemy); } b = (Vec3){ a.x + d.x * t, a.y + d.y * t, a.z + d.z * t }; end = 1; }
+        if (!end && player_ok && s->T.hits_all) {                                  /* HitActors 0x44a0a0: 0x433920(old, new, r 5, feet, 69, H) = vtbl[24] 0x44cd60 {pos + (0, H/2, 0), 69, H/2} */
+            if (sweep_sphere_cyl(a, b, s->T.radius, pl->pos, 69.0f, player_body_height(pl))) {
+                if (player_hit(pl, s->damage, s->dir)) { player_kill(pl, 3); enemy_player_killed(s->enemy); }
+                b = (Vec3){ a.x + (b.x - a.x) * g_hit_frac, a.y + (b.y - a.y) * g_hit_frac, a.z + (b.z - a.z) * g_hit_frac }; end = 1;   /* port: the shot ends where the sweep met him */
+            }
         }
         if (!end) {                                                                /* the other members of actor list 1: the bomb thrower (type 12) and Boss2 (15) */
             Enemy *h = enemies_bomb_contact(&g_enemies, s->enemy, a, b, s->T.radius);
@@ -3543,7 +3553,8 @@ int main(int argc, char **argv)
                     for (uint32_t mk = 0; mk < 8; mk++) {
                         Vec3 a, b; int kind; if (!laser_segment(z, mk, &L.gel, &a, &b, &kind)) break;
                         if (L.have_player && !paused && !fly && !L.player.dead_kind && !cin_running() && laser_hits_player(a, b, &L.player)) player_kill(&L.player, 2);
-                        Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l < 1) continue;
+                        Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+                        if (l < 1) { laser_fx_draw(&z->fx[mk], a, b, kind, g, &cam.pos.x, paused ? 0 : dt); continue; }   /* hit kind 3: b = a, only the impact at a */
                         static const float core[3] = { 1, 0.7f, 0.7f }, glow[3] = { 1, 0.4f, 0.4f };
                         float f = kind == 2 ? 0 : (l > 140 ? 70.0f : l * 0.5f) / l;
                         Vec3 a1 = { a.x + d.x * f, a.y + d.y * f, a.z + d.z * f }, b1 = { b.x - d.x * f, b.y - d.y * f, b.z - d.z * f };

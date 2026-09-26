@@ -422,13 +422,26 @@ enemies are not hit**: their models have no press node (W1A model 0 and 42), so 
 - Moving platforms cut beams while they pass: W1B laser 150 by the shuttle (model 42), W3D 220/251/252/449 by the lifts of model 8.
 - The own housing is not hit because the marker starts just outside it (W1A model 33: marker start z −62.9, tip of the press node z −60.4).
 Port: `laser_segment` (main_engine.c) = `gel_ray_frac` + `inst_ray_press` (instance.c; the instance half of `0x4359b0`, the same test as
-`player_ray_instances` in player.c but without its 4000-unit horizontal reject, so an endless beam also finds a post far away). Not
-ported: kind 3 (raw answer 2, unidentified), the stale `[0x53a558]` of a type-50 ray that finds nothing (the port ends it 100000 away).
+`player_ray_instances` in player.c but without its 4000-unit horizontal reject, so an endless beam also finds a post far away).
+
+**Hit kind 3 and the stale distance (round 30, ported).** Raw answer 2 comes from exactly one place: `0x4330c0` in the instance
+segment test `0x432ab0` (vtbl[5] of every instance, laser vtable `0x4a9278` slot 5) finds the START of the segment inside a press node
+(behind all its planes) and writes `[0x53a554] = 3`, `[0x53a558] = 0`, `[0x53a560]` = the instance, `[0x4c4bd0] = 2`, t = 0 itself
+(PROJECTILES.md §2.3); `0x4359b0` then leaves kind 3 (`0x435b4f`). For a type-51 beam `0x4513b7` only asks "anything?", so
+`b = a + (b − a)·0 = a`, `rec+0x2c = 1` and the normal `rec+0x20` is copied from a stale `0x4b3108`: no beam, only the impact at
+the marker start, and the hit test still runs on the zero-length segment. The endless test `0x431de0` (slot 6, used by `0x497a30`
+for type 50) has no such answer. The endless ray `0x435810` writes `[0x53a558]` only for raw answers 3 and 4 (`0x4358a5`,
+`0x435910`); for anything else (the ray leaves the world) `0x4511a2` builds `b = a + dir·[0x53a558]` with whatever value the last
+writer left there (19 writers: every ray, GetHeight, the collision sweeps, `0x433920`/`0x433bc0` and the charge loop), and
+`0x45122d` still marks the beam as ending on geometry. Port: `laser_segment` tests `inst_point_in_press` first for type 51, and keeps
+the global in `g_hit_frac` (enemy.c), written by the laser rays, the two actor hit tests and the charge loop; the port's other rays
+do not write it, so the stale length is the last of those (simplification). `WOODY_FXLOG=1` prints both cases.
 
 Hit test `0x450f80(i)`: for each actor in `0x4c52d8[0x4c531c]` (list 1 of the previous frame, `0x40c080`: Perso only if
 `+0x26c == 0` and state ≠ 5, `0x44b699`) with **category 1** (`0x40c340`, = the player; enemies are 2): `actor->vtbl[24](&cyl)`
 (Perso `0x44cd60`: center = pos + (0, h/2, 0), radius = `perso+0x114` (= P+4 = 69), half-height h/2), then
-`t = 0x433de0(&rec.a, &rec.b, &cyl.c, cyl.r · 0.85 /*0x4aa3d8*/, cyl.h)`; `0 ≤ t ≤ 1` → **`actor->vtbl[38](2)`** = `Perso::Kill(2)` (`0x44c110`,
+`t = 0x433de0(&rec.a, &rec.b, &cyl.c, cyl.r · 0.85 /*0x4aa3d8*/, cyl.h)` (PERSO_JUMP.md §3.1; `cyl.h` is the half-height, so the y range is
+feet + 0.1 .. feet + H − 0.1; ported exactly as `seg_cyl` in `laser_hits_player`, round 30); `0 ≤ t ≤ 1` → **`actor->vtbl[38](2)`** = `Perso::Kill(2)` (`0x44c110`,
 PERSO_MOVE.md: lightning death, `+0x288 = 1.5 s`, ignored under invulnerability `+0x270 > 0` or cheat `[0x5d7b8a]`). No damage amount, no
 knockback: touch = death. (Correction to INSTANCE.md §7: the radius in the test is that of the Perso · 0.85; `rec+0x18` from message 51
 is not read here. No reader of `rec+0x18` found: uncertain.)

@@ -139,6 +139,7 @@ void player_sync_board(Player *p);
 void player_race_start(Player *p);                     /* level start (Game ctor 0x445850): the race's SurfEnter after the init messages */                    /* 0x44bf10 tail + 0x463e60: the race board takes the Perso's placement and animation */
 /* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
+float player_ground_query_n(const Player *p, const Instance *skip, Vec3 pt, int *found, Vec3 *n);   /* with the floor normal (Buzz's free test) */
 float player_body_height(const Player *p);            /* 0x462490 -> P+0x08: 193 standing / 61 ducked (Woody), race 160 / 81 */
 void player_set_carried(const Instance *owner, const Instance *follower);   /* follower moves with owner: a query that skips owner skips it too */
 /* landing ring (docs/PERSO_JUMP.md 5): the floor point and its normal under an airborne Woody, 0 = draw nothing */

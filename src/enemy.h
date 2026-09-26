@@ -112,6 +112,10 @@ float enemy_sensor_widest_free(const Enemy *e);                               /*
 
 /* type 12, the bomb thrower (W2B end boss, docs/ENEMY2.md 4) */
 Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, float r);   /* HitActors 0x44a0a0 for a bomb: the first thrower whose cylinder the swept sphere touches */
+/* the actor hit tests of the engine (enemy.c) */
+extern float g_hit_frac;                                                      /* the global hit fraction [0x53a558] */
+int   sweep_sphere_cyl(Vec3 a, Vec3 b, float r, Vec3 foot, float R, float H);  /* 0x433920: sphere r swept a->b against the cylinder (foot, R, H); 2 = hit */
+float seg_cyl(Vec3 a, Vec3 b, Vec3 centre, float R, float h);                 /* 0x433de0: segment against the cylinder centre +- (h - 0.1); 0.5 = hit, -1 = miss */
 void enemies_actor_blast(EnemySet *s, Vec3 c, float r);                       /* rocket explosion 0x453560: vtbl[40](c, r) on the enemies of actor list 1 (thrower 12, Boss2 15) */
 int  game_enemy_bomb(Enemy *e, Vec3 pos, Vec3 dir, float speed, float fuse);  /* Fire 0x411e80: 0 = no free bomb in the pool (in main_engine.c) */
 void game_msgmask(Instance *in, uint32_t bits, int on);                      /* MsgMask_Set 0x443e50 / _Clear 0x443e90 on the instance's script object (in main_engine.c) */
@@ -119,7 +123,7 @@ void game_msgmask(Instance *in, uint32_t bits, int on);                      /* 
 /* class 14, the Buzz boss (boss.c, docs/BOSS14.md) */
 void boss_init(Enemy *e);                                                     /* ctor 0x40eb50 + PostLoad 0x40ec50 + factory Reset */
 void boss_update(Enemy *e, struct Player *pl, Vec3 cam, float dt);            /* Think 0x41a320 -> Update 0x40eec0 */
-int  boss_take_damage(Enemy *e);                                              /* vtbl[39] 0x40fe90: always 1 hp, only in the low phase */
+int  boss_take_damage(Enemy *e, const Vec3 *pt, int kind);                    /* vtbl[39] 0x40fe90: always 1 hp, only in the low phase; the star at pt (kind != 2) */
 void boss_reset(Enemy *e);                                                    /* vtbl[17] 0x40ed90 */
 void boss_frame_end(Enemy *e);                                                /* sound source 0x468e50: the loop stops on the first frame without an update */
 void enemies_boss_msg(EnemySet *s, Instance *inst, int id, uint32_t arg, Instance *linked);   /* vtbl[22] 0x410070: 59 couple, 60 mailbox */
