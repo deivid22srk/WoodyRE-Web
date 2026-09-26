@@ -2229,21 +2229,27 @@ static void env_draw(void)
     }
 }
 
+/* the per-frame instance list the sound Update gets (world+0x64, 0x401ee7): in the world (0x407850 takes an instance out) and
+ * in a drawn sector (0x42a840). Not ported: 0x42a8b4 also drops a stationary instance (sphere cached, +0x88 == 1) whose
+ * bounding sphere is outside the view frustum or whose centre is more than 11000 from the camera (0x42a907, 0x4aa2f4) */
+static int snd_owner_active(const void *owner) { const Instance *in = owner; return in->visible && game_enemy_thinks(in); }
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
 #define AI(i) ((i) < (int)m->nargs ? (float)(int32_t)m->args[i] : 0.0f)
     uint32_t s2 = m->nargs ? m->args[0] : 0, s3 = m->nargs > 1 ? m->args[1] : 0;   /* sample ref of the 2D / 3D forms */
     const float *pos = in ? &in->position.x : NULL;
+    int q = (m->id >= 1603 && m->id <= 1605) || (m->id >= 1611 && m->id <= 1615) || m->id == 1617 || (m->id >= 1624 && m->id <= 1626) || (m->id >= 1636 && m->id <= 1638);   /* queued variants: vt[0x2c]/[0x30], 3D queue = 1 (0x468466, 0x468587) */
     switch (m->id) {
-    case 1600: case 1603: audio_play(s2, NULL, 0, AI(1), 1.0f, NULL, 0, 0); break;
-    case 1601: case 1604: audio_play(s2, NULL, 0, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
-    case 1602: case 1605: audio_play(s2, NULL, 0, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
-    case 1606: case 1611: audio_play(s2, NULL, 1, AI(1), 1.0f, NULL, 0, 0); break;
-    case 1607: case 1612: audio_play(s2, NULL, 1, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
-    case 1609: case 1614: audio_play(s2, NULL, 1, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
-    case 1608: case 1610: case 1613: case 1615: audio_play(s2, NULL, 1, AI(1), AI(2) * 0.01f, NULL, 0, AI(3) * 0.01f); break;
-    case 1616: case 1617: audio_play(s3, in, 0, AI(2), 1.0f, NULL, 0, 0); break;
+    case 1600: case 1603: audio_play_q(s2, NULL, q, 0, AI(1), 1.0f, NULL, 0, 0); break;
+    case 1601: case 1604: audio_play_q(s2, NULL, q, 0, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
+    case 1602: case 1605: audio_play_q(s2, NULL, q, 0, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
+    case 1606: case 1611: audio_play_q(s2, NULL, q, 1, AI(1), 1.0f, NULL, 0, 0); break;
+    case 1607: case 1612: audio_play_q(s2, NULL, q, 1, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
+    case 1609: case 1614: audio_play_q(s2, NULL, q, 1, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
+    case 1608: case 1610: case 1613: case 1615: audio_play_q(s2, NULL, q, 1, AI(1), AI(2) * 0.01f, NULL, 0, AI(3) * 0.01f); break;
+    case 1616: case 1617: audio_play_q(s3, in, q, 0, AI(2), 1.0f, NULL, 0, 0); break;
+    case 1618: case 1619: audio_play_q(s3, in, 1, 0, AI(2), -AI(3), NULL, 0, 0); break;   /* 0x46820a: -arg3 without the 0.01, so arg3 = seconds */
     case 1652: audio_stop2d(s2, AI(1) * 0.01f, (int)AI(2)); break;
     case 1655: audio_music((int)AI(0)); break;
     case 1646: case 1656: audio_music_stop(AI(0) * 0.01f); break;
@@ -2254,17 +2260,17 @@ static void snd_msg(const EkoMsg *m, Instance *in)
     switch (m->id) {                                                                /* 3D: key (instance, sample); default dmin 2 m */
     case 1620: audio_play(s3, in, 1, AI(2), 1.0f, pos, 2.0f, 0); break;
     case 1621: audio_play(s3, in, 1, AI(2), AI(3) * 0.01f, pos, 2.0f, 0); break;
-    case 1622: case 1624: audio_play(s3, in, 0, AI(2), 1.0f, pos, 2.0f, 0); break;
-    case 1623: case 1625: audio_play(s3, in, 0, AI(2), AI(3) * 0.01f, pos, 2.0f, 0); break;
-    case 1626: case 1627: audio_play(s3, in, 0, AI(2), AI(3) * -0.01f, pos, 2.0f, 0); break;
+    case 1622: case 1624: audio_play_q(s3, in, q, 0, AI(2), 1.0f, pos, 2.0f, 0); break;
+    case 1623: case 1625: audio_play_q(s3, in, q, 0, AI(2), AI(3) * 0.01f, pos, 2.0f, 0); break;
+    case 1626: case 1627: audio_play_q(s3, in, q, 0, AI(2), AI(3) * -0.01f, pos, 2.0f, 0); break;
     case 1628: audio_stop3d(s3, in, AI(2) * 0.01f); break;
     case 1629: audio_play(s3, in, 1, AI(2), AI(3) * -0.01f, pos, 2.0f, AI(4) * 0.01f); break;
     case 1630: audio_play(s3, in, 1, AI(2), 1.0f, pos, AI(3) * 0.01f, 0); break;
     case 1631: audio_play(s3, in, 1, AI(2), AI(3) * 0.01f, pos, AI(4) * 0.01f, 0); break;
     case 1632: audio_play(s3, in, 1, AI(2), AI(3) * -0.01f, pos, AI(5) * 0.01f, AI(4) * 0.01f); break;
-    case 1633: case 1636: audio_play(s3, in, 0, AI(2), 1.0f, pos, AI(3) * 0.01f, 0); break;
-    case 1634: case 1637: audio_play(s3, in, 0, AI(2), AI(3) * 0.01f, pos, AI(4) * 0.01f, 0); break;
-    case 1635: case 1638: audio_play(s3, in, 0, AI(2), AI(3) * -0.01f, pos, AI(4) * 0.01f, 0); break;
+    case 1633: case 1636: audio_play_q(s3, in, q, 0, AI(2), 1.0f, pos, AI(3) * 0.01f, 0); break;
+    case 1634: case 1637: audio_play_q(s3, in, q, 0, AI(2), AI(3) * 0.01f, pos, AI(4) * 0.01f, 0); break;
+    case 1635: case 1638: audio_play_q(s3, in, q, 0, AI(2), AI(3) * -0.01f, pos, AI(4) * 0.01f, 0); break;
     default: break;
     }
 #undef AI
@@ -2836,6 +2842,7 @@ int main(int argc, char **argv)
         if (M.quitting && (M.quit_t -= dt) <= 0) win.quit = 1;                       /* 0x404cb0 -> app+4 */
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
         rnd_frame(&L.rnd, &win, &cam, g_now);                  /* the same game clock as the instances: a texture override (message 16) starts on it */
+        audio_update(snd_owner_active);                                             /* 0x401ee7: after the draw, with this frame's instance list */
         {   /* 2D layer (docs/HUD_TEXT.md 5.4): HUD, then the text box, then the fades. No HUD in menus, BlackBox, cinematics and the fall death camera (0x401e19) */
             {   /* pickups: no mesh, a pulsing sprite (50..110, period 1 s) 50 above the instance; type 34 sits on its animated volume node */
                 Vec3 cr = cam_right(&cam), cf = cam_forward(&cam), cu = { cf.y * cr.z - cf.z * cr.y, cf.z * cr.x - cf.x * cr.z, cf.x * cr.y - cf.y * cr.x };
