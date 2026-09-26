@@ -67,6 +67,7 @@ typedef struct {
     GelCell *sectors;                          /* nsectors sectors; .vis and the .lit trailer are indexed by these */
     uint32_t nloose; uint32_t *loose;          /* polygons that no cell or sector lists: never cull these away */
     struct GelQuery *q;                        /* scratch of the queries below (level.c) */
+    struct GelCol *col;                        /* the .col registration of instances per cell and the collision cell walks (gel_col_load) */
 } GelFile;
 
 /* ---- .vis: the potentially visible set of a sector (docs/FORMAT_TEX_COL_VIS_LIT.md 3) ------------- */
@@ -116,6 +117,7 @@ typedef struct {
     int32_t first_child, next_sibling, parent; /* 0-based node indices, -1 = none/root */
     InsPoly *polys;
     float box[6]; int box_state;               /* pivot-relative aabb of the node's own points, built on first use (0 = not yet, -1 = the points are not all this node's) */
+    float radius;                              /* N+0x2c: max |p - pivot| over the node's own points (loader 0x427daf..0x427e3d), the node cull of the instance tests */
     /* light / helper / marker payload */
     float light_intensity; uint32_t light_colour; float helper_a, helper_b; uint32_t helper_mode; float marker_value;
 } InsNode;
@@ -162,6 +164,8 @@ typedef struct Instance {
      * frame of the last clock run inst+0x58 (0x43eeee: once per frame); render_gl.c keeps them (docs/INSTANCE.md 4.1).
      * chain_sec1 = the sector whose chain holds it + 1, 0 = in no chain */
     struct Instance *cell_next; int32_t chain_sec1; uint32_t clock_frame;
+    /* +0x20 as the collision queries use it: the stamp [0x4c4c08] of the query that already tested this instance (level.c gel_col_instances) */
+    uint32_t col_stamp;
 } Instance;
 
 typedef struct Model {
@@ -213,6 +217,28 @@ GelPolySet gel_polys_in_box(const GelFile *g, const float box[6]);   /* box: xmi
 GelPolySet gel_polys_on_seg(const GelFile *g, Vec3 a, Vec3 b);
 /* Sectors whose kd subtree meets the box (0x4081c0 widened to a box). Returns how many were written to out. */
 uint32_t gel_sectors_in_box(const GelFile *g, const float box[6], int32_t *out, uint32_t max);
+
+/* ---- which instances a collision query tests (docs/FORMAT_TEX_COL_VIS_LIT.md 2.1, docs/PERSO_MOVE.md 6.7) ----------------
+ * Every instance test of the original (floor vt[7] 0x432480, ray vt[5] 0x432ab0, endless ray vt[6] 0x431de0, cylinder vt[8]
+ * 0x433140, sphere vt[9] 0x433ff0) runs only for the instances REGISTERED in the kd leaf cells the query visited: the .col
+ * lists cell+0x40/+0x44 (static, from the file; each ref = phase mask << 16 | slot), cell by cell in visit order, each ref in
+ * file order, then the dynamic list 0x4c3bb4 (the listed flag-0x20 instances with press nodes, rebuilt every frame by
+ * 0x401c68). An instance is tested once per query (stamp +0x20), only when it is in the world (+0x1c != -1), collidable
+ * (+8 & 0x40 clear), has press nodes, and its current animation phase bit (+0xd0) is in the ref's mask.
+ * The walks fill the visited cell list 0x4c4be8 / [0x4c4be4]; gel_col_instances() then yields the instances in order.
+ * Without a .col file every visible collidable instance with press nodes comes out, in model order (port fallback). */
+int  gel_col_load(GelFile *g, const char *path);                              /* 0x4271e0; 0 on success */
+const uint32_t *gel_col_cell(const GelFile *g, uint32_t cell, uint32_t *n);   /* the refs of one cell, NULL / 0 without a .col */
+void gel_col_dynamic(const GelFile *g, struct Instance *const *list, uint32_t n);   /* 0x401c68..0x401cbc from this frame's instance list */
+int  ins_flag20(const struct Instance *in);                                   /* +8 & 0x20: moved by its own code, re-celled by it */
+uint32_t ins_phase_mask(const struct Instance *in);                           /* +0xd0 = (1 << round(min(phase, 1) * 15)) << 16 (0x43f285) */
+uint32_t gel_walk_cyl(const GelFile *g, Vec3 c, float r, float up, float down);   /* 0x40aa30: flood over the cells the cylinder band touches */
+uint32_t gel_walk_sphere(const GelFile *g, Vec3 c, float r);                  /* 0x40a700: the same for a sphere (cell test 0x40a290) */
+uint32_t gel_walk_down(const GelFile *g, Vec3 p, int found, float floor_y);   /* 0x498520: p's cell and down the -y links to the floor's cell */
+uint32_t gel_walk_seg(const GelFile *g, Vec3 a, Vec3 b, float t_stop, int endless);   /* 0x497fb0 / 0x497b10: the cells along a->b up to t_stop */
+typedef struct { struct Instance *in; uint32_t id; } GelColRef;               /* id = the .col ref (mask << 16 | slot) or slot | 0xffff0000 */
+uint32_t gel_col_instances(const GelFile *g, const InsFile *ins, const GelColRef **out);
+void gel_col_force_all(int on);                                               /* testing (WOODY_CELLCHECK): every instance, as before the cell lists */
 void tex_free(TexFile *t); void gel_free(GelFile *g); void ins_free(InsFile *f); void lit_free(LitFile *l); void vis_free(VisFile *v);
 
 /* Animation: evaluate the node hierarchy of `inst` for animation `anim` at `t` seconds

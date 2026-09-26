@@ -68,10 +68,10 @@ typedef struct {
     Instance **list; uint32_t nlist, list_cap; int list_on;
     uint8_t *list_sec, *list_grp;                      /* sector stamp +4 / group stamp +0 of this frame: the pairs of the camera's .vis list */
     /* the sector chains sector+0x44 (0x407790 pushes in front) in the order 0x42a840 walks them, the clock frame counter
-     * [[0x509adc]] (once per frame per instance, 0x43eeee) and the .col object list of every kd leaf (0x4271e0: cell+0x40
-     * count, +0x44 refs (mask << 16 | object index)), whose type-1 objects of the camera's leaf are clocked first (0x42aa0b) */
+     * [[0x509adc]] (once per frame per instance, 0x43eeee); the .col object list of every kd leaf (0x4271e0: cell+0x40
+     * count, +0x44 refs (mask << 16 | object index)) lives in the GelFile (gel_col_load, gel_col_cell): the type-1 objects
+     * of the camera's leaf are clocked first (0x42aa0b), and the collision queries walk the same lists */
     Instance **chain; uint32_t nchain; uint32_t frame; int chain_ok;
-    uint32_t *col_first; uint32_t *col_refs; uint32_t ncol_cells;
     /* called once per frame for every instance that is drawn, after the visibility pass and before any model is drawn:
      * the render-colour vtbl[26] of the class (the lightning rod 0x452010 updates its glow only when drawn) */
     void (*on_drawn)(Instance *inst);
@@ -83,7 +83,8 @@ void rnd_fade(float brightness);             /* darken the finished frame: 1 = n
 void rnd_free(Renderer *r);
 /* message 34 [inst, other] (0x42dc21): while the camera is inside one of inst's volume nodes, `other` is not drawn (0x42aa0b) */
 void rnd_link(Renderer *r, Instance *inst, Instance *other);
-/* the .col file (0x4271e0): per kd leaf cell a count and that many refs (mask << 16 | object index); 0 = loaded */
+/* the .col file (0x4271e0): per kd leaf cell a count and that many refs (mask << 16 | object index); 0 = loaded. It is
+ * loaded into the level's GelFile (gel_col_load), where the collision queries find it too */
 int rnd_load_col(Renderer *r, const char *path);
 /* 0x42a980 -> 0x42a840: rebuild this frame's instance list (Renderer.list, Instance.listed) from the camera's .vis list. race =
  * the race region list world+0xc0 (Renderer.race, rnd_set_race) while the Perso is a rider (subtypes 4/5, 0x401c36), NULL

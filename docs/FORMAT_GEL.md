@@ -147,11 +147,35 @@ garbage value (one constant per level, e.g. 1134 in W1A) and is never
 read.
 
 Runtime fields of the object: `+0x04` frame stamp (init -1 by the virtual
-init `0x406e40`), `+0x40/+0x44` count/array of dynamic objects registered
-in the cell (indices into `gel+0x40`, low 16 bits); for sectors, `+0x44`
+init `0x406e40`; the collision walks of 5.1 stamp visited cells with `[0x4c3bac]`),
+`+0x40/+0x44` count/array of the objects registered in the cell (for leaf cells:
+filled once from the `.col` file by `0x4271e0` and never written again - a
+**static** registration with a per-ref phase mask, FORMAT_TEX_COL_VIS_LIT.md 2;
+index into `gel+0x40` in the low 16 bits); for sectors, `+0x44`
 is the head of the linked list of entities in the sector (`0x407790`
 inserts, `0x407850` removes; entity `+0x1c` = sector, `+0x18` =
 floor **group** (return value of `0x40a0c0`, `0x4077bc`; read by `0x42a840`, RACE.md §2.1), `+0x24` = next).
+The sector chains are the only per-instance cell bookkeeping that changes at run time; the collision queries do not
+read them (they use the leaf cells' `.col` lists), only the per-frame instance list `0x42a840` does.
+
+### 5.1 The collision walks over the leaf cells
+
+Every geometry query collects the leaf cells it has to look at into the list `0x4c4be8` (count `[0x4c4be4]`, allocated by
+`0x406fc0`) and then tests the world polygons of those cells and the instances registered in them (`.col`, in the order of
+this list; PERSO_MOVE.md 6.7). Four walks, all starting in the cell of the query point (`0x408180`; the callers pass -1):
+
+| Walk | Used by | Which cells, in which order |
+|---|---|---|
+| `0x40aa30(c, r, up, down, cell)` | cylinder push-out `0x407000` | flood fill: the start cell (stamped and appended; `0x40aa92` calls the cell test on it but ignores the answer), then depth first over its six links in the order `-x +x -y +y -z +z` (`0x40aaa9`). A link `>= 0` is a local subtree whose nodes are **all** visited, the `<=` child first (recursion on `node+8`, then loop on `node+0xc`, `0x40a930`); a leaf `~c` is stamped **before** its test (`0x40a99d`), and when the cell test `0x40a7a0` passes it is appended and its own six links are walked. `0x40a7a0`: out if `c.y + up < ymin` or `c.y - down > ymax`; then region codes in xz (`x > xmax` 8, `x < xmin` 4, `z > zmax` 2, `z < zmin` 1, jump table `0x40a900`): inside -> in, one axis out -> in when `c + r > min` / `c - r < max`, a corner -> in when the xz distance to the corner `< r`. |
+| `0x40a700(c, r, cell)` | sphere push-out `0x407340` | the same flood (`0x40a640`; the start cell is not tested at all) with the sphere test `0x40a290` (three axes, table `0x40a5a0` via the byte map `0x40a610`: squared distance from c to the box `< r²`). |
+| `0x498520(p, cell)` (in GetHeight `0x498440`) | floor `0x435650` | p's cell, then while the cell holds no floor polygon the cell under it through link 2 (`-y`, `+0x18`): a subtree is descended with p itself (`0x40ab60`), `~link` directly, `INT_MIN` ends (`0x498737..0x498776`). A cell only accepts floors within its own height (`maxd = p.y - ymin`, `0x4985b9`), so the walk ends in the cell that holds the floor point. |
+| `0x497fb0(a, b, cell)` / `0x497b10(a, dir, cell)` | segment ray `0x497ed0` / endless ray `0x497a30` | along the ray: in the first cell the candidate exit faces are fixed - the ray moves towards the face (`0x406ee0(dir, f) < 0`: `f` even `dir[f/2]`, odd `-dir[f/2]`) and a lies inside it (`0x406e50(a, f) > 0`: even `a - min`, odd `max - a`); per cell the exit face is the one with the smallest `dist / -dir` (the first on a tie), the polygons count only up to that fraction, and when none was hit the walk continues through the exit face's link (a subtree descended at the exit point `a + dir·t`, `0x40ab60`, or `~link`; `INT_MIN` = out of the world, raw 0). The segment also ends in the cell where `t_exit > 1` (b lies inside, `0x498127`). |
+
+The flood's recursion follows every link whose leaf passes the cell test, so for the convex query volumes the collected set
+is exactly the set of cells whose box passes the test (port check: 4000 random queries of each kind in W1A, W3D, K1R, WWS
+and House, 0 differences from brute force over the cell boxes). Port: `gel_walk_cyl`, `gel_walk_sphere`, `gel_walk_down`,
+`gel_walk_seg` in `src/level.c`; the port finds the world hit with its own polygon queries and hands the walk the point
+where it has to stop (the floor point, the hit fraction).
 
 For sectors it additionally holds that: the bbox is exactly the union of
 the bboxes of the leaf cells under the sector root in section 6, and the

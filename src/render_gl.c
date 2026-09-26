@@ -566,7 +566,7 @@ void rnd_free(Renderer *r)
     for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->batches[i].idx); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); free(r->litb[i].idx); }
     free(r->batches); free(r->litb); free(r->face_bound);
     free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev); free(r->model_blend); free(r->links); r->links = NULL; r->nlinks = r->links_cap = 0;
-    free(r->list); free(r->list_sec); free(r->list_grp); free(r->chain); free(r->col_first); free(r->col_refs);
+    free(r->list); free(r->list_sec); free(r->list_grp); free(r->chain);
     for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); free(r->lightb[t].idx); free(r->lightb[t].face); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
     for (uint32_t g = 0; r->tex && g < r->tex->ngroups; g++) {                 /* the level's textures live in the GL context, not in the TexFile */
         TexGroup *tg = &r->tex->groups[g]; if (!tg->gl_frames) continue;
@@ -871,21 +871,11 @@ static int inst_sphere(const Instance *in, Vec3 *c, float *rad)
 /* ---- the .col file (0x4271e0) and the sector chains -----------------------------------------------------------------
  * .col: for every kd leaf cell of the .gel (in .gel order) a u32 count and that many refs (mask << 16 | object index); the
  * object index addresses the level's object table world+0x40 = the script slots. 0x42aa0b reads the list of the camera's
- * leaf (cell+0x40 / +0x44). */
+ * leaf (cell+0x40 / +0x44), and every collision query walks the lists of the cells it visits (level.c gel_col_instances),
+ * so the file is kept in the level's GelFile. */
 int rnd_load_col(Renderer *r, const char *path)
 {
-    free(r->col_first); free(r->col_refs); r->col_first = NULL; r->col_refs = NULL; r->ncol_cells = 0;
-    FILE *f = fopen(path, "rb"); if (!f) return -1;
-    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
-    uint32_t *d = (uint32_t *)malloc(n > 0 ? (size_t)n : 4); size_t nw = n > 0 ? fread(d, 4, (size_t)n / 4, f) : 0; fclose(f);
-    uint32_t cells = 0; size_t o = 0;
-    while (o < nw) { uint32_t c = d[o]; if (o + 1 + c > nw) break; o += 1 + c; cells++; }
-    if (o != nw || cells != r->gel->ncells) { if (getenv("WOODY_VISLOG")) printf("VIS: %s has %u records for %u kd cells: not used\n", path, cells, r->gel->ncells); free(d); return -1; }
-    r->col_first = (uint32_t *)malloc((cells + 1) * sizeof *r->col_first); r->col_refs = (uint32_t *)malloc((nw - cells + 1) * sizeof *r->col_refs);
-    uint32_t k = 0; o = 0;
-    for (uint32_t c = 0; c < cells; c++) { uint32_t m = d[o++]; r->col_first[c] = k; for (uint32_t j = 0; j < m; j++) r->col_refs[k++] = d[o++]; }
-    r->col_first[cells] = k; r->ncol_cells = cells; free(d);
-    return 0;
+    return gel_col_load((GelFile *)r->gel, path);
 }
 /* 0x407850: unlink from the chain of its sector (+0x1c = +0x18 = -1) */
 static void chain_unlink(Renderer *r, Instance *in)
@@ -992,13 +982,13 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
     }
     /* ... and that loop first runs the clock (vtbl[2](1)) of every type-1 object of the camera's kd leaf, in .col order
      * (0x42aa0b..0x42aa2e): each one that is in the world and not flag 0x20 goes in front of its sector's chain */
-    if (r->col_first) {
-        int32_t leaf = gel_cell(g, cam->pos);
-        if (leaf >= 0 && (uint32_t)leaf < r->ncol_cells)
-            for (uint32_t j = r->col_first[leaf]; j < r->col_first[leaf + 1]; j++) {
-                uint32_t idx = r->col_refs[j] & 0xffff; Instance *in = idx < ins->nslots ? ins->slots[idx] : NULL;
-                if (in && in->visible && in->chain_sec1) chain_clock(r, in);   /* 0x42e2c3: out of the world = no clock */
-            }
+    {
+        int32_t leaf = gel_cell(g, cam->pos); uint32_t nref = 0;
+        const uint32_t *refs = leaf >= 0 ? gel_col_cell(g, (uint32_t)leaf, &nref) : NULL;
+        for (uint32_t j = 0; j < nref; j++) {
+            uint32_t idx = refs[j] & 0xffff; Instance *in = idx < ins->nslots ? ins->slots[idx] : NULL;
+            if (in && in->visible && in->chain_sec1) chain_clock(r, in);       /* 0x42e2c3: out of the world = no clock */
+        }
     }
     /* the side planes of 0x437b00, from the same camera the renderer uses */
     float aspect = w->height ? (float)w->width / (float)w->height : 1.333f; if (cam->letterbox) aspect /= 0.75f;
@@ -1048,6 +1038,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
         }
     }
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) { Instance *in = &ins->models[mi].instances[k]; if (in->listed < 0) in->listed = 0; }
+    gel_col_dynamic(g, r->list, r->nlist);                                      /* 0x401c68: the collision queries' dynamic list 0x4c3bb4 from this list */
     n_sec = n_vis > n_seen ? n_vis - n_seen : 0;
     if (log >= 4) { printf("VIS frame %u order:", r->frame); for (uint32_t i = 0; i < r->nlist && i < 24; i++) printf(" %u", r->list[i]->index); puts(""); }   /* every frame: the alternating chain order */
     if (log) {
