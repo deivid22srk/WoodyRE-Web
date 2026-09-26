@@ -67,7 +67,8 @@ rail state: `+0x108..0x10a = 0`, `+0x690 = 0`, `+0x138 = −1`, `+0x134 = 0`, `+
 
 ### 1.2 Message 30 `[_, cs]` (`0x44cde9`) — not a teleport
 `0x44cce0(P, arg1 · 0.01 (0x4aa0ac), 0)` = LockMove: `P+0x238 = max(P+0x238, t)` (no input/movement, PERSO_JUMP §0)
-and `animctl->vtbl[2](1)` (request idle, logical record 1, prio 6500). "Stand still for t seconds."
+and `animctl->vtbl[2](1)` (request idle, logical record 1, prio 6500). "Stand still for t seconds." No state test; no level script
+sends it (scan of all 28 scripts). Ported as `player_lock()` (PERSO_LOOK.md §6).
 
 ### 1.3 `0x42f6b0(inst, typecode, vec3 *out, n)` — marker vector of an instance
 Walks the model's **marker list** (`S+0x50` count, `S+0x54` node indices, 1-based; node kind 0x20, FORMAT_INS),

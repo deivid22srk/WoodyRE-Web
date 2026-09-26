@@ -68,6 +68,7 @@ static struct {
     /* mode 0x80 (docs/CAMERA_SCRIPT.md 4.3): the camera comes from a camera track in the animation an instance plays */
     Instance *anim_inst; int anim_letterbox; Vec3 anim_eye, anim_tgt;   /* CamMgr+0x5d4, +0x618 & 2, +0x1d0, +0x5d8 */
     float shake;                                                 /* +0x67c: remaining shake time (0x41fbb0), docs/CAMERA.md 6.3 */
+    int look_prev;                                               /* 0x459090 ctl+8, as far as state 3 goes: was the Perso looking around last frame */
 } g_cam = { 1 };
 static const float k_sv_defaults[8] = { 1000, 300, 340, 500, 0, 400, 700, 200 };
 static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
@@ -138,6 +139,9 @@ static Vec3 rail_target(const Trajectory *tr, Vec3 c, float d, Vec3 prev)
 static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 {
     Vec3 P, T;
+    if (g_cam.mode == 0x200) {                                   /* look-around (docs/PERSO_LOOK.md 3): eye camera, entered with a cut, no transition, no shake */
+        player_look_camera(p, cam, dt); g_cam.pos = cam->pos; g_cam.active = 0; g_cam.look_off = (Vec3){ 0, 0, 0 }; p->cam_yaw = cam->yaw; return;
+    }
     if (g_cam.mode == 0x80 && g_cam.anim_inst) {                 /* 0x41f1ee: camera from the animation of CamMgr+0x5d4 (0x42fa80): cut, no smoothing.
                                                                   * That instance is the cinematic's main instance (0x44ed3f, letterboxed) or the Perso
                                                                   * himself during a scripted door action (0x44df7d, never letterboxed). */
@@ -352,7 +356,7 @@ static int in_dik_vk(int d)                                      /* DIK scan cod
 static void in_defaults(void)
 {
     static const int D[12][4] = { {VK_LEFT,'A'}, {VK_RIGHT,'D'}, {VK_UP,'W'}, {VK_DOWN,'S'},           /* the port's keys; the joystick buttons of Detect's */
-        {VK_SPACE, IN_JOY + 2}, {'X', IN_JOY + 0}, {VK_LCONTROL, VK_SHIFT, IN_JOY + 1}, {VK_RETURN, IN_JOY + 4},   /* DefaultControlSettings (Setup.dll 0x10002650, */
+        {VK_SPACE, IN_JOY + 2}, {'X', IN_JOY + 0}, {VK_LCONTROL, VK_SHIFT, IN_JOY + 1}, {VK_RETURN, 'V', IN_JOY + 4},   /* DefaultControlSettings (Setup.dll 0x10002650, */
         {'X', IN_JOY + 3}, {VK_ESCAPE, IN_JOY + 5}, {'C', VK_NUMPAD0, IN_JOY + 6}, {VK_RCONTROL, 'E', IN_JOY + 7} };   /* table 0x1000c060: 0x200..0x207) */
     memcpy(g_in.bind, D, sizeof D); g_in.mode = 3; g_in.have_cfg = 0;
 }
@@ -2550,6 +2554,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
         break;
     case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;
+    case 30: if (g_player && in == g_player->inst && m->nargs > 1) player_lock(g_player, (float)(int32_t)m->args[1] * 0.01f); break;   /* Perso LockMove 0x44cde9 [_, cs] (docs/PERSO_LOOK.md 6) */
     case 26:                                                                                                /* Perso teleport 0x44ce11 [_, inst, mode]: 1 = position, 2 = position + direction of the vector marker */
         if (g_player && m->nargs > 2) {
             Instance *to = slot_instance(m->args[1]); int mode = (int)m->args[2];
@@ -2884,6 +2889,7 @@ int main(int argc, char **argv)
             pin.jump = in_held(4) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = in_held(6) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
             pin.special = in_held(11) || (special_at >= 0 && now - t0 >= special_at - 0.1 && now - t0 < special_at);   /* action 11 (RCtrl in the original); it fires on the release */
             pin.duck = in_held(L.player.race_char ? 8 : 5) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);   /* action 5, while riding action 8 (0x465b10; Space / LShift in the original's Woody.cfg, X in the port) */
+            pin.look = !fly && in_held(7); pin.mouse_dx = win.mouse_dx; pin.mouse_dy = win.mouse_dy;   /* action 7 (Enter / V / joystick button 4 by default, docs/INPUT.md), on release; mouse with the right button */
             {   /* WOODY_PECKS="T1 T2 ...": more attack taps of 0.1 s (testing: dispenser, pick up, throw) */
                 static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = getenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
                 for (int k = 0; k < npk; k++) if (now - t0 >= pk[k] && now - t0 < pk[k] + 0.1) pin.action = 1;
@@ -2906,6 +2912,7 @@ int main(int argc, char **argv)
             cin_update(&L.vm, dt, g_now);
             rockets_update(dt, &L.player, L.have_player && !fly);
             L.player.idle_hold = g_res.on || g_level == 0 || (g_cam.mode == 4 && !fly);   /* Perso state 9 / title / frozen (0x459090): no idle count, no sleeping */
+            L.player.cam_mode = fly ? 0x100 : g_cam.mode;                         /* CamMgr+0x134 as the Perso sees it (0x44b9a6, 0x44ba26); F5 = the debug camera 0x100 */
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             if (!paused && !cin_running()) bombs_update(dt);                        /* 0x44d820, frame step 18: after the Perso */
             if (!fly) {                                                             /* 0x4459c0 (frame step 33), also during a cinematic: iris, death, respawn */
@@ -2938,6 +2945,11 @@ int main(int argc, char **argv)
             if (g_cam.plane_on) {                                                   /* 0x459eb0: the player stays on the vertical plane through the marker */
                 Vec3 n = { -g_cam.plane_d.z, 0, g_cam.plane_d.x }; float off = (L.player.pos.x - g_cam.plane_a.x) * n.x + (L.player.pos.z - g_cam.plane_a.z) * n.z;
                 L.player.pos.x -= n.x * off; L.player.pos.z -= n.z * off;
+            }
+            if (L.player.look != g_cam.look_prev) {                               /* 0x4590fb: the camera controller follows a change of Perso state 3 */
+                if (L.player.look) { player_look_start(&L.player); g_cam.cut = 1; cam_set_mode(0x200); }   /* 0x459050 */
+                else if (!L.player.script_act) { g_cam.cut = 1; cam_set_mode(1); }     /* 0x45910e (not into state 5): 0x41f9f0(2), +0x368 = 0, SetMode(0, 0) */
+                g_cam.look_prev = L.player.look;
             }
             if (!fly) cam_update(&L.player, &cam, dt, g_cam.mode == 0x20 ? (pin.forward ? 2 : (pin.back || pin.duck) ? 3 : 0) : in_held(10)); else cam.letterbox = 0;
             if (g_level == 0 && !fly && g_cin.state < 2) {                           /* title orbit: camera mode 0x80 on the Perso's animation 73 (docs/TITLE.md 2): no letterbox, vfov 83.97, no smoothing */

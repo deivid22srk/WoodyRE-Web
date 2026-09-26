@@ -169,8 +169,8 @@ void Perso_Update(Perso *p, bool arg /* always 1 */)
 * **`0x44b980` key 7** (`0x467440(7)` = release edge): in state 3 (and cam mode ≠ 9) or key:
   state 3 ⇒ `0x44c9f0` (back to the previous state `+0x220`), `+0x268 = 1`; state 0 with
   `+0x5b4 == 0` or state 6 with `+0x58c == 2` ⇒ if `onGround` and cam mode 0: `0x464620(p)`;
-  **state := 3** (`0x44c980(3)`); otherwise sound 9. State 3 is thus a key-7 mode
-  (presumably "look around"/first person; `0x44b4a0` sets `+0x100 = 100.0` and anim speed 1 there).
+  **state := 3** (`0x44c980(3)`); otherwise sound 9. State 3 is the key-7 **look-around** (first person, camera mode 0x200;
+  `0x44b4a0` fades the Perso out there: `+0x100 = 100.0`, `0x44e7f0(1.0, 1)` = instance fade 1.0). Worked out in [PERSO_LOOK.md](PERSO_LOOK.md).
 * **`0x44b2e0` steep slope**: `+0x234 = 0`; if onGround: `d = normalize(M->dir(+0x10))`
   `* P+0x80 (40.0)`; test `0x497a30(pos + P+0 (43) up, pos + d, -1)` (raycast/height test) and if
   `[0x4c4bd0]` (result type) 3 or 4 and `[0x4c4bd4] >= 3.0` ⇒ `+0x234 = 1` ("standing at a

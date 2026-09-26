@@ -6,7 +6,7 @@
  * events (trigger volumes, world_collision press nodes, msgmask 0x200).
  * Attacks (0x457a50): peck dash, rebounds, charge run and brake; logical animation chains (table 0x4b6180).
  * Ducking (action 5, 0x465b10, docs/PERSO_DUCK.md) is ported, and so is the follow camera's breadcrumb trail (0x423ab0).
- * Not ported yet: look-around, cfg key mapping. The ground type of the floor (Perso+0x308) is read, but only the
+ * Look-around (action 7, Perso state 3 + camera mode 0x200, docs/PERSO_LOOK.md) is ported. Not ported yet: cfg key mapping. The ground type of the floor (Perso+0x308) is read, but only the
  * footstep effect uses it: the slippery turn ramp of type 1 is not ported. */
 #ifndef WOODY_PLAYER_H
 #define WOODY_PLAYER_H
@@ -18,6 +18,7 @@ typedef struct {
     int forward, back, left, right, jump, action, duck, special;   /* current key state; duck = action 5 (docs/PERSO_DUCK.md), special = action 11 (docs/PERSO_SPECIAL.md) */
     float cam_turn;                                  /* -1..1 manual camera orbit */
     float ax, az;                                    /* the stick (actions 0/1 and 2/3 values, docs/INPUT.md 3): x right, z forward; 0, 0 = only the keys above */
+    int look, mouse_dx, mouse_dy;                    /* look = action 7 (docs/PERSO_LOOK.md); mouse = the relative mouse of the look camera (0x459346) */
 } PlayerInput;
 
 struct EnemySet;
@@ -93,6 +94,12 @@ typedef struct Player {
      * timer; carry_pressed = attack just pressed this frame (read by the sub-states), throw_hold = port: the throw animation
      * keeps playing after the release (the original does that with animation priorities) */
     struct Bomb *bomb; int carrying, bsub, carry_pressed; float bt, throw_hold;
+    int state6;                     /* Perso state 6 itself (+0x21c == 6): on with the pick-up, off with SetState; normally bomb != NULL, but
+                                     * the look-around bug (docs/PERSO_LOOK.md 5) gives it back without a bomb */
+    /* look-around = Perso state 3 (0x44b980, docs/PERSO_LOOK.md): look_prev6 = the state it goes back to (+0x220, 6 or 0), look_key =
+     * action 7 last frame, cam_mode = the camera manager's active mode (CamMgr+0x134, 0x100 = the free camera), written by the app
+     * before every update. Mode 0x200 block CamMgr+0x540: facing at the start (+0x54), yaw +0x78, pitch +0x7c, deltas +0x28/+0x2c */
+    int look, look_prev6, look_key, look_show, cam_mode, look_dx, look_dy; float look_yaw0, look_yaw, look_pitch;   /* look_show = +0x268 */
     Instance *ride; int ride_state; Vec3 ride_seat, ride_p0; Quat ride_q, ride_q0, ride_cur; float ride_t; int ride_jprev, ride_aprev;
     /* statistics */
     float play_time;                /* Perso+0x710 accumulator (0x453ca0): seconds played in this level, one of the five result stats */
@@ -106,6 +113,9 @@ void player_game_tick(Player *p, EkoVM *vm, float dt); /* 0x4459c0: level-start 
 void player_restart(Player *p);                        /* pause menu "Start again" (0x40584d): 0x445930 + race restart 0x4560f0 */
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_camera_reset(Player *p);                   /* SetMode(0, 0) / message 500: put the camera behind the player now */
+void player_look_start(Player *p);                     /* 0x459050: the camera enters mode 0x200 (Perso state 3 began) */
+void player_look_camera(Player *p, FreeCamera *cam, float dt);   /* 0x459346 + 0x425b80: mode 0x200, the view from his eyes */
+void player_lock(Player *p, float t);                  /* message 30 (0x44cde9): LockMove(t) + idle record 1 */
 int  volume_contains(const Instance *inst, uint32_t node, Vec3 p);   /* 0x4300c0: is the point inside this volume node of the instance? */
 void player_free(Player *p);
 void player_boost(Player *p, Vec3 p0, Vec3 dir, float speed, float dur);   /* message 1121 StartBoostSurf 0x456000 */

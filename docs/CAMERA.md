@@ -196,7 +196,7 @@ direction, `ctl+0x18` = recentre timer, `ctl+0x1c` = dt) runs every frame before
 | 5, 6 | 0x20, 0x40 | – | nothing |
 | 7 | 0x80 | `0x4598c4` | `CamMgr+0x618 |= 2`, `+0x5f0 = 0x44e030(Perso)`, `+0x5e4 = Perso pos` |
 | 8 | 0x100 | `0x4594ea` | debug free camera: keys (DIK 0x49/0x4d: `+0x538` ∓ 1 within 0..100; 0x78, 0x7d, 0x29/0x35, 0x1c/0x6a, 0x7a, 0x7b, 0x7f, 0x80 → bits 0..7 of `CamMgr+0x53c`), `Perso+0x690 = 1` |
-| 9 | 0x200 | `0x459346` | first-person/look mode: mouse (`[0x5e6190]` vtable[2]/[3] → `p540+0x28/+0x2c`) or actions 1/0 (×5 / ×−5) and 3/2 (×−5 / ×5); writes the resulting look direction `(−p540+0x3c, 0, −p540+0x44)` normalised back into `M+0x34`, `M+0x1c`, `M+0x10` and calls `0x44c080(Perso, p540, 0)` |
+| 9 | 0x200 | `0x459346` | first-person/look mode: mouse (`[0x5e6190]` vtable[2]/[3] → `p540+0x28/+0x2c`) or actions 1/0 (×5 / ×−5) and 3/2 (×−5 / ×5); writes the resulting look direction `(−p540+0x3c, 0, −p540+0x44)` normalised back into `M+0x34`, `M+0x1c`, `M+0x10` and calls `0x44c080(Perso, p540, 0)`. Fully worked out (Perso state 3 = look-around, update `0x425b80`, limits, speeds, port): [PERSO_LOOK.md](PERSO_LOOK.md) |
 
 **Mode index 0 (follow camera)**, `0x4591a5..0x45933b`:
 
@@ -477,7 +477,7 @@ At `SetMode(0, arg)`: `p->flags &= ~1`; `C->prev = CamMgr state`; `state = 0` (`
 | jumping | rising (jumper 0/1/7): camera y follows 1:1, look point drops 450/s to −150; falling (3/4): y at 6/s, look point also drops; then look-point offset springs back at ×0.94 per frame |
 | collision | sphere r = 40 with push-out (35-unit steps), line-of-sight veto, breadcrumb trail if line of sight is lost |
 | input | only action 0xa: camera behind the player (3·dt, first 0.5 s 7·dt); Perso states 1, 4, 8 force behind mode |
-| first person | separate mode 0x200 (index 9, message 550), not part of the follow camera |
+| first person | separate mode 0x200 (index 9, message 550), not part of the follow camera: the look-around of action 7, [PERSO_LOOK.md](PERSO_LOOK.md) |
 
 ## 4. Script cameras (.ins) and messages
 
@@ -705,7 +705,8 @@ Constants: `0x4a9004`=0, `0x4a900c`=1, `0x4a9010`=100, `0x4a9014`=0.5, `0x4a9030
    the camera (which class is 7?).
 5. Mode 8 (rail): the choice between multiple sphere intersections (`0x4216f0..0x4217dd`) has not been fully worked out.
 6. Modes 2, 4, 0x10, 0x20, 0x40, 0x100, 0x200 (updates `0x4254c0`, `0x425810`, `0x4203c0`, `0x424bf0`, `0x420cf0`,
-   `0x420010`, `0x425b80`) have not been read in detail; only their parameters (§1.2) and input (3.1).
+   `0x420010`, `0x425b80`) have not been read in detail; only their parameters (§1.2) and input (3.1). Exception: 0x200 (`0x425b80`) is
+   decompiled in PERSO_LOOK.md §3.
 7. `CamMgr+0x18` (instance for the starting look direction, `0x41e488`): writer not searched for.
 8. Action 0xa: which key/button this is by default is in the input table (`[0x5e6188]`), not checked.
 9. `0x41fb50(m, &pos, f)` (callers `0x459030`, `0x46496a`, `0x464aab`): helper routine "look from point `pos` toward the

@@ -37,7 +37,7 @@ thus comes back through a script variable (watchers get woken).
 | 15/17 | inst, a, mode, f, t2 | 0 | check **UV scroll override** (`0x42d9c3` / `0x42daae`, INSTANCE.md §2): byte `+0xda = a` (never read), mode bits 3-5 of `+0xd8` (15: 1/2, 17: 4/5 for mode 1/0; other modes leave the bits), speed factor `f·0.01 → +0xe8`, 15 only: duration `t2·0.01 → +0xec`, start `+0xe4` = now. **Sent by no level script** (all 28 checked); ported |
 | 16/18 | inst, a, mode, f | 23/54 | check **texture frame override** (`0x42da32` / `0x42db0f`): byte `+0xd9 = a` (never read), mode bits 0-2 (16: 1/2/3, 18: 4/5/6 for mode 1/0/2; other modes leave the bits), factor `f·0.01 → +0xe0`, start `+0xdc` = now; ported |
 | 19 | inst | 0 | check both overrides off (`+0xd8 &= 0xc0`, `0x42db86`); ported |
-| 26 / 30 | perso | 0 | check Perso class only: 26 `[_, inst, mode]` = teleport (1 = position, 2 = + direction of the marker), 30 `[_, cs]` = LockMove; see PERSO_DEATH.md §1 |
+| 26 / 30 | perso | 0 | check Perso class only: 26 `[_, inst, mode]` = teleport (1 = position, 2 = + direction of the marker), 30 `[_, cs]` = LockMove (no level script sends it; ported, PERSO_LOOK.md §6); see PERSO_DEATH.md §1 |
 | 29 | inst | 0 | check class 20: Reset `0x452ae0` (ROCKET.md §4.4); tilde classes 21, 40/120/121 |
 | 33 | inst, a, b | 50 | ? |
 | 34 | inst, other | 340 | check link instance to `other` (pair in table `[0x50944c]->0x50`, counter +0x4c) – "attach/link" |
