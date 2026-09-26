@@ -558,6 +558,7 @@ void rnd_free(Renderer *r)
     for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->batches[i].idx); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); free(r->litb[i].idx); }
     free(r->batches); free(r->litb); free(r->face_bound);
     free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev); free(r->model_blend); free(r->links); r->links = NULL; r->nlinks = r->links_cap = 0;
+    free(r->list); free(r->list_sec); free(r->list_grp);
     for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); free(r->lightb[t].idx); free(r->lightb[t].face); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
     for (uint32_t g = 0; r->tex && g < r->tex->ngroups; g++) {                 /* the level's textures live in the GL context, not in the TexFile */
         TexGroup *tg = &r->tex->groups[g]; if (!tg->gl_frames) continue;
@@ -742,6 +743,11 @@ static int shadow_caster(const Instance *inst)
     return inst->type == 1 || inst->type == 2 || inst->type == 3 || inst->type == 18 || inst->type == 19 || (inst->setflags & 1) || (inst->type >= 4 && inst->type <= 13);
 }
 static Vec3 g_cam_pos;                 /* the camera of this frame, for the per polygon back-face test and the culling */
+/* Drawn only as a member of the frame's instance list (0x42a840 vtbl[2](0x81), 0x42b380 vtbl[2](5/7)): the base-class instances
+ * and the enemies. Not the Perso (0x42b380 draws it first, outside the loop), not the bomb pool (0x44d820 ticks it with vtbl[2](1))
+ * and not the links an actor draws itself (boss saucer, pads, race board: not scripted). The sector/group part of the list
+ * (in_zone) is what gates here; the cone test stays instance_visible's, on this frame's camera. */
+static int list_drawn(const Instance *in) { return (in->scripted && in->type != 40) || (in->type >= 4 && in->type <= 16); }
 
 /* Is this instance drawn at all this frame? The cone test on the model's bounding sphere is what the port already
  * did. On top of it, 0x42aa0b only walks the instances that belong to the sectors the visibility pass kept, so an
@@ -781,6 +787,15 @@ void rnd_link(Renderer *r, Instance *inst, Instance *other)
     }
     r->links[2 * r->nlinks] = inst; r->links[2 * r->nlinks + 1] = other; r->nlinks++;
 }
+static int link_inside(const Instance *v, Vec3 eye)                      /* 0x4300c0 on each volume node of v */
+{
+    if (!v->visible || !v->node_world) return 0;                            /* hidden by message 6 = in no cell list (0x407850) */
+    for (uint32_t k = 0; k < v->model->nvolume_nodes; k++) {
+        uint32_t node = v->model->volume_nodes[k] - 1;                       /* the node lists in the file are 1-based */
+        if (node < v->model->nnodes && volume_contains(v, node, eye)) return 1;
+    }
+    return 0;
+}
 static void links_hide(Renderer *r, Vec3 eye)
 {
     static int log = -1; if (log < 0) log = getenv("WOODY_LINKLOG") != NULL;
@@ -796,11 +811,7 @@ static void links_hide(Renderer *r, Vec3 eye)
                 printf("link: inst %u hides %u instances while the camera is in its volume, box x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f", v->index, cnt, lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]), puts("");
                 if (i + cnt >= r->nlinks) log = 2;
             }
-            if (v->visible && v->node_world)                                 /* hidden by message 6 = in no cell list (0x407850) */
-                for (uint32_t k = 0; k < v->model->nvolume_nodes && !inside; k++) {
-                    uint32_t node = v->model->volume_nodes[k] - 1;           /* the node lists in the file are 1-based */
-                    if (node < v->model->nnodes) inside = volume_contains(v, node, eye);
-                }
+            inside = link_inside(v, eye);
             if (log) { static const Instance *was[8]; static int in_was[8]; int s = 0;
                 while (s < 7 && was[s] && was[s] != v) s++;
                 if (was[s] != v) { was[s] = v; in_was[s] = 0; }
@@ -809,6 +820,131 @@ static void links_hide(Renderer *r, Vec3 eye)
         if (inside && o->drawn) { o->drawn = 0; hidden++; }
     }
     if (log && hidden) { static int prev = -1; if (hidden != prev) printf("link: %d linked instances hidden", hidden), puts(""); prev = hidden; }
+}
+
+/* ---- the per-frame instance list world+0x60/+0x64 (0x42a980 -> 0x42a840; docs/INSTANCE.md 4.1) ---------------------------
+ * Built at frame step 9 (0x401c63) from the camera position of the camera manager, before any Think. Its readers: the Thinks
+ * 0x42b400 (vtbl[3] of every listed instance: enemies and bosses 0x41a320, the ambient volume 0x472560, bonus halos, the
+ * carousel figures ...), the draw/shadow pass 0x42b380, the skeleton list 0x401c68 and the sound Update 0x401ee7 (3D voices
+ * of unlisted owners fall silent). An instance is listed when
+ *   - it is in the world (+0x1c != -1; message 6 / 0x407850 takes it out) and its sector +0x1c is the first word of a pair
+ *     of the camera's .vis list (0x408210: sector of the camera 0x4081c0, then its entry whose id is the floor group of the
+ *     camera 0x40a0c0, else the first entry) - 0x42a840 walks that sector's chain sector+0x44 -> inst+0x24;
+ *   - its floor group +0x18 is stamped this frame (0x42a867..0x42a87d): the second words of the same pairs, or in a race
+ *     (Perso subtypes 4/5 with a region list world+0xc0 whose first entry is not -1) only the camera's group and the list
+ *     entry after it (0x42aadf..0x42ab52);
+ *   - no message-34 volume holding the camera links it (stamp +0x20, 0x42aa4b);
+ *   - kind 1 with a cached bounding sphere (+0x88 == 1: a stationary instance, see sphere_cached): the sphere passes the
+ *     four side planes (0x437b00, margin r * 1.4142) and, in a race only, |centre - camera|^2 + r^2 <= 1.21e8 (11000,
+ *     0x42a8c8..0x42a91a). Moving instances and actors (enemies, the Perso: flag 0x20) are never frustum tested.
+ * The list is malloc(0x400) = 256 pointers (0x42a4f9) and 0x42a931 writes without a bound; the port grows it and
+ * WOODY_VISLOG reports a frame above 256. */
+/* +0x88 == 1 (0x42eec9..0x42f008): the draw 0x42e2b0 caches the sphere of an instance whose clock stands still (speed
+ * +0xa0 == 0), without flag 0x20 (the actors: enemy PostLoad 0x419e4d, the Perso, the race board), without an .ins path
+ * (the loader sets +0x88 = 2, 0x42868b), without SetFlags bit 1 (0x42efd7), not a laser 50-52 (0x450db2) or a launcher 42
+ * (0x45223e: both 2). Port: scripted = the base-class clock owns the instance (the actors are not scripted). The original
+ * caches on the first draw after the instance stopped; the port counts it as cached from that frame on. */
+static int sphere_cached(const Instance *in)
+{
+    return in->scripted && in->a_speed == 0 && !in->traj.npoints && !(in->setflags & 1) && !(in->type >= 50 && in->type <= 52) && in->type != 42;
+}
+/* the cached sphere: centre = the sum of the bounding-box node's points (model+0x24, 1-based) times 1/8 (0x4a9db8),
+ * radius = the distance from it to the node's last point (0x42ef7e) */
+static int inst_sphere(const Instance *in, Vec3 *c, float *rad)
+{
+    const Model *m = in->model; uint32_t bn = m->bbox_node;
+    if (!in->node_world || !bn || bn > m->nnodes || !m->nodes[bn - 1].npoints) return 0;
+    const InsNode *n = &m->nodes[bn - 1]; Vec3 s = { 0, 0, 0 }, q = s;
+    for (uint32_t k = 0; k < n->npoints; k++) { q = ins_point_world(in, n->point_base + k); s.x += q.x; s.y += q.y; s.z += q.z; }
+    c->x = s.x * 0.125f; c->y = s.y * 0.125f; c->z = s.z * 0.125f;
+    *rad = sqrtf((c->x - q.x) * (c->x - q.x) + (c->y - q.y) * (c->y - q.y) + (c->z - q.z) * (c->z - q.z));
+    return 1;
+}
+void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, const int32_t *race)
+{
+    const GelFile *g = r->gel; InsFile *ins = r->ins;
+    static int log = -1; if (log < 0) { const char *e = getenv("WOODY_VISLOG"); log = e ? atoi(e) : 0; if (e && !log) log = 1; }
+    if (!r->list_sec && g->nsectors) r->list_sec = (uint8_t *)calloc(g->nsectors, 1);
+    if (!r->list_grp && g->ngroups) r->list_grp = (uint8_t *)calloc(g->ngroups, 1);
+    r->nlist = 0; r->list_on = 1;                                               /* 0x42a98f: +0x60 = 0 */
+    /* 0x408210: the camera's .vis list */
+    int32_t cs = gel_sector(g, cam->pos), cg = gel_floor_group(g, cam->pos);
+    const VisList *L = r->vis ? vis_entry(r->vis, g, cam->pos) : NULL;
+    int32_t ent = L ? (int32_t)(L - &r->vis->pool[r->vis->sectors[cs].first]) : -1;
+    int all = !L || !r->list_sec || !r->list_grp;                                /* port: no .vis, or a camera outside every sector: everything is listed */
+    int racing = race && race[0] != -1;                                         /* 0x42a9d3..0x42a9f8: the flag of 0x42a840 */
+    if (!all) {
+        memset(r->list_sec, 0, g->nsectors); memset(r->list_grp, 0, g->ngroups);
+        for (uint32_t k = 0; k < L->npairs; k++) {
+            uint32_t s = L->pairs[2 * k], q = L->pairs[2 * k + 1];
+            if (s < g->nsectors) r->list_sec[s] = 1;                            /* 0x42ab98: sector stamp +4, then 0x42a840 on its chain */
+            if (!racing && q < g->ngroups) r->list_grp[q] = 1;                  /* 0x42aab8..0x42aacd: group stamp +0 */
+        }
+        if (racing && cg >= 0) {                                                /* 0x42aadf: the camera's group and the entry after it */
+            int k = 0; while (k < 5 && race[k] != -1 && race[k] != cg) k++;
+            if (k < 5 && race[k] == cg) { if ((uint32_t)cg < g->ngroups) r->list_grp[cg] = 1; if (k + 1 < 6 && race[k + 1] >= 0 && (uint32_t)race[k + 1] < g->ngroups) r->list_grp[race[k + 1]] = 1; }
+            else if ((uint32_t)cg < g->ngroups) r->list_grp[cg] = 1;           /* port: the original searches on past the -1 (no bound, 0x42aaf3) */
+        }
+    }
+    /* message 34 (0x42aa0b): the linked instances of a volume that holds the camera get this frame's stamp first */
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins->models[mi].instances[k].listed = ins->models[mi].instances[k].in_zone = 0;
+    for (uint32_t i = 0; i < r->nlinks; i++) {
+        const Instance *v = r->links[2 * i]; int in = link_inside(v, cam->pos);
+        for (; i < r->nlinks && r->links[2 * i] == v; i++) if (in) r->links[2 * i + 1]->listed = -1;
+        i--;
+    }
+    /* the side planes of 0x437b00, from the same camera the renderer uses */
+    float aspect = w->height ? (float)w->width / (float)w->height : 1.333f; if (cam->letterbox) aspect /= 0.75f;
+    float tv = tanf(cam->fov_deg * 3.14159265f / 360.0f), th = tv * aspect;
+    Vec3 fw = cam_forward(cam), rt = cam_right(cam), up = { rt.y * fw.z - rt.z * fw.y, rt.z * fw.x - rt.x * fw.z, rt.x * fw.y - rt.y * fw.x };
+    uint32_t n_sec = 0, n_grp = 0, n_link = 0, n_frus = 0, n_far = 0, n_act = 0, n_nofloor = 0;
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+        Instance *in = &ins->models[mi].instances[k];
+        if (in->listed < 0) { in->listed = 0; if (in->visible) n_link++; continue; }
+        if (!in->visible) continue;                                             /* +0x1c == -1: in no sector chain */
+        Vec3 ref = in->cell_dy > 0 ? (Vec3){ in->position.x, in->position.y + in->cell_dy, in->position.z } : ins_anim_centre(in);
+        if (!in->cell_ok || ref.x != in->cell_ref.x || ref.y != in->cell_ref.y || ref.z != in->cell_ref.z) {   /* 0x407790 / 0x4077f0: re-cell */
+            in->cell_ref = ref; in->cell_ok = 1; in->cell_sec = gel_sector(g, ref); in->cell_grp = gel_floor_group(g, ref);
+        }
+        if (in->cell_grp < 0) n_nofloor++;
+        if (!all) {
+            if (in->cell_sec < 0 || (uint32_t)in->cell_sec >= g->nsectors || !r->list_sec[in->cell_sec]) { n_sec++; continue; }
+            if (in->cell_grp < 0 || (uint32_t)in->cell_grp >= g->ngroups || !r->list_grp[in->cell_grp]) { n_grp++; continue; }   /* 0x42a85e: +0x18 == -1 is never listed */
+        }
+        in->in_zone = 1;
+        Vec3 c; float rad;
+        if (sphere_cached(in) && inst_sphere(in, &c, &rad)) {                   /* 0x42a891 */
+            Vec3 d = { c.x - cam->pos.x, c.y - cam->pos.y, c.z - cam->pos.z };
+            float x = d.x * rt.x + d.y * rt.y + d.z * rt.z, y = d.x * up.x + d.y * up.y + d.z * up.z, z = d.x * fw.x + d.y * fw.y + d.z * fw.z, mg = rad * 1.4142f;
+            if (fabsf(x) > z * th + mg || fabsf(y) > z * tv + mg) { n_frus++; continue; }
+            if (racing && d.x * d.x + d.y * d.y + d.z * d.z + rad * rad > 1.21e8f) { n_far++; continue; }   /* 0x4aa2f4 */
+        }
+        if (r->nlist >= r->list_cap) { uint32_t cap = r->list_cap ? r->list_cap * 2 : 256; Instance **nl = (Instance **)realloc(r->list, cap * sizeof *nl); if (!nl) continue; r->list = nl; r->list_cap = cap; }
+        r->list[r->nlist++] = in; in->listed = 1;                               /* 0x42a931..0x42a948 */
+        if (in->type >= 4 && in->type <= 16) n_act++;
+    }
+    if (log) {
+        static double next; static uint32_t mx; double t = win_time(); if (r->nlist > mx) mx = r->nlist;
+        if (r->nlist > 256) { static int warned; if (!warned) { warned = 1; printf("VIS: %u instances listed - the original's list holds 256 (0x42a4f9)", r->nlist), puts(""); } }
+        if (t >= next) {
+            next = t + 1.0;
+            printf("VIS cam %.0f %.0f %.0f sector %d group %d entry %d%s pairs %u%s: listed %u (enemies %u, max %u) | out: sector %u group %u (no floor %u) link %u frustum %u far %u",
+                   cam->pos.x, cam->pos.y, cam->pos.z, cs, cg, ent, ent >= 0 && L && (int32_t)L->id != cg ? " (no id match: first)" : "", L ? L->npairs : 0, all ? " (all)" : racing ? " (race)" : "",
+                   r->nlist, n_act, mx, n_sec, n_grp, n_nofloor, n_link, n_frus, n_far), puts("");
+            if (log >= 3) for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+                const Instance *in = &ins->models[mi].instances[k];
+                if (in->visible && in->cell_grp < 0) printf("  VIS no floor: inst %u type %d at %.0f %.0f %.0f sector %d (position %.0f %.0f %.0f: group %d)", in->index, in->type, in->cell_ref.x, in->cell_ref.y, in->cell_ref.z, in->cell_sec, in->position.x, in->position.y, in->position.z, gel_floor_group(g, in->position)), puts("");
+            }
+            if (log >= 2) {
+                printf("  VIS ids:"); for (uint32_t i = 0; i < r->nlist; i++) printf(" %u", r->list[i]->index); puts("");
+                for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {   /* the actors, listed or not */
+                    const Instance *in = &ins->models[mi].instances[k];
+                    if (in->type >= 4 && in->type <= 16 && in->visible) printf("  VIS actor %u type %d %s at %.0f %.0f %.0f sector %d group %d (drawn last frame %d)", in->index, in->type, in->listed ? "listed" : "out", in->position.x, in->position.y, in->position.z, in->cell_sec, in->cell_grp, in->drawn), puts("");
+                }
+            }
+            mx = 0;
+        }
+    }
 }
 
 /* ---- dynamic point lights (0x498790, docs/LIGHTING.md 7). The original registers them into a 16-slot table
@@ -1425,7 +1561,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k];
             if (!inst->visible || inst->fade > 0.98f) continue;
-            inst->drawn = instance_visible(r, inst, aspect, f, fw, rt, up);
+            inst->drawn = (!r->list_on || inst->in_zone || !list_drawn(inst)) && instance_visible(r, inst, aspect, f, fw, rt, up);
             if ((inst->drawn || shadow_caster(inst)) && r->lit) instance_light(r, inst, dt); } }   /* a caster off screen still needs its light for the shadow */
         if (r->nlinks) links_hide(r, cam->pos);                                /* message 34: 0x42aa0b runs before the sector walk 0x42a840 */
     }

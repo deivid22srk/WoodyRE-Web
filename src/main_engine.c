@@ -2218,11 +2218,9 @@ static void torch_update(float dt)                                           /* 
         }
     }
 }
-int game_enemy_thinks(const Instance *inst)                                  /* Think runs for the instances of the drawn sectors (world+0x64, 0x42a980) */
+int game_enemy_thinks(const Instance *inst)                                  /* Think 0x42b400 runs for the instances of this frame's list world+0x64 (rnd_instance_list) */
 {
-    if (!g_rnd || !g_gel || !g_rnd->cull || !g_rnd->sec_vis || !g_gel->nsectors) return 1;   /* culling off (F4): sec_vis is not kept */
-    int32_t s = gel_sector(g_gel, inst->position);
-    return s < 0 || (uint32_t)s >= g_gel->nsectors || g_rnd->sec_vis[s];
+    return !g_rnd || inst->listed;
 }
 static Vec3 drop_pt(const FxRec *e, float wx, float wy)                      /* a drop at fraction wx along its path; the height uses wy (fistp rounds) */
 {
@@ -2931,10 +2929,9 @@ static void env_draw(void)
     }
 }
 
-/* the per-frame instance list the sound Update gets (world+0x64, 0x401ee7): in the world (0x407850 takes an instance out) and
- * in a drawn sector (0x42a840). Not ported: 0x42a8b4 also drops a stationary instance (sphere cached, +0x88 == 1) whose
- * bounding sphere is outside the view frustum or whose centre is more than 11000 from the camera (0x42a907, 0x4aa2f4) */
-static int snd_owner_active(const void *owner) { const Instance *in = owner; return in->visible && game_enemy_thinks(in); }
+/* the per-frame instance list the sound Update gets (world+0x64, 0x401ee7): rnd_instance_list, built at the start of the frame
+ * (0x42a980 -> 0x42a840, with the frustum / race-distance test of stationary instances, docs/INSTANCE.md 4.1) */
+static int snd_owner_active(const void *owner) { const Instance *in = owner; return in->visible && in->listed; }
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
@@ -3535,6 +3532,9 @@ int main(int argc, char **argv)
             if (br[1] && !br_prev[1]) { sel->anim = (sel->anim + 1) % (int)sel->model->nanims; sel->anim_time = 0; printf("anim %d (%u frames, %.2f s)\n", sel->anim, sel->model->anims[sel->anim].nframes, sel->model->anims[sel->anim].duration_s); }
         }
         br_prev[0] = br[0]; br_prev[1] = br[1];
+        /* frame step 9 (0x401c06..0x401c63): this frame's instance list from the camera as it stands, before any Think; the region
+         * list world+0xc0 goes along while the Perso is a rider (subtypes 4/5) */
+        rnd_instance_list(&L.rnd, &win, &cam, L.have_player && L.player.race_char ? L.rnd.race : NULL);
         static double pf[5]; static int pfn; static const int prof = 1; double pt0 = win_time();
         /* player (provisional controller) + follow camera */
         if (L.have_player && !paused) {
@@ -3672,7 +3672,7 @@ int main(int argc, char **argv)
                 float w = sinf(3.14159265f * (float)fmod(now - t0, 2.0)), size = w * w * 60.0f + 50.0f;
                 hud_world_sprites_begin(&cr.x, &cu.x);
                 for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
-                    Instance *ii = &g_ins.models[mi].instances[k]; if (!ii->visible || ii->fade > 0.98f) continue;
+                    Instance *ii = &g_ins.models[mi].instances[k]; if (!ii->visible || ii->fade > 0.98f || !game_enemy_thinks(ii)) continue;   /* the halo is the bonus Update vtbl[3]: listed instances only (0x42b400, BONUS.md 3.1) */
                     int n = ii->type == 30 ? 0 : ii->type == 35 ? 1 : ii->type == 34 ? 2 : ii->type == 36 ? 3 : ii->type == 37 || ii->type == 38 ? 4 : -1; if (n < 0) continue;
                     float p[3] = { ii->position.x, ii->position.y, ii->position.z };
                     if (ii->type == 34 && ii->node_world) { p[0] = ii->node_world[0].m[12]; p[1] = ii->node_world[0].m[13]; p[2] = ii->node_world[0].m[14]; }

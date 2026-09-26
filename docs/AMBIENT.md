@@ -16,8 +16,10 @@ Notation as in PARTICLES.md: `rnd` = `0x43ff40` = `rand()/32767` ∈ [0, 1]; `dt
   (clears `+0x120` and `+0x121`), `vt[0x74/4]` = `0x472b40` (rain set-up), the rest are base-class entries.
 * **Dtor `0x472e30`**: in mode 2 it frees the start-point grid `+0x124` and the float array `+0x128`, then the base dtor
   `0x42ff30`.
-* The think runs for the instances in the world list of the drawn sectors (world+0x64, built by `0x42a980`), like every
-  instance think (BOSS15_16.md §10); a hidden instance (`0x407850` takes it out of the world) does not think.
+* The think runs for the instances of the frame's list world+0x64 (`0x42a980` → `0x42a840`, INSTANCE.md §4.1), like every
+  instance think (`0x42b400`); a hidden instance (`0x407850` takes it out of the world) does not think, nor one whose sector /
+  floor group is not in the camera's `.vis` entry. The volume is stationary (clock speed 0), so its bounding sphere is cached
+  (`+0x88 = 1`) and it also drops out while that sphere is outside the view frustum (`0x437b00`; in a race also beyond 11000).
 
 | offset | type | meaning | written by |
 |---|---|---|---|
@@ -181,7 +183,7 @@ leaves; only new drops need the think.
 
 All three particles live in the shared effect pool (`[0x5e823c]+0xdb8`, 2000 × 0x50 B, PARTICLES.md §0) and draw from
 their own callbacks through the sprite primitive `0x470f10` / the line primitive `0x471a10`. There is no distance or
-frustum test: the only gating is the think (drawn sectors) for creation and, for motes, the frame stamp.
+frustum test: the only gating is the think (the instance list, §1) for creation and, for motes, the frame stamp.
 
 ## 6. Where it is used (level scripts, init code of the instance's own object)
 
@@ -208,8 +210,8 @@ frustum test: the only gating is the think (drawn sectors) for creation and, for
 ## 7. Port notes (`src/ambient.c`)
 
 * `ambient_msg` takes 1501..1504/1511 for any instance (the handler does not type-check); the existing mode-0 code in
-  main_engine.c keeps its own record. `ambient_update(dt)` runs the think of every type-90 instance that is visible and in a
-  drawn sector (`game_enemy_thinks`), then the particles; `ambient_draw(eye)` draws them between
+  main_engine.c keeps its own record. `ambient_update(dt)` runs the think of every type-90 instance that is visible and in the
+  frame's instance list (`game_enemy_thinks` = `Instance.listed`, `rnd_instance_list`), then the particles; `ambient_draw(eye)` draws them between
   `hud_world_sprites_begin/end`. `ambient_reset()` in `level_free`.
 * The port keeps its own 2000-record pool for these particles instead of sharing the original's global one.
 * Box, polygon planes (`0x4280c2`, as `render_gl.c poly_plane`) and matrices are taken node-local exactly as in §1.1;

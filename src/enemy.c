@@ -364,7 +364,7 @@ void enemy_place(Enemy *e)
     Instance *in = e->inst;
     /* model faces along (cos, 0, sin) of ang; same construction as the player: yaw about y composed with rotx(-90) */
     float yaw = atan2f(cosf(e->ang), sinf(e->ang)), c = cosf(yaw * 0.5f), s = sinf(yaw * 0.5f);
-    in->position = e->pos;
+    in->position = e->pos; in->cell_dy = e->P.height * 0.5f;              /* 0x4077f0(colCenter = pos + h/2): the cell point for the instance list */
     in->quat.x = 0.70710678f * c; in->quat.y = -0.70710678f * s; in->quat.z = -0.70710678f * s; in->quat.w = -0.70710678f * c;
     mat4_from_trs(&in->world, in->position, in->quat, in->scale);
 }
@@ -424,7 +424,7 @@ static void speed_tick(Enemy *e, float dt)
 static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
 {
     Instance *in = e->inst;
-    if (e->removed || !in->visible) return;
+    if (e->removed || !in->visible || !game_enemy_thinks(in)) return;      /* Think 0x41a320 only runs from 0x42b400, for the instances of this frame's list world+0x64 */
     ground_snap(e, pl);
     { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != 12) return; }   /* Think 0x41a320 */
     if (e->cool >= 0) e->cool -= dt;
@@ -555,7 +555,7 @@ static int shooter_vector(const Instance *in, uint32_t tc, Vec3 *p0)      /* 0x4
 static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
 {
     Instance *in = e->inst;
-    if (e->removed || !in->visible) return;
+    if (e->removed || !in->visible || !game_enemy_thinks(in)) return;      /* Think 0x41a320 only runs from 0x42b400, for the instances of this frame's list world+0x64 */
     ground_snap(e, pl);
     { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != S_DEAD) return; }
     if (e->cool >= 0) e->cool -= dt;
@@ -706,10 +706,10 @@ static void bomber_blast(Enemy *e, Vec3 c, float r)                    /* vtbl[4
 }
 /* actor list 1 (0x4c52d8, max 8, double-buffered by 0x40bf60): besides the Perso only two enemy Updates call RegisterActor 0x40c080 --
  * the bomb thrower 0x4110e6 (every Update) and Boss2 0x40dd58 (once message 61 has linked his crushers). An Update only runs after
- * Think 0x41a320 (in the world, within active_d of the camera or dead), so the membership is the one of this frame's Update */
+ * Think 0x41a320 (listed in world+0x64, within active_d of the camera or dead), so the membership is the one of this frame's Update */
 static int actor_list1(const Enemy *e, Vec3 cam)
 {
-    if ((e->type != 12 && e->type != 15) || e->removed || !e->inst->visible) return 0;
+    if ((e->type != 12 && e->type != 15) || e->removed || !e->inst->visible || !game_enemy_thinks(e->inst)) return 0;
     if (e->type == 15 && !e->bb.crush[0]) return 0;
     float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z;
     return dx * dx + dy * dy + dz * dz < e->P.active_d * e->P.active_d || (e->type == 12 ? e->st == 13 : e->hp <= 0);
@@ -812,7 +812,7 @@ Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, flo
 static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
 {
     Instance *in = e->inst;
-    if (e->removed || !in->visible) return;
+    if (e->removed || !in->visible || !game_enemy_thinks(in)) return;      /* Think 0x41a320 only runs from 0x42b400, for the instances of this frame's list world+0x64 */
     ground_snap(e, pl);
     { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != 13) return; }   /* Think 0x41a320 */
     Vec3 tp = pl->pos; float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z, d3 = sqrtf(dx * dx + dy * dy + dz * dz);

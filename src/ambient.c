@@ -212,9 +212,10 @@ static void amb_think_rain(Amb *a, int ai, float dt)
 void ambient_update(float dt)
 {
     g_frame++;
-    for (int i = 0; i < g_namb; i++) {                                           /* think 0x472560 (vt[3]): only for the instances of the drawn sectors */
+    for (int i = 0; i < g_namb; i++) {                                           /* think 0x472560 (vt[3]): only for the instances of this frame's list world+0x64 (0x42b400) */
         Amb *a = &g_amb[i];
-        if (a->in->type != 90 || (!a->in->visible && !getenv("WOODY_AMBON")) || !game_enemy_thinks(a->in)) continue;   /* hidden = out of the world (0x407850) */
+        if (a->in->type != 90) continue;
+        if ((!a->in->visible || !game_enemy_thinks(a->in)) && !getenv("WOODY_AMBON")) continue;   /* hidden = out of the world (0x407850); a stationary volume also drops out with its sphere off screen (0x42a8b4) */
         a->stamp = g_frame;                                                      /* +0x104 */
         if (a->mode == 1) amb_think_motes(a, i);
         else if (a->mode == 2) amb_think_rain(a, i, dt);

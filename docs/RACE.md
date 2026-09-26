@@ -160,7 +160,8 @@ if a sky face of those sectors lies in `z`/next (computed before the frustum tes
 off (for comparison). Test: `python`-driven fly-through with `--cam` along the path, new vs `WOODY_NORACEVIS=1`: K3R
 0 differing pixels on the track except particles, K1R/K2R the same except where the camera sits outside the track
 geometry (path corners) and at the end of K1R, where the elevated start section (zone 1) above the finish is not drawn
-while its instances still are (the original drops those too, `0x42a840`, not ported).
+while its instances still were (the original drops those too, `0x42a840`: now ported as the group filter of `rnd_instance_list`,
+INSTANCE.md §4.1 - the start section's instances seen from the finish are gone as well).
 
 ### 2.2 Board FX emitter (0x34 B; visual only – skippable)
 

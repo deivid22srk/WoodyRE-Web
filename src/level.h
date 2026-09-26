@@ -150,6 +150,11 @@ typedef struct Instance {
     int tex_mode; float tex_t0, tex_fac;                   /* +0xd8 bits 0-2, +0xdc, +0xe0: texture frame override, messages 16 / 18 / 19 (docs/INSTANCE.md 2) */
     int uv_mode; float uv_t0, uv_fac, uv_t2;               /* +0xd8 bits 3-5, +0xe4, +0xe8, +0xec: UV scroll override, messages 15 / 17 / 19 (docs/INSTANCE.md 2) */
     int drawn;                                             /* set by the renderer each frame: this instance survived the visibility pass */
+    /* the per-frame instance list world+0x60/+0x64 (0x42a980 -> 0x42a840, rnd_instance_list, docs/INSTANCE.md 4.1): listed = in this
+     * frame's list, so its Think vtbl[3] runs (0x42b400) and its 3D sounds play (0x401ee7). cell_sec / cell_grp = +0x1c / +0x18, the
+     * sector and the floor group of the cell point (0x407790), recomputed when cell_ref moves; cell_dy > 0: the cell point is
+     * position + (0, cell_dy, 0) (an enemy's collision centre, 0x4077f0 in 0x41b2c0), otherwise the animated root inst+0x60 (the clock 0x43f2f1) */
+    int listed, in_zone; int32_t cell_sec, cell_grp; Vec3 cell_ref; int cell_ok; float cell_dy;   /* in_zone: passed the sector / group / link part (the draw gate) */
 } Instance;
 
 typedef struct Model {
