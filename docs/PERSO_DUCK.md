@@ -101,7 +101,7 @@ Notable points (certain):
 | attack / peck-dash / charge run / knockback (`+0x5b4 ≠ 0`) | no (the function is skipped) | `0x465b43` |
 | charging an attack (key 6 held, `+0x5b4 == 0`) | yes; the charge then drains (−dt in `0x457a50`) and releasing does nothing (`0x457388`) | |
 | carrying a bomb (state 6) | yes, anims 0x4e/0x4f/0x50 (also during pick-up/ground throw: nothing tests `+0x58c`) | |
-| looking around (state 3), climbing wall (4), scripted (5), 7, rocket (8), results (9) | not excluded: the state machine runs, with the 0x31 set; only the key and `onGround` decide. In 3, `Perso_Move(p,0)` is used, in 4/5/7/8/9 no `Perso_Move` | edge case, **derived** (not replayed) |
+| looking around (state 3), climbing wall (4), scripted (5), 7, rocket (8), results (9) | not excluded: the state machine runs, with the 0x31 set; only the key and `onGround` decide. In 3, `Perso_Move(p,0)` is used, in 4/5/7/8/9 no `Perso_Move` | edge case, **derived** (not replayed); §1.6 |
 | dead (state 2) | no; `+0x694` **freezes** at its value | `0x465b35` |
 | race (state 1) | yes with action 8, not while `+0x4e4 > 0` | RACE.md §4.8 (already ported) |
 
@@ -141,6 +141,38 @@ the switch only happens once `inst+0xc0 == 1` = the chain is in its last (loop) 
 | F+1..F+12 | counting down; in F+12 ⇒ sub 0, **no more LockMove in F+12**: movement can happen in that same frame (and `+0x238 = dt_prev − dt ≈ 0`) |
 
 Minimum (a tap on the key): 36 frames = 0.6 s blocked. Height 61 applies from frame 0 through F+11.
+
+### 1.6 Ducking in the Perso states 3/4/5/7/8/9 (certain from the code; the in-game effect is derived)
+
+`0x465b10` is a pre-step of Perso::Update for every state (§1.1); only state 2 and `+0x5b4 ≠ 0` skip it. What it changes there:
+
+* **Animation: nothing visible.** The duck requests (0x31/0x32/0x33, prio 1750; 0x4e..0x50 in state 6) go to the same controller as the
+  state's own requests, and the state wins by priority: climbing 0x14..0x17 (5001/5000/5000/5002), a scripted action (6000: 0x18..0x1e,
+  0x25..0x30, 0x51..0x58), the rocket 0x3b..0x3e (1800); state 9 plays scripted actions too (`0x454090` calls `0x44db50`). Table
+  `0x4b6180`, dumped from the exe. State 7
+  (`0x44e1c0`) does not even tick the controller (`0x463f14` slot 7 = `0x463f11` = return); state 3's `0x463e77` asks for anim 0 (1100),
+  which the duck set does beat (state 3 fades Woody out anyway, PERSO_LOOK.md).
+* **The state handlers ignore it:** `0x4651d0` (4), `0x44db50` (5), `0x44e1c0` (7), `0x4657f0` (8) and `0x454090` (9) read neither `+0x694`
+  nor `+0x238` nor `+0x22c`. The only readers of `+0x694` are `0x45656d`, `0x457388`, `0x462490`, `0x462520`, `0x463963`, `0x46463d`,
+  `0x4647e7`, `0x46486e`, `0x464b93`, `0x464bed`, `0x464c74` and the duck itself; the only writer outside `0x465b10` is Reset `0x44ad28`.
+* **So what carries on:** the sub-state and its two timers, LockMove(dt) every frame, and the body height 61 (`0x462490`): shots, lasers and
+  the Boss14 cone pass over him in a scripted action, on the climbing wall or on a rocket (MoveCollide also runs in state 4). Start needs `+0x22c`
+  (writers: Reset `0x44abc0`, the scripted-action start `0x44dede` = 1, MoveCollide `0x462725`/`0x462733`, snap `0x4629da`): always 1 in
+  state 5 (set by `0x44dda0`, no MoveCollide), whatever MoveCollide found in state 4, and **1 all through a rocket ride** (state 8): the mount
+  `0x465740` needs the ground and neither it nor `0x4657f0` writes the flag - so he can go down on the rocket too (unseen, 1800 > 1750),
+  and leaves it lying if the key is still held.
+* **Coming out of the state still ducking:** nothing clears `+0x694` on a state switch. Holding the key through a door action (1040) he comes
+  out lying (0x32 from the first frame of state 0 on), and gets up only when the key is released and the segment above him is clear.
+* State 9 (results): the port blanks the Perso's input while the results screen runs (`g_res.on`, port simplification, GAMEFLOW.md §5.2), so it
+  never ducks there; state 7 is not ported at all (PERSO_FRAME.md §2.1).
+
+Port (`src/player.c`): `duck_update(p, in, dt, anim_owned)` is also called at the top of `player_update` for the port's states 5
+(`script_act`), 8 (`ride`) and 4 (`climb_sub`), which return early, before `look_update` (the original's order duck → look → special);
+`anim_owned = 1` there keeps it from resetting `lanim` (which would restart the scripted animation: the port's controller has no priorities),
+and `ground` is 1 on the rocket (the port's `on_ground` is 0 there). State 3 already ran it. State 9 is left to the input blanking above
+(which of its requests outrank 1750 in every sub-state of `0x454090` was not checked). Test: `WOODY_MSGAT="2 1040 0 18" --duck 2.2 3` on W1A (`WOODY_DUCKLOG=1 WOODY_ANIMLOG=1`): the door exit plays on
+(anim 25 untouched), the duck goes 0 → 1 at 2.20 and 1 → 2 at 2.58 underneath it, and after the action ends he lies (0x32) until the key
+is released at 5.2 (0x33, then 0).
 
 ## 2. Moving, turning, jumping, attacking while lying down
 
@@ -291,7 +323,7 @@ The Perso plays them 2D. In the port, `src/main_engine.c` (line 2060, "animation
   functions `gel_ray_frac` and `player_ray_instances` are two-sided, which gives the expected behavior for this test.
 * A ceiling between 132 and 193 does not block: he then ends up standing "inside" the ceiling (the wall sweep only pushes in xz). Derived.
 
-## 5. Port recipe (`src/`; none of this is built yet)
+## 5. Port recipe (`src/`; built - this is the recipe it was built from, with the later changes marked **done**)
 
 ### 5.1 `src/player.h`
 * `PlayerInput`: `int forward, back, left, right, jump, action, duck;` (duck = action 5, current key state).
@@ -335,11 +367,13 @@ The Perso plays them 2D. In the port, `src/main_engine.c` (line 2060, "animation
    `anim_len(0x31)` = 0.375 and `anim_len(0x33)` = 0.19995 come out of the model automatically (§1.4).
 4. Call in `player_update` (l. 1350), in the branch `if (!p->dead_kind && !racing) { … }` **after** `attack_trigger()` and the
    `climb_try` return: `duck_update(p, in, dt);`. Racing keeps `race_crouch` (action 8). The early returns (scripted action, rocket,
-   climbing wall) skip ducking: deliberate port deviation (the original lets the state machine keep running there, §1.3); set
-   `p->duck = 0` at their start if that looks cleaner. `move_lock` is already counted down by dt at the start of `player_update`:
-   the order matches §1.1.
+   climbing wall) run it too, before `look_update` (**done**, §1.6; it was first left out as a port deviation). `move_lock` is already
+   counted down by dt at the start of `player_update`: the order matches §1.1.
 5. Horizontal movement zero on a block (§2.2): in the `disp` block, only apply the knockback and sliding contributions if `p->move_lock <= 0`
-   (original: `h = 0` on **any** `+0x238 > 0`, so also during hard landing/bomb pick-up/throw). Conservative alternative: only `!p->duck`.
+   (original: `h = 0` on **any** `+0x238 > 0`, so also during hard landing/bomb pick-up/throw). **Done** with `move_lock > 0` (it was
+   `p->duck` first): every LockMove - ducking, hard landing 0xa, special attack, bomb pick-up/throw, message 30, pecks, the door-17
+   hold - now also stops sliding and knockback, not only walking. Hit `0x44ca00` ends the lock itself (`0x44cbb5`: LockMove(0, force)),
+   so a hit's own knockback is not swallowed (except while ducking, which re-locks the next frame, as in the original).
    Let the push timers keep ticking (leftover after getting up, §2.3). Don't touch vertical (`jumper.dy`).
 6. Animation choice (l. 1476): after `else if (p->hit_anim_t > 0) want = p->hit_anim;` insert
    `else if (p->duck) want = p->duck_anim;` — before the bomb branch (0x4e..0x50 win over the carry anims) and before the ground/air
@@ -379,6 +413,7 @@ The Perso plays them 2D. In the port, `src/main_engine.c` (line 2060, "animation
 1. Whether RampA accelerates from 0 or from its old speed after standing up (`0x467130` not read); the port starts at 0.
 2. `0x497ed0`: one-sided or two-sided against polygons (§4.3); answer 2 (hit kind 3) not investigated.
 3. ~~`0x433d40` (actor pushing): exact height condition~~ – decoded in PERSO_MOVE §6.6.
-4. The edge cases of §1.3/§2.6 (ducking in state 3/4/5/7/8/9, picking up or grabbing while lying down) are only derived from the code.
+4. The edge cases of §1.3/§2.6 (ducking in state 3/4/5/7/8/9, picking up or grabbing while lying down) are only derived from the code
+   (§1.6 has the code evidence for the states; not replayed in the original).
 5. `P+0x14/P+0x18` (193/61): no reader found.
 6. In which levels shots or lasers actually fly between 66 and 198 above the ground (i.e. are dodgeable by ducking): not measured.
