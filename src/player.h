@@ -72,9 +72,11 @@ typedef struct Player {
     int special_st, special_prev; float special_t;   /* special attack 0x458bf0: +0x750 (0 free, 1 charging up to the hit at 1.5 s, 2 after the hit), key state, +0x74c */
     int duck, duck_anim; float duck_t;   /* ducking 0x465b10: sub-state +0x694 (0 up, 1 going down, 2 down, 3 getting up), its logical anim, timer +0x698 */
     float floor_y;                  /* last floor height found under the player */
+    float ring_ground_t, ring_air_t, ring_a;   /* landing ring 0x44af90: +0x580 time on the ground, +0x584 time in the air, +0x588 its alpha 0..255 */
     int floor_is_hull;              /* floor came from an instance press node (kind 1) */
     const Instance *att_inst; uint32_t att_node; Vec3 att_local, att_world;   /* platform attachment (Perso+0x298) */
     uint32_t cur_col;               /* world_collision id currently pressed, 0xffffffff = none (Probe+0x20) */
+    int ground_22c;                 /* Perso+0x22c as msgmask 0x200 sees it (getter 0x44bcf0): on_ground, except that the rocket (state 8) keeps it */
     /* volume tracking: one flag per (instance, volume node) */
     uint32_t nvol; uint8_t *inside; Instance **vol_inst; uint32_t *vol_node; uint32_t *vol_id;
     /* follow camera state */
@@ -139,10 +141,14 @@ void player_sync_board(Player *p);
 void player_race_start(Player *p);                     /* level start (Game ctor 0x445850): the race's SurfEnter after the init messages */                    /* 0x44bf10 tail + 0x463e60: the race board takes the Perso's placement and animation */
 /* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
+float player_ground_query_col(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col);   /* + the world_collision id under pt (0x436dc0), 0xffffffff none */
+void  player_leave_all(Player *p, EkoVM *vm);                  /* 0x443ff0 leave_all: PersoLeave on every volume he is in */
+float player_ground_query_n(const Player *p, const Instance *skip, Vec3 pt, int *found, Vec3 *n);   /* with the floor normal (Buzz's free test) */
 float player_body_height(const Player *p);            /* 0x462490 -> P+0x08: 193 standing / 61 ducked (Woody), race 160 / 81 */
 void player_set_carried(const Instance *owner, const Instance *follower);   /* follower moves with owner: a query that skips owner skips it too */
-/* landing ring (docs/PERSO_JUMP.md 5): the floor point and its normal under an airborne Woody, 0 = draw nothing */
-int  player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal);
+/* landing ring 0x44af90 (docs/PERSO_JUMP.md 5): runs the fade by dt and gives the floor point, its normal and the sprite
+ * alpha; 0 = draw nothing this frame */
+int  player_landing_ring(Player *p, float dt, Vec3 *pos, Vec3 *normal, float *alpha);
 int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34..38: message 10; returns 1 when the instance must disappear */
 void player_script_hold(Player *p, float t);       /* message 1040: scripted action, control taken away for t s */
 void player_place(Player *p, Vec3 pos, float yaw);     /* Perso reset + SetPos + SetFacing (end of a cinematic, hub door) */
@@ -174,7 +180,7 @@ void game_land_dust(Vec3 pos, Vec3 normal);
 void game_smoke_ring(Vec3 pos, Vec3 normal, int kind, float t0, float life);
 void game_splash(Vec3 c, float speed, float radius);   /* 0x478660, docs/SPLASH.md */
 void game_special_fx(void);                            /* 0x47ab90: the streaks and fire rings of the special attack (docs/PERSO_SPECIAL.md 3) */
-int  game_enemy_thinks(const Instance *inst);           /* is the actor in a sector drawn last frame, i.e. did its Think run (list 0x4c5258)? */
+int  game_enemy_thinks(const Instance *inst);           /* is the instance in this frame's list world+0x64 (rnd_instance_list), i.e. does its Think vtbl[3] run (0x42b400)? */
 /* the comic speech bubble 0x478980(inst, kind, duration, offY, offX, live) (docs/PERSO_DEATH.md 4.1): kind 0 "?!" (Kill 1),
  * 1 curse (hard landing), 2 "$", 3 "...", 4 "zzz"; with `live` it lasts while *live != 0 instead of `duration` */
 void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, const int *live);

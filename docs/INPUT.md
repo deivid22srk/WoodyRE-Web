@@ -97,8 +97,8 @@ handler `0x405896`: action 9 → back to page `app+0x64`) never runs.
 | 0x1c | 0x20 | `0x4c2bec` | 0 | **DirectDraw driver GUID**, all 0 = primary (NULL) | `0x4027bd` |
 | 0x2c..0x38 | 0x30 | `0x4c2bfc..c08` | 0x1ff, 1, 1, 3 | device caps / modes (Setup) | – |
 | 0x3c | 0x40 | `0x4c2c0c` | 2 | detail option (outline, LIGHTING.md §5) | `0x42b380`, `0x43b43a` |
-| 0x40, 0x44, 0x48 | 0x44 | `0x4c2c10/14/18` | 640, 480, 32 | display mode | `0x4027da`, `0x40614f` |
-| 0x50 | 0x54 | `0x4c2c20` | 0 | VSync flag | `0x47ee16` |
+| 0x40, 0x44, 0x48 | 0x44 | `0x4c2c10/14/18` | 640, 480, 32 | display mode (DISPLAY.md §1) | `0x4027da`, `0x40614f` |
+| 0x50 | 0x54 | `0x4c2c20` | 0 | Detect's "Disable VSYNC", inverted on NT (DISPLAY.md §2.2) | `0x47ee16`, `0x47eea0` |
 | 0x68..0x98 | 0x6c | `0x4c2c38..c68` | 0 | sound: device flags, volumes (`0x4c2c50` sfx, `0x4c2c54` music), … | `0x4691e2`, `0x44fe2e` (bit 1 of `app+0x384`) |
 | 0x9c | 0xa0 | `0x4c2c6c` | 0 | GUID of the joystick Setup found (`0x10001070`) | **not read**: the game enumerates itself |
 | **0xac** | 0xb0 | `0x4c2c7c` | ↑ ↓ ← → Space LShift LCtrl LShift Enter Esc Num0 RCtrl | **keys config 1**, 12 × u32 | `0x44fc5a..` |
@@ -136,7 +136,7 @@ The only readers of `app+0x104` are `0x402d44` and `0x403018`, so modes 1 and 2 
 
 ```c
 kbd->vt3();                                               /* edges */
-if (app+0x384 & 8) DebugKeys();                          /* dev mode: internal codes 0x41, 0x2b, 0x2c, 0x30, 0x12, … (camera, VM, cheats); not documented further */
+if (app+0x384 & 8) DebugKeys();                          /* dev mode: internal codes 0x41, 0x2b, 0x2c, 0x30, 0x12, … (camera, VM, cheats; 0x0f/0x10/0x11 = SavePos.bin, PERSO_DEATH.md §3.4); flag 8 is never set by the shipped exe */
 if (state == 5 /*waiting*/) { ...; return; }             /* 0x402c8d */
 Pad_Begin(dt);                                            /* 0x467340 */
 if (state == 1 && !(app+0xf4 & 8) && perso && perso+0x5fc) Pad_Set(6, 1.0);   /* perso+0x5fc: an attack queued elsewhere (uncertain), cleared */
@@ -210,7 +210,7 @@ case 7:  Menu_Enter(0x1c);  break;                                 /* 0x405888 *
 void Game_Respawn(Game *g) {                         /* 0x445930 (also the respawn after a lost life, PERSO_DEATH.md §3.4) */
     Iris_Set(g+4, 0, 0, 0.1f);  g->state /*+0x14*/ = 0;  g->timer /*+0xc*/ = 0.1f;  [0x4b3354] = 0.2f;
     Perso_Respawn(g->perso, 0);                       /* 0x44a810: pos = +0x318, Reset (race: SurfEnter, state 1), ground snap */
-    Actors_ResetAll();                                /* 0x40c040 */
+    Actors_ResetAll();                                /* 0x40c040: a no-op, vtbl[28] = 0x445840 `ret` in every Npc class (PERSO_DEATH.md §3.4) */
     CamFollow_Reset(g+8);                             /* 0x458f90: hard cut to the follow camera */
 }
 void Perso_RaceRestart(Perso *p) {                   /* 0x4560f0 */
@@ -224,6 +224,9 @@ The Game sequence (PERSO_FRAME.md §4.1) is then in state 0 with 0.1 s to go and
 once more (at the start position now), the iris opens 0 → 1 in 1 s (state 1), then state 2. **No life is lost** (only
 state 4 does that). The facing `+0x324` is not reset, but race sub-state 0 takes the ride direction from the track when
 there is no checkpoint (RACE.md §4.2).
+So the restart puts back only the rider: enemies, projectiles and ordinary bonuses stay as they are (`0x40c040` does nothing);
+the race bonuses come back and the count restarts from 0 through Reset → SurfEnter (`0x44f8a0`, `+0x264 = +0x4e0 = 0`), and
+`[0x4b3354]` is never read.
 
 ## 6. The port
 
@@ -252,6 +255,7 @@ the Mover).
   `WOODY_JOY="T:X:Y:BUTTONS[:D] ..."` pushes the stick to X,Y (−1..1, before the dead zone) with a button mask for D s
   (default 0.08) from T s on the level clock, in place of the device.
 
-Not ported: the board's `Request(0)` on the race restart (the port's board mirrors the rider), `Actors_ResetAll`
-(`0x40c040`, not done on a normal respawn either), `[0x4b3354]`, bonus-at-checkpoint `+0x4e0`, the debug keys, the mouse,
+The bonus-at-checkpoint `+0x4e0` is ported (`race_bonus_ckpt`: set by 1030, zeroed by `player_restart`, restored by
+`race_enter`); `Actors_ResetAll` `0x40c040` and `[0x4b3354]` need nothing (a no-op and a write-only global, §5.3).
+Not ported: the debug keys (dev flag 8, never set by the shipped exe; they include `SavePos.bin`, PERSO_DEATH.md §3.4), the mouse,
 DirectInput's exclusive mode, and the console "controller removed" page 0x1a.

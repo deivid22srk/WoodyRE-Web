@@ -58,6 +58,7 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     if (s->n >= MAX_ENEMIES) return;
     for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst) return;
     Enemy *e = &s->e[s->n++]; Enemy z = { 0 }; *e = z;
+    e->col_cur = 0xffffffffu;                                                   /* the probes' ctor 0x436cf0 */
     e->inst = inst; e->type = type; e->pos = e->home = inst->position; e->P = params_for(type); e->hp = e->P.hp;
     enemy_sensor_init(e); e->need_snap = type < 13 || type == 14;              /* subtypes < 9: types 4..12 and Buzz */
     e->cool = -1; e->attackable = 1; e->speed = e->want_speed = e->P.walk; e->path_dir = 1; e->path_to = 1;
@@ -77,7 +78,7 @@ static int bomber_peck(Enemy *e);
 static void bomber_blast(Enemy *e, Vec3 c, float r);
 int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 {
-    if (e->type == 14) return boss_take_damage(e);
+    if (e->type == 14) return boss_take_damage(e, NULL, 0);          /* vtbl[40] 0x41ae20: vtbl[39](0, hp, &dir, NULL, 0) */
     if (e->type == 15) return 0;                                       /* 0x40e720: xor al, al */
     if (e->type == 16) return boss16_take_damage(e, dmg);
     if (e->type == 12) return bomber_peck(e);                          /* the peck / charge run of the player (kinds 0 / 1) */
@@ -89,7 +90,7 @@ int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
 
 int enemy_hit(Enemy *e, float dmg, Vec3 dir, Vec3 pt, int kind)
 {
-    if (e->type == 14) return boss_take_damage(e);                  /* 0x40fe90 passes the kind on: no star for kind 2 (the special attack) */
+    if (e->type == 14) return boss_take_damage(e, &pt, kind);       /* 0x40fe90 passes pt and the kind on: no star for kind 2 (the special attack) */
     if (e->type == 15) return 0;                                     /* 0x40e720: nothing hurts him but a blast */
     if (e->type == 16) { int r = boss16_take_damage(e, dmg); if (r && kind != 2) game_hit_star(pt); return r; }   /* 0x40d480 -> 0x41adc0 with the kind */
     if (e->type == 12) return kind == 0 || kind == 1 ? bomber_peck(e) : 0;   /* 0x411ab0 only reacts to kinds 0 / 1: the special attack does nothing */
@@ -363,7 +364,7 @@ void enemy_place(Enemy *e)
     Instance *in = e->inst;
     /* model faces along (cos, 0, sin) of ang; same construction as the player: yaw about y composed with rotx(-90) */
     float yaw = atan2f(cosf(e->ang), sinf(e->ang)), c = cosf(yaw * 0.5f), s = sinf(yaw * 0.5f);
-    in->position = e->pos;
+    in->position = e->pos; in->cell_dy = e->P.height * 0.5f;              /* 0x4077f0(colCenter = pos + h/2): the cell point for the instance list */
     in->quat.x = 0.70710678f * c; in->quat.y = -0.70710678f * s; in->quat.z = -0.70710678f * s; in->quat.w = -0.70710678f * c;
     mat4_from_trs(&in->world, in->position, in->quat, in->scale);
 }
@@ -376,6 +377,34 @@ static void ground_snap(Enemy *e, struct Player *pl)
     e->need_snap = 0; int found; float gy = player_ground_query(pl, e->inst, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
     if (found) { e->pos.y = gy; e->vfall = 0; }
     else printf("An ennemy (Id=%x) is outside of the world, please check this !!!\n", e->inst->id);   /* 0x41a213 */
+}
+
+/* Probe_Test 0x436dc0 on the probe +0x178 with the enemy's own id (docs/EVENTS.md 3.2): GetHeight under pt, "on the ground"
+ * when pt.y - (ground + tol) < 1 (0x4a900c); standing on a world_collision press node sends Press / In, leaving it UnPress.
+ * Callers: 0x41a4e0 (ground following), 0x414f10 (ghost height), 0x410900 (Buzz), Reset 0x41a010; all with pt = pos + h/2,
+ * tol = h/2. 0x416a10 (type 10) and 0x41b030 (vtbl[56]: no call site through +0xe0) are not used by a shipped enemy. */
+int enemy_probe(Enemy *e, struct Player *pl, Vec3 pt, float tol, float *gy, int *found)
+{
+    uint32_t col = 0xffffffffu;
+    *gy = player_ground_query_col(pl, e->inst, pt, found, &col);
+    int on = *found && pt.y - (*gy + tol) < 1.0f;
+    game_col_probe(&e->col_cur, on, col, e->inst);
+    return on;
+}
+void enemy_reset_probe(Enemy *e)                                  /* 0x41a104..0x41a148: after the ground snap, at the start position */
+{
+    if (!g_epl) return;                                           /* no update has run yet (the level geometry comes with the player): the first ground follow presses */
+    float h2 = e->P.height * 0.5f, gy; int found;
+    enemy_probe(e, g_epl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);
+}
+/* Enemy::HandleMsg 0x41abfd: message 6 with 0 on an enemy that is in the world (cell >= 0) -> UnPress of the probe's
+ * collision (0x41ac11) and out of the world (0x407850, left to inst_msg) */
+void enemies_msg6_off(EnemySet *s, Instance *inst)
+{
+    for (int i = 0; i < s->n; i++) {
+        Enemy *e = &s->e[i]; if (e->inst != inst || !inst->visible) continue;
+        game_col_probe(&e->col_cur, 0, 0xffffffffu, inst);
+    }
 }
 
 /* FindTarget 0x41af80 -> 0x40c0d0: the player within P+0x20 (3D) and |dy| < P+0x24 of the centre -- the enemy itself, or its
@@ -395,7 +424,7 @@ static void speed_tick(Enemy *e, float dt)
 static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
 {
     Instance *in = e->inst;
-    if (e->removed || !in->visible) return;
+    if (e->removed || !in->visible || !game_enemy_thinks(in)) return;      /* Think 0x41a320 only runs from 0x42b400, for the instances of this frame's list world+0x64 */
     ground_snap(e, pl);
     { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != 12) return; }   /* Think 0x41a320 */
     if (e->cool >= 0) e->cool -= dt;
@@ -487,17 +516,19 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     if (e->st == 8) wander_avoid(e, dt);
     if (e->type == 13) {                                          /* height control 0x414f10: feet at the player's feet height (home without a target); frozen when hit / dead */
         if (e->st != 9 && e->st != 12) {
-            int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+            int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* 0x414f8d */
             float want = see ? tp.y - e->pos.y : e->home.y - e->pos.y, stp = see ? e->P.run * dt : e->P.walk * dt;
             if (see && want > 0 && (pl->jumper.state == 0 || pl->jumper.state == 1 || pl->jumper.state == 7)) stp *= 0.2f;
-            if (want < -0.01f) { e->pos.y += want < -stp ? -stp : want; if (found && e->pos.y < gy) e->pos.y = gy; }
+            if (want < -0.01f) { e->pos.y += want < -stp ? -stp : want; if (found && e->pos.y < gy) { e->pos.y = gy; on = 1; } }
             else if (want > 0.01f) { float up = want > stp ? stp : want; if (!player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height, e->pos.z }, (Vec3){ e->pos.x, e->pos.y + e->P.height + up, e->pos.z })) e->pos.y += up; }
+            game_msgmask(in, 0x200, on);                              /* 0x41514d / 0x415169: +0x174 bit 0 (hit or clamped); frozen with it while hit / dead */
         }
     } else
     /* ground following 0x41a4e0: v += 200*dt - 0.2*v per frame, y -= v, never below the ground */
-    { int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+    { int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* 0x41a561 */
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
-      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; } }
+      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
+      game_msgmask(in, 0x200, on); }                                /* 0x41a642 / 0x41a65e */
     if (anim == -2) { int r = wander_rec(e, e->w_act); if (r >= 0) er_request(e, r); } else ea_play(e, anim);
     enemy_place(e);
 }
@@ -524,7 +555,7 @@ static int shooter_vector(const Instance *in, uint32_t tc, Vec3 *p0)      /* 0x4
 static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
 {
     Instance *in = e->inst;
-    if (e->removed || !in->visible) return;
+    if (e->removed || !in->visible || !game_enemy_thinks(in)) return;      /* Think 0x41a320 only runs from 0x42b400, for the instances of this frame's list world+0x64 */
     ground_snap(e, pl);
     { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != S_DEAD) return; }
     if (e->cool >= 0) e->cool -= dt;
@@ -633,9 +664,10 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     if (e->knock_t > 0) { e->knock_t -= dt; if (e->knock_t < 0) e->knock_t = 0; float v = dt * E_KNOCK * e->knock_t; step = (Vec3){ e->knock_dir.x * v, 0, e->knock_dir.z * v }; }
     if ((step.x != 0 || step.z != 0) && !enemy_move(e, pl, step)) enemy_blocked(e, e->st == S_WANDER, e->st == S_DASH);
     if (e->st == S_WANDER) wander_avoid(e, dt);
-    { int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+    { int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* ground following 0x41a4e0 */
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
-      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; } }
+      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
+      game_msgmask(in, 0x200, on); }
     /* the throw (priority 1000) plays out over the turn animations (priority 900) of the wait state */
     if (e->throw_hold) { const Model *m = in->model; int s = g_sa[SA_THROW].anim; if (e->st == S_WAIT && (uint32_t)s < m->nanims && in->anim == s && in->anim_time < m->anims[s].duration_s * 0.98f) { anim = SA_THROW; anim_speed = 0; } else if (e->st != S_FIRE) e->throw_hold = 0; }
     if (anim == -2) { int r = wander_rec(e, e->w_act); if (r >= 0) er_request(e, r); } else sa_play(e, anim, anim_speed);
@@ -674,10 +706,10 @@ static void bomber_blast(Enemy *e, Vec3 c, float r)                    /* vtbl[4
 }
 /* actor list 1 (0x4c52d8, max 8, double-buffered by 0x40bf60): besides the Perso only two enemy Updates call RegisterActor 0x40c080 --
  * the bomb thrower 0x4110e6 (every Update) and Boss2 0x40dd58 (once message 61 has linked his crushers). An Update only runs after
- * Think 0x41a320 (in the world, within active_d of the camera or dead), so the membership is the one of this frame's Update */
+ * Think 0x41a320 (listed in world+0x64, within active_d of the camera or dead), so the membership is the one of this frame's Update */
 static int actor_list1(const Enemy *e, Vec3 cam)
 {
-    if ((e->type != 12 && e->type != 15) || e->removed || !e->inst->visible) return 0;
+    if ((e->type != 12 && e->type != 15) || e->removed || !e->inst->visible || !game_enemy_thinks(e->inst)) return 0;
     if (e->type == 15 && !e->bb.crush[0]) return 0;
     float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z;
     return dx * dx + dy * dy + dz * dz < e->P.active_d * e->P.active_d || (e->type == 12 ? e->st == 13 : e->hp <= 0);
@@ -691,23 +723,96 @@ void enemies_actor_blast(EnemySet *s, Vec3 c, float r)
         if (e->type == 12) bomber_blast(e, c, r); else if (e->type == 15) boss15_blast(e, c, r);
     }
 }
+/* ---- the engine's actor hit tests (0x433920 / 0x433bc0 / 0x433de0), literally. The comparisons keep the x87 jumps: a NaN
+ * (a zero-length sweep divides 0.5 by 0) goes the way `fcom; test ah, 1/0x41` sends it. g_hit_frac mirrors the one global
+ * hit fraction [0x53a558]: 0x433920/0x433bc0 write it on a hit, the charge loop writes 0.5 (0x4589e9), the laser rays their
+ * answer; the laser of type 50 reads it back when its ray finds nothing. In the original every ray and collision sweep of the
+ * frame also writes it (19 writers, 0x424a69..0x4589e9); the port's other rays do not (port simplification). */
+float g_hit_frac;
+/* 0x433bc0(a, b, r, s, R): a sphere r swept from a to b against the sphere (s, R) in 3D. The entry fraction when it lies in
+ * [0, 1], else the exit fraction when that does (a start inside the sphere); a sweep that starts and ends inside misses */
+static int sweep_sphere_sphere(Vec3 a, Vec3 b, float r, Vec3 s, float R)
+{
+    float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, ex = a.x - s.x, ey = a.y - s.y, ez = a.z - s.z;
+    float A = dz * dz + dy * dy + dx * dx, B = (ez * dz + ey * dy + ex * dx) * 2.0f, Rs = r + R;
+    float disc = B * B - (ez * ez + ey * ey + ex * ex - Rs * Rs) * A * 4.0f;               /* 0x4a94c0 = 4 */
+    if (!(disc >= 0)) return 0;                                                             /* 0x433c7c */
+    float sq = sqrtf(disc), inv = 0.5f / A, t0 = (-B - sq) * inv, t1 = (sq - B) * inv;     /* 0x4a9014 = 0.5 */
+    if (t0 > t1) { float q = t0; t0 = t1; t1 = q; }                                         /* 0x433cbd */
+    if (!(t0 > 1.0f) && t0 >= 0) { g_hit_frac = t0; return 2; }                             /* 0x433ccf..0x433cf7 */
+    if (t1 > 1.0f || !(t1 >= 0)) return 0;                                                  /* 0x433cf8..0x433d1a */
+    g_hit_frac = t1; return 2;
+}
+/* 0x433920(a, b, r, c, R, H): a sphere r swept from a to b against the upright cylinder with its FOOT at c, radius R, height H.
+ * xz quadratic with R + r (a start inside the circle with no xz motion = the whole segment), the y span of the part inside the
+ * circle against [c.y - r, c.y + H + r]; the straight wall only counts when that span crosses the whole of [c.y + R, c.y + H - R],
+ * otherwise the two end spheres (c.y + R and c.y + H - R, radius R) decide: a capsule. Returns 2 (hit, g_hit_frac = entry) or 0 */
+int sweep_sphere_cyl(Vec3 a, Vec3 b, float r, Vec3 c, float R, float H)
+{
+    float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, ex = a.x - c.x, ez = a.z - c.z;
+    float A = dz * dz + dx * dx, B = (ez * dz + ex * dx) * 2.0f, Rs = r + R, C = ez * ez + ex * ex - Rs * Rs;
+    float disc = B * B - C * A * 4.0f, t0, t1;
+    if (!(disc >= 0)) return 0;                                                             /* 0x4339c6 */
+    if (!(A > 0.001f)) {                                                                    /* 0x4339db, 0x4a94c4: no xz motion */
+        if (C >= 0) return 0;                                                               /* 0x433b2a: the start is outside the circle */
+        t0 = 0; t1 = 1.0f;
+    } else {
+        float sq = sqrtf(disc), inv = 0.5f / A;
+        t0 = (-B - sq) * inv; t1 = (sq - B) * inv;
+        if (t0 > t1) { float q = t0; t0 = t1; t1 = q; }                                     /* 0x433a18 */
+        if (t0 > 1.0f || !(t1 >= 0)) return 0;                                              /* 0x433a39, 0x433a4a */
+        if (!(t0 >= 0)) t0 = 0;                                                             /* 0x433a61 */
+        if (t1 > 1.0f) t1 = 1.0f;                                                           /* 0x433a78 */
+    }
+    float y0 = dy * t0 + a.y, y1 = dy * t1 + a.y;
+    if (y0 > y1) { float q = y0; y0 = y1; y1 = q; }                                         /* 0x433aa9 */
+    if (c.y - r > y1 || !(r + H + c.y >= y0)) return 0;                                     /* 0x433acb, 0x433ae5 */
+    if (H + c.y - R > y0 && !(R + c.y >= y1)) { g_hit_frac = t0; return 2; }                /* 0x433aff, 0x433b11: through the straight part */
+    if (sweep_sphere_sphere(a, b, r, (Vec3){ c.x, R + c.y, c.z }, R)) return 2;             /* 0x433b6d: lower cap */
+    return sweep_sphere_sphere(a, b, r, (Vec3){ c.x, H + c.y - R, c.z }, R);                /* 0x433ba2: upper cap */
+}
+/* 0x433de0(a, b, c, R, h): the segment a..b against the upright cylinder around the CENTRE c, radius R, y range
+ * [c.y - h + 0.1, c.y + h - 0.1] (0x4a9008 = 0.1): the xz quadratic clipped to [0, 1], then the y span of that part.
+ * 0.5 (0x4a9014) on a hit, -1 (0x4a9500) otherwise - never the fraction. The laser 0x450f80 passes h = half the height,
+ * the charge run 0x4589d0 the whole height around feet + h/2 (so there the range is feet - h/2 + 0.1 .. feet + 1.5 h - 0.1) */
+float seg_cyl(Vec3 a, Vec3 b, Vec3 c, float R, float h)
+{
+    float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, ex = a.x - c.x, ez = a.z - c.z;
+    float A = dz * dz + dx * dx, B = (ez * dz + ex * dx) * 2.0f, C = ez * ez + ex * ex - R * R;
+    float disc = B * B - C * A * 4.0f, t0, t1;
+    if (!(disc >= 0)) return -1.0f;                                                         /* 0x433e7c */
+    if (!(A > 0.001f)) {                                                                    /* 0x433e91 */
+        if (C >= 0) return -1.0f;                                                           /* 0x433fbe */
+        t0 = 0; t1 = 1.0f;
+    } else {
+        float sq = sqrtf(disc), inv = 0.5f / A;
+        t0 = (-B - sq) * inv; t1 = (sq - B) * inv;
+        if (t0 > t1) { float q = t0; t0 = t1; t1 = q; }                                     /* 0x433ed8 */
+        if (!(t1 > 0) || t0 >= 1.0f) return -1.0f;                                         /* 0x433ef9, 0x433f0a */
+        if (!(t0 >= 0)) t0 = 0;                                                             /* 0x433f1d */
+        if (t0 > 1.0f) t0 = 1.0f;                                                           /* 0x433f32 */
+        if (t1 > 1.0f) t1 = 1.0f;                                                           /* 0x433f4b */
+    }
+    float y0 = t0 * dy + a.y, y1 = dy * t1 + a.y;
+    if (y0 > y1) { float q = y0; y0 = y1; y1 = q; }                                         /* 0x433f72 */
+    if (y0 > h + c.y - 0.1f || c.y - h + 0.1f > y1) return -1.0f;                           /* 0x433f9a, 0x433fb2 */
+    return 0.5f;
+}
 Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, float r)
 {
     for (int i = 0; i < s->n; i++) {
         Enemy *e = &s->e[i];
         if ((e->type != 12 && e->type != 15) || e == owner || e->removed || !e->inst->visible) continue;   /* subtype 8 (type 12) and 12 (class 15, actor list 1 via 0x40c080) */
         if (e->type == 12 && (e->st == 1 || e->st == 13)) continue;   /* vtbl[47] 0x411970: no actor in states 1 / 13 */
-        float R = r + e->P.radius, dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
-        float t = l2 > 1e-6f ? ((e->pos.x - a.x) * dx + (e->pos.z - a.z) * dz) / l2 : 0; if (t < 0) t = 0; if (t > 1) t = 1;
-        float cx = a.x + dx * t - e->pos.x, cz = a.z + dz * t - e->pos.z, y = a.y + (b.y - a.y) * t;
-        if (cx * cx + cz * cz <= R * R && y > e->pos.y - r && y < e->pos.y + e->P.height + r) return e;   /* 0x433920: swept sphere against the cylinder */
+        /* vtbl[24] 0x41ad80 = {pos + (0, h/2, 0), radius, h/2}; 0x44a15f passes the foot (c.y - h/2) and the whole height */
+        if (sweep_sphere_cyl(a, b, r, e->pos, e->P.radius, e->P.height)) return e;
     }
     return NULL;
 }
 static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
 {
     Instance *in = e->inst;
-    if (e->removed || !in->visible) return;
+    if (e->removed || !in->visible || !game_enemy_thinks(in)) return;      /* Think 0x41a320 only runs from 0x42b400, for the instances of this frame's list world+0x64 */
     ground_snap(e, pl);
     { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != 13) return; }   /* Think 0x41a320 */
     Vec3 tp = pl->pos; float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z, d3 = sqrtf(dx * dx + dy * dy + dz * dz);
@@ -781,9 +886,10 @@ static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         break;
     }
     if (e->st == 4 || e->st == 7 || e->st == 9 || e->st == 11) anim = -1;   /* the set-up states have no animation of their own */
-    { int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);   /* ground following 0x41a4e0 */
+    { int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* ground following 0x41a4e0 */
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
-      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; } }
+      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
+      game_msgmask(in, 0x200, on); }
     if (anim >= 0) ba_play(e, anim, speed, hold);
     enemy_place(e);
 }
@@ -807,8 +913,9 @@ static void enemy_reset(Enemy *e)
     e->pos = e->home = e->start; e->ang = e->want_ang = e->start_ang;
     e->hp = e->P.hp; e->hit_t = e->dead_t = e->knock_t = e->vfall = 0; e->removed = 0; e->attackable = 1;
     in->visible = 1; in->fade = 0; in->anim = 0; in->anim_time = 0; e->lanim = -1;
+    e->need_snap = e->type < 13; if (g_epl) ground_snap(e, g_epl); enemy_reset_probe(e);   /* 0x41a0f8..0x41a148: ground snap 0x41a1a0, then the probe (Press/In/UnPress) */
     game_msgmask(in, 0x10, 0);
-    e->cool = e->t = e->atk_t = e->reload = e->turn_t = 0; e->throw_hold = 0; e->path_to = 1; e->path_dir = 1; e->need_snap = e->type < 13;
+    e->cool = e->t = e->atk_t = e->reload = e->turn_t = 0; e->throw_hold = 0; e->path_to = 1; e->path_dir = 1;
     if (e->type == 12) { e->st = 0; e->idle_t = 0; e->nlong = 4; e->idle_a = 9; e->done = 0; e->melee_t = e->windup = 0; e->big_touch = 0; }
     else {
         e->speed = e->want_speed = e->P.walk;

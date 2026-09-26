@@ -493,8 +493,17 @@ void Sweep(vec3 *res, vec3 *from, vec3 *to, float up, float sub /*30*/) {      /
   Buzz stays ≈ 200 away from him in state 3 (measured in the port: Woody (−7983, −7567), Buzz (−7855, 2430, −7717)). That is the "hiding
   behind the lanterns" trick from the original.
 * The sweep runs **every frame**, even with step 0 (Stand, shaking, the fall in state 7): the sphere then pushes him out of place from whatever it touches.
-* After the sweep: subtype ≥ 9 ⇒ `res.y = from.y`; free if `[0x4b310c]` (ground normal y from GetHeight) ≥ 0.8 and the step-down < `P+0x2c`, otherwise
-  only platform delta + `OnBlocked`. Chase hook `[2]` `0x41bdf0`: movement < 0.01 ⇒ ±16 random in x and z (unstick).
+* After the sweep (`0x41b4dd..0x41b69c`, decompiled round 30): the behaviour hook `[2]` (Chase `0x41bdf0`: movement < 0.01 ⇒ ±16 random in
+  x and z, unstick); subtype ≥ 9 ⇒ `res.y = from.y`; `0x436d10` clears the probe's platform; `drop = res.y − [0x53a568]`. **Free** if
+  `[0x4b310c] >= 0.8` (`0x4a987c`, NaN = blocked) and `drop < P+0x2c` (15000): then (with `drop < 1` and hit kind 2 the platform attach
+  `0x436d80`) `pos = res`, collision centre `res + (0, h/2, 0)`, re-cell. Otherwise **blocked**: `pos += platform delta`, re-attach if
+  the probe had a platform, re-cell, and the behaviour's `vtbl[3]` OnBlocked (Wander `0x41c420`: widest free sensor direction, action 5;
+  Chase `0x41be90`: nearest free direction, turn timer 0). `[0x53a568]` / `[0x4b310c]` are the ground height and the normal y of the
+  LAST substep's GetHeight `0x435650(&c, −1, 1)` at the sphere centre; when GetHeight finds nothing it answers `y = c.y`, normal
+  (0, 1, 0) (`0x43568c`), so the sweep then lifts the sphere by h (`c.y − h < c.y`) and the step is free. Over the W1B arena floor
+  the test always passes; it matters on slopes steeper than ~37° under the sphere (mode 2 arenas). Port: `boss_sweep` returns both,
+  `behav_move` does the test and the two OnBlocked (`player_ground_query_n`, the ground query with the normal). Log `WOODY_BOSSLOG=1`
+  prints `boss blocked at ...`.
 * The push-out per polygon (closest point, `r − distance` along that direction) is the port's reading of `0x409ad0`/`0x433ff0` at the
   call level, not traced instruction by instruction.
 
@@ -550,7 +559,10 @@ void Explode(Inst *link, int n) {                                   /* 0x40ff48 
   no `vtbl[39]`; hitting it does nothing.
 * `Enemy_TakeDamage` (ENEMY.md §6.2): `Behav_Knock` on the **active** behaviour (knockback `600·t_rest` along `dir` for AnimLen(8) = 2.1 s;
   at `dir = 0` (peck) no displacement); if that behaviour already has a knockback in progress ⇒ `false` **without** hp loss (state 9 and hitT are
-  already set at that point – an edge case, literally like this). Star burst `0x40c2d0` at `pt` (except `kind == 2`). Return value `hp ≤ 0`.
+  already set at that point – an edge case, literally like this). Star burst `0x40c2d0` at `pt` (except `kind == 2`; `0x41adea`;
+  `0x40c2d0` skips it for `pt == NULL` and calls the hit star `0x4750e0(pt)` otherwise, `0x40c2ff`/`0x40c327`), then `hp −= dmg`
+  (`0x41adef`). Return value `hp ≤ 0`. A bomb blast reaches it through the base `vtbl[40]` `0x41ae20` = `vtbl[39](0, hp, &dir, NULL, 0)`:
+  no star. (Port round 30: `boss_take_damage(e, pt, kind)` draws `game_hit_star` after the knockback check.)
 * Whether the player can peck him from the floor or has to jump depends on the Perso's attack geometry (PERSO_JUMP.md) relative to `pos.y` ≈
   floor + 290 and has not been statically determined.
 * After the hit: state 9 (red/white flashing §8, anim 14), after 2.1 s `high = 1` ⇒ up. On the 5th hit: state 9 → 12 (next frame).
@@ -689,14 +701,24 @@ Order of implementation; numbers for mode 1 / W1B.
   typecode-0 marker no. n of the saucer).
 * Movement: `boss_sweep` = the sphere sweep §5.1 with `player_sphere_push` (world + press nodes of instances, excluding the boss himself, his
   saucer and the player), every frame, even at step 0. Before, it was a thin ray only against world polygons and nothing was tested at step 0:
-  Buzz flew straight through the lanterns and reached the player in the corners. Not ported: the "free" test `[0x4b310c] >= 0.8` (always true above the arena floor).
+  Buzz flew straight through the lanterns and reached the player in the corners. The "free" test after the sweep (§5.1) and the
+  hit star (§6.2) are ported (round 30); the smoke plume's colour and alpha are the decompiled ones (PARTICLES.md §10).
+* Hit tests (round 30): the peck dash and the charge run use the exact `0x433920` / `0x433de0` (PERSO_JUMP.md §3.1). For Buzz
+  (R 240, H 150) the dash capsule is two spheres of 340 (100 + 240) around `pos.y − 90` and `pos.y + 240`, so an air attack within
+  ≈ 340 of him hits; the charge run's range is `pos.y − 75 + 0.1 .. pos.y + 225`, above the beak (≈ feet + 124 = 1469 in W1B) at the
+  low hover height 1634.8 and only 1 unit short of it at the landing height 1544.8: from the ground Buzz can only be hit by jumping.
+* Mode 2 checked against §3A/§5/§6.2 (round 30): Reset values, bob (P+0x0c, 150, sound 49, dust), fall offset 130, records +17,
+  sounds 44..49, the explosion at `pos + 400` on hits; class-17 smoke never exists (W2D/W3D send `63 [inst, 1]`, §9.2). Nothing
+  mode-2-specific is missing beyond the two items above.
   Test corner: `WOODY_POSAT="24 -7990 1360 -7560"` for the test below (Woody is no longer hit; the old build kills him).
 * The linked instance is excluded from the boss's ground test by `player_set_carried`; `player_ground_query` now also skips the player himself
   (the boss used to land on Woody's own collision node).
 * Found while porting: the cinematic start `0x44ecc0` calls `0x4077f0` on every actor, and that always puts a hidden instance back into its
   cell. Because of that, Buzz (398) and his saucer (399) appear in the intro of the fight, even though the script hides them at init (CINEMATIC.md).
 * Test: `extract/Data W1B --pos -5753 1800 -8901 --yaw -90 --walk 2` (walks into volume 94; intro until ≈ 22 s, then the fight);
-  `--jump 25.2 --peck 25.5 0.1` hits him at the first landing. Hooks: `WOODY_BOSSLOG=1` (state per frame), `WOODY_BOSSHP=N` (start hp),
+  `WOODY_FPS=60 WOODY_POSAT="25.5 -5912 1345 -8491" --jump 25.55 --peck 25.85 0.1` puts Woody ≈ 330 from him after the
+  first stomp and hits him (hp 4) with the air attack during the low chase (round 30; the older `--jump 25.2 --peck 25.5 0.1` no
+  longer lands a hit, neither in the round-29 build). Hooks: `WOODY_BOSSLOG=1` (state per frame), `WOODY_BOSSHP=N` (start hp),
   `WOODY_FPS=N` (frame cap, for the per-frame formulas), `WOODY_GOD=1`. A run to the end completes W1B in `woodyre.sav`: make a copy first.
 
 ## 14. Open questions

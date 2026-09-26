@@ -267,6 +267,94 @@ The renderer/updater `0x42e2b0` returns immediately if `+0x1c == −1` (`0x42e2c
 Everything that iterates `cell+0x44` (drawing, player collision against press nodes) no longer sees a hidden instance.
 Hidden = invisible AND without collision. Animation time keeps running (the clock uses absolute time).
 
+### 4.1 The per-frame instance list `world+0x60/+0x64` (`0x42a980` → `0x42a840`)
+
+World = `[0x509adc]` = `App+0x28`. `+0x64` = array of `Instance*`, `+0x60` = count, allocated once as `malloc(0x400)` =
+**256 pointers** (`0x42a4f9..0x42a50c`); `0x42a931` appends **without a bound** (a frame with more than 256 would overwrite the
+heap; the port grows its array and `WOODY_VISLOG` reports such a frame - none was seen in the levels tried, max ≈ 120 in W2D).
+Built once per frame at frame step 9 (`0x401c06..0x401c63`, PERSO_FRAME.md §1) from the camera position `CamMgr+0x1d0`
+(= the camera of the previous frame's camera update), before every Think; `0x42a980(&campos, race)` with `race` =
+`World+0xc0` (the region list of SetRaceInfo, RACE.md §2.1) when the Perso's subtype is 4 or 5, otherwise NULL.
+
+```c
+void World_BuildList(World *w, vec3 *cam, int *race)                    /* 0x42a980 */
+{
+    w->nsec /*+0x48*/ = w->ngrp /*+0x54*/ = w->n /*+0x60*/ = 0;          /* the list is emptied here and nowhere else (and in the reset 0x42a5e0) */
+    g_secStamp /*[0x4c3bac]*/++; g_grpStamp /*[0x4c4ca8]*/++; g_instStamp /*[0x4c4c08]*/++;
+    Cell *leaf = kd->cells[0x408180(cam)];
+    int flag = race && race[0] != -1;                                   /* 0x42a9d3..0x42a9f8: flag for 0x42a840 */
+    if (!flag) race = NULL;
+    for (k < leaf->nids /*+0x40*/) {                                    /* message 34 (§10.1): volume instances of the camera's leaf */
+        I = kd->obj[leaf->ids[k] & 0xffff];
+        if ((I->flags8 & 0x1f) != 1) continue;
+        I->vtbl[2](I, 1);                                               /* clock / pose */
+        if (0x4300c0(I, cam)) for (l = I->links /*+0xd4*/; l; l = l->next) l->inst->stamp20 = g_instStamp;
+    }
+    VisEntry *e = 0x408210(cam);                                        /* sector s = 0x4081c0(cam), g = 0x40a0c0(cam, -1): the entry of s
+                                                                         * whose id == g, else the first entry (RACE.md 2.1) */
+    if (!race) for (pair in e) if (kd->groups[pair.grp].stamp /*+0*/ != g_grpStamp) {  /* 0x42aa9b: every pair's GROUP */
+        w->grp[w->ngrp++] = pair.grp; kd->groups[pair.grp].stamp = g_grpStamp; }
+    else { g = 0x40a0c0(cam, -1); if (g != -1) {                         /* 0x42aadf: the camera's group and the list entry after it */
+        p = race; while (*p != g) p++;                                  /* no bound: runs past the -1 terminator (+0xd4) if g is not in the list */
+        mark(g); if (p[1] != -1) mark(p[1]); } }
+    for (pair in e) { S = kd->sectors[pair.sec];                        /* 0x42ab60: every pair's SECTOR */
+        if (S->stamp /*+4*/ == g_secStamp) continue;
+        w->sec[w->nsec++] = pair.sec; S->stamp = g_secStamp;
+        0x42a840(S, flag); }
+}
+void Sector_ListInstances(Sector *S, int flag)                          /* 0x42a840 */
+{
+    for (I = S->head /*+0x44*/; I; I = I->next /*+0x24*/) {             /* the sector's chain: instances in the world (+0x1c = S) */
+        if (I->grp18 == -1 || kd->groups[I->grp18].stamp != g_grpStamp) continue;   /* 0x42a858..0x42a87d: floor group marked */
+        if ((I->flags8 & 0x1f) == 1 && I->status88 == 1) {             /* kind 1 with a cached bounding sphere (§6) */
+            if (!0x437b00(camRepere /*[0x509adc]+8*/, &I->sphere /*+0x8c*/, I->sphere.r /*+0x98*/)) I->stamp20 = g_instStamp;   /* frustum */
+            else if (flag && |camPos - I->sphere.c|^2 + r^2 > 1.21e8f /*0x4aa2f4, 11000^2*/) I->stamp20 = g_instStamp;             /* race only */
+        }
+        if (I->stamp20 == g_instStamp) continue;                        /* 0x42a92f: frustum / distance / message-34 link / already in */
+        w->list[w->n++] = I;                                            /* 0x42a931, no bound */
+        if (!(I->flags8 & 0x20)) I->vtbl[2](I, 0x81);                    /* draw (the Perso, enemies and boards have 0x20: drawn elsewhere / below) */
+        I->stamp20 = g_instStamp;
+    }
+}
+```
+* **Floor group** `+0x18` = `0x40a0c0(p, −1)` (RACE.md §2.1): the GEL section-3 group of the floor polygon under the point, taken by
+  `0x407790` together with the sector `+0x1c` = `0x4081c0(p)` when the instance enters the world (loader `0x4288cf`: `p` = `inst.pos`)
+  and by every re-cell `0x4077f0` - the clock after each pose (`0x43f2ed`: the animated root `+0x60`, unless flag 0x20), an enemy after a
+  move (its collision centre `pos + (0, h/2, 0)`, ENEMY.md §3.3/§5.1; PostLoad `0x419e4d` sets flag 0x20 on enemies). An instance with
+  **no floor under that point** (`+0x18 = −1`) is **never listed**: in the data mostly invisible volume/collision objects, the bomb pool
+  parked under the floor (W3D) and a few decor pieces whose root node lies below the floor.
+* **Sphere test** `0x437b00(repere, c, r)`: camera-space `x', y', z'` of the rows of `Repere+0x30..0x5c` (x/sx, y/sy, z·zoom,
+  CAMERA.md §5.2), visible ⇔ `|x'| ≤ z' + 1.4142·r/sx` and `|y'| ≤ z' + 1.4142·r/sy` (`0x4aa3d4`); no near/far plane. It only
+  concerns **stationary** instances: `+0x88 = 1` is set by the draw `0x42eec9..0x42f008` when the clock speed `+0xa0` is 0,
+  flag 0x20 is off, `+0x84 ≠ 0` and SetFlags bit 1 is off (§6); a path (`.ins` TRAJ: loader `+0x88 = 2`), classes 50-52 (`0x450db2`)
+  and the launcher 42 (`0x45223e`) are 2 = never cached. Sphere = centre ⅛ × the sum of the bounding-box node's points (model
+  `+0x24`, 1-based), radius = distance to its last point. The clock (`0x43ef95`) or an animation message (`0x42d656`) resets 1 → 0.
+  Moving instances and actors are therefore never frustum-tested.
+* The **11000 test** (`dist² + r² > 1.21e8`) only runs in the races (flag = race list given and not empty).
+
+**Readers** (all of `[0x509adc]+0x60/+0x64`; `0x42b450` is a plain count getter):
+1. `0x401c68..0x401cbc`: the skeleton list `0x4c3bb4` (kind 1, flag 0x20, `+0xf8→+0x58`).
+2. **`0x42b400(dt)`** (frame step 17, `0x401d78`, runs while paused too): `vtbl[3]` = **Think** of every listed instance, and for
+   kind 2 (`.lit` light records) the flare `0x474a90`. This is the **only** caller of `vtbl[3]`: enemies and all three bosses
+   (`0x41a320`, ENEMY.md §3.1), the ambient volume 90 (`0x472560`), the bonus halos (BONUS.md §3.1), the carousel figures (110), the
+   classes of OBJECTS.md §2 ... A hidden (§4) or unlisted instance does not think. The count is read once before the loop.
+3. `0x42b380(World, Perso)`: `vtbl[2](5 or 7)` for every listed instance except the Perso (which it draws first): draw + shadow pass.
+4. The sound Update `0x401ee7` → `mgr->vt[4](list, n, 0)` (SOUND.md §2.2 step 3): 3D voices of unlisted owners fade out / are cut.
+
+**Port** (`rnd_instance_list`, `src/render_gl.c`; called at the start of the frame from `main_engine.c` with the current camera,
+race list `Renderer.race` while `race_char`): sectors and groups from `vis_entry` (`0x408210`), per instance the sector and
+floor group (`gel_floor_group` = `0x40a0c0`) of its cell point, cached in `Instance.cell_*` and recomputed when the point moves;
+cell point = `position + (0, cell_dy, 0)` for the enemies (`enemy_place` sets `cell_dy = h/2`), else the animated root
+(`ins_anim_centre` = `+0x60`); message-34 links (`link_inside`); the stationary sphere test on the port's frustum (aspect of the
+window, not 4:3) and the race 11000 test. Results: `Instance.listed` (Think / sound) and `Instance.in_zone` (sector + group + link:
+the draw gate of base-class instances and enemies in `rnd_frame`, whose own cone test stays on this frame's camera).
+Readers switched: enemy / boss Updates and the actor list 1 (`game_enemy_thinks`), `snd_owner_active`, `ambient_update`, the
+bonus halos, the Perso's special attack target list. Port simplifications: the port does not keep the original's order of
+re-cells (it re-cells from the current point every frame, not only after a clock run), counts a sphere as cached from the first
+stationary frame, and when there is no `.vis` (or the camera is outside every sector) lists everything. `WOODY_VISLOG=1`: once a
+second camera sector / floor group / `.vis` entry, list size and max, and why the others are out (sector, group, no floor,
+link, frustum, race distance); `=2` also the ids and every actor; `=3` the instances without a floor group.
+
 ## 5. Messages 56 / 57: transparency fade (`+0x6c`)
 
 `+0x6c` = **transparency** (0 = normal, 1 = gone). Readers:
@@ -343,8 +431,9 @@ against all actors from `0x4c52d8` against the record's segment (`0x433de0`, rad
    (enemies 4-16 message 11, Perso, type 20/21, type 60).
 
 The clock (and thus the path follower) only runs for instances with a cell (`+0x1c ≠ −1`), once per frame, from the world draw loop
-`0x42b380` → `vtable[2](5 or 7)` = `0x42e2b0` for ALL instances in `world+0x64` (not just visible ones). `vtable[3]` (think step; base = empty
-`0x462c60`) is called by `0x42b400` for all instances, including hidden ones.
+`0x42b380` → `vtable[2](5 or 7)` = `0x42e2b0` for ALL instances in `world+0x64`. `vtable[3]` (think step; base = empty
+`0x462c60`) is called by `0x42b400` for the instances of that list only (§4.1): not for hidden ones, nor for those outside the
+camera's `.vis` sectors / floor groups or (stationary) outside the view frustum.
 
 ## 9. Base class field table (0x104 bytes)
 
@@ -478,7 +567,7 @@ typedef struct {
 ## 12. Open questions
 1. `+0xd9`/`+0xda` (arg1 of 15..18, 0xffff in W1A): no reader found in `0x47f290`; possibly a texture filter elsewhere in `0x43b3f0`.
 2. SetFlags bit 2: no reader found. Bit 1: is the extra pass a shadow or a reflection (table `[0x4c4cac]+4`)? Bit 0x20: nature of the effect pass.
-3. Exact color blending in `0x4388e0` at fade > 0.01 in the extra pass (the shadow). Drawing the model itself while fading is worked out in MODEL_RENDER.md §8.
+3. ~~Exact color blending in `0x4388e0` at fade > 0.01 in the extra pass (the shadow)~~: MODEL_RENDER.md §8.1 (AMB + light texture × light colour × k × fade, bucket 2). Drawing the model itself while fading: MODEL_RENDER.md §8.
 4. `+0x88 == 2`: meaning of this state in `0x42e2b0`.
 5. Rounding mode of `0x499580` (ftol) for the texture frame index and the phase mask (truncate or round).
 6. Class 20/21 (message 55), type 60 (`0x474a40`, 1503/1506) and enemy message 11 are not worked out here.

@@ -9,8 +9,7 @@
  * (message 59, W1B 404 = its machine) gets its position, rotation and animation record every frame.
  *
  * Simplified: no actor avoidance; the obstacle sensor runs (enemy.c, docs/OBSTACLE.md 3) but with P+0x2c/0x30 = 15000 it
- * never reports a direction blocked, so it only quantises the wander directions to its 16 slots; the hit star
- * 0x40c2d0 is not drawn; mode 2 (W2D/W3D/WWS) is ported with the same
+ * never reports a direction blocked, so it only quantises the wander directions to its 16 slots; mode 2 (W2D/W3D/WWS) is ported with the same
  * state machine (its dust is the smoke ring 0x476140(pos - 50 up, up, 0, 1.5, 6.0), docs/PARTICLES.md 3) and it is not verified in those levels. */
 #include <math.h>
 #include <stdlib.h>
@@ -135,7 +134,7 @@ static void h_speed(Enemy *e, float dt)
  * (model 6, press nodes up to y 1972) and away from the rock walls behind them: in the low phase (pos.y 1635) the sphere
  * meets the lantern heads, in the high phase (2430) it passes over them but meets the walls, so he never gets within the
  * 150 (xz) he needs to stomp a player who hides in the corner behind a lantern (docs/BOSS14.md 5.1). */
-static Vec3 boss_sweep(Enemy *e, Player *pl, Vec3 from, Vec3 to)
+static Vec3 boss_sweep(Enemy *e, Player *pl, Vec3 from, Vec3 to, float *ground_y, float *ground_ny)
 {
     float r = e->P.radius, up = e->P.height * 0.5f, h = r + up + 1.0f;
     Vec3 d = { to.x - from.x, to.y - from.y, to.z - from.z };
@@ -145,15 +144,19 @@ static Vec3 boss_sweep(Enemy *e, Player *pl, Vec3 from, Vec3 to)
     for (; n > 0; n--) {
         c.x += d.x; c.y += d.y; c.z += d.z;
         Vec3 push = player_sphere_push(pl, e->inst, c, r); c.x += push.x; c.z += push.z;
-        int found; float gy = player_ground_query(pl, e->inst, c, &found);
-        if (found && c.y - h < gy) c.y = gy + h;
+        int found; Vec3 gn; float gy = player_ground_query_n(pl, e->inst, c, &found, &gn);   /* GetHeight 0x435650(&c, -1, 1): nothing found = c.y, normal (0, 1, 0) */
+        if (c.y - h < gy) c.y = gy + h;                              /* 0x4376bf (with nothing found that lifts the sphere by h) */
         res = (Vec3){ c.x, c.y - h, c.z };
+        *ground_y = gy; *ground_ny = gn.y;                           /* [0x53a568] / [0x4b310c] of the last substep */
     }
     return res;
 }
 /* common move 0x41b2c0 for subtype >= 9: y is kept, no ledge or step test (P+0x2c/0x30 = 15000); the sweep slides the
- * sphere along whatever it touches. The "free" test ([0x4b310c] = ground normal y >= 0.8) always holds over the arena
- * floor and is not ported. */
+ * sphere along whatever it touches. Then the "free" test 0x41b514..0x41b54a: the step is taken only when the floor under
+ * the sphere of the last substep has a normal y >= 0.8 (0x4a987c) and lies less than P+0x2c below the feet; otherwise he
+ * stays (plus the platform delta, 0 for Buzz) and the behaviour's OnBlocked vtbl[3] runs: Wander 0x41c420 turns to the
+ * widest free sensor direction (action 5), Chase 0x41be90 to the free direction nearest its angle with the turn timer 0.
+ * Over the W1B arena floor the test always passes; it refuses steps over steep slopes (and over nothing: no normal) */
 static void behav_move(Enemy *e, Player *pl, float step, float dt)
 {
     BossState *b = &e->b;
@@ -162,12 +165,18 @@ static void behav_move(Enemy *e, Player *pl, float step, float dt)
     if (b->knock[b->behav] > 0) { b->knock[b->behav] -= dt; if (b->knock[b->behav] < 0) b->knock[b->behav] = 0; step = 0; }   /* a peck knocks with dir 0: no step */
     if (step < 0) step = 0;
     Vec3 d = { cosf(e->ang), 0, sinf(e->ang) };
-    Vec3 res = boss_sweep(e, pl, e->pos, (Vec3){ e->pos.x + d.x * step, e->pos.y, e->pos.z + d.z * step });
+    float gy = e->pos.y, ny = 1.0f;
+    Vec3 res = boss_sweep(e, pl, e->pos, (Vec3){ e->pos.x + d.x * step, e->pos.y, e->pos.z + d.z * step }, &gy, &ny);
     if (b->behav == 1 && step > 0) {                                /* Achtervolgen hook [2] 0x41bdf0: stuck (< 0.01) => wriggle -16..15 */
         float mx = res.x - e->pos.x, mz = res.z - e->pos.z;
         if (sqrtf(mx * mx + mz * mz) < 0.01f) { res.x += (float)(rand() % 32 - 16); res.z += (float)(rand() % 32 - 16); }
     }
-    e->pos.x = res.x; e->pos.z = res.z;                              /* subtype >= 9: res.y = from.y */
+    if (ny >= 0.8f && !(e->pos.y - gy >= e->P.drop)) { e->pos.x = res.x; e->pos.z = res.z; return; }   /* subtype >= 9: res.y = from.y */
+    if (b->behav == 0) {                                             /* Wander OnBlocked 0x41c420 */
+        float a = enemy_sensor_widest_free(e); if (a >= 0) e->want_ang = a;
+        b->w_act = 5; int n = wander_rec(e, 5); b->w_t = n < 0 ? 0 : anim_len(e, n);
+    } else if (b->behav == 1) { e->want_ang = enemy_sensor_nearest_free(e, e->ang); b->c_turn_t = 0; }   /* Chase OnBlocked 0x41be90 */
+    if (getenv("WOODY_BOSSLOG")) printf("  boss blocked at %.0f %.0f %.0f: floor normal y %.2f, %.0f below (behav %d)", e->pos.x, e->pos.y, e->pos.z, ny, e->pos.y - gy, b->behav), puts("");
 }
 static void behav_tick(Enemy *e, Player *pl, float dt)
 {
@@ -198,14 +207,15 @@ static void behav_tick(Enemy *e, Player *pl, float dt)
 /* vtbl[43] 0x410900: hover height, or the fall (flag 4) with the feet k below pos */
 static void height_tick(Enemy *e, Player *pl, float dt)
 {
-    BossState *b = &e->b;
+    BossState *b = &e->b; float h2 = e->P.height * 0.5f, gy0; int f0;
+    game_msgmask(e->inst, 0x200, enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy0, &f0));   /* 0x410973: the probe at pos + h/2 (Press/In/UnPress), 0x410993 / 0x4109ab */
     if (b->grav) {
         float k = m1(e) ? 200.0f : 130.0f, feet = e->pos.y - k; int found;
-        float gy = player_ground_query(pl, e->inst, (Vec3){ e->pos.x, feet + e->P.height * 0.5f, e->pos.z }, &found);
+        float gy; enemy_probe(e, pl, (Vec3){ e->pos.x, feet + h2, e->pos.z }, h2, &gy, &found);   /* 0x41a561 again, with the same probe at the feet */
         int on = found && gy >= feet - 0.5f;
         if (on) b->fall_v = 0; else { b->fall_v += dt * e->P.fall_g - b->fall_v * 0.2f; if (b->fall_v > 0) feet -= b->fall_v; }   /* 0x41a4e0: v in units per FRAME */
         if (found && feet < gy) { feet = gy; on = 1; }
-        b->on_ground = on; e->pos.y = feet + k; return;
+        b->on_ground = on; e->pos.y = feet + k; game_msgmask(e->inst, 0x200, on); return;   /* 0x41a642 / 0x41a65e */
     }
     b->on_ground = 0;
     if (!m1(e) && !b->high && b->st != 9) {                          /* mode 2 hops in the low phase */
@@ -264,6 +274,7 @@ void boss_reset(Enemy *e)                                            /* vtbl[17]
 {
     BossState *b = &e->b;
     e->pos = e->home = e->inst->position; e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp; e->hit_t = 0;   /* WOODY_BOSSHP: testing */ e->inst->visible = 1;   /* 0x407790: back in the world */
+    enemy_reset_probe(e); game_msgmask(e->inst, 0x10, 0);           /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
     wander_start(e); b->grav = 0; b->st = 0; b->t1d8 = 0; b->high = 1; b->acc = 0;
     b->bob_down = 1; b->bob_max = 150.0f; b->bob = 0; b->fall_v = 0; b->knock[0] = b->knock[1] = b->knock[2] = 0;
     b->rec = b->lrec = -1; b->sub = b->lsub = 0;
@@ -285,7 +296,7 @@ void boss_init(Enemy *e)
     in->visible = 1;                                                 /* the factory hangs it in the world; the W1B script hides it 1 s later */
 }
 
-int boss_take_damage(Enemy *e)                                       /* vtbl[39] 0x40fe90 */
+int boss_take_damage(Enemy *e, const Vec3 *pt, int kind)             /* vtbl[39] 0x40fe90 */
 {
     BossState *b = &e->b;
     if (b->mode == 0 || b->high || e->hit_t > 0) return 0;          /* high phase or still "hit": invulnerable */
@@ -301,6 +312,7 @@ int boss_take_damage(Enemy *e)                                       /* vtbl[39]
     /* Enemy_TakeDamage 0x41adc0 with 1.0 whatever the attacker says: a knockback still running on the active behaviour refuses the hit */
     if (b->knock[b->behav] > 0) return 0;
     b->knock[b->behav] = state_len(e);
+    if (pt && kind != 2) game_hit_star(*pt);                         /* 0x41adea: star 0x40c2d0 -> 0x4750e0 at pt; none for the special attack (2) or a blast (pt NULL, 0x41aeec) */
     e->hp -= 1.0f;
     printf("  BOSS %u hit, hp %.0f", e->inst->index, e->hp), puts("");
     return e->hp <= 0;
@@ -314,8 +326,8 @@ void boss_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         b->y_low = (found ? gy : in->position.y) + B_LOW; b->y_low_ok = 1;
     }
     if (b->mode == 0) { if (b->rec >= 0) { rec_tick(in, b->rec, &b->rec, &b->sub); if (b->link) rec_tick(b->link, b->lrec, &b->lrec, &b->lsub); } }   /* beaten: the last record plays out */
-    /* Think 0x41a320: only within 3000 of the camera (or dead) */
-    if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;
+    /* Think 0x41a320: only for an instance of this frame's list world+0x64 (0x42b400), and only within 3000 of the camera (or dead) */
+    if (!in->visible || !game_enemy_thinks(in) || (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0)) return;
     /* mailbox 0x410be0, first thing in every update */
     { int v = game_var_get(b->mail_var);
       if ((v == 1 || v == 2) && b->mode != v) { b->mode = v; boss_reset(e); printf("  BOSS %u: mode %d", in->index, v), puts(""); }
@@ -459,8 +471,10 @@ void enemies_boss_msg(EnemySet *s, Instance *inst, int id, uint32_t arg, Instanc
  *
  * The dynamic lights 0x498790 of the columns and the wave are registered (rnd_light_add); the original never draws
  * them (docs/LIGHTING.md 7), the port only with WOODY_DYNLIGHT=1. Not ported: actor list 1
- * (0x40c080, only the rocket explosion reads it), the turning sense of class 15's intro spin (not verified), and
- * class 90 mode 1, so class 16's group-3 volumes show nothing. */
+ * (0x40c080, only the rocket explosion reads it) and class 90 mode 1, so class 16's group-3 volumes show nothing.
+ * The turning sense of class 15's intro spin is verified (round 30): 0x46d220(0, a, 0) builds rows (c, 0, -s), (0, 1, 0),
+ * (s, 0, c) from the cos table 0x5e823c (s = -cos[a + 0x80]), 0x40deaf takes T.x row0 + T.y row1 + T.z row2 = (T.x c + T.z s,
+ * T.y, T.z c - T.x s) in R/U/W - what state 2 below does. */
 
 typedef struct { int sub[4]; int prio; float speed; } PRec;
 static const PRec g_r15[5] = {                                       /* AnimCtrl records 0x4b18a8 (getter 0x40eb30), all restart 1 */
@@ -515,9 +529,10 @@ static void link_face(Instance *l, Vec3 d)
 }
 static void ground_follow(Enemy *e, Player *pl, float dt)            /* Enemy::Update -> vtbl[43] 0x41a4e0 (flag 4): v += 200 dt - 0.2 v per frame */
 {
-    int found; float gy = player_ground_query(pl, e->inst, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+    int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* 0x41a561 */
     e->vfall += e->P.fall_g * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
-    if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; }
+    if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
+    game_msgmask(e->inst, 0x200, on);                                /* 0x41a642 / 0x41a65e */
 }
 /* 0x40ea70(c, r, base, R, H): a sphere against an upright cylinder: the y gap to [base, base + H], then 3D against r + R */
 static int sphere_cyl(Vec3 c, float r, Vec3 base, float R, float H)
@@ -538,6 +553,7 @@ void boss15_reset(Enemy *e)                                          /* vtbl[17]
 {
     BossBState *b = &e->bb;
     e->pos = e->home; e->vfall = 0; e->inst->visible = 1;           /* 0x407790: back in the world */
+    enemy_reset_probe(e); game_msgmask(e->inst, 0x10, 0);           /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
     e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
     b->st = 1; e->hit_t = 1.0f; b->t_intro = 0; b->row = 0; b->phase = 0; b->t_taunt = 5.0f; b->phase_flag = 0;
     if (b->crush[0]) for (int i = 0; i < 4; i++) {
@@ -592,7 +608,7 @@ void boss15_update(Enemy *e, Player *pl, Vec3 cam, float dt)
 {
     BossBState *b = &e->bb; Instance *in = e->inst;
     g_b15_pl = pl;
-    if (!in->visible) return;                                        /* out of the world (0x407850): no Think */
+    if (!in->visible || !game_enemy_thinks(in)) return;              /* out of the world (0x407850) or not in this frame's list world+0x64: no Think (0x42b400) */
     if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;    /* Think 0x41a320: 3500 */
     ground_follow(e, pl, dt); enemy_place(e);                        /* Enemy::Update 0x41a3e0; its vtbl[45] is empty */
     if (!b->crush[0]) return;
@@ -637,7 +653,7 @@ void boss15_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         if (f <= 0.8f) a = (float)(int)(f * 1.25f * 512.0f);
         else if (f < 1.0f) a = (float)(int)(512.0f - (f - 0.8f) * 1.25f * 512.0f);
         else a = 0;                                                  /* 90 degrees off, which the square does not show */
-        float c = cosf(a * 2.0f * PI_F / 512.0f), s = sinf(a * 2.0f * PI_F / 512.0f);   /* 0x46d220(0, a, 0): about the frame's up axis */
+        float c = cosf(a * 2.0f * PI_F / 512.0f), s = sinf(a * 2.0f * PI_F / 512.0f);   /* 0x46d220(0, a, 0): about the frame's up axis (sense verified) */
         for (int i = 0; i < 4; i++) if (b->crush[i]) { const float *T = g_T15[i]; link_place(b->crush[i], frame_pt(b, T[0] * c + T[2] * s, T[1], T[2] * c - T[0] * s)); }
         if (f >= 1.0f) { b->t_intro = 0; b->st = 3; audio_fx_stop(44, NULL, 0); }
         break; }
@@ -673,6 +689,7 @@ void boss16_reset(Enemy *e)                                          /* vtbl[17]
 {
     BossBState *b = &e->bb; float now = game_time();
     e->pos = e->home; e->vfall = 0; e->inst->visible = 1;
+    enemy_reset_probe(e); game_msgmask(e->inst, 0x10, 0);           /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
     e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
     b->st = 1; b->cur = 0; b->interval = 2.0f;
     for (int i = 0; i < 7; i++) {
@@ -729,7 +746,7 @@ static void wave_tick(Enemy *e, float dt)                            /* the reco
 void boss16_update(Enemy *e, Player *pl, Vec3 cam, float dt)
 {
     BossBState *b = &e->bb; Instance *in = e->inst;
-    if (!in->visible) return;
+    if (!in->visible || !game_enemy_thinks(in)) return;              /* list world+0x64 (0x42b400) */
     if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;    /* Think 0x41a320: 3000 */
     ground_follow(e, pl, dt); enemy_place(e);
     if (!b->grp[0][0]) return;

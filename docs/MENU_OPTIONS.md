@@ -20,7 +20,8 @@ TITLE.md §5.1/§5.2. Sound manager: SOUND.md §2/§4. Addresses without explana
 - **Vibration** writes `[joystick]+4` (float 0..1); the rumble method of the PC joystick class is an empty function
   (`0x467b20` = `ret 8`), so on PC **this option does nothing audible/perceptible**. The item is always present, even without a joystick.
 - No sub-pages (no key-binding, controller or language page). Resolution, detail, VSync and key bindings live in Woody.cfg and are
-  only ever changed by the setup program (`Detect.exe`/`Setup.dll`), never by this menu.
+  only ever changed by the setup program (`Detect.exe`/`Setup.dll`), never by this menu (DISPLAY.md §1–§2). The port adds a
+  "Display" item and page (port extra, §9.4, DISPLAY.md §4).
 
 ## 1. Class, constructor, vtable
 
@@ -313,6 +314,11 @@ Proposal that leaves the original layout intact: **the five items stay at y 192.
 pixel-exact original page. Resolution/aspect belong in `woodyre.cfg` (like Woody.cfg has them for the original), not
 in the save. Reverting on "back" also applies to this page (backup on enter), but a mode switch is only applied on
 Continue.
+
+**Implemented** (port extra) as proposed: item 5 "Display" → port page **0x40** with aspect ratio, window size, fullscreen,
+VSync, frame rate limit and Continue; choice flag **0x100**; stored in `woodyre.cfg`. What the original does for display
+mode and frame pacing, and the port's behaviour, overrides and test hooks: **DISPLAY.md**. (The compat switch to hide
+item 5 was not added.)
 
 ## 10. Uncertain
 

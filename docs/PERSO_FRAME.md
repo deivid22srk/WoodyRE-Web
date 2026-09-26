@@ -30,7 +30,7 @@ Callers: `0x401615` (main loop) and `0x404e90`. `esi = App`. `bl = 8` = pause bi
 | 6 | `0x401bee` | `0x4076d0([0x4c4c04])` | `obj+4 = obj+0` (keep the previous value; presumably a time/counter) |
 | 7 | `0x401bf3` | `0x406ff0()` | `[0x4c4bec] = 0` (list 0x4c3bb4 of visible instances cleared) |
 | 8 | `0x401c01` | `0x401940(App+0 != 3)` | if arg: `0x445ba0(Game, dt)` (Game sub-objects `+8` via `0x459090` and `+0x18` via `0x4571c0` tick – HUD/score). Always: copy the camera record (0x9c bytes) from `[0x4c737c]+0x140` to `0x4c2d08`, `0x42a680(level, &0x4c2d08, level+8, 0x41fa20(cam))` = **put the camera into the renderer**. If `App+0x44->+0x384 & 2`: `0x4883a0(App+0x20, cam+0x1dc)` |
-| 9 | `0x401c06-0x401c63` | `0x40c350(Perso)` = `(vtable[4]()[0] >> 5) & 0x1f` = subtype; if 4 or 5 ⇒ `0x42a980(&campos, World+0xc0)` otherwise `0x42a980(&campos, 0)` | **visibility/kd-tree traversal** (render preparation; `campos` = cam `+0x90..0x98`) |
+| 9 | `0x401c06-0x401c63` | `0x40c350(Perso)` = `(vtable[4]()[0] >> 5) & 0x1f` = subtype; if 4 or 5 ⇒ `0x42a980(&campos, World+0xc0)` otherwise `0x42a980(&campos, 0)` | **visibility/kd-tree traversal**: the world groups to draw and the per-frame instance list `World+0x60/+0x64` (INSTANCE.md §4.1; `campos` = cam `+0x90..0x98`) |
 | 10 | `0x401c68-0x401cbc` | loop over `World+0x64[i]`: instance with `flags(+8) & 0x20` and `(flags & 0x1f) == 1` and `inst+0xf8->+0x58 != 0` → `0x4c3bb4[n++] = inst` (max 0x3ff), `[0x4c4bec] = n` | list of "visible instances with skeleton/mesh" for the renderer |
 | 11 | `0x401cc2` | if `0x44f2e0(Game+0x64)` (cinematic mode) ⇒ `0x468e20(Perso+0x4a4, 0, 0x3c, [0x5e48c8])` | stop the sound object in Perso (`0x468a30(...)`, clear flag &= ~2) |
 | 12 | `0x401ce4-0x401d07` | if not paused and not cinematic: **`0x44b530(Perso, 1)` = Perso::Update** | player update (§2) |
@@ -38,14 +38,14 @@ Callers: `0x401615` (main loop) and `0x404e90`. `esi = App`. `bl = 8` = pause bi
 | 14 | `0x401d1b` | if `App+0xe4 != 0`: `0x4846d0(App+0 == 0)`; if that is true ⇒ `0x404b60(App, 0.5f, 0x1a, 0, 0x20)` | transition/fade (0x404b60 = start fade, cf. message 1081) |
 | 15 | `0x401d57` | `Perso->vtable[2](1)` | = `0x42e2b0` (base instance: per-frame animation/skeleton tick) |
 | 16 | `0x401d69` | if not paused: `0x44b480(Perso)` | if `Perso+0x21c == 6 && Perso+0x690 == 0` ⇒ `0x463530(Perso)` |
-| 17 | `0x401d78` | `0x42b400(dt)` | (per-frame tick of something global, calls `0x474a90`) |
+| 17 | `0x401d78` | `0x42b400(dt)` | **Think** `vtbl[3]` of every instance of the list `World+0x64` built in step 9 (INSTANCE.md §4.1); kind 2 (`.lit` light) also `0x474a90` |
 | 18 | `0x401d7d` | `0x44d820()` | for all objects in `0x5e4880[0x5e487c]`: `0x44d850(obj)` – if `obj+0x131` ⇒ `obj->vtable[2](1)` (tick), and more if not paused |
 | 19 | `0x401d85` | `0x42abc0(World)` | render preparation |
 | 20 | `0x401d91` | `0x42b380(World, Perso)` | render preparation with the player |
 | 21 | `0x401d99` | `0x42b4e0(World)` | render (183 instr, calls `0x42c320`, `0x498830`) |
 | 22 | `0x401da1` | `0x42ac10(World)` | **main render loop** (425 instr, `0x42b6c0`, `0x439540`) |
 | 23 | `0x401da6` | `[0x509b2c]++` | frame counter |
-| 24 | `0x401dbd` | not paused and `cam+0x138 != 8`: `0x44b4a0(Perso)` | Perso post-render update: if state 3 ⇒ `+0x100 = 100.0`, `0x44e7f0(1.0, 1)`; if `+0x268` ⇒ reset, `+0x100 = 100.0`, `0x44e7f0(0, 1)`; `+0x5cc = (0x42f6b0(Perso, 0, &Perso+0x59c, 0) == 1)` (ground test?); `0x44af90(Perso)`; `+0x248 = 0` |
+| 24 | `0x401dbd` | not paused and `cam+0x138 != 8`: `0x44b4a0(Perso)` | Perso post-render update: if state 3 ⇒ `+0x100 = 100.0`, `0x44e7f0(1.0, 1)`; if `+0x268` ⇒ reset, `+0x100 = 100.0`, `0x44e7f0(0, 1)`; `+0x5cc = (0x42f6b0(Perso, 0, &Perso+0x59c, 0) == 1)` (ground test?); `0x44af90(Perso)` (the landing ring, PERSO_JUMP.md §5); `+0x248 = 0` |
 | 25 | `0x401de2` | not paused: `0x42b450(dt)` | |
 | 26 | `0x401def` | not paused: `0x42d2e0()` | 241 instr; calls `0x407790` (find world cell), `0x428ce0`, `0x4359b0` – **collision/cell assignment of moving instances** |
 | 27 | `0x401dfa` | `0x46d040([0x5e823c])` | tick message-1500 subsystem (particles?) |
@@ -56,7 +56,7 @@ Callers: `0x401615` (main loop) and `0x404e90`. `esi = App`. `bl = 8` = pause bi
 | 32 | `0x401e7e` | not paused: `0x4490f0(dt)` | (calls `0x4493c0`) |
 | 33 | `0x401e9a` | not paused: **`0x4459c0(Game, dt)`** | Game transition state machine + respawn (§4) |
 | 34 | `0x401ec2` | if `[0x5e48c8]` (sound manager) and (not paused or `App+0xe4 == 0`): `0x468ba0(dt)` | sound manager tick (list `+0x14/+0x18`, gate `[0x5e61a4]`) |
-| 35 | `0x401eca` | if `App+0x44->+0x384 & 2`: `App+0x1c->vtable[7]([0x509adc]+0x64, [0x509adc]+0x60, 0)` | (video/playback object?) |
+| 35 | `0x401eca` | if `App+0x44->+0x384 & 2`: `App+0x1c->vtable[7]([0x509adc]+0x64, [0x509adc]+0x60, 0)` | sound Update with the instance list (SOUND.md §2.2 step 3) |
 
 ### 1.1 `0x44e690(Perso)` (step 13)
 If `Perso+0x21c == 0` (state IDLE) and `Perso+0x57c != 0`: `0x44dda0(0x49, &Perso+0x564, 0)` and
@@ -460,7 +460,7 @@ after 1.00 s; start of the boss fight (vt 28.33..28.62) only `1152` ×44, `1150 
 camera, **no iris**; Woody (with no input) dies at vt 38.54 ⇒ state 3, iris 1 → 0 at 40.54 (death
 duration 3.0 − 1.0), life lost at 41.54, respawn at 41.79, iris 0 → 1, state 2 at 42.80.
 * state 0: `0x451bd0()` (thunderstorm off), fader tick, `Game+0xc -= dt`; ≤ 0 ⇒ `0x445930(Game)`
-  (fader (0,0,0.1), timer 0.1, `Perso->0x44a810(0)`, all actors `vtbl[28]()` via `0x40c040`,
+  (fader (0,0,0.1), timer 0.1, `Perso->0x44a810(0)`, all actors `vtbl[28]()` via `0x40c040` = an empty `ret` in every class, PERSO_DEATH §3.4,
   `0x458f90(Game+8)`), iris (0 → 1.0 over 1.0 s), **state 1** (iris opens).
 * state 1: iris done ⇒ **state 2** (gameplay).
 * state 2: `Perso->vtbl[36]()` (dead) ⇒ **state 3**, timer 0.

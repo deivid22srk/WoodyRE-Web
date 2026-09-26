@@ -30,8 +30,9 @@ Helper scripts for this analysis lived in the scratch folder (not in the repo); 
   a one-shot is cut and resumed at once). Default `dmin = 2.0 m` ⇒ audible up to 20 m = 2000 units. No doppler (velocity never set).
 * **Listener = the camera** (`CamMgr+0x1dc`, set every frame by `0x4019b6`). **No occlusion**: the per-frame line-of-sight
   test `0x428cf0` is a stub (`xor eax, eax; ret 0x10`), so the "muffled" fade states 3/4 never occur (§2.1). What does silence
-  sounds behind walls is the **instance list**: only 3D voices of instances in this frame's list `world+0x64` (visible sectors,
-  `0x42a840`) are processed; the others fall silent (§2.2 step 3).
+  sounds behind walls is the **instance list**: only 3D voices of instances in this frame's list `world+0x64` (the camera's `.vis`
+  sectors and floor groups, `0x42a980` → `0x42a840`, INSTANCE.md §4.1) are processed; the others fall silent (§2.2 step 3). A
+  stationary emitter (clock speed 0, e.g. a waterfall or machine decor) also drops out while its bounding sphere is off screen.
 * **Queued plays** (1603..1605, 1611..1615, 1617..1619, 1624..1626, 1636..1638): a 2D voice waits behind the newest 2D voice,
   a 3D voice behind the instance's newest 3D voice (§2.5).
 * Max **24 physical** voices (`0x46c160`: `mgr+0x3c < 0x18`), 512 logical (`0x46aa20`), no priorities: when full, a
@@ -163,10 +164,12 @@ State 3/4 would come from **occlusion**: `0x46b920` (per 3D voice per frame) cal
    vOrientFront/vOrientTop, committed by `0x48fcf0` → `SetAllParameters`). Camera space is x = right, y = down, z = forward
    (CAMERA.md §5.2), so top points *down*; that only flips elevation, the left/right axis is `top × front = column 0` (§2.3).
 3. Update is called by the frame at `0x401ee7`: `app+0x1c->vt[0x1c]` (`0x469080`) → `mgr->vt[4](list = [0x509adc]+0x64,
-   n = [0x509adc]+0x60, 0)` = the per-frame **instance list of the visible sectors** (`0x42a840`, rebuilt every frame; BONUS.md
-   §3.1). Both this call and the listener setter only run if `[0x5e5814]+0x384 & 2`, which `0x44fe2e..0x44fe5f` sets to
+   n = [0x509adc]+0x60, 0)` = the per-frame **instance list** (`0x42a980` → `0x42a840`, rebuilt every frame at frame step 9; INSTANCE.md §4.1,
+   BONUS.md §3.1). Both this call and the listener setter only run if `[0x5e5814]+0x384 & 2`, which `0x44fe2e..0x44fe5f` sets to
    `(sfx on | music on | [0x4c2c40]) & 1` = "sound on". `0x42a840` also leaves out a stationary instance (sphere cached, `+0x88 == 1`)
-   whose bounding sphere is outside the view frustum (`0x437b00`) or more than 11000 units from the camera (`0x42a907`, `0x4aa2f4` = 1.21e8).
+   whose bounding sphere is outside the view frustum (`0x437b00`) and, **in the race levels only** (the flag of `0x42a840` = a race region
+   list is given, `0x42a8c8`), one with `dist² + r² > 1.21e8` (11000 units, `0x42a907`, `0x4aa2f4`). An instance whose floor group `+0x18`
+   is not stamped this frame is never listed either (`0x42a867..0x42a87d`).
    The list marks 3D nodes as "processed this frame" (`node+8 = mgr+0x38`, `0x46a9c0`); for the voice of a not-processed node:
    a **loop** fades out over 0.5 s ("Killing softly cause not processed", `0x46b19c`), then stops as inaudible (node kept); a
    **one-shot** is stopped at once and its node kept (log text "Killing cause locked", `0x46b4b4`) – unless its sample is the
@@ -399,8 +402,8 @@ stopped (`0x401cdf`).
    into range; a one-shot is cut and resumed at once. Constant-gain pan: `L = (pan>0 ? (100−pan)/100 : 1)`, `R` mirrored.
    Max 24 voices, no stealing (the port mixes up to 96). **No occlusion** (§2.1); instead the 3D voices of owners outside the
    frame's instance list fall silent the same way (§2.2 step 3): port `audio_update(snd_owner_active)` after the draw, with
-   `snd_owner_active` = `visible && game_enemy_thinks()` (in the world and in a drawn sector; the frustum/11000 test for
-   stationary instances is not ported). Queued plays per §2.5.
+   `snd_owner_active` = `visible && listed` (`rnd_instance_list`, built at the start of the frame: `.vis` entry sectors + floor
+   groups, message-34 links, the frustum test of stationary instances and the race 11000 test). Queued plays per §2.5.
 5. **Animation events** type 4 fired from the animation tick (window `[tPrev, tNow)`, wrap), one random draw per tick,
    Perso = 2D, rest 3D, pitch × `enemy+0x170`.
 6. **SoundFx table** §5 as a constant array; `fx_play(id, inst)`, `fx_stop(id, inst)`, chain 25..28 with 0.3 s, source helper for

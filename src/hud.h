@@ -14,6 +14,12 @@ typedef struct {
 int  hud_load(const char *common_rck, const char *level_rck);   /* images 61..64 + strings of bank 0, font of the level bank; needs a GL context */
 void hud_free(void);
 void hud_begin(int win_w, int win_h);                           /* 640x480 virtual, origin top left; after the 3D frame */
+/* port extras (docs/DISPLAY.md 3/4): the same on the box vx, vy, vw, vh of the window (GL origin bottom left); a box wider
+ * than 4:3 shows more virtual x left and right of 0..640 (the layout stays 4:3, centred). hud_bars blacks out the rest of
+ * the window. hud_port_str: a string ref for port-only ASCII text (menu items, choices). */
+void hud_begin_view(int vx, int vy, int vw, int vh);
+void hud_bars(int win_w, int win_h, int vx, int vy, int vw, int vh);
+uint32_t hud_port_str(const char *ascii);
 void hud_end(void);
 void hud_draw(const HudState *s, float dt);
 /* 0x448450: hud+0 = 0 game, 1 the pause pages 0x18 / 0x19 (the extended HUD: $ and charge counters slide in),
@@ -32,7 +38,7 @@ void hud_anim_reset(void);
 void hud_anim_pickup(int kind, const float *screen, int face);
 /* menu pages of the common page class (docs/TITLE.md 5, MENU_NEWGAME.md 2): an item is {Common string, flags, value};
  * flags 1 selectable, 2 header (never selected), 4 right, 8 left, 0x80 centred on x 160, 0x20 size x 0.8,
- * 0x10 slider ("name value%"). The items run from y = yfrac * 480, one cell (62 * S / 40) apart, size 30 shrinking
+ * 0x10 slider ("name value%"), 0x100 choice (port extra: "name string", value = a string ref). The items run from y = yfrac * 480, one cell (62 * S / 40) apart, size 30 shrinking
  * until the widest name fits; the selected one blinks away at 2 Hz. `ready` = the page's input delay is over. */
 typedef struct { uint32_t id, flags; int value; } MenuItem;
 void hud_menu_items(const MenuItem *it, int n, float yfrac, int sel, int ready);
@@ -108,6 +114,5 @@ void hud_world_streak_flip(int image, const float *a, const float *b, const floa
 /* an additive textured quad in world space, colour per vertex (already times alpha): the fire ring of the special attack (docs/PERSO_SPECIAL.md 3.3) */
 void hud_world_quad(int image, const float v[4][3], const float uv[4][2], const float rgb[4][3]);
 /* additive ring of half width hw around c, lying in the plane with normal n: the landing marker under Woody */
-void hud_world_ring(const float *c, const float *n, float radius, float hw, const float *rgb, float alpha);
 
 #endif

@@ -101,26 +101,67 @@ void SetRaceInfo(Perso *p, Inst *board, Traj *poly)          /* 0x455dc0 */
 }
 ```
 
-### 2.1 The region list `[0x509adc]+0xc0` (render only – skippable)
+### 2.1 The region list `renderer+0xc0` (render only)
 
-`0x40a0c0(pos, -1)` finds the kd cell of `pos` (`0x408180`) and returns the polygon group (GEL group records
-`world+0x38`, 0x18 B) of the floor polygon under the point. In the frame pipeline (`0x401c06`, PERSO_FRAME §1 step 9),
-for Perso subtype 4/5 `0x42a980(&campos, App+0x28 + 0xc0)` is called with this list (App+0x28 is presumably the same
-scene object as `[0x509adc]`; both have dt at `+0x38`). With a list whose first entry ≠ −1, `0x42a980` does **not** mark the
-groups from the `.vis` lists but only: the group under the camera (`0x40a0c0(campos)`) and the **next** group in the list.
-(Original bug: the search for the camera's group in the list has no bound check – `0x42aaef..0x42aafb` runs past the −1
-if the camera's group is not in the list.) A port that draws all geometry can ignore this.
+`[0x509adc]` **is** the renderer / scene object App+0x28 (its ctor `0x42a440` stores `this` there at `0x42a451`), so
+SetRaceInfo writes into the same object whose `+0xc0` the frame pipeline passes to `0x42a980`. The ctor does not write
+`+0xc0..+0xd4`; only `0x455f95..0x455fed` does, so the list lives as long as the App (it survives into the next level).
+(`0x42e250`, which also writes `-1` to a `+0xc0`, is the reset of the entity base class, vtable `0x4aa31c`, not this.)
 
-Read in full (round 29): `0x408210(pos)` = the `.vis` list of the camera: sector `s = 0x4081c0(pos)` (kd leaf), group
-`g = 0x40a0c0(pos, −1)` (the GEL group of the floor under the point), then the entry of sector `s` whose `id` equals `g`
-(else the first entry) - so the `.vis` entry id (0/1, FORMAT_TEX_COL_VIS_LIT.md §3) is a floor group. `0x42a980(pos, list)`
-then walks that entry's pairs `(sector, group)`: without a race list every pair's **group** (second word, record
-`world+0x38 + g·0x18`, frame stamp at `+0`) goes into the draw-group list `this+0x58/+0x54`; with a race list only the
-camera's own group and the list entry after it (stamped the same way); in both cases every pair's **sector** (first word,
-`world+0x24[s]`, stamp `+4`) goes into the instance list `this+0x4c/+0x48` and through `0x42a840` (the instances that are
-processed/drawn). So in the races the world geometry of all but two track regions is simply not drawn, while the
-instances still follow the `.vis`. The port draws world faces per sector (`world_visibility`, render_gl.c) and ignores both
-the group word and this list; the six race levels would need the group records `world+0x38` in `gel_load` first.
+**Call site** `0x401c06..0x401c63` (PERSO_FRAME §1 step 9): camera position = `0x41fa30([0x4c737c]) + 0x90` (the eye);
+`0x40c350([esi+0x34])` = Perso subtype (`(vtbl[4]()->[0] >> 5) & 0x1f`); subtype 4 or 5 → `0x42a980(&eye, renderer+0xc0)`,
+any other → `0x42a980(&eye, NULL)`.
+
+**`0x42a980(pos, list)`** (this = renderer):
+
+| Address | What |
+|---|---|
+| `0x42a989..0x42a9be` | counts `+0x48` (sectors), `+0x54` (groups), `+0x60` (instances) = 0; stamps `[0x4c3bac]` (sector), `[0x4c4ca8]` (group), `[0x4c4c08]` (instance) `++` |
+| `0x42a9c4..0x42a9f8` | kd leaf of pos (`0x408180`) for the type-1 volume objects (`0x42aa0b`, INSTANCE.md 10.1); `race = list && list[0] != -1` (`[esp+0x10]`) |
+| `0x42aa77` | `E = 0x408210(pos)`: sector `s = 0x4081c0(pos)`, `g = 0x40a0c0(pos, -1)`, the entry of `world+0x28[s]` whose `id == g`, else the first entry (`0x40824f..0x408256`); returns `&E.pair_count` |
+| `0x42aa8c..0x42aadd` | not race: every pair's **second word** = a `.gel` group (record `world+0x38 + g·0x18`); not yet stamped → appended to `+0x58`, stamped |
+| `0x42aadf..0x42ab52` | race: `z = 0x40a0c0(pos, -1)`; `z == -1` → **no group at all** (`0x42aaed`); otherwise search `z` in the list **without a bound** (`0x42aaef..0x42aafb`: past the `-1` at `+0xd4` into whatever follows the renderer's `+0xd8`), append `z`, then the entry after it if `!= -1` (`0x42ab25..0x42ab52`); no "already stamped" test here |
+| `0x42ab54..0x42aba7` | both paths: every pair's **first word** = a sector; not yet stamped → appended to `+0x4c`, stamped, `0x42a840(sector, race)` |
+
+**`0x42ac10`** then stamps every polygon `[first, last]` of each group of `+0x58` (`0x42ac32..0x42ac75`) and draws, per sector
+of `+0x4c`, only the polygons of its list that carry this stamp (`0x42acc7`). So a face is drawn iff it lies in a marked
+group AND in the polygon list of a marked sector. In the 22 non-race levels there is one group, so the group word changes
+nothing; in the six race levels (the region lists name zones 0..4; K1R/S1R, K2R/S2R, K3R/S3R share the geometry) only two track zones are drawn.
+
+**`0x40a0c0(pos, cell)`** – the floor group under a point (the floor polygon's group, not the polygon):
+start cell = `cell`, or `0x408180(pos)` when `-1`. In that cell's polygon list take every polygon with `ny >= 0`
+(`0x40a141`), `d = n·pos + D > 0` (`0x40a16a`), `d <= ny·(pos.y − cell.ymin) + 0.001` (`0x40a17b`, `[0x4a94c4]`, cell
+`+0x30` = bbox ymin: the plane is not below the cell's bottom) and `pos` inside its xz shadow (every edge prev→cur:
+`(cur.x−p.x)(prev.z−p.z) − (prev.x−p.x)(cur.z−p.z) >= 0`, `0x40a1b3..0x40a1f8`). The loop does not stop at a hit: the
+**last** hit in the list wins (`0x40a202`). Without a hit: the cell's −y link `+0x18`: `>= 0` → local subtree `0x40ab60`,
+`INT_MIN` → return −1, else cell `~link`. Hit → `0x40a26a`: the first group whose last polygon `>= poly`.
+
+**`0x42a840(sector, race)`** (the entity list of the sector, `+0x44`/`+0x24` chain): an entity is taken only if its
+**`+0x18` != −1 and that group carries this frame's group stamp** (`0x42a858..0x42a87d`); `+0x18` is the entity's floor
+group, written by `0x40a0c0` in the sector insert `0x4077bc` (FORMAT_GEL.md §5 called it the floor polygon). So in the
+races the instances of the undrawn zones are dropped too. A type-1 entity with `+0x88 == 1` must also pass the sphere
+view test `0x437b00(+0x8c, r = +0x98)`; with `race == 1` additionally `|cam − c|² + r² <= 121000000` (`[0x4aa2f4]`,
+about 11000², `0x42a8c8..0x42a91a`), otherwise it is stamped as handled and not taken. **Not ported** (the visible-instance list world+0x64 is a separate item).
+
+**The sky** (SKY.md §1): the cube is drawn only if a sky face got the stamp; with two groups stamped that can switch off.
+In the data it does not on the track: at every fly-through camera position on the track (below) the sky stayed on; it
+goes off only with the camera outside the track geometry, where the floor group is −1.
+
+Region lists and zones of the data (port, `WOODY_RACEVISLOG=1`): K1R/S1R `1 2 0 3 4` (20 points), K2R/S2R `4 0 1 2 3`
+(14), K3R/S3R `0 1 2 3 4` (33). So the last zone of the track is drawn alone, the others with the next one.
+
+**Port** (round 30, `src/level.c`, `src/render_gl.c`): `gel_floor_poly` / `gel_floor_group` = `0x40a0c0` + `0x40a26a` (the
+cell links and local subtrees are now kept by `read_cells`), `vis_entry` = `0x408210`, `gel_race_regions` = the tail of
+SetRaceInfo; message 1120 calls `rnd_set_race` only for `race_char` (subtype 4/5, `0x401c36`). `world_visibility` takes the
+race path when the list is set and the camera is in a sector with a `.vis`: sectors = the pairs of `vis_entry` (no extra
+"own sector", no union of both entries), groups `z` + next, faces filtered by `FaceBatch.zone` in `add_face`, sky cube only
+if a sky face of those sectors lies in `z`/next (computed before the frustum test). Port choices: `z` not in the list →
+`z` alone (the original reads past the list); the port's sector frustum test stays on top. `WOODY_NORACEVIS=1` turns it
+off (for comparison). Test: `python`-driven fly-through with `--cam` along the path, new vs `WOODY_NORACEVIS=1`: K3R
+0 differing pixels on the track except particles, K1R/K2R the same except where the camera sits outside the track
+geometry (path corners) and at the end of K1R, where the elevated start section (zone 1) above the finish is not drawn
+while its instances still were (the original drops those too, `0x42a840`: now ported as the group filter of `rnd_instance_list`,
+INSTANCE.md §4.1 - the start section's instances seen from the finish are gone as well).
 
 ### 2.2 Board FX emitter (0x34 B; visual only – skippable)
 
@@ -542,7 +583,7 @@ SurfEnter and `0x456210` (plus the global emitter list in `0x46d040`).
 ## 8. Porting notes
 
 Can be skipped or stubbed without changing gameplay: the FX emitter (§2.2, particle system `[0x5e823c]`), the
-render region list (§2.1), rumble `0x44d1b0`, star effect `0x4750e0`, `0x478980` (landing effect / speech bubble),
+render region list (§2.1, ported in round 30), rumble `0x44d1b0`, star effect `0x4750e0`, `0x478980` (landing effect / speech bubble),
 `0x476140` dust, splash `0x478660`, sound 60 (2D engine loop) and sound 59 (boost), the race HUD flags.
 Needed: state 1 ride + crash + race kill, the board transform copy, both anim controllers, the Jumper and MoveCollide
 (already ported for Woody), follow camera behind-mode with the race parameters, messages 1120/1121, checkpoints 1030.
@@ -561,7 +602,7 @@ Surprises / pitfalls:
 * Numeric anim durations (0x5d, 0x70, lean anims) from K1R models 16/17 – need the model files.
 * ~~Number and placement of the type-9 markers~~: 2 on the K boards, 1 on the S boards (port log of 1120).
 * ~~Exact sprite/particle parameters of `0x475440`~~: §2.2.
-* Whether App+0x28 is the same object as `[0x509adc]` (region list read/write) – very likely, not verified.
+* ~~Whether App+0x28 is the same object as `[0x509adc]`~~: yes, `0x42a451` (§2.1).
 * Rotation direction of action 0/1 on screen – derived from the math and CAMERA.md's handedness, verify in-game.
 * Who ticks the board's own skeleton/animation (`vtbl[2]`); presumably the normal instance update, since the board is
   an ordinary level instance with flag 0x20.
@@ -593,8 +634,8 @@ Surprises / pitfalls:
   with a hard fall: 0x6f + the curse bubble) and the dust of ground type 2; the spray emitter of §2.2 (`Player.bfx`, drawn by
   `board_fx_draw` in main_engine.c before the effect pool, puffs = `FX_BOARD_PUFF`; the sprite primitive got mode 0x13).
 * Deviations: a frame with zero displacement does not count as stuck (the NaN compare of §4.5); the crash rays test world
-  polygons and press nodes; rumble is left out (the port has no force feedback); the region list of §2.1 is not used
-  (the port draws world faces per sector); see TODO.md for what is left out.
+  polygons and press nodes; rumble is left out (the port has no force feedback); the region list of §2.1 filters the world
+  faces and the sky since round 30, not yet the instances; see TODO.md for what is left out.
 * Test: `woody.exe <Data> K1R --shot out/x.ppm 4` (jets + smoke trail, the rider leans with the ramp), steering with
   `WOODY_KEYS="2.5:LEFT:1.0"` + `WOODY_ANIMLOG=1` (rider `lanim` and `board lanim` lines), `WOODY_BOARDLOG=1`. Crash, star,
   Kill(8), respawn with "RACE n race bonuses back": `K2R --shot x.ppm 11` (crash ~5.5 s; since the press-node collision the

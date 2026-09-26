@@ -397,26 +397,50 @@ static float world_ground(const Player *p, Vec3 pt, int *found, const Instance *
     *hit_inst = NULL; *hit_node = NULL; *found = f1; g_ground_n = f1 ? gn : (Vec3){ 0, 1, 0 }; g_ground_mat = f1 ? gm : -1; return f1 ? y1 : pt.y;
 }
 
-float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found)
+/* the world_collision behind a GetHeight hit (0x436e03..0x436e65): hit type 2 (an instance press node), the model has
+ * collisions (S+0x60), the node's type code is 1 -> inst+0x70[nvol + sub-index]; anything else 0xffffffff */
+static uint32_t hit_collision(const Instance *hi, const InsNode *hn)
+{
+    if (!hi || !hn || hn->kind != 1 || hn->type_code != 1) return 0xffffffffu;
+    const Model *hm = hi->model; uint32_t k = hm->nvolume_nodes + hn->sub_index;
+    return hm->ncollision_ids && k < hi->nids ? hi->ids[k] : 0xffffffffu;
+}
+/* GetHeight for another actor (skip = its own instance). col (may be NULL) = the world_collision it stands over, for the
+ * generic probe 0x436dc0 of enemies and bombs; n (may be NULL) = the floor normal ([0x4b3108..], GetHeight 0x435650:
+ * (0, 1, 0) and y = pt.y when nothing is found) */
+static float ground_query_full(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col, Vec3 *n)
 {
     const Instance *hi; const InsNode *hn; Vec3 keep = g_ground_n;
     int32_t keep_mat = g_ground_mat;
-    g_ground_skip = skip; g_skip_self = skip ? p->inst : NULL; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_skip_self = NULL; g_ground_n = keep; g_ground_mat = keep_mat;
+    g_ground_skip = skip; g_skip_self = skip ? p->inst : NULL; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_skip_self = NULL;
+    if (n) *n = g_ground_n;
+    g_ground_n = keep; g_ground_mat = keep_mat;
+    if (col) *col = *found ? hit_collision(hi, hn) : 0xffffffffu;
     return y;
 }
+float player_ground_query_col(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col) { return ground_query_full(p, skip, pt, found, col, NULL); }
+float player_ground_query_n(const Player *p, const Instance *skip, Vec3 pt, int *found, Vec3 *n) { return ground_query_full(p, skip, pt, found, NULL, n); }
+float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found) { return ground_query_full(p, skip, pt, found, NULL, NULL); }
 
-/* Landing ring (docs/PERSO_JUMP.md 5): while Woody is off the ground the spot he hangs over is marked on the
- * floor. Only the states in which he falls under his own weight get one: not while a script drives him, not on
- * the rocket, not on a wall and not while he is dying. The drop is unlimited, so a pit shows its bottom. */
-int player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal)
+/* Landing ring 0x44af90 (docs/PERSO_JUMP.md 5), run by the Perso post-render update 0x44b4a0 every frame that is not
+ * paused. Not in Perso state 2 (dead), 4 (climbing), 5 (scripted) or 8 (rocket), nor while the game's mode object is in a
+ * cinematic/menu mode (0x44f2e0); then even the timers stand still. Otherwise: on the ground +0x580 counts up and the
+ * alpha +0x588 drops 1020/s (gone in 0.25 s), in the air +0x584 counts up and the alpha climbs 255/s (full after 1 s),
+ * clamped to 0..255. The ring itself is one sprite: bank 0 image 3 (the ripple ring of the splash, byte-identical to
+ * image 58), mode 0x12, size 80, rotation 64/512, rgb 0.6, alpha +0x588 * 0.8/255, flags 6 (own colour and rotation,
+ * flat in the plane of S+0x230 = the floor normal P+0x458, additive), at (x, floor height P+0x224 + 1, z) - straight
+ * under him, also after landing while it fades. */
+int player_landing_ring(Player *p, float dt, Vec3 *pos, Vec3 *normal, float *alpha)
 {
-    if (!p->inst || p->on_ground || p->dead_kind || p->script_act || p->ride || p->climb_sub || p->use_root) return 0;
-    const Instance *hi; const InsNode *hn; int found = 0; Vec3 keep = g_ground_n; int32_t keep_mat = g_ground_mat;
-    float y = world_ground(p, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found, &hi, &hn);
-    Vec3 n = g_ground_n; g_ground_n = keep; g_ground_mat = keep_mat;
-    if (!found) return 0;
-    *pos = (Vec3){ p->pos.x, y, p->pos.z };
-    if (normal) *normal = n;
+    if (!p->inst || p->dead_kind || p->script_act || p->ride || p->climb_sub || p->use_root) return 0;   /* 0x44af93: states 5, 4, 2, 8 */
+    if (p->on_ground) { p->ring_ground_t += dt; p->ring_air_t = 0; } else { p->ring_air_t += dt; p->ring_ground_t = 0; }   /* 0x44afd4, byte +0x22c */
+    if (p->ring_ground_t > 0) p->ring_a -= dt * 1020.0f;                /* [0x4aac70] */
+    else if (p->ring_air_t > 0) p->ring_a += dt * 255.0f;               /* [0x4aa308] */
+    if (p->ring_a > 255.0f) p->ring_a = 255.0f;
+    else if (p->ring_a < 0) { p->ring_a = 0; return 0; }                /* 0x44b185: below 0 it is reset and nothing is drawn */
+    *pos = (Vec3){ p->pos.x, p->floor_y + 1.0f, p->pos.z };             /* P+0x1f4, P+0x224 + 1.0, P+0x1fc */
+    if (normal) *normal = p->race_floor_n;                              /* P+0x458 = Mover+0xd0, the floor query's normal (docs/RACE.md 1) */
+    *alpha = p->ring_a * 0.0031372549f;                                 /* [0x4aac6c] = 0.8 / 255 */
     return 1;
 }
 
@@ -781,39 +805,40 @@ static void beak_vector(const Player *p, Vec3 *a, Vec3 *b)
         *a = ins_point_world(in, mo->nodes[i].point_base); *b = ins_point_world(in, mo->nodes[i].point_base + 1); return; }
     *a = *b = in->position;
 }
-/* hit loop 0x457ceb: dash = swept circle (radius 100 + target radius) along dash start -> position in xz plus a height
- * overlap; charge run = 50 long beak segment against the target's vertical cylinder. The target handles the hit itself:
- * vtbl[39](p, 1.0, &dir, &hitpoint, isPeck) (0x458b53), whose Enemy_TakeDamage 0x41adc0 puts the hit star 0x4750e0 on the
- * hit point - the beak tip p+0x59c for the dash, the middle of the beak segment for the charge run (docs/PERSO_JUMP.md 3). */
+/* hit loop 0x457ceb..0x458b96 (docs/PERSO_JUMP.md 3), over every actor of the list (t != p), tp = t->vtbl[34]() = its feet:
+ *  dash (substate 2): 0x433920(&dash start p+0x5e4, &p+0x1f4 (the position), 100, &tp, t->vtbl[32]() radius, t->vtbl[33]() height)
+ *    = a sphere of 100 swept along the dash against the target's capsule-shaped cylinder; hit point = the beak tip p+0x59c, dir 0;
+ *  otherwise (the charge run 9/10, and every actor after a dash hit, whose substate is 3 by then): the beak segment
+ *    a = p+0x59c, b = a + normalize(p+0x5a8 - a) * 50 (0x4a9030, written back to p+0x5a8) against 0x433de0(a, b, tp + (0, h/2, 0),
+ *    radius, h); a hit writes [0x53a558] = 0.5, hit point = lerp(a, b, [0x53a558]), dir = normalize_xz(tp - p+0x1f4); in
+ *    substate 10 also Mover_SetDir(M, dir) 0x459ff0 (he turns to the target at once).
+ * The loop does not stop on a hit. The target handles it: vtbl[39](p, 1.0, &dir, &hitpoint, isPeck) (0x458b53), whose
+ * Enemy_TakeDamage 0x41adc0 puts the hit star 0x4750e0 on the hit point; a true answer = vtbl[38](3) (inside enemy_hit). */
 static void attack_hit_loop(Player *p)
 {
     if (!p->enemies) return;
+    Vec3 ba, bb; beak_vector(p, &ba, &bb);                               /* 0x457ceb: without the marker both are the instance position */
+    { Vec3 d = vsub(bb, ba); float l = sqrtf(vdot(d, d)); if (l > 0) d = (Vec3){ d.x / l, d.y / l, d.z / l };   /* 0x4588af..0x458987 */
+      bb = (Vec3){ ba.x + d.x * 50.0f, ba.y + d.y * 50.0f, ba.z + d.z * 50.0f }; }
     for (int i = 0; i < p->enemies->n; i++) {
         Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible) continue;
-        float r = enemy_radius(e), h = enemy_height(e); int hit = 0; Vec3 dir = { 0, 0, 0 };
-        if (p->atk == 2) {
-            float ax = p->dash_start.x, az = p->dash_start.z, bx = p->pos.x - ax, bz = p->pos.z - az, l2 = bx * bx + bz * bz;
-            float t = l2 > 1e-6f ? ((e->pos.x - ax) * bx + (e->pos.z - az) * bz) / l2 : 0; if (t < 0) t = 0; if (t > 1) t = 1;
-            float cx = ax + bx * t - e->pos.x, cz = az + bz * t - e->pos.z, R = 100.0f + r;
-            hit = cx * cx + cz * cz <= R * R && p->pos.y < e->pos.y + h + 100.0f && p->pos.y + P_BODY_H > e->pos.y;
+        float r = enemy_radius(e), h = enemy_height(e); Vec3 tp = e->pos, dir = { 0, 0, 0 }, pt;
+        int peck = p->atk == 2;
+        if (peck) {
+            if (!sweep_sphere_cyl(p->dash_start, p->pos, 100.0f, tp, r, h)) continue;   /* 0x457dcb */
+            pt = ba;                                                                     /* 0x458a10 */
         } else {
-            Vec3 f = { sinf(p->yaw), 0, cosf(p->yaw) };
-            for (int k = 0; k <= 2 && !hit; k++) {                        /* beak segment: from the body surface 50 forward, at head height */
-                float s = P_RADIUS * 0.5f + 25.0f * k, qx = p->pos.x + f.x * s - e->pos.x, qz = p->pos.z + f.z * s - e->pos.z;
-                hit = qx * qx + qz * qz <= (r + 15.0f) * (r + 15.0f) && p->pos.y + P_BODY_H * 0.6f > e->pos.y && p->pos.y < e->pos.y + h;
-            }
-            if (hit) { float dx = e->pos.x - p->pos.x, dz = e->pos.z - p->pos.z, l = sqrtf(dx * dx + dz * dz); if (l > 1e-3f) dir = (Vec3){ dx / l, 0, dz / l }; }
+            if (!(seg_cyl(ba, bb, (Vec3){ tp.x, tp.y + h * 0.5f, tp.z }, r, h) >= 0)) continue;   /* 0x4589d0 */
+            g_hit_frac = 0.5f;                                                           /* 0x4589e9: the answer, always 0.5 */
+            float dx = tp.x - p->pos.x, dz = tp.z - p->pos.z, l = sqrtf(dx * dx + dz * dz);   /* 0x458a3c */
+            dir = l > 0 ? (Vec3){ dx / l, 0, dz / l } : (Vec3){ dx, 0, dz };
+            pt = (Vec3){ ba.x * (1 - g_hit_frac) + bb.x * g_hit_frac, ba.y * (1 - g_hit_frac) + bb.y * g_hit_frac, ba.z * (1 - g_hit_frac) + bb.z * g_hit_frac };
+            if (p->atk == 10) p->yaw = atan2f(dir.x, dir.z);                            /* 0x458b07: Mover_SetDir */
         }
-        if (!hit) continue;
-        int was = p->atk; if (p->atk == 2) p->atk = 3;
-        Vec3 ba, bb; beak_vector(p, &ba, &bb);
-        if (was != 2) {                                                    /* charge: b = a + normalize(p+0x5a8 - a) * 50, hit point = lerp(a, b, 0.5) */
-            Vec3 d = vsub(bb, ba); float l = sqrtf(vdot(d, d)); if (l > 1e-4f) { ba.x += d.x / l * 25.0f; ba.y += d.y / l * 25.0f; ba.z += d.z / l * 25.0f; }
-        }
-        /* no SoundFx 6 here: that is the bomb explosion (0x44d730 is in Bomb_Explode 0x44d6e0), the hit loop plays nothing */
-        int died = enemy_hit(e, 1.0f /* P+0x90 */, dir, ba, was == 2);    /* isPeck = 1 for the dash, 0 for the charge run */
-        printf("  ATTACK hit enemy %u (%s)%s at %.0f %.0f %.0f (feet %.0f %.0f %.0f)\n", e->inst->index, was == 2 ? "peck" : "charge", died ? " - dead" : "", ba.x, ba.y, ba.z, p->pos.x, p->pos.y, p->pos.z);
-        if (was == 2) return;
+        if (peck) p->atk = 3;                                                            /* 0x458b18 */
+        /* rumble 0x44d1b0 (0.5, 0.3) not ported; no SoundFx 6 here: that is the bomb explosion (0x44d730 is in Bomb_Explode 0x44d6e0) */
+        int died = enemy_hit(e, 1.0f /* P+0x90 */, dir, pt, peck);         /* isPeck = 1 for the dash, 0 otherwise */
+        printf("  ATTACK hit enemy %u (%s)%s at %.0f %.0f %.0f (feet %.0f %.0f %.0f)\n", e->inst->index, peck ? "peck" : "charge", died ? " - dead" : "", pt.x, pt.y, pt.z, p->pos.x, p->pos.y, p->pos.z);
     }
 }
 
@@ -1079,8 +1104,8 @@ void player_game_tick(Player *p, EkoVM *vm, float dt)
     case 3: p->game_t += dt; if (p->game_t >= p->death_delay - 1.0f) { iris_set(p, 1.0f, 0, 1.0f); p->game_state = 4; } break;   /* 0x445ac1 */
     case 4: if (iris_tick(p, dt)) {
                 if (p->lives > 0) p->lives--;                            /* 0x44c730: life lost, leave all volumes, msgmask 0x10 pulse */
-                if (vm) { eko_actor_leave_all(vm, p->inst->id); eko_msgmask_set(vm, p->inst->id, 0x10); p->mask10_frames = 2; }
-                for (uint32_t v = 0; v < p->nvol; v++) p->inside[v] = 0;
+                player_leave_all(p, vm);
+                if (vm) { eko_msgmask_set(vm, p->inst->id, 0x10); p->mask10_frames = 2; }
                 p->game_state = 0; p->game_t = 0.25f; } break;
     }
     if (p->mask10_frames > 0 && --p->mask10_frames == 0 && vm) eko_msgmask_clear(vm, p->inst->id, 0x10);
@@ -1088,7 +1113,10 @@ void player_game_tick(Player *p, EkoVM *vm, float dt)
 /* Pause menu "Start again" (page 0x19 = the pause menu while riding, result 18, 0x40584d): 0x445930 = the respawn step of the Game
  * sequence (state 0 with 0.1 s to go, the iris shut, Perso respawn 0x44a810(0) at the checkpoint), then the race restart 0x4560f0:
  * no checkpoint any more (+0x330 = 0, +0x4e0 = 0), respawn position = the start (+0x318 = +0x30c), respawn again. State 0 then
- * respawns once more after 0.1 s and opens the iris 0 -> 1 in 1 s (docs/PERSO_FRAME.md 4.1), as after a death but no life is lost. */
+ * respawns once more after 0.1 s and opens the iris 0 -> 1 in 1 s (docs/PERSO_FRAME.md 4.1), as after a death but no life is lost.
+ * The race bonuses come back through Reset -> SurfEnter (race_enter: 0x44f8a0, +0x264 = +0x4e0 = 0). "Reset all actors" 0x40c040
+ * (vtbl[28] of every Npc but the Perso) is a no-op in the shipped game: slot 28 is 0x445840 = a bare `ret` in the Npc, Enemy,
+ * Perso and all nine enemy/boss class vtables, so neither this restart nor a death respawn resets an enemy. [0x4b3354] = 0.2 has no reader. */
 void player_restart(Player *p)
 {
     iris_set(p, 0, 0, 0.1f); p->iris = 0; p->iris_t = 0; p->game_state = 0; p->game_t = 0.1f;   /* 0x445930: Fader(Game+4, 0, 0, 0.1), state 0, timer 0.1 */
@@ -1337,6 +1365,22 @@ static void player_volumes_y(Player *p, EkoVM *vm, float probe_y)
 
 static Quat q_unit(Quat q);
 static void player_volumes(Player *p, EkoVM *vm) { player_volumes_y(p, vm, P_VOL_PROBE_Y); }
+/* 0x44b888..0x44b8c4, after the state dispatch of 0x44b530 in every Perso state: msgmask 0x200 = onGround +0x22c (getter
+ * 0x44bcf0; not "Perso state is free"). +0x22c is written only by Perso_MoveCollide 0x4624f0 (0x462725 / 0x462733: the
+ * result of the probe 0x436f00, states 0/1/2/3/4/6) and set to 1 by Reset 0x44abc0, the ground snap 0x4629da and a scripted
+ * action with a vector 0x44dede; states 5/7/8/9 skip 0x4624f0 and leave it as it was. keep = one of those states (the port's
+ * rocket ride writes on_ground = 0 for its own use, the scripted action does not go through the ground test) */
+static void perso_mask200(Player *p, EkoVM *vm, int keep)
+{
+    if (!keep) p->ground_22c = p->on_ground;
+    if (vm) { if (p->ground_22c) eko_msgmask_set(vm, p->inst->id, 0x200); else eko_msgmask_clear(vm, p->inst->id, 0x200); }   /* 0x44b89c / 0x44b8bf */
+}
+/* 0x443ff0(perso id): PersoLeave on every volume the VM has him in (0x4444b0); the port's "was inside" cache follows */
+void player_leave_all(Player *p, EkoVM *vm)
+{
+    if (vm) eko_actor_leave_all(vm, p->inst->id);
+    for (uint32_t v = 0; v < p->nvol; v++) { if (p->inside[v]) printf("  VOL leave_all 0x%x (inst %u)\n", p->vol_id[v], p->vol_inst[v]->index); p->inside[v] = 0; }
+}
 
 /* ---- Perso state 1: riding the race board (subtypes 4/5 = script types 18/19, docs/RACE.md) ------------------ */
 static Vec3 xz_unit(Vec3 v) { float l = sqrtf(v.x * v.x + v.z * v.z); return l > 0 ? (Vec3){ v.x / l, 0, v.z / l } : (Vec3){ v.x, 0, v.z }; }
@@ -1479,20 +1523,27 @@ float player_body_height(const Player *p)                                 /* 0x4
 }
 /* ducking 0x465b10 (docs/PERSO_DUCK.md 1.2): hold action 5 on the ground -> 0x31 (down, 0.375 s), 0x32 (lying, every frame),
  * released and the segment feet+61 .. feet+132 free -> 0x33 (up, 0.2 s). Sub-states 1 and 3 end on their timer only.
- * With a bomb 0x4e/0x4f/0x50. Every frame he is down, LockMove(dt, 0) = max: no walking, turning, jumping or attacking. */
-static void duck_update(Player *p, const PlayerInput *in, float dt)
+ * With a bomb 0x4e/0x4f/0x50. Every frame he is down, LockMove(dt, 0) = max: no walking, turning, jumping or attacking.
+ * It is a pre-step of Perso::Update (0x44b797) for EVERY Perso state but 2 (dead) and attacks, so it also runs in the states
+ * 3/4/5/7/8/9 (docs/PERSO_DUCK.md 1.3). anim_owned: the Perso state owns the animation there - climbing 0x14..0x17 (prio
+ * 5000..5002), a scripted action (6000), the rocket 0x3b..0x3e (1800) all outrank the duck set (1750), and the handlers
+ * 0x4651d0 / 0x44db50 / 0x4657f0 read neither +0x694 nor +0x238 - so only the sub-state, its timers, the lock and the body
+ * height (61, for shots and lasers) go on, and he comes out of the state still ducking (Reset 0x44ad28 is the only clear).
+ * ground = +0x22c as 0x44bcf0 reads it: the port's on_ground, except on the rocket, where the port keeps on_ground 0 but the
+ * original's flag stays 1 from the mount (0x465740 needs the ground; 0x4657f0 never writes +0x22c and MoveCollide does not run). */
+static void duck_update(Player *p, const PlayerInput *in, float dt, int anim_owned, int ground)
 {
     if (p->dead_kind || p->atk) return;                                     /* state 2 / +0x5b4: nothing, no LockMove either */
     int b = p->state6;                                                      /* 0x465bc0: the bomb set whenever state == 6, bomb or not */
     switch (p->duck) {
-    case 0: if (in->duck && p->on_ground) { p->duck = 1; p->duck_anim = b ? 0x4e : 0x31; p->duck_t = anim_len(p, p->duck_anim, 0); p->lanim = -1; } break;
+    case 0: if (in->duck && ground) { p->duck = 1; p->duck_anim = b ? 0x4e : 0x31; p->duck_t = anim_len(p, p->duck_anim, 0); if (!anim_owned) p->lanim = -1; } break;
     case 1: if ((p->duck_t -= dt) <= 0) p->duck = 2; break;
     case 2: p->duck_anim = b ? 0x4f : 0x32;
             if (!in->duck) {                                                /* 0x4359b0 from feet + P+0x10 to feet + P+0x0c - P+0x10: any hit keeps him down */
                 Vec3 a = { p->pos.x, p->pos.y + P_DUCK_H, p->pos.z }, e = { p->pos.x, p->pos.y + (P_BODY_H - P_DUCK_H), p->pos.z }, n; float f;
                 int blocked = gel_ray_frac(p->gel, a, e) <= 1.0f || (player_ray_instances(p, p->inst, a, e, &f, &n, NULL) && f <= 1.0f);
                 if (getenv("WOODY_DUCKLOG") && blocked) { const Instance *hi = NULL; float gw = gel_ray_frac(p->gel, a, e); int ih = player_ray_instances(p, p->inst, a, e, &f, &n, &hi); printf("  DUCK blocked: world %.3f inst %d (%u) f %.3f\n", gw, ih, hi ? hi->index : 0u, f); }
-                if (!blocked) { p->duck_anim = b ? 0x50 : 0x33; p->duck_t = anim_len(p, p->duck_anim, 0); p->duck = 3; p->lanim = -1; }
+                if (!blocked) { p->duck_anim = b ? 0x50 : 0x33; p->duck_t = anim_len(p, p->duck_anim, 0); p->duck = 3; if (!anim_owned) p->lanim = -1; }
             }
             break;
     case 3: if ((p->duck_t -= dt) <= 0) p->duck = 0; break;
@@ -1717,7 +1768,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->bonus_inv > 0) p->bonus_inv -= dt;                             /* 0x44b1fa */
     bonus_blink(p, dt);
     if (p->game_state == 0) return;                                      /* waiting for the respawn */
-    look_update(p, in);                                                   /* 0x44b980 runs in every Perso state too (the original calls it after the attack controller) */
+    if (!p->dead_kind && !p->race_char && (p->script_act || p->ride || p->climb_sub)) duck_update(p, in, dt, 1, p->ride ? 1 : p->on_ground);   /* 0x465b10 also in the states 5 / 8 / 4, which return early below; before 0x44b980 as in 0x44b797 */
+    look_update(p, in);                                                 /* 0x44b980 runs in every Perso state too (the original calls it after the attack controller) */
     special_update(p, in, dt);                                            /* 0x458bf0 runs in every Perso state */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
@@ -1755,7 +1807,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             } else lock_move(p, 0.3f);                                     /* 17: the pose is held until the teleport (message 26) resets the controller */
             p->script_act = 0;
         }
-        player_apply_transform(p); return;
+        player_apply_transform(p); perso_mask200(p, vm, 1); return;       /* state 5: no 0x4624f0, +0x22c kept */
     }
     if (!p->dead_kind && p->ride) {                                        /* state 8, 0x4657f0: the Perso follows the rocket (seat marker + its full rotation); no move, no collision, no gravity */
         Quat rq = p->ride_q; int st = p->ride_state, can = 0, ending = 0;
@@ -1775,18 +1827,18 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             p->ride = NULL; jumper_reset(&p->jumper); jumper_force_fall(&p->jumper, 1); p->on_ground = 0; p->lanim = -1; p->speed = 0; p->ramp_phase = 0; p->action_prev = in->action;
             p->floor_y = p->pos.y; player_apply_transform(p); puts("  PLAYER leaves the rocket");
         } else { p->on_ground = 0; p->inst->position = p->pos; p->inst->quat = p->ride_cur; mat4_from_trs(&p->inst->world, p->pos, p->ride_cur, p->inst->scale); }
-        if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200);
-        player_volumes_y(p, vm, 20.0f); return;                            /* 0x462760(p, 20.0) */
+        player_volumes_y(p, vm, 20.0f);                                    /* 0x462760(p, 20.0) */
+        perso_mask200(p, vm, 1); return;                                   /* state 8 skips 0x4624f0: +0x22c keeps the value from before the ride */
     }
     if (!p->dead_kind && p->climb_sub) {                                   /* state 4: 0x4651d0, then Perso_MoveCollide 0x4624f0 (0x44b834) */
         Vec3 d = climb_update(p, in, dt); const Instance *hi; const InsNode *hn;
         p->vel = (Vec3){ d.x / dt, d.y / dt, d.z / dt };
         move_collide(p, &d, dt, 0, &hi, &hn);
-        player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return;
+        player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return;   /* state 4 runs 0x4624f0: +0x22c = its probe */
     }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     int racing = p->race_char && !p->dead_kind;                           /* Perso state 1: no attacks, no Mover (0x44b530) */
-    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } duck_update(p, in, dt); }
+    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return; } duck_update(p, in, dt, 0, p->on_ground); }
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
     else {
@@ -1854,7 +1906,9 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
     disp = p->use_atk_disp ? p->atk_disp : (Vec3){ p->move_dir.x * p->speed * dt, p->jumper.dy, p->move_dir.z * p->speed * dt };
-    int hlock = p->duck != 0;                                              /* 0x44bc16: +0x238 > 0 zeroes the horizontal vector (walk, slide, knockback); the port only applies that while ducked */
+    int hlock = p->move_lock > 0;                                          /* 0x44bc16: ANY LockMove (+0x238 > 0: ducking, hard landing, special attack, bomb pick-up/throw,
+                                                                            * message 30, pecks) zeroes the horizontal vector h = walk + slide (RampB) + knockback (RampC); the
+                                                                            * jumper's vertical and the attack's own displacement (+0x5bc) are not touched (docs/PERSO_DUCK.md 2.2) */
     if (hlock && !p->use_atk_disp) disp.x = disp.z = 0;
     if (p->push_t > 0 || p->push_speed > 0) {                              /* RampC 0x45acb0: 500 u/s, 0.1 s up, 0.5 s out */
         if (p->push_t > 0) { p->push_t -= dt; p->push_speed += 500.0f / 0.1f * dt; if (p->push_speed > 500.0f) p->push_speed = 500.0f; }
@@ -1984,9 +2038,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         } else if (p->cur_col != 0xffffffffu) {
             eko_col_perso_unpress(vm, p->cur_col, p->inst->id); p->events_sent++; printf("  COL unpress 0x%x\n", p->cur_col); p->cur_col = 0xffffffffu;
         }
-        /* msgmask 0x200 = "player stands on the ground" (0x44b89c / 0x44b8bf) */
-        if (p->on_ground) eko_msgmask_set(vm, p->inst->id, 0x200); else eko_msgmask_clear(vm, p->inst->id, 0x200);
     }
+    perso_mask200(p, vm, 0);                                              /* msgmask 0x200 = onGround +0x22c */
 
     player_volumes(p, vm);
 }
@@ -2174,6 +2227,7 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
     p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
+    if (have) p->ground_22c = 1;                                    /* 0x44dede: onGround = 1 only with a vector (msgmask 0x200) */
     p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = anim_len(p, lg, 0); p->script_faded = 0;
     if (act == 18) p->fade_req = 2;   /* fade in 0.5 s on the first frame (0x44dc2b). The camera is NOT cut here: the tail of 0x44dda0
                                        * puts it on the animation's own camera track (message 1040 in main_engine.c) and a cut back to the
@@ -2190,7 +2244,7 @@ void player_ground_snap(Player *p)
     p->pos.y = found ? gy : p->pos.y + P_PROBE_Y;                      /* pos.y = [0x53a568] always: with nothing below it still holds the probe height
                                                                          * (traced: the W2B boss intro ends 53 under the floor, NotFound -> feet + 43,
                                                                          * and the next frame's step-up puts him on the floor 10 higher) */
-    p->floor_y = p->pos.y; jumper_reset(&p->jumper); p->on_ground = 1; player_apply_transform(p);
+    p->floor_y = p->pos.y; jumper_reset(&p->jumper); p->on_ground = 1; p->ring_a = 0; p->ring_ground_t = 1.0f; player_apply_transform(p);   /* +0x588 = 0, +0x580 = 1.0 */
 }
 
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44ce11 -> 0x44a650: SetPos + ground snap 0x462990, anim controllers reset, camera cut 0x458f90 */

@@ -58,6 +58,27 @@ int win_open(Window *w, const char *title, int width, int height)
 }
 void win_poll(Window *w) { MSG m; w->mouse_dx = w->mouse_dy = 0; while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageA(&m); } }
 void win_swap(Window *w) { SwapBuffers((HDC)w->hdc); }
+void win_mode(Window *w, int width, int height, int full)
+{
+    HWND h = (HWND)w->hwnd; MONITORINFO mi = { sizeof mi };
+    GetMonitorInfoA(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
+    if (full) {
+        SetWindowLongA(h, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        return;
+    }
+    RECT rc = { 0, 0, width, height }; AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+    int fw = rc.right - rc.left - width, fh = rc.bottom - rc.top - height, aw = mi.rcWork.right - mi.rcWork.left - fw, ah = mi.rcWork.bottom - mi.rcWork.top - fh;
+    if (width > aw || height > ah) { float s = (float)aw / width < (float)ah / height ? (float)aw / width : (float)ah / height; printf("window %dx%d does not fit the screen: %dx%d\n", width, height, (int)(width * s), (int)(height * s)); width = (int)(width * s); height = (int)(height * s); }
+    SetWindowLongA(h, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+    SetWindowPos(h, HWND_NOTOPMOST, mi.rcWork.left + (aw - width) / 2, mi.rcWork.top + (ah - height) / 2, width + fw, height + fh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+}
+int win_vsync(int interval)
+{
+    typedef BOOL (WINAPI *SwapFn)(int);
+    SwapFn f = (SwapFn)(void (*)(void))wglGetProcAddress("wglSwapIntervalEXT");
+    return f && f(interval) ? 0 : -1;
+}
 
 /* screen brightness like the original's fader 0x4776d0: 1 = normal, 0 = black */
 void rnd_fade(float brightness)
@@ -274,7 +295,9 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
     r->face_stamp = (uint32_t *)calloc(gel->npolys ? gel->npolys : 1, 4);
     r->sec_vis = (uint8_t *)calloc(gel->nsectors ? gel->nsectors : 1, 1);
     r->sec_prev = (uint8_t *)calloc(gel->nsectors ? gel->nsectors : 1, 1);
-    r->sec_dirty = 1;
+    r->sec_dirty = 1; r->sky_on = 1;
+    for (int k = 0; k < 6; k++) r->race[k] = -1;                                  /* no race region list: the plain .vis path */
+    for (uint32_t z = 0, i = 0; z < gel->ngroups; z++) for (; i < gel->groups[z].end && i < gel->npolys; i++) r->face_batch[i].zone = z;
     for (uint32_t g = 0; g < tex->ngroups; g++) {
         TexGroup *tg = &tex->groups[g]; tg->gl_frames = (uint32_t *)calloc(tg->frame_count ? tg->frame_count : 1, 4);
         for (uint32_t f = 0; f < tg->frame_count; f++) tg->gl_frames[f] = upload_texture(tg, (int)f);
@@ -298,6 +321,7 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
         uint32_t grp = m->group; uint32_t gflags = tex->groups[grp].flags;
         if (((gflags >> 8) & 0xff) == 2) {                                         /* sky group (0x42acea): the face is never drawn, it only switches the sky cube on */
             TexGroup *sg = &tex->groups[grp];
+            r->face_batch[i].sky = 1;
             if (!r->have_sky) { r->have_sky = 1; r->sky_hu = 0.5f / (float)sg->width; r->sky_hv = 0.5f / (float)sg->height; for (int f = 0; f < 5; f++) r->sky_tex[f] = sg->gl_frames[(uint32_t)f < sg->frame_count ? f : 0]; }
             continue;
         }
@@ -408,8 +432,10 @@ static void idx_reserve(struct WorldBatch *b, uint32_t extra)
 static void add_face(Renderer *r, uint32_t f)
 {
     if (f >= r->gel->npolys || r->face_stamp[f] == r->stamp_gen) return;
+    const struct FaceBatch *fb = &r->face_batch[f];
+    if (r->race_vis && (int32_t)fb->zone != r->race_zone[0] && (int32_t)fb->zone != r->race_zone[1]) return;   /* 0x42ac32: only the polygons of a marked group carry the frame stamp */
     r->face_stamp[f] = r->stamp_gen;
-    const struct FaceBatch *fb = &r->face_batch[f]; if (!fb->ntris) return;
+    if (!fb->ntris) return;
     struct WorldBatch *b = (fb->lit ? r->litb : r->batches) + fb->group;
     idx_reserve(b, fb->ntris * 3);
     for (uint32_t k = 0; k < fb->ntris * 3; k++) b->idx[b->nidx++] = fb->tri0 * 3 + k;
@@ -417,12 +443,36 @@ static void add_face(Renderer *r, uint32_t f)
 static void world_visibility(Renderer *r, const FreeCamera *cam, const float pl[6][4])
 {
     const GelFile *g = r->gel; uint32_t ns = g->nsectors;
-    r->pvs_on = 0;
+    r->pvs_on = 0; r->race_vis = 0; r->sky_on = 1; r->race_zone[0] = r->race_zone[1] = -2;
     if (!r->cull || !ns || !g->sectors) { r->drawn_tris = r->total_tris; r->nsec_vis = ns; return; }
     memset(r->sec_vis, 0, ns);
     int32_t cs = r->cull >= 2 && r->vis ? gel_sector(g, cam->pos) : -1;
     uint32_t npairs = 0;
-    if (cs >= 0 && (uint32_t)cs < r->vis->nsectors) {                          /* 0x42a980: the .vis list of that sector */
+    const VisList *E = r->race[0] != -1 && cs >= 0 ? vis_entry(r->vis, g, cam->pos) : NULL;   /* 0x401c36: race list given and its first entry != -1 */
+    if (E) {
+        /* Race path of 0x42a980 (docs/RACE.md 2.1): the sectors are still every pair's first word of the camera's .vis entry
+         * (0x408210: the entry whose id is the floor group under the camera), but the groups are not the pairs' second words:
+         * only z = the floor group under the camera (0x42aae2) and the region list entry after z (0x42ab25). z = -1 marks no
+         * group at all (0x42aaed), so no world face is drawn. The original searches z in the list without a bound
+         * (0x42aaef..0x42aafb, past the -1 at +0xd4 into whatever follows); the port stops at the 5 entries and then takes z alone. */
+        int32_t z = gel_floor_group(g, cam->pos), z2 = -1;
+        if (z != -1) { int k = 0; while (k < 5 && r->race[k] != z) k++; if (k < 5) z2 = r->race[k + 1]; }
+        r->race_vis = 1; r->pvs_on = 1; r->race_zone[0] = z; r->race_zone[1] = z2;
+        for (uint32_t k = 0; k < E->npairs; k++) r->sec_vis[E->pairs[2 * k]] = 1;   /* no "own sector" here: the original takes the pairs only */
+        npairs = E->npairs;
+        /* The sky cube needs a sky face among the stamped faces of those sectors (0x42acea), before any frustum test:
+         * with only two groups stamped it can go off. Recomputed when the entry or the two groups change. */
+        if (E != (const VisList *)r->race_entry || z != r->race_prev[0] || z2 != r->race_prev[1]) {
+            int sky = 0;
+            for (uint32_t k = 0; k < E->npairs && !sky; k++) { const GelCell *S = &g->sectors[E->pairs[2 * k]];
+                for (uint32_t q = 0; q < S->npolys && !sky; q++) { uint32_t f = S->polys[q]; if (f >= g->npolys) continue;
+                    const struct FaceBatch *fb = &r->face_batch[f]; sky = fb->sky && ((int32_t)fb->zone == z || (int32_t)fb->zone == z2); } }
+            r->race_entry = E; r->race_sky = sky; r->sec_dirty = 1;
+        }
+        r->sky_on = r->race_sky;
+        if ((z != r->race_prev[0] || z2 != r->race_prev[1]) && getenv("WOODY_RACEVISLOG"))
+            printf("  RACEVIS camera (%.0f %.0f %.0f) sector %d entry id %u (%u pairs): groups %d + %d, sky %d\n", cam->pos.x, cam->pos.y, cam->pos.z, cs, E->id, E->npairs, z, z2, r->race_sky);
+    } else if (cs >= 0 && (uint32_t)cs < r->vis->nsectors) {                   /* 0x42a980: the .vis list of that sector */
         const VisSector *S = &r->vis->sectors[cs];
         for (uint32_t e = 0; e < S->nlists; e++) {
             const VisList *L = &r->vis->pool[S->first + e];
@@ -431,17 +481,18 @@ static void world_visibility(Renderer *r, const FreeCamera *cam, const float pl[
                                                      * meaning of the list id is not confirmed, and a union can only show too much */
         }
     }
-    if (npairs) { r->sec_vis[cs] = 1; r->pvs_on = 1; }                         /* the camera's own sector is always in */
+    if (r->race_vis) {}
+    else if (npairs) { r->sec_vis[cs] = 1; r->pvs_on = 1; }                    /* the camera's own sector is always in */
     else memset(r->sec_vis, 1, ns);                                            /* no sector, or an empty list: show everything */
     r->nsec_vis = 0;
     for (uint32_t i = 0; i < ns; i++) if (r->sec_vis[i]) { if (aabb_in_frustum(pl, g->sectors[i].bbox)) r->nsec_vis++; else r->sec_vis[i] = 0; }
     /* the index lists only have to be rebuilt when the set of sectors changed */
-    if (!r->sec_dirty && !memcmp(r->sec_vis, r->sec_prev, ns)) return;
-    memcpy(r->sec_prev, r->sec_vis, ns); r->sec_dirty = 0;
+    if (!r->sec_dirty && !memcmp(r->sec_vis, r->sec_prev, ns) && r->race_zone[0] == r->race_prev[0] && r->race_zone[1] == r->race_prev[1]) return;
+    memcpy(r->sec_prev, r->sec_vis, ns); r->sec_dirty = 0; r->race_prev[0] = r->race_zone[0]; r->race_prev[1] = r->race_zone[1];
     for (uint32_t i = 0; i < r->nbatches; i++) { r->batches[i].nidx = 0; r->litb[i].nidx = 0; }
     if (++r->stamp_gen == 0) { memset(r->face_stamp, 0, (size_t)g->npolys * 4); r->stamp_gen = 1; }
     for (uint32_t i = 0; i < ns; i++) if (r->sec_vis[i]) { const GelCell *S = &g->sectors[i]; for (uint32_t k = 0; k < S->npolys; k++) add_face(r, S->polys[k]); }
-    for (uint32_t k = 0; k < g->nloose; k++) add_face(r, g->loose[k]);         /* faces no sector lists: always drawn */
+    for (uint32_t k = 0; k < g->nloose; k++) add_face(r, g->loose[k]);         /* faces no sector lists: always drawn (race path: if in a marked group) */
     r->drawn_tris = 0;
     for (uint32_t i = 0; i < r->nbatches; i++) r->drawn_tris += (r->batches[i].nidx + r->litb[i].nidx) / 3;
     for (int t = 0; t < 16; t++) {              /* the .lit light polygons follow the face they lie on */
@@ -507,6 +558,7 @@ void rnd_free(Renderer *r)
     for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->batches[i].idx); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); free(r->litb[i].idx); }
     free(r->batches); free(r->litb); free(r->face_bound);
     free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev); free(r->model_blend); free(r->links); r->links = NULL; r->nlinks = r->links_cap = 0;
+    free(r->list); free(r->list_sec); free(r->list_grp);
     for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); free(r->lightb[t].idx); free(r->lightb[t].face); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
     for (uint32_t g = 0; r->tex && g < r->tex->ngroups; g++) {                 /* the level's textures live in the GL context, not in the TexFile */
         TexGroup *tg = &r->tex->groups[g]; if (!tg->gl_frames) continue;
@@ -691,6 +743,11 @@ static int shadow_caster(const Instance *inst)
     return inst->type == 1 || inst->type == 2 || inst->type == 3 || inst->type == 18 || inst->type == 19 || (inst->setflags & 1) || (inst->type >= 4 && inst->type <= 13);
 }
 static Vec3 g_cam_pos;                 /* the camera of this frame, for the per polygon back-face test and the culling */
+/* Drawn only as a member of the frame's instance list (0x42a840 vtbl[2](0x81), 0x42b380 vtbl[2](5/7)): the base-class instances
+ * and the enemies. Not the Perso (0x42b380 draws it first, outside the loop), not the bomb pool (0x44d820 ticks it with vtbl[2](1))
+ * and not the links an actor draws itself (boss saucer, pads, race board: not scripted). The sector/group part of the list
+ * (in_zone) is what gates here; the cone test stays instance_visible's, on this frame's camera. */
+static int list_drawn(const Instance *in) { return (in->scripted && in->type != 40) || (in->type >= 4 && in->type <= 16); }
 
 /* Is this instance drawn at all this frame? The cone test on the model's bounding sphere is what the port already
  * did. On top of it, 0x42aa0b only walks the instances that belong to the sectors the visibility pass kept, so an
@@ -730,6 +787,15 @@ void rnd_link(Renderer *r, Instance *inst, Instance *other)
     }
     r->links[2 * r->nlinks] = inst; r->links[2 * r->nlinks + 1] = other; r->nlinks++;
 }
+static int link_inside(const Instance *v, Vec3 eye)                      /* 0x4300c0 on each volume node of v */
+{
+    if (!v->visible || !v->node_world) return 0;                            /* hidden by message 6 = in no cell list (0x407850) */
+    for (uint32_t k = 0; k < v->model->nvolume_nodes; k++) {
+        uint32_t node = v->model->volume_nodes[k] - 1;                       /* the node lists in the file are 1-based */
+        if (node < v->model->nnodes && volume_contains(v, node, eye)) return 1;
+    }
+    return 0;
+}
 static void links_hide(Renderer *r, Vec3 eye)
 {
     static int log = -1; if (log < 0) log = getenv("WOODY_LINKLOG") != NULL;
@@ -745,11 +811,7 @@ static void links_hide(Renderer *r, Vec3 eye)
                 printf("link: inst %u hides %u instances while the camera is in its volume, box x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f", v->index, cnt, lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]), puts("");
                 if (i + cnt >= r->nlinks) log = 2;
             }
-            if (v->visible && v->node_world)                                 /* hidden by message 6 = in no cell list (0x407850) */
-                for (uint32_t k = 0; k < v->model->nvolume_nodes && !inside; k++) {
-                    uint32_t node = v->model->volume_nodes[k] - 1;           /* the node lists in the file are 1-based */
-                    if (node < v->model->nnodes) inside = volume_contains(v, node, eye);
-                }
+            inside = link_inside(v, eye);
             if (log) { static const Instance *was[8]; static int in_was[8]; int s = 0;
                 while (s < 7 && was[s] && was[s] != v) s++;
                 if (was[s] != v) { was[s] = v; in_was[s] = 0; }
@@ -758,6 +820,131 @@ static void links_hide(Renderer *r, Vec3 eye)
         if (inside && o->drawn) { o->drawn = 0; hidden++; }
     }
     if (log && hidden) { static int prev = -1; if (hidden != prev) printf("link: %d linked instances hidden", hidden), puts(""); prev = hidden; }
+}
+
+/* ---- the per-frame instance list world+0x60/+0x64 (0x42a980 -> 0x42a840; docs/INSTANCE.md 4.1) ---------------------------
+ * Built at frame step 9 (0x401c63) from the camera position of the camera manager, before any Think. Its readers: the Thinks
+ * 0x42b400 (vtbl[3] of every listed instance: enemies and bosses 0x41a320, the ambient volume 0x472560, bonus halos, the
+ * carousel figures ...), the draw/shadow pass 0x42b380, the skeleton list 0x401c68 and the sound Update 0x401ee7 (3D voices
+ * of unlisted owners fall silent). An instance is listed when
+ *   - it is in the world (+0x1c != -1; message 6 / 0x407850 takes it out) and its sector +0x1c is the first word of a pair
+ *     of the camera's .vis list (0x408210: sector of the camera 0x4081c0, then its entry whose id is the floor group of the
+ *     camera 0x40a0c0, else the first entry) - 0x42a840 walks that sector's chain sector+0x44 -> inst+0x24;
+ *   - its floor group +0x18 is stamped this frame (0x42a867..0x42a87d): the second words of the same pairs, or in a race
+ *     (Perso subtypes 4/5 with a region list world+0xc0 whose first entry is not -1) only the camera's group and the list
+ *     entry after it (0x42aadf..0x42ab52);
+ *   - no message-34 volume holding the camera links it (stamp +0x20, 0x42aa4b);
+ *   - kind 1 with a cached bounding sphere (+0x88 == 1: a stationary instance, see sphere_cached): the sphere passes the
+ *     four side planes (0x437b00, margin r * 1.4142) and, in a race only, |centre - camera|^2 + r^2 <= 1.21e8 (11000,
+ *     0x42a8c8..0x42a91a). Moving instances and actors (enemies, the Perso: flag 0x20) are never frustum tested.
+ * The list is malloc(0x400) = 256 pointers (0x42a4f9) and 0x42a931 writes without a bound; the port grows it and
+ * WOODY_VISLOG reports a frame above 256. */
+/* +0x88 == 1 (0x42eec9..0x42f008): the draw 0x42e2b0 caches the sphere of an instance whose clock stands still (speed
+ * +0xa0 == 0), without flag 0x20 (the actors: enemy PostLoad 0x419e4d, the Perso, the race board), without an .ins path
+ * (the loader sets +0x88 = 2, 0x42868b), without SetFlags bit 1 (0x42efd7), not a laser 50-52 (0x450db2) or a launcher 42
+ * (0x45223e: both 2). Port: scripted = the base-class clock owns the instance (the actors are not scripted). The original
+ * caches on the first draw after the instance stopped; the port counts it as cached from that frame on. */
+static int sphere_cached(const Instance *in)
+{
+    return in->scripted && in->a_speed == 0 && !in->traj.npoints && !(in->setflags & 1) && !(in->type >= 50 && in->type <= 52) && in->type != 42;
+}
+/* the cached sphere: centre = the sum of the bounding-box node's points (model+0x24, 1-based) times 1/8 (0x4a9db8),
+ * radius = the distance from it to the node's last point (0x42ef7e) */
+static int inst_sphere(const Instance *in, Vec3 *c, float *rad)
+{
+    const Model *m = in->model; uint32_t bn = m->bbox_node;
+    if (!in->node_world || !bn || bn > m->nnodes || !m->nodes[bn - 1].npoints) return 0;
+    const InsNode *n = &m->nodes[bn - 1]; Vec3 s = { 0, 0, 0 }, q = s;
+    for (uint32_t k = 0; k < n->npoints; k++) { q = ins_point_world(in, n->point_base + k); s.x += q.x; s.y += q.y; s.z += q.z; }
+    c->x = s.x * 0.125f; c->y = s.y * 0.125f; c->z = s.z * 0.125f;
+    *rad = sqrtf((c->x - q.x) * (c->x - q.x) + (c->y - q.y) * (c->y - q.y) + (c->z - q.z) * (c->z - q.z));
+    return 1;
+}
+void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, const int32_t *race)
+{
+    const GelFile *g = r->gel; InsFile *ins = r->ins;
+    static int log = -1; if (log < 0) { const char *e = getenv("WOODY_VISLOG"); log = e ? atoi(e) : 0; if (e && !log) log = 1; }
+    if (!r->list_sec && g->nsectors) r->list_sec = (uint8_t *)calloc(g->nsectors, 1);
+    if (!r->list_grp && g->ngroups) r->list_grp = (uint8_t *)calloc(g->ngroups, 1);
+    r->nlist = 0; r->list_on = 1;                                               /* 0x42a98f: +0x60 = 0 */
+    /* 0x408210: the camera's .vis list */
+    int32_t cs = gel_sector(g, cam->pos), cg = gel_floor_group(g, cam->pos);
+    const VisList *L = r->vis ? vis_entry(r->vis, g, cam->pos) : NULL;
+    int32_t ent = L ? (int32_t)(L - &r->vis->pool[r->vis->sectors[cs].first]) : -1;
+    int all = !L || !r->list_sec || !r->list_grp;                                /* port: no .vis, or a camera outside every sector: everything is listed */
+    int racing = race && race[0] != -1;                                         /* 0x42a9d3..0x42a9f8: the flag of 0x42a840 */
+    if (!all) {
+        memset(r->list_sec, 0, g->nsectors); memset(r->list_grp, 0, g->ngroups);
+        for (uint32_t k = 0; k < L->npairs; k++) {
+            uint32_t s = L->pairs[2 * k], q = L->pairs[2 * k + 1];
+            if (s < g->nsectors) r->list_sec[s] = 1;                            /* 0x42ab98: sector stamp +4, then 0x42a840 on its chain */
+            if (!racing && q < g->ngroups) r->list_grp[q] = 1;                  /* 0x42aab8..0x42aacd: group stamp +0 */
+        }
+        if (racing && cg >= 0) {                                                /* 0x42aadf: the camera's group and the entry after it */
+            int k = 0; while (k < 5 && race[k] != -1 && race[k] != cg) k++;
+            if (k < 5 && race[k] == cg) { if ((uint32_t)cg < g->ngroups) r->list_grp[cg] = 1; if (k + 1 < 6 && race[k + 1] >= 0 && (uint32_t)race[k + 1] < g->ngroups) r->list_grp[race[k + 1]] = 1; }
+            else if ((uint32_t)cg < g->ngroups) r->list_grp[cg] = 1;           /* port: the original searches on past the -1 (no bound, 0x42aaf3) */
+        }
+    }
+    /* message 34 (0x42aa0b): the linked instances of a volume that holds the camera get this frame's stamp first */
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins->models[mi].instances[k].listed = ins->models[mi].instances[k].in_zone = 0;
+    for (uint32_t i = 0; i < r->nlinks; i++) {
+        const Instance *v = r->links[2 * i]; int in = link_inside(v, cam->pos);
+        for (; i < r->nlinks && r->links[2 * i] == v; i++) if (in) r->links[2 * i + 1]->listed = -1;
+        i--;
+    }
+    /* the side planes of 0x437b00, from the same camera the renderer uses */
+    float aspect = w->height ? (float)w->width / (float)w->height : 1.333f; if (cam->letterbox) aspect /= 0.75f;
+    float tv = tanf(cam->fov_deg * 3.14159265f / 360.0f), th = tv * aspect;
+    Vec3 fw = cam_forward(cam), rt = cam_right(cam), up = { rt.y * fw.z - rt.z * fw.y, rt.z * fw.x - rt.x * fw.z, rt.x * fw.y - rt.y * fw.x };
+    uint32_t n_sec = 0, n_grp = 0, n_link = 0, n_frus = 0, n_far = 0, n_act = 0, n_nofloor = 0;
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+        Instance *in = &ins->models[mi].instances[k];
+        if (in->listed < 0) { in->listed = 0; if (in->visible) n_link++; continue; }
+        if (!in->visible) continue;                                             /* +0x1c == -1: in no sector chain */
+        Vec3 ref = in->cell_dy > 0 ? (Vec3){ in->position.x, in->position.y + in->cell_dy, in->position.z } : ins_anim_centre(in);
+        if (!in->cell_ok || ref.x != in->cell_ref.x || ref.y != in->cell_ref.y || ref.z != in->cell_ref.z) {   /* 0x407790 / 0x4077f0: re-cell */
+            in->cell_ref = ref; in->cell_ok = 1; in->cell_sec = gel_sector(g, ref); in->cell_grp = gel_floor_group(g, ref);
+        }
+        if (in->cell_grp < 0) n_nofloor++;
+        if (!all) {
+            if (in->cell_sec < 0 || (uint32_t)in->cell_sec >= g->nsectors || !r->list_sec[in->cell_sec]) { n_sec++; continue; }
+            if (in->cell_grp < 0 || (uint32_t)in->cell_grp >= g->ngroups || !r->list_grp[in->cell_grp]) { n_grp++; continue; }   /* 0x42a85e: +0x18 == -1 is never listed */
+        }
+        in->in_zone = 1;
+        Vec3 c; float rad;
+        if (sphere_cached(in) && inst_sphere(in, &c, &rad)) {                   /* 0x42a891 */
+            Vec3 d = { c.x - cam->pos.x, c.y - cam->pos.y, c.z - cam->pos.z };
+            float x = d.x * rt.x + d.y * rt.y + d.z * rt.z, y = d.x * up.x + d.y * up.y + d.z * up.z, z = d.x * fw.x + d.y * fw.y + d.z * fw.z, mg = rad * 1.4142f;
+            if (fabsf(x) > z * th + mg || fabsf(y) > z * tv + mg) { n_frus++; continue; }
+            if (racing && d.x * d.x + d.y * d.y + d.z * d.z + rad * rad > 1.21e8f) { n_far++; continue; }   /* 0x4aa2f4 */
+        }
+        if (r->nlist >= r->list_cap) { uint32_t cap = r->list_cap ? r->list_cap * 2 : 256; Instance **nl = (Instance **)realloc(r->list, cap * sizeof *nl); if (!nl) continue; r->list = nl; r->list_cap = cap; }
+        r->list[r->nlist++] = in; in->listed = 1;                               /* 0x42a931..0x42a948 */
+        if (in->type >= 4 && in->type <= 16) n_act++;
+    }
+    if (log) {
+        static double next; static uint32_t mx; double t = win_time(); if (r->nlist > mx) mx = r->nlist;
+        if (r->nlist > 256) { static int warned; if (!warned) { warned = 1; printf("VIS: %u instances listed - the original's list holds 256 (0x42a4f9)", r->nlist), puts(""); } }
+        if (t >= next) {
+            next = t + 1.0;
+            printf("VIS cam %.0f %.0f %.0f sector %d group %d entry %d%s pairs %u%s: listed %u (enemies %u, max %u) | out: sector %u group %u (no floor %u) link %u frustum %u far %u",
+                   cam->pos.x, cam->pos.y, cam->pos.z, cs, cg, ent, ent >= 0 && L && (int32_t)L->id != cg ? " (no id match: first)" : "", L ? L->npairs : 0, all ? " (all)" : racing ? " (race)" : "",
+                   r->nlist, n_act, mx, n_sec, n_grp, n_nofloor, n_link, n_frus, n_far), puts("");
+            if (log >= 3) for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+                const Instance *in = &ins->models[mi].instances[k];
+                if (in->visible && in->cell_grp < 0) printf("  VIS no floor: inst %u type %d at %.0f %.0f %.0f sector %d (position %.0f %.0f %.0f: group %d)", in->index, in->type, in->cell_ref.x, in->cell_ref.y, in->cell_ref.z, in->cell_sec, in->position.x, in->position.y, in->position.z, gel_floor_group(g, in->position)), puts("");
+            }
+            if (log >= 2) {
+                printf("  VIS ids:"); for (uint32_t i = 0; i < r->nlist; i++) printf(" %u", r->list[i]->index); puts("");
+                for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {   /* the actors, listed or not */
+                    const Instance *in = &ins->models[mi].instances[k];
+                    if (in->type >= 4 && in->type <= 16 && in->visible) printf("  VIS actor %u type %d %s at %.0f %.0f %.0f sector %d group %d (drawn last frame %d)", in->index, in->type, in->listed ? "listed" : "out", in->position.x, in->position.y, in->position.z, in->cell_sec, in->cell_grp, in->drawn), puts("");
+                }
+            }
+            mx = 0;
+        }
+    }
 }
 
 /* ---- dynamic point lights (0x498790, docs/LIGHTING.md 7). The original registers them into a 16-slot table
@@ -826,9 +1013,9 @@ static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat
     tint_apply(inst, c, base); bt_color(c[0], c[1], c[2]);
 }
 
-/* ---- cast shadows (0x42e651-0x42ec3a, drawn by 0x4385f0): the caster's geometry projected from its light onto the
- * receiving faces, as opaque ambient-coloured polygons between the light pass and the texture pass, so the shadow
- * looks like an unlit face. The original clips against the faces on the CPU; here the stencil buffer does it. */
+/* ---- cast shadows (0x42e651-0x42ec3a, drawn by 0x4385f0, or 0x4388e0 while the caster fades): the caster's geometry
+ * projected from its light onto the receiving faces, as opaque ambient-coloured polygons between the light pass and the
+ * texture pass, so the shadow looks like an unlit face. The original clips against the faces on the CPU; here the stencil buffer does it. */
 static float *g_sh; static uint32_t g_sh_n, g_sh_cap;                       /* caster triangles, world space */
 static void sh_push(Vec3 a, Vec3 b, Vec3 c)
 {
@@ -838,6 +1025,7 @@ static void sh_push(Vec3 a, Vec3 b, Vec3 c)
 static int g_shlog;                                                         /* WOODY_SHLOG=1: one line per second per instance that reaches the caster test */
 static void cast_shadow(const Renderer *r, Instance *inst)
 {
+    int fading = inst->fade > 0.01f;                                        /* 0x42e69a/0x42eb7a: [0x4a94f8] = 0.01 -> 0x4388e0, else 0x4385f0 */
     Model *m = inst->model; const LitLight *L = &r->lit->lights[inst->light]; const int32_t *own = model_owner(m);
     g_sh_n = 0;
     for (uint32_t ni = 0; ni < m->nnodes; ni++) {
@@ -897,8 +1085,41 @@ static void cast_shadow(const Renderer *r, Instance *inst)
             /* stencil = 1 on the visible part of the receiving face */
             glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
             glBegin(GL_TRIANGLE_FAN); for (uint32_t k = 0; k < gp->nverts; k++) { const GelVert *v = &r->gel->verts[gp->indices[k]]; glVertex3f(v->x, v->y, v->z); } glEnd();
-            glColorMask(1, 1, 1, 1); glStencilFunc(GL_EQUAL, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP); glDisable(GL_DEPTH_TEST);
-            glVertexPointer(3, GL_FLOAT, 0, proj); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
+            glColorMask(1, 1, 1, 1); glDisable(GL_DEPTH_TEST);
+            glVertexPointer(3, GL_FLOAT, 0, proj);
+            if (!fading) { glStencilFunc(GL_EQUAL, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3); }
+            else {
+                /* 0x4388e0 (bucket 2: blend off, z-write off, SPECULAR on): out = light texture x diffuse + specular, with
+                 * specular = AMB ([0x5e86ac]+0x1b0, 0x438c75) and diffuse = (int)(C' * k) per channel (0x438b65..0x438bc5),
+                 * C' = the light's colour (light+0x30) x inst+0x6c (0x42e6b7..0x42e6e2), k = 1 - |n.L + d|/R of the receiving
+                 * plane (0x498830 at 0x42ebaf, 0 outside the sphere), texture [0x5e8678] + 0x74 (15 - round(k * 15.49))
+                 * (0x438ba9..0x438bf3), u/v = the two rows of the sphere projection applied to the projected points
+                 * (0x438a32..0x438a6f). So the shaded area gets back fade x this light's own contribution: at fade 0.01 a
+                 * full shadow, at 0.98 almost none. Port: two passes through the stencil, AMB (1 -> 2) and then the textured
+                 * term added ONE/ONE (2 -> 3), so overlapping caster triangles still write every pixel once, as the
+                 * original's blend-off overwrite does. */
+                glStencilFunc(GL_EQUAL, 1, 3); glStencilOp(GL_KEEP, GL_KEEP, GL_INCR); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
+                float R = L->range, kk = dl < R ? 1.0f - dl / R : 0.0f, col[3];
+                for (int q = 0; q < 3; q++) col[q] = (float)(int)(L->colour[q] * inst->fade * kk) / 255.0f;
+                const GelVert *v2 = &r->gel->verts[gp->indices[2]];                          /* 0x498890: U towards the third vertex */
+                float F[3] = { L->pos.x - pl[0] * dl, L->pos.y - pl[1] * dl, L->pos.z - pl[2] * dl }, U[3] = { v2->x - F[0], v2->y - F[1], v2->z - F[2] };
+                float ul = sqrtf(U[0] * U[0] + U[1] * U[1] + U[2] * U[2]);
+                if (kk > 0 && ul > 1e-4f && (col[0] > 0 || col[1] > 0 || col[2] > 0)) {
+                    int ti = 15 - (int)(kk * 15.49f + 0.5f); if (ti < 0) ti = 0; if (ti > 15) ti = 15;
+                    float sc = 0.5f / sqrtf(R * R - dl * dl);
+                    for (int q = 0; q < 3; q++) U[q] /= ul;
+                    float W[3] = { pl[1] * U[2] - pl[2] * U[1], pl[2] * U[0] - pl[0] * U[2], pl[0] * U[1] - pl[1] * U[0] };
+                    static float *uv; static uint32_t uv_cap; if (uv_cap < np) { uv_cap = np + 1024; uv = (float *)realloc(uv, (size_t)uv_cap * 6 * sizeof(float)); }
+                    for (uint32_t i = 0; i < np * 3; i++) {
+                        float d[3] = { proj[i * 3] - F[0], proj[i * 3 + 1] - F[1], proj[i * 3 + 2] - F[2] };
+                        uv[i * 2] = 0.5f + sc * (d[0] * W[0] + d[1] * W[1] + d[2] * W[2]); uv[i * 2 + 1] = 0.5f + sc * (d[0] * U[0] + d[1] * U[1] + d[2] * U[2]);
+                    }
+                    glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->light_tex[ti]); glEnableClientState(GL_TEXTURE_COORD_ARRAY); glTexCoordPointer(2, GL_FLOAT, 0, uv);
+                    glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE); glColor3f(col[0], col[1], col[2]);
+                    glStencilFunc(GL_EQUAL, 2, 3); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
+                    glDisable(GL_BLEND); glDisable(GL_TEXTURE_2D); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glColor3f(LIT_AMB, LIT_AMB, LIT_AMB);
+                }
+            }
             n_drawn++;
             glEnable(GL_DEPTH_TEST); glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 0, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
             glBegin(GL_TRIANGLE_FAN); for (uint32_t k = 0; k < gp->nverts; k++) { const GelVert *v = &r->gel->verts[gp->indices[k]]; glVertex3f(v->x, v->y, v->z); } glEnd();
@@ -912,10 +1133,14 @@ static void draw_cast_shadows(const Renderer *r)
     { static int last = -1; int s = (int)g_tex_now; g_shlog = getenv("WOODY_SHLOG") && (s != last || atoi(getenv("WOODY_SHLOG")) == 2); if (g_shlog) last = s; }
     glDisable(GL_TEXTURE_2D); glDisable(GL_BLEND); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glEnable(GL_STENCIL_TEST); glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -1.0f); glColor3f(LIT_AMB, LIT_AMB, LIT_AMB);
+    /* bucket 2 (fading casters, 0x4388e0) is flushed before bucket 5 (opaque, 0x4385f0) in 0x4293f0 (0x42960e, 0x42966c):
+     * where both overlap, the flat AMB of an opaque caster wins */
+    for (int bucket = 0; bucket < 2; bucket++)
     for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) {
         Model *m = &r->ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k];
+            if ((inst->fade > 0.01f) != (bucket == 0)) continue;
             int caster = shadow_caster(inst);
             if (g_shlog && (caster || inst->type)) printf("  SH t %.1f model %u inst %u type %d setflags %x caster %d vis %d fade %.2f l_seen %d light %d nodes %d at %.0f %.0f %.0f", g_tex_now, mi, k, inst->type, inst->setflags, caster, inst->visible, inst->fade, inst->l_seen, inst->light, inst->node_world != NULL, inst->world.m[12], inst->world.m[13], inst->world.m[14]), puts("");
             /* 0x42e2c3/0x42e377/0x42e417: no sector, fade >= 0.98 or an empty sector light list drop the shadow. Whether
@@ -1130,10 +1355,9 @@ void rnd_uv_report(const Renderer *r, const Instance *inst)
     }
 }
 
-/* ---- outline (0x43ea30, fed by the two back-face lists 0x43b3f0 collects): the back faces once more, every vertex
- * pushed out along its own normal, flat black, at the same depth as the model. Only for instances that carry SetFlags
- * bit 0x20 (message 45) - the characters and handful of props the level script flags, plus every actor class the port
- * flags itself when the class is assigned (main_engine.c, message 1200) - and only within 1500 units.
+/* ---- outline (0x43ea30, fed by the two back-face lists 0x43b3f0 collects): the back faces once more, their stamped
+ * vertices pushed out along their own normal, flat black, at the same depth as the model. Only for instances that carry
+ * SetFlags bit 0x20 (message 45) - the characters and handful of props the level script flags - and only within 1500 units.
  * w = d/300 up to 2.5, then 5 - d/300 (0x43b4ce..0x43b4f3), so the rim keeps a constant width on screen. Drawn after
  * the model with the ordinary depth test: outside the silhouette the hull is all there is, and where it pokes through
  * a concave fold it beats the model - that is where the creases along a snout or a finger come from. */
@@ -1163,6 +1387,17 @@ static void draw_outline(const Renderer *r, Instance *inst)
     { const char *e = getenv("WOODY_OLW"); if (e) w *= (float)atof(e); }     /* test helper: scale the rim */
     Model *m = inst->model; const int32_t *own = model_owner(m); const Vec3 zero = { 0, 0, 0 };
     g_ol_n = 0;
+    /* Which corners move out: 0x43b3f0 first stamps 0xffff0000 into v+0x40 of the vertex records of every back face -
+     * all three corners of a skin triangle (0x43c3bc), but only the index words +0x18/+0x1a/+0x1c, corners 0/1/2, of a
+     * node polygon (0x43c42d) - then 0x43c49a..0x43c56a rewrites the position of each stamped vertex as
+     * M_node ((p - pivot) + w n) and 0x43ea30 draws every back face from those records. A fourth (or later) corner
+     * that no other back face stamps keeps the plain position the model pass computed, so such a quad's rim tapers
+     * to the surface at that corner. Reproduced: pass 0 stamps, pass 1 emits. */
+    static uint8_t *mark; static uint32_t mark_cap;
+    if (mark_cap < m->npoints) { mark_cap = m->npoints + 256; free(mark); mark = (uint8_t *)malloc(mark_cap); }
+    if (!mark) return;
+    memset(mark, 0, m->npoints);
+    for (int pass = 0; pass < 2; pass++) {
     for (uint32_t ni = 0; ni < m->nnodes; ni++) {
         InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || n->type_code == 2) continue;
         if (n->type_code >= 5 && n->type_code <= 8) continue;                   /* 0x43bf65 throws the eyelid layer's back faces away */
@@ -1172,9 +1407,10 @@ static void draw_outline(const Renderer *r, Instance *inst)
             if (p->nverts < 3 || (p->flags & 2) || (p->flags & 0x60)) continue; /* double sided and blended polygons never outline (0x43c0c2) */
             const float *pl = poly_plane(m, n, p);
             if (pl[0] * cl.x + pl[1] * cl.y + pl[2] * cl.z + pl[3] > 0) continue;   /* front facing: the model pass drew it */
+            if (pass == 0) { for (uint32_t c = 0; c < 3; c++) if (p->indices[c] < m->npoints) mark[p->indices[c]] = 1; continue; }
             Vec3 v[3];
             for (uint32_t c = 0; c < p->nverts; c++) {
-                Vec3 q = ol_vertex(inst, &inst->node_world[ni], &m->points[p->indices[c]], n->pivot, w);
+                Vec3 q = ol_vertex(inst, &inst->node_world[ni], &m->points[p->indices[c]], n->pivot, p->indices[c] < m->npoints && mark[p->indices[c]] ? w : 0.0f);
                 if (c == 0) v[0] = q; else { v[1] = v[2]; v[2] = q; if (c >= 2) ol_push(v[0], v[2], v[1]); }
             }
         }
@@ -1191,9 +1427,11 @@ static void draw_outline(const Renderer *r, Instance *inst)
         float vx = wp[0].x - wp[2].x, vy = wp[0].y - wp[2].y, vz = wp[0].z - wp[2].z;
         float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
         if (nx * (g_cam_pos.x - wp[0].x) + ny * (g_cam_pos.y - wp[0].y) + nz * (g_cam_pos.z - wp[0].z) > 0) continue;   /* front facing */
+        if (pass == 0) { for (int c = 0; c < 3; c++) if (idx[c] < m->npoints) mark[idx[c]] = 1; continue; }
         Vec3 e[3];
-        for (int c = 0; c < 3; c++) e[c] = ol_vertex(inst, MM[c], &m->points[idx[c]], pv[c], w);
+        for (int c = 0; c < 3; c++) e[c] = ol_vertex(inst, MM[c], &m->points[idx[c]], pv[c], idx[c] < m->npoints && mark[idx[c]] ? w : 0.0f);
         ol_push(e[0], e[2], e[1]);
+    }
     }
     if (g_shlog) printf("  OL inst %u setflags %x w %.2f tris %u fade %.2f", inst->index, inst->setflags, w, g_ol_n, inst->fade), puts("");
     if (!g_ol_n) return;
@@ -1297,7 +1535,7 @@ static void draw_dyn_world(Renderer *r)
 
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s)
 {
-    glViewport(0, 0, w->width, w->height);
+    glViewport(w->vx, w->vy, w->width, w->height);
     g_tex_now = time_s; g_cam_pos = cam->pos;
     for (uint32_t g = 0; g < r->tex->ngroups; g++) {                 /* texture animation: frame_count frames over anim_duration seconds */
         TexGroup *tg = &r->tex->groups[g];
@@ -1323,7 +1561,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k];
             if (!inst->visible || inst->fade > 0.98f) continue;
-            inst->drawn = instance_visible(r, inst, aspect, f, fw, rt, up);
+            inst->drawn = (!r->list_on || inst->in_zone || !list_drawn(inst)) && instance_visible(r, inst, aspect, f, fw, rt, up);
             if ((inst->drawn || shadow_caster(inst)) && r->lit) instance_light(r, inst, dt); } }   /* a caster off screen still needs its light for the shadow */
         if (r->nlinks) links_hide(r, cam->pos);                                /* message 34: 0x42aa0b runs before the sector walk 0x42a840 */
     }
@@ -1336,7 +1574,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
     if (cam->letterbox) {                     /* image strip y = 30..390 of 480: black above (30) and below (90), docs/CAMERA_SCRIPT.md 2.4 */
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
-        glViewport(0, (int)(w->height * (cam->letterbox == 1 ? 0.125f : 0.1875f)), w->width, (int)(w->height * 0.75f));   /* 1 = centred (cinematics, 0x41f8d0), 2 = shifted up (mode 4) */
+        glViewport(w->vx, w->vy + (int)(w->height * (cam->letterbox == 1 ? 0.125f : 0.1875f)), w->width, (int)(w->height * 0.75f));   /* 1 = centred (cinematics, 0x41f8d0), 2 = shifted up (mode 4) */
     }
     float proj[16] = { f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (zf + zn) / (zn - zf), -1, 0, 0, 2 * zf * zn / (zn - zf), 0 };
     glMultMatrixf(proj);
@@ -1345,7 +1583,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     float view[16] = { rt.x, up.x, -fw.x, 0, rt.y, up.y, -fw.y, 0, rt.z, up.z, -fw.z, 0,          /* GL camera looks along -z */
                        -(rt.x * cam->pos.x + rt.y * cam->pos.y + rt.z * cam->pos.z), -(up.x * cam->pos.x + up.y * cam->pos.y + up.z * cam->pos.z), (fw.x * cam->pos.x + fw.y * cam->pos.y + fw.z * cam->pos.z), 1 };
     glLoadMatrixf(view);
-    if (r->have_sky && r->show_world) {                                             /* 0x42ad40..0x42b373: five quads of a cube around the camera, white, unlit, drawn behind everything */
+    if (r->have_sky && r->show_world && r->sky_on) {                               /* 0x42ad40..0x42b373: five quads of a cube around the camera, white, unlit, drawn behind everything */
         static const signed char q[5][4][3] = {
             { {-1,-1, 1}, {-1, 1, 1}, { 1, 1, 1}, { 1,-1, 1} }, { { 1,-1, 1}, { 1, 1, 1}, { 1, 1,-1}, { 1,-1,-1} },
             { { 1,-1,-1}, { 1, 1,-1}, {-1, 1,-1}, {-1,-1,-1} }, { {-1,-1,-1}, {-1, 1,-1}, {-1, 1, 1}, {-1,-1, 1} },
@@ -1495,4 +1733,15 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     (void)time_s;
 }
 
+void rnd_set_race(Renderer *r, const Trajectory *path)
+{
+    if (!path || !path->npoints) { for (int k = 0; k < 6; k++) r->race[k] = -1; }
+    else gel_race_regions(r->gel, path->points, path->npoints, r->race);   /* 0x455f3d..0x455fed -> renderer+0xc0..+0xd4 */
+    r->sec_dirty = 1; r->race_entry = NULL;
+    if (getenv("WOODY_RACEVISLOG")) printf("  RACEVIS region list %d %d %d %d %d (%u points)\n", r->race[0], r->race[1], r->race[2], r->race[3], r->race[4], path ? path->npoints : 0);
+    if (path && getenv("WOODY_RACEVISLOG")) for (uint32_t i = 0; i < path->npoints; i++) { Vec3 q = path->points[i];
+        int32_t f = gel_floor_poly(r->gel, q); const float *pl = f >= 0 ? r->gel->polys[f].plane : NULL;
+        printf("    point %2u (%.0f %.0f %.0f): floor group %d at y %.0f\n", i, q.x, q.y, q.z, gel_floor_group(r->gel, q),
+               pl && pl[1] > 0 ? -(pl[0] * q.x + pl[2] * q.z + pl[3]) / pl[1] : q.y); }
+}
 void rnd_set_sky(Renderer *r, const uint32_t tex[5]) { if (r->have_sky) for (int f = 0; f < 5; f++) if (tex[f]) r->sky_tex[f] = tex[f]; }

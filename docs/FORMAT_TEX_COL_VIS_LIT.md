@@ -174,11 +174,17 @@ correct; **F4** steps the culling down one stage at a time: frustum + `.vis` →
 
 The port uses the sector polygon list, not the group from the second word of a pair: 22 of the 28
 levels have a single group covering all polygons, so nothing would be lost by that. The
-flag/group is therefore not (yet) read.
+flag/group is therefore not read on that path. The six race levels have a separate path since round 30
+(RACE.md §2.1): one entry chosen as `0x408210` does, sectors from the first words, groups = the floor group under
+the camera + the next entry of the race region list, faces filtered by their `.gel` group.
 
-### Uncertain
-- No code other than the loader and destructor (`0x407a80`) has been found reading
-  `world+0x28`; the meaning of `id` (0/1) and the flag is thus not confirmed from code.
+### Reader `0x408210` (round 29/30)
+`0x408210(pos)` reads `world+0x28`: sector `s = 0x4081c0(pos)`, `g = 0x40a0c0(pos, −1)` = the `.gel` group (section 3) of
+the floor polygon under `pos`, then the entry of `s` whose **`id == g`**, else the first one; it returns `&pair_count`.
+So `id` is a floor group (a sector that spans two floor zones has one list per zone), and the second word of a pair
+("flag") is a `.gel` group index: `0x42a980` marks those groups (their polygons get the frame stamp in `0x42ac10`) and
+only stamped polygons of the listed sectors are drawn (RACE.md §2.1). Correction to the table above: the race levels
+have entry ids and pair groups 0..4 (port log `WOODY_RACEVISLOG=1`, e.g. K1R sector 114 entry id 4).
 
 ---
 
