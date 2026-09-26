@@ -90,10 +90,10 @@ XZ distance to the *start point*, the look direction against the *marker directi
 on the ground, and if true `player_brake_charge` = `0x458e40`. The latter is the visible part: **without that brake Woody keeps the
 700 units/s of the charge run and rams the switch instead of pecking it** (anim 0x12 IS the peck the player sees).
 `WOODY_SWLOG=1` logs, per 1042, the distance, the angle, the Perso state, the attack substate and the outcome.
-Still missing is the **obstacle sensor** `0x44b2e0` (`p+0x234`, PERSO_FRAME.md §3): in the original a charge run also brakes
-for a steep edge or wall (PERSO_JUMP.md §2.3 state 9/10); in the port it keeps running until the collision code stops it —
-against an instance without a hull node that means: until he's halfway inside it. `0x497a30` (the world query that sensor uses)
-and the meaning of result type 3/4 have not yet been decompiled, so that sensor is deliberately not yet ported.
+The charge run also brakes at a **ledge**: the sensor `0x44b2e0` (`p+0x234`) casts the endless ray `0x497a30` down to the
+floor 40 ahead and fires when the floor there lies more than 86 lower (result type 3 = world polygon or 4 = press node,
+`t > 3`); ported, see OBSTACLE.md §2. It does not react to walls: a charge run against a wall is stopped by the collision
+only, so how far he gets into an instance is up to the instance collision (PERSO_MOVE.md §6.5).
 
 **Sequence in the original**: releasing the button on the ground starts the charge run (atk = 9, PERSO_JUMP §2.2) in the
 Perso update in `0x457330`; in the VM tick of the same frame 1050 sets the variable, the watcher sends 1042, and 1042 brakes the charge run

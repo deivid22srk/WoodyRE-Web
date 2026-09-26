@@ -6,6 +6,7 @@
 #include "player.h"
 #include "audio.h"
 #include "enemy.h"
+#include "instance.h"
 
 /* ---- decompiled Perso parameters (docs/PERSO_FRAME.md 2.3 / 2.6, table 0x4b5f14, Woody column) ---- */
 #define P_WALK_SPEED   600.0f     /* P+0x1c: RampA max speed, units/s */
@@ -34,7 +35,9 @@
 #define P_PROBE_Y      43.0f      /* P+0x00: ground probe / collision centre above the feet */
 #define P_RADIUS       69.0f      /* P+0x04: horizontal collision radius (0x434820 in 0x4624f0) */
 #define P_RACE_SPEED   1250.0f    /* P+0x1c of the race columns 3/4: the constant ride speed (docs/RACE.md 6) */
-#define P_VOL_PROBE_Y  71.0f      /* volume test point above the feet: 0x462760(perso, 71.0), docs/EVENTS.md 2.1 */
+#define P_EDGE_LOOK    40.0f      /* P+0x80: how far ahead the ledge sensor 0x44b2e0 aims (docs/OBSTACLE.md 2) */
+#define P_EDGE_T       3.0f       /* 0x4a988c: the sensor fires when the ray's first hit lies beyond 3 x its aim */
+#define P_VOL_PROBE_Y  71.0f     /* volume test point above the feet: 0x462760(perso, 71.0), docs/EVENTS.md 2.1 */
 /* follow camera (docs/CAMERA.md 3) */
 #define CAM_DIST_MIN   300.0f     /* xz distance to T is kept inside 300..400 */
 #define CAM_DIST_MAX   400.0f
@@ -565,6 +568,46 @@ float gel_ray_hit(const GelFile *g, Vec3 a, Vec3 b, Vec3 *n_out)
 }
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b) { return gel_ray_hit(g, a, b, NULL); }
 
+/* the endless ray 0x497a30(a, dir, -1) (docs/OBSTACLE.md 1): the world part 0x497b10 walks the cells from the one holding a
+ * (0x408180) through their exit faces and answers 3 with t = the first polygon, or 1 when the ray leaves the world; then every
+ * instance of the visited cells and of the dynamic list answers through vtbl[6] 0x431de0 with its press nodes, and a nearer
+ * one makes it 4. t is in units of dir, not normalised: the callers pass an unnormalised dir and read it that way.
+ * Port: a segment to where the ray leaves the level's bounding box, world polygons and then instance press nodes up to the
+ * world hit, as the endless laser does. Like 0x497c5a only the world polygons that face a count (plane(a) >= 0, the ray
+ * going in); the press nodes are tested from both sides here (0x43214d is one-sided too). On 1 the original leaves
+ * [0x4c4bd4] stale, which here is simply "no hit". */
+static float gel_ray_front(const GelFile *g, Vec3 a, Vec3 b)
+{
+    float best = 2.0f;
+    GelPolySet ps = gel_polys_on_seg(g, a, b);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3) continue;
+        float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
+        float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
+        if (da < 0 || db >= 0) continue;                                   /* 0x497c73 / 0x497ca2: back faces and parallel rays are skipped */
+        float t = da / (da - db); if (t >= best) continue;
+        Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
+        if (poly_contains(g, pl, q)) best = t;
+    }
+    return best;
+}
+int player_ray_endless(const Player *p, Vec3 a, Vec3 dir, float *t)
+{
+    const float *bb = p->gel->bbox; const float o[3] = { a.x, a.y, a.z }, d[3] = { dir.x, dir.y, dir.z }; float K = 1e30f;
+    for (int k = 0; k < 3; k++) {
+        if (d[k] > 1e-6f) { float e = (bb[2 * k + 1] - o[k]) / d[k]; if (e < K) K = e; }
+        else if (d[k] < -1e-6f) { float e = (bb[2 * k] - o[k]) / d[k]; if (e < K) K = e; }
+    }
+    if (!(K < 1e29f)) return 1;
+    if (K < 1.0f) K = 1.0f;
+    Vec3 b = { a.x + dir.x * K, a.y + dir.y * K, a.z + dir.z * K };
+    float f = gel_ray_front(p->gel, a, b), fw = f < 1.0f ? f : 1.0f, fi; int kind = f <= 1.0f ? 3 : 1;
+    Vec3 bw = { a.x + (b.x - a.x) * fw, a.y + (b.y - a.y) * fw, a.z + (b.z - a.z) * fw };
+    if (inst_ray_press(p->ins, NULL, a, bw, &fi, NULL, NULL) && fi <= 1.0f && fi * fw < (kind == 3 ? f : 2.0f)) { f = fi * fw; kind = 4; }
+    *t = kind == 1 ? 0 : f * K;
+    return kind;
+}
+
 int player_segment_blocked(const Player *p, Vec3 a, Vec3 b) { return gel_ray_frac(p->gel, a, b) <= 1.0f; }
 
 /* ---- logical animations: table 0x4b6180 (0x1c bytes per record: sub[4], prio, speed, restart) --------------
@@ -621,8 +664,8 @@ static void anim_request(Player *p, int n, float rate)                     /* 0x
 
 /* ---- attack controller 0x457a50 + trigger 0x457330 (docs/PERSO_JUMP.md 2) -----------------------------------
  * Ported: peck dash with auto-aim (1,2), hit pause and recoil (3,4,5), wall/ground rebound (6,7), charge run with
- * auto-steer (9,10), brake (11), hit loop against the enemies. Not ported: peckable surfaces (8), the steep-edge test,
- * rumble. The dash additionally ends on landing, which the original leaves to its ray probe. */
+ * auto-steer (9,10), brake (11) also at a ledge (check_steep, 0x44b2e0), hit loop against the enemies. Not ported:
+ * peckable surfaces (8), rumble. The dash additionally ends on landing, which the original leaves to its ray probe. */
 static void lock_move(Player *p, float t) { p->move_lock = t; p->ramp_phase = 0; p->speed = 0; }   /* 0x44cce0 */
 
 /* ---- standing still, 0x464500 (docs/PERSO_MOVE.md 4.3) ---------------------------------------------------------
@@ -711,6 +754,22 @@ static void attack_hit_loop(Player *p)
     }
 }
 
+/* 0x44b2e0, the ledge sensor of the charge run (docs/OBSTACLE.md 2), at the end of the Perso frame (after the collision,
+ * before Orient 0x44bd00), so the attack controller reads the previous frame's answer. On the ground it casts the endless
+ * ray from the collision centre (feet + P+0 = 43) towards the floor point P+0x80 = 40 ahead along the facing: dir =
+ * (40·f.x, -43, 40·f.z). Flat floor answers t = 1, a wall t < 1; only a first hit (world or press node) at t > 3, i.e.
+ * more than 86 below the feet and 120 or more ahead, sets +0x234. A ray that finds nothing (1) does not. */
+static void check_steep(Player *p)
+{
+    p->steep_edge = 0;                                                   /* 0x44b2fb */
+    if (!p->on_ground) return;                                           /* 0x44bcf0 = +0x22c */
+    Vec3 a = { p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, dir = { sinf(p->yaw) * P_EDGE_LOOK, -P_PROBE_Y, cosf(p->yaw) * P_EDGE_LOOK };
+    float t; int k = player_ray_endless(p, a, dir, &t);
+    if ((k == 3 || k == 4) && t > P_EDGE_T) p->steep_edge = 1;          /* 0x44b43e..0x44b45b */
+    if (getenv("WOODY_EDGELOG") && (p->atk == 9 || p->atk == 10))
+        printf("  EDGE atk %d pos %.0f %.0f %.0f kind %d t %.2f -> %d\n", p->atk, p->pos.x, p->pos.y, p->pos.z, k, t, p->steep_edge);
+}
+
 static void attack_update(Player *p, const PlayerInput *in, float dt)
 {
     p->use_atk_disp = 0;
@@ -753,14 +812,19 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
         return;
     case 7: jumper_reset(&p->jumper); if ((p->atk_t -= dt) <= 0) { p->atk = 0; jumper_force_fall(&p->jumper, 0); } return;
     case 9:
+        if (p->steep_edge) {                                               /* 0x457abe: a ledge ahead ends the windup, before the aim */
+            if (in->jump) { lock_move(p, 0); p->atk = 0; }                 /* 0x457ae1: action 4 held => LockMove(0, 1), the jump follows */
+            else player_brake_charge(p);                                   /* 0x457b0a */
+            return;
+        }
         if ((p->atk_t -= dt) <= 0) p->atk = 10;
         auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
         p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return;
     case 10:
         auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
-        if (p->charge > 0 && !in->jump) { p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return; }
+        if (p->charge > 0 && !p->steep_edge && !in->jump) {               /* 0x457c09..0x457c3d: charge left, no ledge ahead, no jump */ p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return; }
         if (in->jump) { lock_move(p, 0); p->atk = 0; return; }             /* jump cancels the run */
-        player_brake_charge(p); return;                                    /* 0x457e16: the charge ran out */
+        player_brake_charge(p); return;                                    /* 0x457e16: the charge ran out or a ledge is ahead */
     case 11: if ((p->atk_t -= dt) <= 0) p->atk = 0; return;
     default: return;
     }
@@ -1508,7 +1572,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); if (p->climb_sub) p->on_ground = 0; player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return; }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     int racing = p->race_char && !p->dead_kind;                           /* Perso state 1: no attacks, no Mover (0x44b530) */
-    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } duck_update(p, in, dt); }
+    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } duck_update(p, in, dt); }
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
     else {
@@ -1619,6 +1683,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; player_kill(p, 7); }     /* below the world: "disappear" death (the original leaves this to script volumes) */
     p->pos = np;
     if (racing) race_check_crash(p, old_pos, disp, body_h);
+    check_steep(p);                                                       /* 0x44b2e0, after the collision and before Orient */
     player_apply_transform(p);
     /* animations, Perso_AnimState 0x463e60 (docs/PERSO_MOVE.md 4.3, PERSO_JUMP.md 4): attack sub-state first, then
      * ground by Mover phase (0x463f40) or air by Jumper state (0x4642f0), the idle variations 0x59/0x5a by 0x464500. */

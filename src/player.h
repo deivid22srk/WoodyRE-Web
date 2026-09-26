@@ -42,6 +42,7 @@ typedef struct Player {
     float speed;                    /* horizontal speed along the facing direction (Mover RampA, 0x45b110) */
     int ramp_phase; float ramp_t, ramp_target, ramp_v0;   /* 0 idle, 1 accelerating, 2 at target, 3 decelerating */
     int on_ground;
+    int steep_edge;                 /* Perso+0x234, the ledge sensor 0x44b2e0: the floor drops away ahead (docs/OBSTACLE.md 2) */
     Jumper jumper;
     /* damage / death / respawn */
     float health; int lives;        /* Perso+0x24c (hearts, max 5), +0x250 */
@@ -144,6 +145,7 @@ Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r);
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b);   /* first world polygon hit on a->b as a fraction 0..1, or 2 when nothing is hit */                 /* Perso vt[38] */
 int  player_ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b, float *frac, Vec3 *n_out, const Instance **inst_out);   /* ray 0x4359b0, instance part (hit kind 2): press-node polygons */
 float gel_ray_hit(const GelFile *g, Vec3 a, Vec3 b, Vec3 *n_out);   /* the same, and the normal of that polygon, turned towards a */
+int  player_ray_endless(const Player *p, Vec3 a, Vec3 dir, float *t);   /* 0x497a30: 1 nothing, 3 world polygon, 4 instance press node; *t in units of dir */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
 
 /* footstep effects, drawn by the app (main_engine.c) as the pickup effects are (docs/FOOTSTEPS.md)
