@@ -983,7 +983,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
         i--;
     }
     /* ... and that loop first runs the clock (vtbl[2](1)) of every type-1 object of the camera's kd leaf, in .col order
-     * (0x42aa15..0x42aa33): each one that is in the world and not flag 0x20 goes in front of its sector's chain */
+     * (0x42aa0b..0x42aa2e): each one that is in the world and not flag 0x20 goes in front of its sector's chain */
     if (r->col_first) {
         int32_t leaf = gel_cell(g, cam->pos);
         if (leaf >= 0 && (uint32_t)leaf < r->ncol_cells)
@@ -1027,7 +1027,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
             if (r->nlist >= r->list_cap) { uint32_t cap = r->list_cap ? r->list_cap * 2 : 256; Instance **nl = (Instance **)realloc(r->list, cap * sizeof *nl); if (!nl) continue; r->list = nl; r->list_cap = cap; }
             r->list[r->nlist++] = in; in->listed = 1;                               /* 0x42a931..0x42a948 */
             if (in->type >= 4 && in->type <= 16) n_act++;
-            chain_clock(r, in);                                                     /* vtbl[2](0x81) -> 0x43eee0 -> 0x4077f0 */
+            chain_clock(r, in);                                                     /* vtbl[2](0x81) (not for flag 0x20, 0x42a94e) -> 0x43eee0 -> 0x4077f0 */
         }
     }
     if (all) {                                                                      /* port: instances in no sector are listed too without a .vis */

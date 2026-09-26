@@ -45,9 +45,28 @@ its life.
   `[0x5e823c]+0x800[mode]`, filled at `0x4024bb`: `table[8r + c] = ftol(atan(2^(r−c)) · 81.4873)` (`0x4a9028` = 512/2π)
   for r, c = 1..7. Mode 0x12 (r = c = 2) is the square (base 64 = 45°), mode **0x1a** (r = 3, c = 2) is a 1:2 upright
   quad (base 90, `atan 2`). So `size` is the half DIAGONAL (the known BONUS.md §2.4 fact) for every mode.
-* **UV sets** `0x470d80` (jump table `0x470ef4`), for the corners in the order above (u, v):
+* **UV sets** `0x470d80(mode, which)` (jump table `0x470ef4`), for the corners in the order above (u, v):
   0 = (1,0)(0,0)(0,1)(1,1) · 1 = v flipped · 2 = u flipped · 3 = both · 4 = (1,1)(1,0)(0,0)(0,1) · 5 = unchanged · 6 = (0,0)(0,1)(1,1)(1,0).
-  Without flag 0x40 a sprite whose last set was ≠ 0 is reset to 0.
+  Without flag 0x40 a sprite whose last set was ≠ 0 is reset to 0 (`0x4714cb..0x4714e0`).
+* **The second argument of `0x470d80` picks the vertex set** (`0x470d80..0x470dca`; vertices are 0x40 B, `+0xc` xyz,
+  `+0x24` rgba, `+0x34/+0x38` uv): **0** = the sprite quad `S+0x00..0xc0` (corner k0 = `+0x00`, k1 = `+0x40`, k2 = `+0x80`,
+  k3 = `+0xc0`); **1** = the quad of the line primitive `0x471a10`, `S+0x100..0x1c0`, whose vertex v0 = `+0x100` gets
+  the entry of k1, v1 = `+0x140` of k2, v2 = `+0x180` of k3, v3 = `+0x1c0` of k0; any other value is taken as a pointer
+  to a single vertex that receives all four pairs (`0x470dbe`). Every mode but 5 also stores itself in `S+0x200` (the
+  sprite's "last set", `0x470e00..0x470ee1`) — whichever set it wrote. The ctor `0x470d60` sets both sets to mode 0.
+* **The line primitive `0x471a10(flags)`** (`S+0x278` p0, `+0x284` p1, `+0x290`/`+0x2a0` rgba per end, `+0x2b0` half width,
+  `+0x2b4` image): both ends go to view space (rows of `[0x509adc]+8`, `0x471a13..0x471afa`); the quad is offset across
+  the projected direction `(dx, dy)`: v0 = p0 + (−dy, dx)·w, v1 = p0 − (−dy, dx)·w, v2 = p1 − …, v3 = p1 + … (`0x471b80..
+  0x471cd5`), so **u runs along the line (p0 → p1) and v across it** in mode 0. Flag 0x400 = own half width (else
+  `[0x4b7aa0]`), 0x800 = own colours (else `0x4b7a84`), 0x200 = textured; it is always submitted with flags **0x24**
+  (additive ONE/ONE, view-space vertices, `0x471e74`). Afterwards it resets its uv set with `0x470d80(0, 1)` **only if
+  `S+0x204 != 0`** (`0x471eb7`) — and no instruction writes `S+0x204` (the six `mov [reg+0x204]` in the exe belong to
+  other objects), so the reset never happens. Only the lightning bolt (`0x46d932`) ever sets the line's uv set, so every
+  later textured line (the rod arcs `0x46da00`, the rain streaks `0x47de10`, the hit-star speed lines `0x474e00`, the other
+  callers `0x46e530`, `0x46f2d0`, `0x46fb30`, `0x477fa0`, `0x478b70`, `0x479d70`, `0x47a790`) is drawn with the mirror of the **last bolt segment** until the next bolt; before the first bolt, mode 0.
+* **`S+0x260` is the quad's shape** (`0x470f1e`: `edi = table[S+0x260]`, the `base` angle below). Every effect that sets it
+  uses 0x12 (the square) except the ribcage (0x1a) and the race board's flames (0x13); the storm's glow sprite
+  (STORM.md §5.2) is an ordinary square.
 * **Plane axes `0x471ee0(out, n)`** (4×4, columns): column 0 = u, column 1 = v, column 2 = n. Generally
   `u = normalize(n.z, 0, −n.x)` (level, across the normal), `v = n × u`; for n ≈ (0, ±1, 0) (`|n.x|, |n.z| < 0.001`,
   `1 − |n.y| < 0.001`) `v = normalize(0, −n.z, n.y)`, `u = v × n`. The corner offsets go along u (x) and v (y).
@@ -199,8 +218,11 @@ Verified against PERSO_DEATH.md §4.2; additions:
 * The ribcage (i = 3) uses sprite **mode 0x1a**: a 1:2 upright quad (§1), half diagonal 75.
 * Both sprites use the **default colour** (flag bit 1 off): the bone (flags 0x4d, blended) at texture × 1, the glow
   (flags 0x45, additive) at texture × 0.5; alpha 1.
-* During the model phases no sprites are drawn, but the light `0x498790` is still registered at `S+0x208`, i.e. at
-  whatever the last sprite of the frame was (LIGHTING.md §7: never drawn).
+* The light `0x498790(kind 0, S+0x208, white, rnd·100 + 200)` is registered every frame (`0x477d9d..0x477dc6`), also
+  during the model phases, when no sprite is drawn: `S+0x208` is then whatever the last sprite handed to `0x470f10`
+  was, this frame or an earlier one (in a skeleton phase it is the last bone's glow, the right leg). LIGHTING.md §7:
+  never drawn. Port: `hud.c` keeps `S+0x208` (`hud_last_sprite_pos`, written by every `hud_world_spr_mode` /
+  `hud_world_fx` / `hud_world_fx_plane` call before it draws or bails out) and `FX_SKELETON` registers the light there.
 * Also called by the race kill `0x44c59d` (kind 2, RACE.md §4.9).
 
 ## 7. The port
@@ -220,6 +242,10 @@ original's flags as they are (§1); the alpha-blended path uses `GL_COMBINE` wit
 | `0x478c0e` muzzle ring | in `bombs_draw` with the launcher's muzzle smoke |
 | `0x477e40` | `game_skeleton` from `player_kill` kinds 2/9 and the race kind 2 |
 | `0x475440` / `0x475380` | `board_fx_draw` / `FX_BOARD_PUFF`: the race board's jets and smoke (RACE.md §2.2); needs sprite mode 0x13 (base 37, a 2:1 quad), which `hud_world_spr_mode` now knows |
+
+The line primitive `0x471a10` is `hud_world_streak` / `hud_world_streak_flip` / `hud_world_beam` (`world_line_uv` in
+`hud.c`); the uv table `k_uvset` is shared by sprites and lines, and the line's current set `g_line_uv` persists as in
+the original (§1): only `hud_world_streak_flip` (the bolt) changes it.
 
 Deviations: the splinter's rotation (§4); the player's facing at the skeleton flash is set to face the camera's look
 direction at once (0x459ff0 resets the Mover ramps; the port sets `yaw`); the plane sprites get a GL polygon offset

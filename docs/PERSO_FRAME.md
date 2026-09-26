@@ -108,8 +108,8 @@ void Perso_Update(Perso *p, bool arg /* always 1 */)
     }
     p->disp = (0,0,0);                                   /* +0x204..0x20c: displacement this frame */
     if (!p->frozen) {
-        if (p->attachedTo == 0 && p->state != 5)         /* +0x26c, +0x21c */
-            RegisterActor(p, 0xa);                       /* 0x40c080: 0x4c5218[n] = (p, 10), max 8 – list for the "thunderstorm" system (§4.2) */
+        if (p->deathKind == 0 && p->state != 5)          /* +0x26c (0 = alive, STORM.md §4), +0x21c */
+            RegisterActor(p, 0xa);                       /* 0x40c080: 0x4c5218[n] = (p, 10), max 8; copied to actor list 1 at the next frame start (0x40bf60) */
         if (!p->frozen) {
             p->accu.t += dt;                             /* 0x453ca0 on +0x710 */
             if (p->bonusCount >= 25) {                   /* +0x25c */
@@ -368,7 +368,7 @@ animation speed, `+0x1c` cell, `+0xf8` model.
 | 0x254, 0x258, 0x260, 0x264 | int | HUD counters (`0x44ae60`) | `0x44a3d0` = 0 |
 | 0x25c | int | **bonus counter** (25 → heart) | `0x44b6d1`, `0x44c8d4` |
 | 0x268 | u8 | return from state 3 | `0x44b980`, `0x44b4a0` |
-| 0x26c | u32 | attached object (no thunderstorm registration if ≠ 0) | `0x44c453` |
+| 0x26c | u32 | **death kind** (0 = alive; Kill writes the kind, Reset `0x44ab54` clears it; no actor-list registration if ≠ 0), not an attached object | `0x44c453` |
 | 0x270, 0x280, 0x704 | f32 | timers −dt | `0x44b1b0`, `0x44cd25`, `0x44cd45`, `0x44c89c` |
 | 0x274, 0x27c | | reset to 0 | `0x44ab20` |
 | 0x278 | int | respawn countdown (−1 idle; 2 after death; 0 ⇒ clear id flag 0x10) | `0x44c730`, `0x44b5ce` |

@@ -348,7 +348,7 @@ the run. `0x42f0bf` appended ~28000 entries in that time — into the list nobod
 | `0x40cea4` | class 16 state 4, throw | his column | 400 | `boss.c` |
 | `0x40d1da` | class 16 state 5, vanish | his column | `(1 − t/1.5) · 400` | `boss.c` |
 | `0x4766ee` | explosion kind 0 record `0x4765f0` (bomb, BOMB.md §4.3), while `u = t/0.25 < 1` | the explosion | sprite size + 100 = `500·sin³(2πu) + 100` (signed: −400..600) | `main_engine.c` `bombs_draw` (one frame late: registered in the effect draw after `rnd_frame`) |
-| `0x477dc6` | Woody's skeleton effect `0x477980` (PERSO_DEATH.md §4.2), every frame | the last sprite drawn | `rnd · 100 + 200` | not ported (the effect itself is not) |
+| `0x477dc6` | Woody's skeleton effect `0x477980` (PERSO_DEATH.md §4.2), every frame | `S+0x208` = the position of the last sprite handed to `0x470f10` (in a skeleton phase the last bone's glow; in a model phase an earlier effect's sprite) | `rnd · 100 + 200` | `main_engine.c` `FX_SKELETON` at `hud_last_sprite_pos()` (PARTICLES.md §6) |
 
 ### 7.6 Port
 

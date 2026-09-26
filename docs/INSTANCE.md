@@ -344,16 +344,18 @@ void Sector_ListInstances(Sector *S, int flag)                          /* 0x42a
 **Port** (`rnd_instance_list`, `src/render_gl.c`; called at the start of the frame from `main_engine.c` with the current camera,
 race list `Renderer.race` while `race_char`): sectors and groups from `vis_entry` (`0x408210`), per instance the sector and
 floor group (`gel_floor_group` = `0x40a0c0`) of its cell point, cached in `Instance.cell_*` and recomputed when the point moves;
-cell point = `position + (0, cell_dy, 0)` for the enemies (`enemy_place` sets `cell_dy = h/2`), else the animated root
-(`ins_anim_centre` = `+0x60`); message-34 links (`link_inside`); the stationary sphere test on the port's frustum (aspect of the
+cell point = `position + (0, cell_dy, 0)` for the enemies (`enemy_place` sets `cell_dy = h/2`), the `.ins` position for the
+flag-0x20 links of messages 61/62 (`Instance.cell_fixed`, never re-celled by their clock), else the animated root
+(`ins_anim_centre` = `+0x60`); the list ORDER of the original (sector chains walked in `.vis` pair order, every clock run
+re-links the instance in front of its chain, the camera leaf's `.col` objects clocked first; MODEL_RENDER.md §9.1); message-34 links (`link_inside`); the stationary sphere test on the port's frustum (aspect of the
 window, not 4:3) and the race 11000 test. Results: `Instance.listed` (Think / sound) and `Instance.in_zone` (sector + group + link:
 the draw gate of base-class instances and enemies in `rnd_frame`, whose own cone test stays on this frame's camera).
 Readers switched: enemy / boss Updates and the actor list 1 (`game_enemy_thinks`), `snd_owner_active`, `ambient_update`, the
-bonus halos, the Perso's special attack target list. Port simplifications: the port does not keep the original's order of
-re-cells (it re-cells from the current point every frame, not only after a clock run), counts a sphere as cached from the first
+bonus halos, the Perso's special attack target list. Port simplifications: an instance whose cell point moved to another
+sector is re-celled at once, even when no clock ran (the original leaves it in its old sector's chain until one does), counts a sphere as cached from the first
 stationary frame, and when there is no `.vis` (or the camera is outside every sector) lists everything. `WOODY_VISLOG=1`: once a
 second camera sector / floor group / `.vis` entry, list size and max, and why the others are out (sector, group, no floor,
-link, frustum, race distance); `=2` also the ids and every actor; `=3` the instances without a floor group.
+link, frustum, race distance); `=2` also the ids and every actor; `=3` the instances without a floor group; `=4` also the first 24 ids of the list every frame.
 
 ## 5. Messages 56 / 57: transparency fade (`+0x6c`)
 
