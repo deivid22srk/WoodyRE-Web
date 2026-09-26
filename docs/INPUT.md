@@ -95,18 +95,18 @@ handler `0x405896`: action 9 → back to page `app+0x64`) never runs.
 | 0x08 | 0x0c | `0x4c2bd8` | 5 | selected 3D device index (Setup) | – |
 | 0x0c | 0x10 | `0x4c2bdc` | `84e63de0-46aa-11cf-…` | **D3D device GUID** (IID_IDirect3DHALDevice) | `0x4027f5` (TRACING.md had 0x0c/0x1c swapped) |
 | 0x1c | 0x20 | `0x4c2bec` | 0 | **DirectDraw driver GUID**, all 0 = primary (NULL) | `0x4027bd` |
-| 0x2c..0x38 | 0x30 | `0x4c2bfc..c08` | 0x1ff, 1, 1, 3 | device caps / modes (Setup) | – |
-| 0x3c | 0x40 | `0x4c2c0c` | 2 | detail option (outline, LIGHTING.md §5) | `0x42b380`, `0x43b43a` |
+| 0x2c..0x38 | 0x30 | `0x4c2bfc..c08` | 0x1ff, 1, 1, 3 | device caps flags and capability-derived choices no dialog shows (SETUP.md 1) | – |
+| 0x3c | 0x40 | `0x4c2c0c` | 2 | Detect's "Effects quality" (outline, LIGHTING.md §5) | `0x42b380`, `0x43b43a` |
 | 0x40, 0x44, 0x48 | 0x44 | `0x4c2c10/14/18` | 640, 480, 32 | display mode (DISPLAY.md §1) | `0x4027da`, `0x40614f` |
-| 0x50 | 0x54 | `0x4c2c20` | 0 | Detect's "Disable VSYNC", inverted on NT (DISPLAY.md §2.2) | `0x47ee16`, `0x47eea0` |
-| 0x68..0x98 | 0x6c | `0x4c2c38..c68` | 0 | sound: device flags, volumes (`0x4c2c50` sfx, `0x4c2c54` music), … | `0x4691e2`, `0x44fe2e` (bit 1 of `app+0x384`) |
+| 0x50 | 0x54 | `0x4c2c20` | 0 | Detect's "Activate VSync", inverted on NT (DISPLAY.md §2.2, SETUP.md 2) | `0x47ee16`, `0x47eea0` |
+| 0x68..0x98 | 0x6c | `0x4c2c38..c68` | 0 (mkcfg bug, SETUP.md 4; Setup: 1, 1, 1, 0, …, 100, 30, 100, device) | sound page: switches Sound Fx / Music / Cinematic / Invert Left/Right, volumes (`0x4c2c50` sfx, `0x4c2c54` music, `+0x88` unused), output device, speakers (SETUP.md 1) | `0x4691e2`, `0x44fe2e` (bit 1 of `app+0x384`) |
 | 0x9c | 0xa0 | `0x4c2c6c` | 0 | GUID of the joystick Setup found (`0x10001070`) | **not read**: the game enumerates itself |
 | **0xac** | 0xb0 | `0x4c2c7c` | ↑ ↓ ← → Space LShift LCtrl LShift Enter Esc Num0 RCtrl | **keys config 1**, 12 × u32 | `0x44fc5a..` |
 | **0xdc** | 0xe0 | `0x4c2cac` | R F D G, 0x200..0x207 | **keys config 2**, 12 × u32 | `0x44fd42..` |
 | 0x10c | 0x110 | `0x4c2cdc` | 0 | Setup: a joystick was detected (`0x1000d6d8`) | – |
-| 0x110 | 0x114 | `0x4c2ce0` | 0 | "Joystick Mode" choice of Detect (**uncertain** which control) | `0x44fc20` |
-| 0x114 | 0x118 | `0x4c2ce4` | 1 | **keyboard only** (Detect's "Keyboard" choice; 1 without a joystick) | `0x44fc05` |
-| 0x118 | 0x11c | `0x4c2ce8` | 0 | passed through by Setup (`0x10021ea0`) | – |
+| 0x110 | 0x114 | `0x4c2ce0` | 0 | "Joystick Mode": radio "Digital" (0x45f) = 1, "Analogique" (0x460) = 0 (SETUP.md 1) | `0x44fc20` |
+| 0x114 | 0x118 | `0x4c2ce4` | 1 | **keyboard only**: radio "Key" (0x46b) = 1, "Joy" (0x46a) = 0; forced 1 without a joystick | `0x44fc05` |
+| 0x118 | 0x11c | `0x4c2ce8` | 0 | registry `HKCU\Software\Eko Software\The Gift` "Language" (Setup `0x100032a0`) | – |
 
 The 12 key slots of each set, in cfg order, and the action they feed (`0x44fbd0`):
 
@@ -237,6 +237,8 @@ the Mover).
   `<Data>/../Woody.cfg` (the install layout). Magic checked, both key sets and the mode read; DIK codes become VK codes
   (`in_dik_vk`: a table for the extended keys and the numpad, `MapVirtualKey` for the rest, so the keyboard layout counts
   like DirectInput's physical keys). The volumes stay in `woodyre.cfg` (MENU_OPTIONS.md); nothing is written to Woody.cfg.
+  The same file lookup (`wcfg_read`) also feeds `setup_import`: vsync, reverse stereo and film sound for `woodyre.cfg`
+  keys that are still missing (SETUP.md 2.4, 3).
 - **Without Woody.cfg** the port keeps its own keys: arrows/WASD, Space jump, X duck (and duck while riding), LCtrl/Shift
   attack, Enter look, Esc pause, C/Num0 camera, RCtrl/E special; joystick buttons as Detect's config 2 (§2: button 0 duck,
   1 attack, 2 jump, 3 duck riding, 4 look, 5 pause, 6 camera, 7 special), and **mode 3** = keyboard and joystick both

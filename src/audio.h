@@ -29,6 +29,7 @@ void audio_listener(const float *pos, const float *right);          /* per frame
 void audio_update(int (*active)(const void *owner));                /* per frame: 3D voices of owners that are not active fall silent */
 void audio_pause(int paused);                                       /* suspends the voices */
 void audio_master(float sfx, float music);                          /* 0..1 */
+void audio_reverse_stereo(int on);                                  /* Woody.cfg +0x74 "Invert Left/Right" (0x46b7e0): 3D voices pan mirrored */
 float audio_duration(uint32_t ref);
 void audio_fx(int id, const void *owner, const float *pos);        /* engine effect `id` of the SoundFx table; pos NULL = 2D */
 void audio_fx_stop(int id, const void *owner, int is3d);

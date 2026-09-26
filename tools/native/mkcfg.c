@@ -1,8 +1,12 @@
 /* Generate Woody.cfg the same way Detect.exe does: load Setup.dll, run its hardware
  * detection, apply the default controls and let SaveConfig write the file into the cwd.
  * Build (32-bit, Setup.dll is x86):
- *   python -m ziglang cc -target x86-windows-gnu -O2 -o out/mkcfg.exe tools/native/mkcfg.c -lgdi32 -luser32 -lole32
- * Run from the folder that contains Setup.dll (game/). */
+ *   python -m ziglang cc -target x86-windows-gnu -O2 -o out/mkcfg.exe tools/native/mkcfg.c -lgdi32 -luser32
+ * Run from the folder that contains Setup.dll (game/). Detect reads an existing Woody.cfg there first (0x10003920) and
+ * carries its display / sound choices over; delete it for Setup's defaults (the keys are reset by DefaultControlSettings).
+ * NO CoInitialize before Detect: Setup's sound enumeration 0x10002770 does its own and returns at once when that
+ * gives S_FALSE (already initialised), leaving its sound page empty, so SaveConfig then writes the sound section
+ * +0x68..+0x98 as all 0 = no sound at all in the game (docs/SETUP.md 4). Detect.exe calls Detect before OLE is up. */
 #include <windows.h>
 #include <stdio.h>
 typedef int (__cdecl *DetectFn)(HWND);
@@ -10,7 +14,6 @@ typedef void (__cdecl *VoidFn)(void);
 typedef int (__cdecl *SaveFn)(void);
 int main(void)
 {
-    CoInitialize(NULL);
     HMODULE h = LoadLibraryA("Setup.dll");
     if (!h) { printf("LoadLibrary Setup.dll failed: %lu\n", GetLastError()); return 1; }
     DetectFn Detect = (DetectFn)GetProcAddress(h, "Detect");
