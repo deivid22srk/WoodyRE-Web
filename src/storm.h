@@ -16,6 +16,7 @@ void storm_stop(void);                                    /* message 1101 -> 0x4
  * actor this frame (cinematic, scripted action) */
 void storm_update(float dt, struct Player *pl, int frozen);
 void storm_fx_draw(const float *eye, float dt);           /* the bolts and the rod arcs (particle callbacks 0x46d520 / 0x46da00) */
+void storm_rod_drawn(Instance *inst);                     /* Renderer.on_drawn: vt[26] 0x452010, the rod's colour, only for a drawn rod */
 void storm_overlay_draw(int paused, float dt);            /* 0x46e0d0: the full-screen darkening and flashes, 2D, before the HUD */
 
 #endif

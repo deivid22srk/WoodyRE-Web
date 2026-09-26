@@ -132,10 +132,15 @@ void Storm_Update(float dt)                             /* 0x451cc0, first thing
 }
 ```
 
-* **Who is struck.** Actor list 1 is filled by the actors' own updates of the previous frame (`0x40c080`). The Perso
-  registers only when not frozen (`+0x690 == 0`, a cinematic), with no attached object (`+0x26c == 0`) and not in
-  state 5 (scripted animation) (`0x44b699`); Boss2 (`0x40dd58`) and enemy type 12 (`0x4110e6`) register too, but they
-  are not category 1 and the storm skips them. So a strike during a cinematic or a door action strikes nobody (the flash still happens).
+* **Who is struck.** Actor list 1 (`0x4c52d8`, count `0x4c531c`) is a **copy made at the start of every app frame**: the
+  actors append themselves (`0x40c080(this, 10)`: `{this, 10}` pairs at `0x4c5218`, count `0x4c5320`, at most 8, silently
+  dropped beyond) during their updates, and `0x40bf60` (called at `0x401bd9`, before any update of the frame) copies that
+  list to `0x4c52d8`, sets `0x4c531c` and empties the staging list. So the storm sees who registered during the
+  **previous** frame (the positions are read live through `vtbl[34]`). The Perso (update `0x44b530`) registers only when
+  not frozen (`+0x690 == 0`, a cinematic; `0x44b68b`), **not dead** (`+0x26c == 0`, `0x44b699`) and not in state 5 (scripted
+  animation, `+0x21c`, `0x44b6a3`). `+0x26c` is the **death kind**: Kill writes the kind there (`0x44c453`, and `0x44c6d3` in
+  `0x44c4ba`), Reset `0x44ab20` clears it (`0x44ab54`); it is not an "attached object" as PERSO_FRAME.md had it.
+  Boss2 (`0x40dd58`) and enemy type 12 (`0x4110e6`) register too, but they are not category 1 and the storm skips them. So a strike during a cinematic or a door action strikes nobody (the flash still happens).
 * **Timing.** Timer 1.0 at the start ⇒ strike at +1 s, then every `interval` s; the warning when the timer crosses
   1.7, i.e. 1.7 s before each strike except the first. W3A/W3D/K3A/S3A: 15 s, W3B: 12 s.
 * **Death.** `Kill(9)` makes the Game tick go to state 3 on the same frame (`0x4459c0` state 2 tests `vtbl[36]`), and
@@ -225,9 +230,9 @@ void Bolt_Tick(P *o)                                    /* 0x46d520 */
     for (i = 0; i < n; i++) {
         S.p0 = seg[i].a; S.p1 = seg[i].b; S.rgba0 = S.rgba1 = (1, 1, 1, alpha); S.halfWidth = 30;
         S.tex = 0x1001e;                                /* bank 0 image 30 */
-        SpriteUV(S, seg[i].kind, 1);                    /* 0x470d80: 0 plain, 1 v mirrored, 2 u mirrored, 3 both */
+        SpriteUV(S, seg[i].kind, 1);                    /* 0x470d80: into the LINE's vertex set (arg 1); 0 plain, 1 v mirrored, 2 u mirrored, 3 both, 4 turned */
         Line(&S, 0xe00);                                /* 0x471a10: own width, own colours, textured; additive */
-        S.pos = b; S.rgb = (0.8, 0.8, 1.0); S.alpha = 0.7f; S.+0x260 = 0x12; S.tex = 0x10006;   /* bank 0 image 6 */
+        S.pos = b; S.rgb = (0.8, 0.8, 1.0); S.alpha = 0.7f; S.shape = 0x12 /*+0x260: square*/; S.tex = 0x10006;   /* bank 0 image 6 */
         S.size = rnd() * 20 + 25;                       /* 0x4a9994, 0x4abc64 */
         DrawSprite(&S, 3);                              /* 0x470f10: billboard, own colour — n times per frame at b */
     }
@@ -301,15 +306,19 @@ within 1 s and it pulses cyan, draining back when he leaves.
   or camera mode 4. The storm is stopped after the tick when the Game state was 0 or 3 before it, exactly as `0x4459c0`.
   The Perso counts as an actor unless frozen or in a scripted action (`script_act`, state 5).
 * `storm_fx_draw` with the other world effects (bolts: `hud_world_streak_flip` with bank 0 image 30, new fx slot 19,
-  and `hud_world_fx` image 6; arcs: `hud_world_streak` image 0); `storm_overlay_draw` first thing after `hud_begin`
+  and `hud_world_spr_mode` image 6; arcs: `hud_world_streak` image 0); `storm_overlay_draw` first thing after `hud_begin`
   (`hud_rect`, the same ARGB convention as RectVirtual).
-* Rod colour: `Instance.tint_mode = 2`, `tint_rgb = col / 255`.
-* **Simplified / assumed:** the rod colour is updated every logic frame instead of only when the rod is drawn (differs
-  only for a rod off screen); the actor list has no one-frame lag and the Perso's `+0x26c` (attached object) is not
-  tested; the random numbers come from a local LCG, not the CRT `rand()` sequence; which uv corner each 0x470d80 mode
-  mirrors is taken from the mode tables (`0x470de2`, `0x470e0c`, `0x470e3a`) without tracing the line quad's corner
-  order; the glow sprite's `+0x260 = 0x12` is not decoded (drawn additive like the other fx sprites); the skeleton
-  flash of the Kill(9) death (`0x477e40`) is ported since (PARTICLES.md §6).
+* Rod colour: `Instance.tint_mode = 2`, `tint_rgb = col / 255`, set by `storm_rod_drawn`, which the renderer calls for
+  every **drawn** instance (`Renderer.on_drawn`, after the visibility pass, before any model is drawn), as the original calls
+  vt[26] only for a rod it draws: a rod off screen keeps its glow and its `+0x114` flag until it is drawn again; the glow
+  moves by the frame's dt at most once per logic frame (nothing while paused).
+* Actor list 1: `storm_update` takes the Perso's registration flag of the **previous** frame (`!frozen && !dead_kind &&
+  !script_act`, taken after this frame's `player_update`, used on the next), as the copy `0x40bf60` gives it.
+* The bolt's line uv set (`0x470d80(kind, 1)`) and the glow sprite's shape (`+0x260 = 0x12`, the square) are decoded
+  (PARTICLES.md §1): the port sets the line's uv set and keeps it for the lines drawn after it (`hud.c` `k_uvset` /
+  `g_line_uv`), and draws the glow with `hud_world_spr_mode(0x12, 6, …, flags 3)` (camera facing, own colour, additive).
+* **Simplified / assumed:** the random numbers come from a local LCG, not the CRT `rand()` sequence; the skeleton flash of
+  the Kill(9) death (`0x477e40`) is ported (PARTICLES.md §6).
 * Log: `WOODY_STORMLOG=1` (rods and their parameters, start/stop, warning, every strike with "sheltered" or "HIT",
   glow per second).
 
@@ -326,6 +335,9 @@ within 1 s and it pulses cyan, draining back when he leaves.
 
 1. Not traced live in the original (all of the above is static); the flash strobes (grey 0 at alpha 160 at the start and
    end of each flash) look harsh but are what `0x46e2a0` computes.
-2. The meaning of sprite field `+0x260` (0x12 here) and of the second argument of `0x470d80` (1 = the line's vertex set
-   `+0x100..0x1c0`?).
+2. ~~The meaning of sprite field `+0x260` and of the second argument of `0x470d80`~~: resolved (PARTICLES.md §1). `+0x260`
+   is the quad's shape, the index into the corner-angle table `[0x5e823c]+0x800` (`0x470f1e..0x470f24`); 0x12 is the plain
+   square every sprite uses. The second argument of `0x470d80` picks the vertex set: 0 = the sprite quad `S+0x00..0xc0`,
+   1 = the line quad `S+0x100..0x1c0` of `0x471a10` (`0x470d8e..0x470da9`), anything else = a pointer to one vertex that
+   gets all four uv pairs (`0x470dbe`).
 3. W3B's rod with height 10 (a flat shelter sphere of radius 400 around a point 5 above its origin) — which instance and why.

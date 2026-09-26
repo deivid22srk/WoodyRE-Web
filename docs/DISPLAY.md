@@ -12,8 +12,9 @@ CAMERA.md §5 (projection), HNM.md (films).
   but its switch (`app+0x384` bit 0) is never set in the shipped build.
 - **Pacing**: the main loop has **no Sleep, no timer wait and no frame cap**. The only brake is the present:
   `Flip(DDFLIP_WAIT)` (= wait for vertical blank) or, with the other value of the VSync flag, a `Blt` with
-  `DDBLTFX_NOTEARING`. With the cfg every installation gets (VSync flag 0) on Windows NT/2000/XP and later, the flag is
-  inverted to 1 at device creation, so the game **flips on vsync** by default.
+  `DDBLTFX_NOTEARING`. The flag is Detect's **"Activate VSync"** box (SETUP.md 2); with the cfg every installation on the
+  primary display driver gets (flag 0), Windows NT/2000/XP and later invert it to 1 at device creation, so the game
+  **flips on vsync** by default there.
 - **dt**: raw `QueryPerformanceCounter` delta per frame, **clamped to 0.1 s** (and a dt ≤ 0 also becomes 0.1). A developer
   "Constant Frame rate" switch replaces it with `1/200` s.
 - **Aspect**: the layout (HUD, menus: 640x480 virtual) and the 3D projection are fixed 4:3; a non-4:3 mode is stretched.
@@ -74,20 +75,24 @@ void Present(Renderer *r) {                       /* 0x47ee90 */
     } else { ClientToScreen; OffsetRect; primary->Blt(&dst, back, &src, 0, NULL); }  /* 0x47ef01: windowed, never used */
 }
 ```
-`[0x4c2c20]` = Woody.cfg `+0x50` (file offset 0x54), Detect.exe's checkbox **"Disable VSYNC"** (dialog string at
-file offset 0x354ee of Detect.exe; the Setup.dll side keeps it per device in `[0x10033dec + 4·dev]`, set at `0x10003648`).
-At the end of device init (`0x47ee0e..0x47ee22`): **if `[0x4c3aa0]` (1 on a Windows NT platform, set by WinMain at
-`0x405ddf` from `GetVersionExA`; 0 on Win9x at `0x405dbe`) then `[0x4c2c20] = 1 − [0x4c2c20]`**. Consequences:
+`[0x4c2c20]` = Woody.cfg `+0x50` (file offset 0x54), Detect.exe's checkbox 0x3f2. Its dialog template says "Disable VSYNC"
+(file offset 0x354ee of Detect.exe), but `OnInitDialog` replaces that with string 0x6f **'Activate " VSync"'**
+(`0x402c68..0x402c84`), so 1 = "vsync wanted" (SETUP.md 2.1). The Setup.dll side keeps it per device in
+`[0x10033dec + 4·dev]`: 1 for a device on a secondary DirectDraw driver, 0 on the primary one (`0x1000363f..0x10003651`,
+SETUP.md 2.3). At the end of device init (`0x47ee0e..0x47ee22`): **if `[0x4c3aa0]` (1 on a Windows NT platform, set by
+WinMain at `0x405ddf` from `GetVersionExA`; 0 on Win9x at `0x405dbe`) then `[0x4c2c20] = 1 − [0x4c2c20]`**. Consequences:
 
-| platform | cfg "Disable VSYNC" | `[0x4c2c20]` | present |
+| platform | cfg "Activate VSync" | `[0x4c2c20]` | present |
 |---|---|---|---|
-| NT / 2000 / XP and later | 0 (default, mkcfg) | 1 | Flip, **vsync** |
+| NT / 2000 / XP and later | 0 (default on the primary driver, mkcfg) | 1 | Flip, **vsync** |
 | NT / 2000 / XP and later | 1 | 0 | Blt + NOTEARING (driver dependent, in practice no wait) |
 | Win9x | 0 | 0 | Blt + NOTEARING |
 | Win9x | 1 | 1 | Flip, vsync |
 
-On Win9x the flag works the other way round from its label; on NT the inversion makes the label right (**uncertain**
-whether that is the intent or a two-bug cancel; only the NT rows matter for a modern system). With exclusive fullscreen,
+**Settled**: the box works as labelled on Win9x and inverted on NT. The inversion is applied in place to the global the
+game writes back to Woody.cfg on a normal quit (`0x401130` writes the whole block `0x4c2bd0`), so on NT every session that
+quits that way stores the opposite flag and the next one uses the other present mode — not a consistent design, whatever
+the intent was (SETUP.md 2.2). Only the NT rows matter for a modern system. With exclusive fullscreen,
 a flip chain of one back buffer and DDFLIP_WAIT, the frame rate is the refresh rate of the display mode (or an
 integer fraction of it when a frame takes longer). The known "no VSync" complaint (ANALYSE.md) concerns wrappers
 and the Blt path, not the default.
@@ -121,7 +126,8 @@ So the game speed is real time down to 10 fps, slow motion below. The port does 
   ring reaches the corners of the wider view and is fully open at v = 1. Pickups projected to the screen
   (`rnd_project`, the HUD fly-in) are remapped into that range. `hud_bars` paints the pillar/letter bars black at the
   end of the frame (after the fade).
-- **Vsync**: `wglSwapIntervalEXT(1)` by default (the original's NT default, §2.2), 0 = off.
+- **Vsync**: `wglSwapIntervalEXT(1)` by default (the original's NT default, §2.2), 0 = off. Until `woodyre.cfg` has a
+  `vsync=` key, the port takes it from Woody.cfg `+0x50` with the NT rule, vsync = (flag ≠ 1) (`setup_import`, SETUP.md 2.4).
 - **Fps cap**: optional (default off, as the original); Sleep(1) with `timeBeginPeriod(1)` until 2 ms before the due
   time, then a spin. The dt clamp stays.
 
@@ -156,7 +162,8 @@ fullscreen=0
 vsync=1
 fpscap=0           # 0 = off
 ```
-Defaults = the port's window before these options (1280x800, wide, windowed, vsync on, no cap). Overrides:
+Defaults = the port's window before these options (1280x800, wide, windowed, vsync on, no cap; vsync from Woody.cfg while
+the key is missing, §3). The same file also keeps `reverse_stereo=` and `film_sound=` (SETUP.md 3). Overrides:
 `--res WxH`, `--windowed`, `--fullscreen`, `--aspect 4:3|wide`, `WOODY_VSYNC=0/1`, `WOODY_FPSCAP=N`. A screenshot run
 (`--shot`, `WOODY_SHOTSEQ`, `WOODY_LOGOSHOT`) ignores the cfg's display keys and starts from the defaults, so test images
 stay 1280x800 wide unless the command line says otherwise. `WOODY_FPS=N` (testing: frame-rate dependent code) still
@@ -164,8 +171,9 @@ takes precedence over the cap. `WOODY_FPSLOG=1` prints the frame rate every 2 s.
 
 ## 6. Uncertain
 
-1. Whether the Win9x/NT inversion of the VSync flag (§2.2) is deliberate; the meaning of the Setup.dll per-device
-   default at `0x1000363f..0x10003651` (set to 1 on some device condition, not followed).
+1. ~~Whether the Win9x/NT inversion of the VSync flag is deliberate; the Setup.dll per-device default~~: settled in §2.2
+   and SETUP.md 2 (label "Activate VSync"; right on Win9x, inverted on NT, re-inverted into the cfg at every quit; default
+   1 only for devices on a secondary DirectDraw driver).
 2. What `DDBLTFX_NOTEARING` did on the drivers of the time (documented as "schedule the blit to avoid tearing"; many
    drivers ignored it).
 3. The frame-skip path of App::Frame (`0x4015d6..0x401609`: states with `app+0xf4` bit 1 set and bit 2 clear present

@@ -331,7 +331,7 @@ Consequences:
   has bit 0, so it is off. (With it on, the diffuse alpha 0 that `0x43d91d` writes would discard every pixel.)
 
 **Port** (`rnd_frame`, the block after `post_models`): pass 1 no longer draws model faces; one loop over the drawn
-instances in the port's draw order keeps a static `sort_depth` = `[0x5ac8d4]` (updated by every fading instance), puts
+instances in the original's draw order (the Perso, then the instance list, §9.1) keeps a static `sort_depth` = `[0x5ac8d4]` (updated by every fading instance), puts
 fading instances on the fade list and every instance of a model with a blended mesh polygon (`Renderer.model_blend`)
 on the additive list, both with the current `sort_depth`; then buckets `round(d · 254 / max(1, all d))` from the
 highest down: fade depth-only, fade blend, additive faces (ONE/ONE, alpha test off). Measured (W1A, WWS, `WOODY_PROF=1`):
@@ -341,6 +341,42 @@ added first and the half-transparent blades were blended over it; now the haze i
 them out, as in the original. A frame without a fading instance is bit-identical to before (K1A, S1A, WWS start
 frames with a fixed time step); W1A's start frame has one (slot 486, model 49, an all-glow pickup fading in) and only
 its pixels change (the glow behind its fading body is now depth-rejected).
+
+### 9.1 The instance order that feeds the stale depth
+
+"Drawn before it" is the order of the world draw `0x42b380`: the Perso first (`vtbl[2](4 or 6)`, `0x42b396..0x42b3a9`), then
+every entry of the frame's instance list `world+0x64` in list order, the Perso skipped (`vtbl[2](5 or 7)`, `0x42b3b2..0x42b3ed`).
+The list is built by `0x42a980` → `0x42a840` (INSTANCE.md §4.1), and its order is fixed by the **sector chains**:
+* `0x42ab60`: the pairs of the camera's `.vis` entry in file order; each pair's sector once (sector stamp `+4`), and for it
+  `0x42a840` walks the chain `sector+0x44 → inst+0x24` from its head, reading `next` before it handles the instance
+  (`0x42a85b`), appending whatever passes (floor group, message-34 link, cached-sphere frustum / race distance).
+* The chain is a stack: `0x407790` links an instance **in front** (`0x4077da..0x4077dd`), `0x407850` unlinks it
+  (`+0x1c = +0x18 = −1`, `0x407889..0x407897`), and the re-cell `0x4077f0` is unlink + link in front. The loader links the
+  `.ins` objects in file order (`0x4288cf`; cameras too, `0x428a4a`), so a chain starts as the reverse file order.
+* **Every clock run re-cells.** `0x42e2b0` with arg bit 0 runs the clock `0x43eee0` (`0x42e310`), which works at most once per
+  frame (`inst+0x58 == [[0x509adc]]`, `0x43eeee`) and ends, unless the instance has flag 0x20, with `inst+0x60` = the
+  animated root and `0x4077f0(inst+0x60)` (`0x43f2ed..0x43f351`). The list build calls `vtbl[2](0x81)` for every instance it
+  appends that has no flag 0x20 (`0x42a94b..0x42a95b`), so each listed instance goes to the front of its chain **while the walk goes on behind it**: after
+  the walk a chain of listed, clocked instances is reversed, and next frame it is walked in the reverse order. **The list
+  order of a static scene therefore alternates between two orders every frame** (and with it the draw order of `0x42b380`).
+  Actors and the links of messages 61/62 (flag 0x20) keep their place unless their own mover re-cells them.
+* Before the walk, the message-34 loop (`0x42aa0b`) runs `vtbl[2](1)` = the clock on every type-1 object of the camera's
+  kd leaf, in `.col` order (`0x4271e0` list `cell+0x40/+0x44`, `0x42aa0b..0x42aa2e`), so those move to the front first.
+
+So which fading instance last wrote `[0x5ac8d4]` before a given glow instance depends on the sectors' `.vis` order, the
+chain history and the frame parity; a glow batch of a non-fading instance between two fading ones can flip buckets every
+frame.
+
+**Port** (`rnd_instance_list` in `src/render_gl.c`): `Renderer.chain` holds one chain per sector (`Instance.cell_next`,
+`chain_sec1`), built in `.ins` order on the first list of a level; `chains_sync` unlinks hidden instances, links shown ones in
+front, re-cells a moved actor / flag-0x20 link (its own `0x4077f0`) in front; the camera leaf's `.col` objects are clocked
+first (`rnd_load_col`, `.col` loaded by `level_load`); the walk follows the `.vis` pairs and `chain_clock` (once per frame,
+`Instance.clock_frame`) re-links every listed non-0x20 instance in front. The sort loop of the fade / additive buckets then
+takes the Perso, the list in order, and last the few instances the port draws outside the list (model order). `WOODY_VISLOG=4`
+prints the first 24 list ids every frame (W1A start: two orders alternating, e.g. `308 294 300 299 298 296 …` /
+`296 298 299 300 294 308 …`). Port simplification kept: an instance whose cell point moves to another sector without a clock
+run is re-linked at once (the original leaves it in the old chain until a clock runs). Start frames of W1A, W1B, W2D and
+WWS render as before (0-755 differing pixels at a fixed 60 fps, animation phase only).
 
 **Texture surfaces** (`0x47fa60`). The file's RGB565 goes through `0x47f090(v, 0)` to ARGB8888 with **the low bits 0**
 (`r5 << 3`, `g6 << 2`, `b5 << 3`), the colour key test (`0x47fc0e`), and back through `0x47f170` to the surface format:

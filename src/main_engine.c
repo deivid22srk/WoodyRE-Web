@@ -58,6 +58,7 @@ static uint32_t msvc_rand(void *user);
 /* ---- camera manager: follow camera (mode 1, player.c) + the fixed script cameras (docs/CAMERA_SCRIPT.md, CAMERA.md 4 and 6.1)
  * mode 2 (message 510) / mode 4 (520, letterbox, player frozen): camera at the .ins camera position looking at
  * target origin + (0, f, 0). A mode change blends linearly from the frozen old camera unless the script asked for a cut. */
+typedef struct { float t, T, diff, start, tgt; } SvRamp;       /* one ramp of the side view: elapsed, duration, target - start, start, target */
 static struct {
     int mode; Vec3 fix_pos; Instance *fix_target; float fix_f;
     float dur, speed; int dur_from_speed, cut;                  /* 570 / 560 / 580 */
@@ -66,7 +67,9 @@ static struct {
     const Trajectory *rail; float rail_d, rail_y; Vec3 rail_pt; int rail_first;   /* mode 8 (540): camera on a TRAJ at distance d from the player */
     /* mode 0x20 (game messages 1088 + 1110, CAMERA_SCRIPT.md 4.2): side view of a section where the player is kept on a vertical plane */
     int plane_on, side; Vec3 plane_a, plane_d; float sv_par[8];   /* sv_par: lat 1000, ahead 300, h 340, h_up 500, h_down 0, rate_h 400, rate_a 700, rate_lat 200 */
-    float sv_a, sv_h, sv_lat, sv_s;
+    float sv_a, sv_h, sv_lat, sv_htarget;                        /* S+0x28c A, +0x290 H, +0x294 Lat; p+0x24 the height target */
+    SvRamp sv_ra, sv_rh, sv_rl;                                  /* the linear ramps of A (S+0x368..0x378), H (+0x354..0x364), Lat (+0x37c..0x38c) */
+    float sv_blend, sv_bt, sv_bstart, sv_bT; int sv_bsign;        /* 0x4250b0: S+0x340 blend, +0x348 t, +0x34c start, +0x350 duration, +0x344 sign byte */
     int death_cam;                                               /* engine use of mode 2 (0x41fb50 from 0x459030): the camera stops and watches the player fall */
     /* mode 0x80 (docs/CAMERA_SCRIPT.md 4.3): the camera comes from a camera track in the animation an instance plays */
     Instance *anim_inst; int anim_letterbox; Vec3 anim_eye, anim_tgt;   /* CamMgr+0x5d4, +0x618 & 2, +0x1d0, +0x5d8 */
@@ -78,6 +81,17 @@ static struct {
 } g_cam = { 1 };
 static const float k_sv_defaults[8] = { 1000, 300, 340, 500, 0, 400, 700, 200 };
 static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
+/* 0x424b30, the init of mode 0x20 that SetMode (0x41f56b -> 0x41e4e0) runs on EVERY SetMode(5), also the re-entry of 0x459960:
+ * flip byte p+0x20 = 0, A = p+0x2c and H = Htarget = p+0x30 and Lat = p+0x28 at once (no ramp at the start), blend 1.0 with the
+ * sign byte 1 (look ahead along +p->dir), the flip blend and the three ramps zeroed */
+static void cam_side_init(void)
+{
+    const float *q = g_cam.sv_par;
+    if (g_player) g_player->side_flip = 0;
+    g_cam.sv_a = q[1]; g_cam.sv_htarget = q[2]; g_cam.sv_h = g_cam.sv_htarget; g_cam.sv_lat = q[0];
+    g_cam.sv_blend = 1.0f; g_cam.sv_bsign = 1; g_cam.sv_bt = g_cam.sv_bstart = g_cam.sv_bT = 0;
+    memset(&g_cam.sv_ra, 0, sizeof g_cam.sv_ra); memset(&g_cam.sv_rh, 0, sizeof g_cam.sv_rh); memset(&g_cam.sv_rl, 0, sizeof g_cam.sv_rl);
+}
 static void cam_set_mode(int mode)                               /* SetMode 0x41f410 + 0x41eaa0 */
 {
     if (getenv("WOODY_CAMLOG") && mode != g_cam.mode) printf("  CAM mode %d -> %d (%s)\n", g_cam.mode, mode, g_cam.cut ? "cut" : "travelling");
@@ -87,12 +101,12 @@ static void cam_set_mode(int mode)                               /* SetMode 0x41
     } else g_cam.active = 0;
     g_cam.mode = mode; if (mode != 0x80) g_cam.anim_inst = NULL;
     if (mode == 1 && g_player) g_player->cam_init = 0;
+    if (mode == 0x20) cam_side_init();                           /* 0x41f56b: 0x41e4e0 -> 0x424b30 */
 }
 /* 0x41df70, the camera reset of 0x458f90 (teleport 26, respawn) and of the level start 0x402b0d: shake off (+0x67c), zoom 1.2
  * (0x41f680), auto-zoom off (+0x66c &= ~4), follow camera state CENTER (0x422350, the cam_init of the mode switch) */
 static void cam_reset(void) { g_cam.shake = 0; g_cam.autozoom = 0; if (g_player) g_player->cam_zoom = 1.2f; }
 static void cam_hard_reset(void) { cam_reset(); g_cam.cut = 1; cam_set_mode(1); }   /* 0x458f90: the reset, then the hard cut to the follow camera */
-static float ramp_to(float v, float target, float step) { return v < target ? (v + step > target ? target : v + step) : (v - step < target ? target : v - step); }
 /* 0x44de44: a Perso state change (scripted action, teleport, cinematic, death) ends the side view's plane lock */
 static void plane_release(void) { if (!g_cam.plane_on) return; g_cam.plane_on = 0; if (g_cam.mode == 0x20) { g_cam.cut = 1; cam_set_mode(1); } puts("  side view: plane lock released"); }
 static void cam_side_start(Instance *in, int v)                   /* Perso::0x459960 */
@@ -105,9 +119,9 @@ static void cam_side_start(Instance *in, int v)                   /* Perso::0x45
     Vec3 A = ins_point_world(in, mo->nodes[node].point_base), B = ins_point_world(in, mo->nodes[node].point_base + 1), d = { B.x - A.x, 0, B.z - A.z };
     float l = sqrtf(d.x * d.x + d.z * d.z); if (l < 0.01f) d = (Vec3){ 1, 0, 0 }; else { d.x /= l; d.z /= l; }
     g_cam.plane_on = 1; g_cam.plane_a = A; g_cam.plane_d = d; g_cam.side = v == 1 ? 0 : 1;
+    if (g_player) { g_player->side_l = v == 1; g_player->side_r = v != 1; }   /* 0x459ae9: v == 1 -> +0x4ed = 1 (facing d = the left key), else +0x4ee = 1 */
     memcpy(g_cam.sv_par, k_sv_defaults, sizeof k_sv_defaults);
-    g_cam.sv_a = 0; g_cam.sv_h = g_cam.sv_par[2]; g_cam.sv_lat = g_cam.sv_par[0]; g_cam.sv_s = 1;
-    g_cam.cut = 1; cam_set_mode(0x20);
+    g_cam.cut = 1; cam_set_mode(0x20);                             /* 0x459baf / 0x459bba; the mode init 0x424b30 sets A, H, Lat and the blend */
 }
 /* WOODY_MSGUNK=1: every message id the port does not handle, once per id (with the args of that first send) */
 static void msg_unknown(const EkoMsg *m, const char *what)
@@ -198,6 +212,46 @@ static Vec3 rail_nearest(const Trajectory *tr, Vec3 c, Vec3 R)
     }
     return cand;
 }
+/* 0x425300 (A) = 0x425220 (H) = 0x4253e0 (Lat): a linear ramp in time, restarted from the current value when it is idle (t == 0)
+ * or the target moved; the first call leaves the value where it is. f = t / T; f > 1 snaps to the target and idles the ramp
+ * (0x4253c4), otherwise value = start + (target - start) f and t += dt. Called only while value != target. */
+static void sv_ramp(float *v, float target, float rate, SvRamp *r, float dt)
+{
+    if (r->t == 0 || r->tgt != target) {                                          /* 0x425300..0x425386 */
+        r->t = 0; r->tgt = target; r->diff = target - *v; r->T = r->diff / rate; if (r->T < 0) r->T = -r->T; r->start = *v;
+    }
+    float f = r->t / r->T;
+    if (f > 1.0f) { r->t = 0; *v = target; return; }                              /* 0x42539a: C0 / C3 clear */
+    *v = f * r->diff + r->start; r->t += dt;
+}
+/* 0x4250b0(dt, &ahead), ahead = the unit walking direction p->dir on entry. A < 0.001: ahead stays the unit vector (unscaled, no
+ * sign) and a flip only toggles the sign byte. Otherwise ahead = (x A, 0, z A); on p->flip (p+0x20, one frame, 0x459c70) the sign
+ * byte S+0x344 toggles, start = -blend (0x425141; the 1.0 test at 0x42512b gives the same -1), blend = -1, t = 0, duration
+ * T = |ahead| / p+0x40 * (1 - start): so s = +-blend is continuous across the flip, and the look point then sweeps linearly from
+ * where it was to the other side at the rate of A (700 u/s). While blend != 1.0 (bitwise, 0x425194): blend = start + (1 - start)
+ * t / T, capped at 1 (0x4251ce), t += dt AFTER the use (the flip frame itself shows start). ahead *= (sign ? blend : -blend). */
+static void sv_ahead(Vec3 *ahead, int flip, float rate, float dt)
+{
+    if (!(g_cam.sv_a >= 0.001f)) { if (flip) g_cam.sv_bsign = !g_cam.sv_bsign; return; }   /* 0x4250b0..0x4250e5 (0x4a94c4 = 0.001) */
+    ahead->x *= g_cam.sv_a; ahead->y = 0; ahead->z *= g_cam.sv_a;
+    if (flip) {                                                                   /* 0x42510c */
+        g_cam.sv_bsign = !g_cam.sv_bsign;
+        g_cam.sv_bstart = g_cam.sv_blend == 1.0f ? -1.0f : -g_cam.sv_blend;
+        g_cam.sv_blend = -1.0f; g_cam.sv_bt = 0;
+        g_cam.sv_bT = sqrtf(ahead->x * ahead->x + ahead->z * ahead->z) / rate * (1.0f - g_cam.sv_bstart);
+    }
+    if (g_cam.sv_blend != 1.0f) {                                                 /* 0x42518d */
+        /* T = 0 happens when the flip byte stays up for a second frame (0x459c70 skipped under a move lock): start = -(-1) = 1, and
+         * the original divides 0 / 0 at 0x4251a1 - a NaN that then sticks in the blend until the next SetMode(5) (derived). The
+         * port takes t / T = 1 there: blend 1, s unchanged */
+        float f = g_cam.sv_bT != 0 ? g_cam.sv_bt / g_cam.sv_bT : 1.0f;
+        float v = f * (1.0f - g_cam.sv_bstart) + g_cam.sv_bstart;
+        g_cam.sv_blend = v > 1.0f ? 1.0f : v;
+        g_cam.sv_bt += dt;
+    }
+    float s = g_cam.sv_bsign ? g_cam.sv_blend : -g_cam.sv_blend;                  /* 0x4251e8 */
+    ahead->x *= s; ahead->y *= s; ahead->z *= s;
+}
 static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 {
     Vec3 P, T;
@@ -219,13 +273,20 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
     }
     if (g_cam.mode == 0x20 && g_cam.plane_on) {                  /* 0x424bf0 */
         const float *q = g_cam.sv_par; Vec3 d = g_cam.plane_d, sidev = { -d.z, 0, d.x };   /* (0,-1,0) x dir */
-        float htarget = behind_key == 2 ? q[3] : behind_key == 3 ? q[4] : q[2];
-        g_cam.sv_a = ramp_to(g_cam.sv_a, q[1], q[6] * dt); g_cam.sv_h = ramp_to(g_cam.sv_h, htarget, q[5] * dt); g_cam.sv_lat = ramp_to(g_cam.sv_lat, q[0], q[7] * dt);
-        float face = sinf(p->yaw) * d.x + cosf(p->yaw) * d.z;    /* the look-ahead follows the walking direction; the reversal blends at the look-ahead rate */
-        g_cam.sv_s = ramp_to(g_cam.sv_s, face >= 0 ? 1.0f : -1.0f, (g_cam.sv_a > 1 ? q[6] / g_cam.sv_a : 10.0f) * dt);
-        Vec3 C = { p->pos.x + d.x * g_cam.sv_a * g_cam.sv_s, p->pos.y + g_cam.sv_h, p->pos.z + d.z * g_cam.sv_a * g_cam.sv_s };
-        float lat = g_cam.side == 0 ? -g_cam.sv_lat : g_cam.sv_lat;
+        /* 0x424d4e: p->h (p+4, written by the Perso in 0x459c70) picks the height target p+0x24: 0 (up key) -> p+0x34, 1 -> p+0x30,
+         * 2 (down / duck) -> p+0x38 */
+        g_cam.sv_htarget = behind_key == 2 ? q[3] : behind_key == 3 ? q[4] : q[2];
+        /* each ramp only runs while the value differs from its target (0x424d7f, 0x424d9d, 0x424dbb); the same dt as the VM frame */
+        if (g_cam.sv_a != q[1]) sv_ramp(&g_cam.sv_a, q[1], q[6], &g_cam.sv_ra, dt);                            /* 0x425300, rate p+0x40 */
+        if (g_cam.sv_h != g_cam.sv_htarget) sv_ramp(&g_cam.sv_h, g_cam.sv_htarget, q[5], &g_cam.sv_rh, dt);    /* 0x425220, rate p+0x3c */
+        if (g_cam.sv_lat != q[0]) sv_ramp(&g_cam.sv_lat, q[0], q[7], &g_cam.sv_rl, dt);                        /* 0x4253e0, rate p+0x44 */
+        float lat = g_cam.side == 0 ? -g_cam.sv_lat : g_cam.sv_lat;                                          /* 0x424dd3 */
+        Vec3 ahead = d; sv_ahead(&ahead, p->side_flip, q[6], dt);                                              /* 0x4250b0 */
+        Vec3 C = { p->pos.x + ahead.x, p->pos.y + ahead.y + g_cam.sv_h, p->pos.z + ahead.z };                  /* 0x424e30 / 0x424e35 */
         P = (Vec3){ C.x + sidev.x * lat, C.y, C.z + sidev.z * lat }; T = p->pos; g_cam.look_off = (Vec3){ C.x - T.x, C.y - T.y, C.z - T.z };
+        if (getenv("WOODY_SIDELOG") && (p->side_flip || (int)(p->play_time * 10) != (int)((p->play_time - dt) * 10)))
+            printf("  SIDE t %.2f flip %d A %.1f H %.1f Lat %.1f blend %.3f sign %d s %+.3f ahead %.1f %.1f\n", p->play_time, p->side_flip, g_cam.sv_a, g_cam.sv_h, g_cam.sv_lat,
+                   g_cam.sv_blend, g_cam.sv_bsign, g_cam.sv_bsign ? g_cam.sv_blend : -g_cam.sv_blend, ahead.x, ahead.z);
     } else if (g_cam.mode == 8 && g_cam.rail) {
         /* 0x421570. c = p+0x20 = the player's position (vt[34], his feet) that 0x459090 writes every frame, its y filtered
          * y = (1-k) y + k y_prev with k = 0.95^(30 dt) and frozen while he rises or falls (p+0x50 bits 2/3) */
@@ -389,6 +450,12 @@ static void save_auto(void) { if (g_slot >= 0) { g_file.slot[g_slot] = g_save; f
  * volumes are linear amplitude v / 100: -2000 log10(100 / v) mB in 0x48bf50 is exactly that. */
 static struct { int sfx, music, vib; } g_opt = { 100, 70, 0 };   /* port defaults (audio.c's 1.0 / 0.7); vibration: no joystick = 0% (0x4674b0), rumble is a no-op on PC */
 static void opt_apply(void) { audio_master(g_opt.sfx * 0.01f, g_opt.music * 0.01f); }   /* 0x469570 / 0x4695a0 */
+/* two switches of Detect.exe's Sound page that the game reads (docs/SETUP.md 3): "Invert Left/Right" = Woody.cfg +0x74 ->
+ * [0x5e81c0] = reverse stereo (0x46b7e0), and "Cinematic" = +0x70 -> [0x5e81bc], which only gates the sound of the HNM films
+ * (0x426a57: no DirectSound for the film player without it). The port keeps them in woodyre.cfg (reverse_stereo=, film_sound=);
+ * a key woodyre.cfg does not have yet comes from Woody.cfg when its sound section is live (setup_import), else the Setup
+ * defaults (0x100032a0: invert 0, cinematic 1). -1 = not in woodyre.cfg. vsync: the same for the display page's key. */
+static struct { int rev, film, vsync; } g_setup = { -1, -1, -1 };
 /* ---- display (docs/DISPLAY.md; everything here is a PORT EXTRA). The original runs exclusive fullscreen at the Woody.cfg mode
  * (Detect's list, default 640x480), always 4:3 in the layout, and paces itself only by Flip(DDFLIP_WAIT) = vsync (0x47ee90);
  * no frame cap, dt clamped to 0.1 s (0x40185b). The port: a window of any size or borderless fullscreen, 4:3 pillarboxed or a
@@ -408,7 +475,8 @@ static void opt_read(void)
         if (sscanf(line, "sfx=%d", &v) == 1) g_opt.sfx = v; else if (sscanf(line, "music=%d", &v) == 1) g_opt.music = v; else if (sscanf(line, "vibration=%d", &v) == 1) g_opt.vib = v;
         else if (sscanf(line, "aspect=%15s", s) == 1) g_disp.wide = strcmp(s, "4:3") != 0;
         else if (sscanf(line, "window=%dx%d", &v, &v2) == 2) { if (v >= 320 && v2 >= 240 && v <= 7680 && v2 <= 4320) { g_disp.w = v; g_disp.h = v2; } }
-        else if (sscanf(line, "fullscreen=%d", &v) == 1) g_disp.full = v != 0; else if (sscanf(line, "vsync=%d", &v) == 1) g_disp.vsync = v != 0;
+        else if (sscanf(line, "fullscreen=%d", &v) == 1) g_disp.full = v != 0; else if (sscanf(line, "vsync=%d", &v) == 1) g_disp.vsync = g_setup.vsync = v != 0;
+        else if (sscanf(line, "reverse_stereo=%d", &v) == 1) g_setup.rev = v != 0; else if (sscanf(line, "film_sound=%d", &v) == 1) g_setup.film = v != 0;
         else if (sscanf(line, "fpscap=%d", &v) == 1) g_disp.cap = v < 0 ? 0 : v > 1000 ? 1000 : v; } fclose(f); }
     int *o[3] = { &g_opt.sfx, &g_opt.music, &g_opt.vib }; for (int i = 0; i < 3; i++) { if (*o[i] < 0) *o[i] = 0; if (*o[i] > 100) *o[i] = 100; }
 }
@@ -417,6 +485,7 @@ static void opt_write(void)
     FILE *f = fopen("woodyre.cfg", "w"); if (!f) return;
     fprintf(f, "sfx=%d\nmusic=%d\nvibration=%d\n", g_opt.sfx, g_opt.music, g_opt.vib);
     fprintf(f, "aspect=%s\nwindow=%dx%d\nfullscreen=%d\nvsync=%d\nfpscap=%d\n", g_disp.wide ? "wide" : "4:3", g_disp.w, g_disp.h, g_disp.full, g_disp.vsync, g_disp.cap);
+    fprintf(f, "reverse_stereo=%d\nfilm_sound=%d\n", g_setup.rev > 0, g_setup.film != 0);
     fclose(f);
 }
 /* the 3D view in the window (GL origin bottom left): narrower than 4:3 = letterboxed in both modes, wider = pillarboxed in 4:3 mode */
@@ -472,16 +541,46 @@ static void in_defaults(void)
         {'X', IN_JOY + 3}, {VK_ESCAPE, IN_JOY + 5}, {'C', VK_NUMPAD0, IN_JOY + 6}, {VK_RCONTROL, 'E', IN_JOY + 7} };   /* table 0x1000c060: 0x200..0x207) */
     memcpy(g_in.bind, D, sizeof D); g_in.mode = 3; g_in.have_cfg = 0;
 }
+/* the Woody.cfg file (magic + 0x11c bytes) into b[0x120]: 1 = read, 0 = none, -1 = obsolete; *used = the path */
+static int wcfg_read(const char *data_dir, unsigned char *b, const char **used)
+{
+    static char alt[600]; const char *try_[3] = { getenv("WOODY_CFG"), "Woody.cfg", alt }; snprintf(alt, sizeof alt, "%s/../Woody.cfg", data_dir);
+    FILE *f = NULL; int k;
+    for (k = 0; k < 3 && !f; k++) if (try_[k]) f = fopen(try_[k], "rb");
+    if (!f) return 0;
+    *used = try_[k - 1];
+    size_t n = fread(b, 1, 0x120, f); fclose(f);
+    return n < 0x120 || (b[0] | b[1] << 8 | b[2] << 16 | (uint32_t)b[3] << 24) != 0x19072001 ? -1 : 1;   /* 0x401092 */
+}
+#define CFG32(o) ((int)((uint32_t)b[(o) + 4] | (uint32_t)b[(o) + 5] << 8 | (uint32_t)b[(o) + 6] << 16 | (uint32_t)b[(o) + 7] << 24))   /* cfg offset o (the file has the magic first) */
+/* boot, before the window (docs/SETUP.md): the Setup keys woodyre.cfg does not have yet come from Woody.cfg.
+ * - vsync: +0x50 is Detect's "Activate VSync" box, which the game inverts at device creation on Windows NT (0x47ee0e:
+ *   [0x4c2c20] = 1 - flag when [0x4c3aa0], GetVersionExA platform 2) and then flips on vsync when the result is not 0
+ *   (0x47eea0); the port only runs on the NT line, so vsync = (flag != 1): the Setup default 0 gives vsync.
+ * - reverse stereo +0x74, film sound +0x70: only from a live sound section (one of the switches +0x68/+0x6c/+0x70 on);
+ *   the cfg that tools/native/mkcfg.c wrote before it stopped calling CoInitialize has the whole section 0 (Setup's
+ *   0x10002770 returns early on S_FALSE), which the original plays without any sound - not something to copy.
+ * WOODY_REVSTEREO=0/1 overrides the reverse stereo for a run without saving it (testing, main). */
+static void setup_import(const char *data_dir)
+{
+    unsigned char b[0x120]; const char *path = NULL; int r = wcfg_read(data_dir, b, &path);
+    if (r > 0) {
+        int live = CFG32(0x68) || CFG32(0x6c) || CFG32(0x70);
+        if (g_setup.vsync < 0) g_disp.vsync = CFG32(0x50) != 1;
+        if (live && g_setup.rev < 0) g_setup.rev = CFG32(0x74) != 0;
+        if (live && g_setup.film < 0) g_setup.film = CFG32(0x70) != 0;
+        printf("setup: %s: vsync flag %d%s, sound section %s (fx %d music %d cinematic %d invert %d, volumes %d %d %d)\n", path, CFG32(0x50),
+               g_setup.vsync >= 0 ? " (woodyre.cfg has vsync=)" : CFG32(0x50) != 1 ? " -> vsync on" : " -> vsync off", live ? "live" : "off (ignored)", CFG32(0x68), CFG32(0x6c), CFG32(0x70), CFG32(0x74), CFG32(0x80), CFG32(0x84), CFG32(0x88));
+    }
+    if (g_setup.rev < 0) g_setup.rev = 0;                                           /* Setup defaults 0x100032a0 */
+    if (g_setup.film < 0) g_setup.film = 1;
+}
 static void in_read_cfg(const char *data_dir)
 {
     in_defaults();
-    char alt[600]; const char *try_[3] = { getenv("WOODY_CFG"), "Woody.cfg", alt }; snprintf(alt, sizeof alt, "%s/../Woody.cfg", data_dir);
-    unsigned char b[0x120]; FILE *f = NULL; int k;
-    for (k = 0; k < 3 && !f; k++) if (try_[k]) f = fopen(try_[k], "rb");
-    if (!f) { puts("input: no Woody.cfg, port keys"); return; }
-    size_t n = fread(b, 1, sizeof b, f); fclose(f);
-    #define CFG32(o) ((int)((uint32_t)b[(o) + 4] | (uint32_t)b[(o) + 5] << 8 | (uint32_t)b[(o) + 6] << 16 | (uint32_t)b[(o) + 7] << 24))   /* cfg offset o (the file has the magic first) */
-    if (n < sizeof b || CFG32(-4) != 0x19072001) { puts("input: Configuration file is Obsolete... (Woody.cfg), port keys"); return; }   /* 0x401092 */
+    unsigned char b[0x120]; const char *path = NULL; int r = wcfg_read(data_dir, b, &path);
+    if (!r) { puts("input: no Woody.cfg, port keys"); return; }
+    if (r < 0) { puts("input: Configuration file is Obsolete... (Woody.cfg), port keys"); return; }   /* 0x401092 */
     static const int act_of[12] = { 2, 3, 0, 1, 5, 6, 4, 8, 7, 9, 10, 11 };   /* cfg key index -> action (0x44fc5a..0x44fe28) */
     memset(g_in.bind, 0, sizeof g_in.bind);
     for (int c = 0; c < 2; c++) for (int i = 0; i < 12; i++) {
@@ -490,9 +589,9 @@ static void in_read_cfg(const char *data_dir)
     }
     g_in.mode = CFG32(0x114) == 1 ? 0 : CFG32(0x110) == 0 ? 2 : 1;   /* 0x44fc05 */
     g_in.have_cfg = 1;
-    printf("input: %s, mode %d (%s)\n", try_[k - 1], g_in.mode, g_in.mode ? "joystick" : "keyboard only");
-    #undef CFG32
+    printf("input: %s, mode %d (%s)\n", path, g_in.mode, g_in.mode ? "joystick" : "keyboard only");
 }
+#undef CFG32
 static void in_joy_poll(double now, double tl)                   /* 0x467a40 poll + 0x467a80 axes + 0x467af0 buttons; tl = the level clock */
 {
     g_in.jx = g_in.jy = 0; g_in.jbtn = 0; g_in.jok = 0;
@@ -584,6 +683,8 @@ static int inst_vector_at(const Instance *in, uint32_t tc, uint32_t n, Vec3 *p0,
     return 0;
 }
 static int inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir) { return inst_vector_at(in, tc, 0, p0, dir); }
+/* for player.c (Perso state 7, 0x44e1c0): 0x42f6b0 poses the instance (vtbl[2](1)) before it reads the marker */
+int game_inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir) { ins_pose((Instance *)in, in->anim, in->anim_time); return inst_vector(in, tc, p0, dir); }
 /* ---- results screen (docs/GAMEFLOW.md 5.1 and 10.1): the hub script ends a level with 1140 [door, var], the engine
  * puts the Perso on the door vector with scripted action 0x4a (he comes down at the door with his parasol, animation
  * 74 with its own camera track) and runs the state machine perso+0x724 while menu page 0x1e is up:
@@ -2630,10 +2731,12 @@ static void fx_particle(FxRec *e, float u, float dt)
                 float size = i == 0 ? 120.0f : i == 3 ? 75.0f : 55.0f; int mode = i == 3 ? 0x1a : 0x12, rot = i == 0 ? head : 0;
                 hud_world_spr_mode(mode, img[e->shape][i], pos, size, rot, NULL, 1.0f, 0x4d, NULL, mir[row + i]);          /* the bone, alpha blended */
                 hud_world_spr_mode(mode, img[e->shape][6 + i], pos, size + jit, rot, NULL, 1.0f, 0x45, NULL, mir[row + i]); /* its flickering glow, additive */
-                e->dir = (Vec3){ pos[0], pos[1], pos[2] };                   /* S+0x208: where the light goes */
             }
         }
-        rnd_light_add(0, e->dir, white255, fx_rnd() * 100.0f + 200.0f);      /* 0x498790: registered every frame, never drawn by the original (LIGHTING.md 7) */
+        /* 0x477d9d..0x477dc6: 0x498790(kind 0, S+0x208, white, rnd * 100 + 200) every frame, never drawn by the original (LIGHTING.md 7).
+         * S+0x208 is the position of the shared sprite object, so in a skeleton phase the last bone's glow (the right leg) and
+         * in a model phase whatever effect drew a sprite last - this frame or an earlier one */
+        { float lp[3]; hud_last_sprite_pos(lp); rnd_light_add(0, (Vec3){ lp[0], lp[1], lp[2] }, white255, fx_rnd() * 100.0f + 200.0f); }
         break; }
     case FX_FLAME: {                                                         /* 0x47cd00: rises 40 a second, shrinks to nothing, white -> red, additive */
         e->pos.y += dt * 40.0f;                                              /* +0xc += dt * 0x4ab294 */
@@ -2933,6 +3036,7 @@ static void env_draw(void)
  * (0x42a980 -> 0x42a840, with the frustum / race-distance test of stationary instances, docs/INSTANCE.md 4.1) */
 static int snd_owner_active(const void *owner) { const Instance *in = owner; return in->visible && in->listed; }
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
+static int g_cam_hold;                                            /* CamMgr+0x290, messages 1649 / 1650: written, never read (0x41fa40 / 0x41fa50) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
 #define AI(i) ((i) < (int)m->nargs ? (float)(int32_t)m->args[i] : 0.0f)
@@ -2953,6 +3057,10 @@ static void snd_msg(const EkoMsg *m, Instance *in)
     case 1655: audio_music((int)AI(0)); break;
     case 1646: case 1656: audio_music_stop(AI(0) * 0.01f); break;
     case 1657: audio_next_fade_in(AI(0) * 0.01f); break;
+    case 1649: case 1650:                                                           /* 0x46864f / 0x468660: no arguments, [0x4c737c] = CamMgr: 0x41fa40 sets +0x290 = 1,
+                                                                                     * 0x41fa50 clears it (also on every camera mode switch, 0x41f50c..0x41f5dc). Nothing
+                                                                                     * reads CamMgr+0x290 (docs/SOUND.md 8.5), and no script sends either: a flag, no effect */
+        g_cam_hold = m->id == 1649; if (getenv("WOODY_SNDLOG")) printf("  SND %d: camera flag CamMgr+0x290 = %d (unread)\n", m->id, g_cam_hold); break;
     default: break;
     }
     if (!in) return;
@@ -3142,6 +3250,10 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
         break;
     case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;
+    /* 0x4451a1 / 0x4451c2: Perso state 7 (docs/PERSO_STATE7.md), carried by the type-0 vector marker of inst; 1045 ignores its argument.
+     * No shipped level script sends either (every SEND in the 28 code files has an immediate id); WOODY_MSGAT can */
+    case 1044: if (g_player) player_follow(g_player, in); break;
+    case 1045: if (g_player) player_follow_end(g_player); break;
     case 30: if (g_player && in == g_player->inst && m->nargs > 1) player_lock(g_player, (float)(int32_t)m->args[1] * 0.01f); break;   /* Perso LockMove 0x44cde9 [_, cs] (docs/PERSO_LOOK.md 6) */
     case 26:                                                                                                /* Perso teleport 0x44ce11 [_, inst, mode]: 1 = position, 2 = position + direction of the vector marker */
         if (g_player && m->nargs > 2) {
@@ -3294,6 +3406,8 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     if (getenv("WOODY_CELLLOG")) printf("  gel: %u cells, %u sectors, %u kd nodes | lit: %u lights, %u sector light lists\n", L->gel.ncells, L->gel.nsectors, L->gel.nkd, L->lit.nlights, L->lit.nsectors);
     rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL, L->have_vis ? &L->vis : NULL);
     water_reset(&L->tex); L->rnd.post_models = water_draw;   /* class 60 (water.c) */
+    L->rnd.on_drawn = storm_rod_drawn;                       /* class 80 vt[26] 0x452010: the rod colour, per drawn rod (storm.c) */
+    snprintf(path, sizeof path, "%s/%s/%s.col", dir, lvl, lvl); rnd_load_col(&L->rnd, path);   /* 0x4271e0: the objects of every kd leaf (0x42aa0b) */
     L->have_player = player_init(&L->player, &g_ins, &L->gel, &L->tex) == 0;
     g_player = L->have_player ? &L->player : NULL; g_rnd = &L->rnd; g_gel = &L->gel;
     for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
@@ -3335,7 +3449,9 @@ static void logos_play(Window *w, const char *dir)
         HnmFile h; if (hnm_open(&h, path)) { printf("logo: %s missing\n", path); continue; }
         int snd = 0, stop = 0, r = 0; double t0 = win_time();
         while (!stop && !w->quit && (r = hnm_next(&h)) > 0) {
-            if (h.npcm) { if (!snd && h.has_sound) snd = !audio_pcm_open(h.rate, h.channels); if (snd) audio_pcm_push(h.pcm, h.npcm); }   /* the first block holds 32 frames of sound */
+            if (h.npcm && g_setup.film) { if (!snd && h.has_sound) snd = !audio_pcm_open(h.rate, h.channels); if (snd) audio_pcm_push(h.pcm, h.npcm); }   /* the first block holds 32 frames of sound; film sound only with
+                * Setup's "Cinematic" switch (0x426a57: [0x5e81bc] = cfg +0x70, else the player gets no DirectSound); no volume option applies,
+                * the core never calls SetVolume on its buffer (docs/SETUP.md 3.3) */
             if (h.frame == 1) t0 = win_time();
             double due = t0 + (h.frame - 1) * h.frame_time;                                                   /* the clock of the sound: one superchunk = one frame of it */
             for (;;) {
@@ -3410,6 +3526,7 @@ int main(int argc, char **argv)
     }
     SetProcessDPIAware();                                                              /* port extra: real pixels on a scaled desktop, so 4K is 4K */
     opt_read();                                                                        /* woodyre.cfg: the volumes (applied at sound start) and the display */
+    setup_import(dir);                                                                 /* the Setup keys woodyre.cfg lacks: from Woody.cfg (docs/SETUP.md) */
     {   /* the display that runs: the cfg's, but a screenshot run keeps the fixed default (1280x800 window, wide, vsync) whatever the
          * cfg says; the command line and WOODY_VSYNC / WOODY_FPSCAP override both */
         static const Display def = { 1, 1280, 800, 0, 1, 0 };
@@ -3432,6 +3549,7 @@ int main(int argc, char **argv)
     }
     if (!getenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
     opt_apply();                                                                       /* 0x4691e2: the volumes from the cfg at sound start */
+    audio_reverse_stereo(getenv("WOODY_REVSTEREO") ? atoi(getenv("WOODY_REVSTEREO")) != 0 : g_setup.rev);   /* 0x4691f4: [0x5e81c0] = cfg +0x74 */
     in_read_cfg(dir);                                                                  /* 0x405e0f: Woody.cfg (key bindings, controller mode) */
     if (logo < 0) logo = !(argc > 2 && argv[2][0] != '-') && !getenv("WOODY_NOLOGO") && !shot_path && enter_at < 0 && !getenv("WOODY_KEYS") && !getenv("WOODY_SHOTSEQ");
     if (logo) logos_play(&win, dir);                                                   /* boot state 2 (0x402649): only when booting to the title; a level on the command line or a scripted run skips them */
@@ -3559,7 +3677,22 @@ int main(int argc, char **argv)
             pin.jump = in_held(4) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = in_held(6) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
             pin.special = in_held(11) || (special_at >= 0 && now - t0 >= special_at - 0.1 && now - t0 < special_at);   /* action 11 (RCtrl in the original); it fires on the release */
             pin.duck = in_held(L.player.race_char ? 8 : 5) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);   /* action 5, while riding action 8 (0x465b10; Space / LShift in the original's Woody.cfg, X in the port) */
-            pin.look = !fly && in_held(7); pin.mouse_dx = win.mouse_dx; pin.mouse_dy = win.mouse_dy;   /* action 7 (Enter / V / joystick button 4 by default, docs/INPUT.md), on release; mouse with the right button */
+            pin.look = !fly && in_held(7);                                          /* action 7 (Enter / V / joystick button 4 by default, docs/INPUT.md), on release */
+            {   /* the look-around's mouse counts (0x459346 reads [0x5e6190] vt[2] / vt[3] = DIMOUSESTATE lX / lY). The original never polls
+                 * its mouse (docs/INPUT.md 1.3: nothing calls vt[1] 0x467cc0 = GetDeviceState), so its counts never change and the mouse
+                 * does nothing: the port gives 0 too. WOODY_LOOKMOUSE=1 (port extra) feeds the raw relative counts of this frame in
+                 * instead, through the original's formula; WOODY_MOUSE="T:DX:DY[:D] ..." adds DX, DY counts per frame for D s (default
+                 * 0.5) from T s on (testing, implies WOODY_LOOKMOUSE) */
+                static int lm = -1; if (lm < 0) lm = (getenv("WOODY_LOOKMOUSE") && atoi(getenv("WOODY_LOOKMOUSE"))) || getenv("WOODY_MOUSE");
+                if (lm) { pin.mouse_dx = win.raw_dx; pin.mouse_dy = win.raw_dy; }
+                for (const char *e = getenv("WOODY_MOUSE"); e && *e; ) {
+                    double t, d = 0.5; int dx, dy, n = 0;
+                    if (sscanf(e, "%lf:%d:%d%n", &t, &dx, &dy, &n) < 3) break;
+                    e += n; if (*e == ':') { int n2 = 0; sscanf(e + 1, "%lf%n", &d, &n2); e += 1 + n2; }
+                    if (now - t0 >= t && now - t0 < t + d) { pin.mouse_dx += dx; pin.mouse_dy += dy; }
+                    while (*e == ' ') e++;
+                }
+            }
             {   /* WOODY_PECKS="T1 T2 ...": more attack taps of 0.1 s (testing: dispenser, pick up, throw) */
                 static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = getenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
                 for (int k = 0; k < npk; k++) if (now - t0 >= pk[k] && now - t0 < pk[k] + 0.1) pin.action = 1;
@@ -3583,6 +3716,7 @@ int main(int argc, char **argv)
             rockets_update(dt, &L.player, L.have_player && !fly);
             L.player.idle_hold = g_res.on || g_level == 0 || (g_cam.mode == 4 && !fly);   /* Perso state 9 / title / frozen (0x459090): no idle count, no sleeping */
             L.player.cam_mode = fly ? 0x100 : g_cam.mode;                         /* CamMgr+0x134 as the Perso sees it (0x44b9a6, 0x44ba26); F5 = the debug camera 0x100 */
+            L.player.side_on = g_cam.plane_on;                                     /* Perso+0x4ec: 0x459c70 runs while it is set (0x44b7be) */
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             if (!paused && !cin_running()) bombs_update(dt);                        /* 0x44d820, frame step 18: after the Perso */
             if (!fly) {                                                             /* 0x4459c0 (frame step 33), also during a cinematic: iris, death, respawn */
@@ -3614,7 +3748,7 @@ int main(int argc, char **argv)
             }
             L.player.dead_cam_req = 0;
             if (!cin_running()) enemies_update(&g_enemies, &L.player, cam.pos, dt);
-            if (g_cam.plane_on) {                                                   /* 0x459eb0: the player stays on the vertical plane through the marker */
+            if (g_cam.plane_on && !L.player.follow) {                               /* 0x459eb0: the player stays on the vertical plane through the marker (Perso_Move only: not in state 7) */
                 Vec3 n = { -g_cam.plane_d.z, 0, g_cam.plane_d.x }; float off = (L.player.pos.x - g_cam.plane_a.x) * n.x + (L.player.pos.z - g_cam.plane_a.z) * n.z;
                 L.player.pos.x -= n.x * off; L.player.pos.z -= n.z * off;
             }

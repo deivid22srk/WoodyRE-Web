@@ -1,7 +1,7 @@
 # INPUT.md — Woody.cfg key bindings, joystick, the action layer and the pause menu restart (Woody.exe, build 17-10-2001)
 
 Status: **static analysis** of `out/disasm_full.txt` (imagebase 0x400000) and of `Setup.dll` (imagebase 0x10000000,
-disassembled with capstone); nothing here was traced live. Addresses without a module are Woody.exe. Uncertain points are
+disassembled with capstone); only the mouse check of §1.3 was traced live. Addresses without a module are Woody.exe. Uncertain points are
 marked **uncertain**. Related: PERSO_MOVE.md §3 (the 14 actions and who reads them), MENU_NEWGAME.md §1 (menu keys),
 TRACING.md §2 (Woody.cfg and `tools/native/mkcfg.c`), RACE.md §3.2 (race restart).
 
@@ -19,6 +19,9 @@ TRACING.md §2 (Woody.cfg and `tools/native/mkcfg.c`), RACE.md §3.2 (race resta
   X/Y give actions 0/1 and 2/3 **with the deflection as value**; the speed of the Mover scales with it (`0x45a4b0`).
   Only X, Y and buttons 0..31 are read: no POV hat, no second stick, no rumble (`0x467b20` = `ret 8`).
 - In the joystick modes the **keyboard gives no directions** (`0x40301e`); all other actions work from both.
+- The **mouse** is a DirectInput device (`GUID_SysMouse`, non-exclusive + foreground, `0x467b70`) that is created and acquired
+  but **never polled** (`0x467cc0` has no caller): its `lX`/`lY` stay 0, and the look-around that reads them (`0x459346`) only
+  turns with the keys (§1.3).
 - Menus: confirm = action 0xc (set together with action 4, the jump key) just pressed **or DIK_RETURN released** (fixed);
   back = action 5 just pressed **or DIK_ESCAPE released** (fixed). Pause = action 9 just pressed, only in Game state 2.
 - Pause page **0x19** is the pause menu **while riding** (Perso state 1): Continue / **Start again** / Options / Quit.
@@ -31,7 +34,7 @@ TRACING.md §2 (Woody.cfg and `tools/native/mkcfg.c`), RACE.md §3.2 (race resta
 |---|---|---|---|
 | DirectInput | `[0x5e619c]` | `0x4676f0`: `DirectInputCreateA(hinst, 0x700, &di, 0)` → `[0x4b6f80]` = HRESULT (≠ 0: no input objects at all) | refcount `[0x5e61a0]` (`0x467720` / `0x467730`) |
 | keyboard | `[0x5e6194]` = `app+8` | `0x467680` → `0x467d70`, vtable `0x4ab974`, 0x308 B | `GUID_SysKeyboard` (`0x4abf10`), `c_dfDIKeyboard` (`0x492770`), coop 6 = non-exclusive + foreground |
-| mouse | `[0x5e6190]` = `app+0xc` | `0x4674f0` → `0x467b70`, vtable `0x4ab944`, 0x18 B | `GUID_SysMouse`, `c_dfDIMouse`, coop 6; only read by the debug free camera (CAMERA.md §3, `0x459346`) |
+| mouse | `[0x5e6190]` = `app+0xc` | `0x4674f0` → `0x467b70`, vtable `0x4ab944`, 0x18 B | `GUID_SysMouse`, `c_dfDIMouse`, coop 6 = non-exclusive + foreground; read only by the look-around camera (`0x459346`), and **never polled** (§1.3) |
 | joystick | `[0x5e618c]` = `app+0x10` | `0x467470` → `0x4678d0`, vtable `0x4ab90c`, 0x5c B | `+4` vibration (1.0 after the ctor, MENU_OPTIONS.md); `[0x5e618c] = 0` when no device was found |
 | controller | `[0x5e6188]` = `app+0x14` | PERSO_MOVE §3.2 | 14 × {value, held, state} + dt |
 
@@ -82,6 +85,33 @@ float axis(int v) {                                    /* 0x467a80 */
 `vt6` is always true on PC; the console path behind it (`0x403360`: controller gone for > 0x46 frames → page 0x1a,
 handler `0x405896`: action 9 → back to page `app+0x64`) never runs.
 
+### 1.3 Mouse `0x4ab944`
+```c
+Mouse::Mouse() {                                         /* 0x467b70; new(0x18) at 0x467506 */
+    vtable = 0x4ab944;  0x467720();                     /* DirectInput refcount */
+    if (DI failed) return;                               /* [0x4b6f80] != 0 */
+    dev = NULL;
+    if (di->CreateDevice(GUID_SysMouse /*0x4abf20*/, &dev, 0)) return;                   /* 0x467bc5 */
+    if (dev->SetDataFormat(&c_dfDIMouse /*0x491750*/)) return;                          /* 0x467bd6 */
+    if (dev->SetCooperativeLevel(hwnd /*[0x4c3a94]*/, 6 /*NONEXCLUSIVE|FOREGROUND*/)) return;   /* 0x467beb */
+    dev->Acquire();  g_mouse /*[0x5e6190]*/ = this;     /* 0x467bf7, 0x467bfa */
+}
+void vt1_poll() { memset(&st /*+8, DIMOUSESTATE*/, 0, 16); if (dev->GetDeviceState(16, &st) == DIERR_INPUTLOST) dev->Acquire(); }   /* 0x467cc0 */
+int  vt2_x()    { return st.lX; }                        /* 0x467d00 */
+int  vt3_y()    { return st.lY; }                        /* 0x467d10 */
+bool vt4_b0()   { return st.rgbButtons[0] != 0; }       /* 0x467d20 */
+bool vt5_b1()   { return st.rgbButtons[1] != 0; }       /* 0x467d30 */
+/* vt0 0x467c20: dtor 0x467c40 (g_mouse = 0, Unacquire, Release) */
+```
+`GetDeviceState` is only in `vt1` `0x467cc0`, and **nothing calls it**: `[0x5e6190]` is read at `0x4022fb` (the app dtor's
+test), `0x459346` (vt[2]/vt[3] only) and in the dtors `0x467550`/`0x467c65`; `app+0xc` is written at `0x402346` and read
+nowhere (no `call [reg+4]` in the exe has the mouse as `this`); the frame input `0x402940` polls the keyboard (`app+8`) and the
+joystick (`app+0x10`) only. The ctor never writes `+8..+0x17` either, so `lX`/`lY` are whatever `new` returned. Live
+(`tools/wmouse.py`, 100 s from boot through the logos to the title): `0x467cc0` is never hit, the object at `0x026f8330`
+holds `lX = lY = lZ = 0`, buttons 0, at VM init and every 5 s after. So **the mouse does nothing in Woody.exe**: the look-around
+reads 0 and only the direction keys turn the view (PERSO_LOOK.md §3.1). The DirectInput device is created and acquired anyway
+(non-exclusive, so the cursor stays; foreground only).
+
 ## 2. Woody.cfg
 
 `0x405d40` (WinMain part) → `0x401000("Woody.cfg")`: open (up to twice; a missing file starts `Detect.exe` first, then
@@ -95,18 +125,18 @@ handler `0x405896`: action 9 → back to page `app+0x64`) never runs.
 | 0x08 | 0x0c | `0x4c2bd8` | 5 | selected 3D device index (Setup) | – |
 | 0x0c | 0x10 | `0x4c2bdc` | `84e63de0-46aa-11cf-…` | **D3D device GUID** (IID_IDirect3DHALDevice) | `0x4027f5` (TRACING.md had 0x0c/0x1c swapped) |
 | 0x1c | 0x20 | `0x4c2bec` | 0 | **DirectDraw driver GUID**, all 0 = primary (NULL) | `0x4027bd` |
-| 0x2c..0x38 | 0x30 | `0x4c2bfc..c08` | 0x1ff, 1, 1, 3 | device caps / modes (Setup) | – |
-| 0x3c | 0x40 | `0x4c2c0c` | 2 | detail option (outline, LIGHTING.md §5) | `0x42b380`, `0x43b43a` |
+| 0x2c..0x38 | 0x30 | `0x4c2bfc..c08` | 0x1ff, 1, 1, 3 | device caps flags and capability-derived choices no dialog shows (SETUP.md 1) | – |
+| 0x3c | 0x40 | `0x4c2c0c` | 2 | Detect's "Effects quality" (outline, LIGHTING.md §5) | `0x42b380`, `0x43b43a` |
 | 0x40, 0x44, 0x48 | 0x44 | `0x4c2c10/14/18` | 640, 480, 32 | display mode (DISPLAY.md §1) | `0x4027da`, `0x40614f` |
-| 0x50 | 0x54 | `0x4c2c20` | 0 | Detect's "Disable VSYNC", inverted on NT (DISPLAY.md §2.2) | `0x47ee16`, `0x47eea0` |
-| 0x68..0x98 | 0x6c | `0x4c2c38..c68` | 0 | sound: device flags, volumes (`0x4c2c50` sfx, `0x4c2c54` music), … | `0x4691e2`, `0x44fe2e` (bit 1 of `app+0x384`) |
+| 0x50 | 0x54 | `0x4c2c20` | 0 | Detect's "Activate VSync", inverted on NT (DISPLAY.md §2.2, SETUP.md 2) | `0x47ee16`, `0x47eea0` |
+| 0x68..0x98 | 0x6c | `0x4c2c38..c68` | 0 (mkcfg bug, SETUP.md 4; Setup: 1, 1, 1, 0, …, 100, 30, 100, device) | sound page: switches Sound Fx / Music / Cinematic / Invert Left/Right, volumes (`0x4c2c50` sfx, `0x4c2c54` music, `+0x88` unused), output device, speakers (SETUP.md 1) | `0x4691e2`, `0x44fe2e` (bit 1 of `app+0x384`) |
 | 0x9c | 0xa0 | `0x4c2c6c` | 0 | GUID of the joystick Setup found (`0x10001070`) | **not read**: the game enumerates itself |
 | **0xac** | 0xb0 | `0x4c2c7c` | ↑ ↓ ← → Space LShift LCtrl LShift Enter Esc Num0 RCtrl | **keys config 1**, 12 × u32 | `0x44fc5a..` |
 | **0xdc** | 0xe0 | `0x4c2cac` | R F D G, 0x200..0x207 | **keys config 2**, 12 × u32 | `0x44fd42..` |
 | 0x10c | 0x110 | `0x4c2cdc` | 0 | Setup: a joystick was detected (`0x1000d6d8`) | – |
-| 0x110 | 0x114 | `0x4c2ce0` | 0 | "Joystick Mode" choice of Detect (**uncertain** which control) | `0x44fc20` |
-| 0x114 | 0x118 | `0x4c2ce4` | 1 | **keyboard only** (Detect's "Keyboard" choice; 1 without a joystick) | `0x44fc05` |
-| 0x118 | 0x11c | `0x4c2ce8` | 0 | passed through by Setup (`0x10021ea0`) | – |
+| 0x110 | 0x114 | `0x4c2ce0` | 0 | "Joystick Mode": radio "Digital" (0x45f) = 1, "Analogique" (0x460) = 0 (SETUP.md 1) | `0x44fc20` |
+| 0x114 | 0x118 | `0x4c2ce4` | 1 | **keyboard only**: radio "Key" (0x46b) = 1, "Joy" (0x46a) = 0; forced 1 without a joystick | `0x44fc05` |
+| 0x118 | 0x11c | `0x4c2ce8` | 0 | registry `HKCU\Software\Eko Software\The Gift` "Language" (Setup `0x100032a0`) | – |
 
 The 12 key slots of each set, in cfg order, and the action they feed (`0x44fbd0`):
 
@@ -237,6 +267,8 @@ the Mover).
   `<Data>/../Woody.cfg` (the install layout). Magic checked, both key sets and the mode read; DIK codes become VK codes
   (`in_dik_vk`: a table for the extended keys and the numpad, `MapVirtualKey` for the rest, so the keyboard layout counts
   like DirectInput's physical keys). The volumes stay in `woodyre.cfg` (MENU_OPTIONS.md); nothing is written to Woody.cfg.
+  The same file lookup (`wcfg_read`) also feeds `setup_import`: vsync, reverse stereo and film sound for `woodyre.cfg`
+  keys that are still missing (SETUP.md 2.4, 3).
 - **Without Woody.cfg** the port keeps its own keys: arrows/WASD, Space jump, X duck (and duck while riding), LCtrl/Shift
   attack, Enter look, Esc pause, C/Num0 camera, RCtrl/E special; joystick buttons as Detect's config 2 (§2: button 0 duck,
   1 attack, 2 jump, 3 duck riding, 4 look, 5 pause, 6 camera, 7 special), and **mode 3** = keyboard and joystick both
@@ -257,5 +289,14 @@ the Mover).
 
 The bonus-at-checkpoint `+0x4e0` is ported (`race_bonus_ckpt`: set by 1030, zeroed by `player_restart`, restored by
 `race_enter`); `Actors_ResetAll` `0x40c040` and `[0x4b3354]` need nothing (a no-op and a write-only global, §5.3).
-Not ported: the debug keys (dev flag 8, never set by the shipped exe; they include `SavePos.bin`, PERSO_DEATH.md §3.4), the mouse,
+- **Mouse**: the original's mouse never reaches the game (§1.3), so by default the port's look-around gets 0 counts too.
+  `src/render_gl.c` registers the mouse as raw input (`RegisterRawInputDevices`, usage page 1 / usage 2, no flags = only while
+  the window is in the foreground, cursor untouched, like coop level 6) and sums `WM_INPUT` relative motion into
+  `Window.raw_dx/raw_dy`, reset by every `win_poll` (the counts since the last poll, as `GetDeviceState` would give).
+  `WOODY_LOOKMOUSE=1` (port extra) feeds them into the look-around's `L+0x28/+0x2c` in place of the 0, where the original's own
+  formula applies (clamp ±64, `counts·dt·π/16` per frame, at most π/10; no button needed, the keys override it per axis);
+  `WOODY_MOUSE="T:DX:DY[:D] ..."` adds DX, DY counts per frame for D s (default 0.5) from T s on (testing). The window-pixel
+  deltas with the right button (`Window.mouse_dx/dy`) now only drive the F5 free camera.
+
+Not ported: the debug keys (dev flag 8, never set by the shipped exe; they include `SavePos.bin`, PERSO_DEATH.md §3.4),
 DirectInput's exclusive mode, and the console "controller removed" page 0x1a.

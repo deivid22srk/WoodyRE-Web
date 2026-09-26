@@ -36,6 +36,11 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         static int lx = -1, ly = -1; int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         if (w && w->mouse_right && lx >= 0) { w->mouse_dx += x - lx; w->mouse_dy += y - ly; }
         lx = x; ly = y; return 0; }
+    case WM_INPUT: {                                              /* relative mouse counts (RegisterRawInputDevices in win_open) */
+        RAWINPUT ri; UINT sz = sizeof ri;
+        if (w && GetRawInputData((HRAWINPUT)lp, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1 && ri.header.dwType == RIM_TYPEMOUSE
+            && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) { w->raw_dx += ri.data.mouse.lLastX; w->raw_dy += ri.data.mouse.lLastY; }
+        break; }                                                  /* DefWindowProc cleans up after WM_INPUT */
     }
     return DefWindowProcA(h, msg, wp, lp);
 }
@@ -53,10 +58,13 @@ int win_open(Window *w, const char *title, int width, int height)
     int pf = ChoosePixelFormat(hdc, &pfd); SetPixelFormat(hdc, pf, &pfd);
     HGLRC rc2 = wglCreateContext(hdc); wglMakeCurrent(hdc, rc2);
     w->hwnd = hwnd; w->hdc = hdc; w->hglrc = rc2; w->width = width; w->height = height;
+    /* the mouse as raw input (usage page 1, usage 2): relative counts, delivered only while the window is in the foreground, the
+     * cursor left alone - like the original's DirectInput mouse, cooperative level 6 = non-exclusive + foreground (0x467be5) */
+    { RAWINPUTDEVICE rid = { 0x01, 0x02, 0, hwnd }; RegisterRawInputDevices(&rid, 1, sizeof rid); }
     printf("OpenGL: %s / %s\n", (const char *)glGetString(GL_RENDERER), (const char *)glGetString(GL_VERSION));
     return 0;
 }
-void win_poll(Window *w) { MSG m; w->mouse_dx = w->mouse_dy = 0; while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageA(&m); } }
+void win_poll(Window *w) { MSG m; w->mouse_dx = w->mouse_dy = 0; w->raw_dx = w->raw_dy = 0; while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageA(&m); } }
 void win_swap(Window *w) { SwapBuffers((HDC)w->hdc); }
 void win_mode(Window *w, int width, int height, int full)
 {
@@ -558,7 +566,7 @@ void rnd_free(Renderer *r)
     for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->batches[i].idx); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); free(r->litb[i].idx); }
     free(r->batches); free(r->litb); free(r->face_bound);
     free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev); free(r->model_blend); free(r->links); r->links = NULL; r->nlinks = r->links_cap = 0;
-    free(r->list); free(r->list_sec); free(r->list_grp);
+    free(r->list); free(r->list_sec); free(r->list_grp); free(r->chain); free(r->col_first); free(r->col_refs);
     for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); free(r->lightb[t].idx); free(r->lightb[t].face); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
     for (uint32_t g = 0; r->tex && g < r->tex->ngroups; g++) {                 /* the level's textures live in the GL context, not in the TexFile */
         TexGroup *tg = &r->tex->groups[g]; if (!tg->gl_frames) continue;
@@ -860,6 +868,93 @@ static int inst_sphere(const Instance *in, Vec3 *c, float *rad)
     *rad = sqrtf((c->x - q.x) * (c->x - q.x) + (c->y - q.y) * (c->y - q.y) + (c->z - q.z) * (c->z - q.z));
     return 1;
 }
+/* ---- the .col file (0x4271e0) and the sector chains -----------------------------------------------------------------
+ * .col: for every kd leaf cell of the .gel (in .gel order) a u32 count and that many refs (mask << 16 | object index); the
+ * object index addresses the level's object table world+0x40 = the script slots. 0x42aa0b reads the list of the camera's
+ * leaf (cell+0x40 / +0x44). */
+int rnd_load_col(Renderer *r, const char *path)
+{
+    free(r->col_first); free(r->col_refs); r->col_first = NULL; r->col_refs = NULL; r->ncol_cells = 0;
+    FILE *f = fopen(path, "rb"); if (!f) return -1;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    uint32_t *d = (uint32_t *)malloc(n > 0 ? (size_t)n : 4); size_t nw = n > 0 ? fread(d, 4, (size_t)n / 4, f) : 0; fclose(f);
+    uint32_t cells = 0; size_t o = 0;
+    while (o < nw) { uint32_t c = d[o]; if (o + 1 + c > nw) break; o += 1 + c; cells++; }
+    if (o != nw || cells != r->gel->ncells) { if (getenv("WOODY_VISLOG")) printf("VIS: %s has %u records for %u kd cells: not used\n", path, cells, r->gel->ncells); free(d); return -1; }
+    r->col_first = (uint32_t *)malloc((cells + 1) * sizeof *r->col_first); r->col_refs = (uint32_t *)malloc((nw - cells + 1) * sizeof *r->col_refs);
+    uint32_t k = 0; o = 0;
+    for (uint32_t c = 0; c < cells; c++) { uint32_t m = d[o++]; r->col_first[c] = k; for (uint32_t j = 0; j < m; j++) r->col_refs[k++] = d[o++]; }
+    r->col_first[cells] = k; r->ncol_cells = cells; free(d);
+    return 0;
+}
+/* 0x407850: unlink from the chain of its sector (+0x1c = +0x18 = -1) */
+static void chain_unlink(Renderer *r, Instance *in)
+{
+    if (!in->chain_sec1) return;
+    Instance **pp = &r->chain[in->chain_sec1 - 1];
+    while (*pp && *pp != in) pp = &(*pp)->cell_next;
+    if (*pp) *pp = in->cell_next;
+    in->cell_next = NULL; in->chain_sec1 = 0;
+}
+/* the cell point: an enemy's collision centre (0x4077f0 in its mover), a flag-0x20 link its .ins position (the last
+ * explicit 0x4077f0(NULL)), everything else the animated root inst+0x60 (the clock 0x43f2f1) */
+static Vec3 cell_point(const Instance *in)
+{
+    return in->cell_dy > 0 ? (Vec3){ in->position.x, in->position.y + in->cell_dy, in->position.z } : in->cell_fixed ? in->position : ins_anim_centre(in);
+}
+static void cell_compute(const GelFile *g, Instance *in, Vec3 ref)    /* 0x4081c0 sector, 0x40a0c0 floor group (cached per point) */
+{
+    if (!in->cell_ok || ref.x != in->cell_ref.x || ref.y != in->cell_ref.y || ref.z != in->cell_ref.z) {
+        in->cell_ref = ref; in->cell_ok = 1; in->cell_sec = gel_sector(g, ref); in->cell_grp = gel_floor_group(g, ref);
+    }
+}
+/* 0x4077f0 / 0x407790: out of its chain and IN FRONT of the chain of the sector of its cell point (none: out of the world) */
+static void chain_recell(Renderer *r, Instance *in)
+{
+    chain_unlink(r, in);
+    cell_compute(r->gel, in, cell_point(in));
+    if (in->cell_sec >= 0 && (uint32_t)in->cell_sec < r->nchain) { in->cell_next = r->chain[in->cell_sec]; r->chain[in->cell_sec] = in; in->chain_sec1 = in->cell_sec + 1; }
+}
+/* +8 & 0x20: the actors move and re-cell themselves (enemy PostLoad 0x419e4d, the Perso, the race board), the links of
+ * messages 61/62 are never re-celled by their clock; everything else is re-celled by every clock run (0x43f2ed) */
+static int inst_flag20(const Instance *in)
+{
+    return in->cell_dy > 0 || in->cell_fixed || (!in->scripted && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19));
+}
+/* the clock 0x43eee0 runs at most once per frame (inst+0x58 = [[0x509adc]]) and ends with the re-cell 0x43f351 */
+static void chain_clock(Renderer *r, Instance *in)
+{
+    if (in->clock_frame == r->frame) return;
+    in->clock_frame = r->frame;
+    if (!inst_flag20(in)) chain_recell(r, in);
+}
+/* keep the chains in step with what happened since the last frame: 0x4288cf put every instance of the .ins in front of
+ * its sector's chain in file order at load; message 6 unlinks (0x407850) and a show links in front again; an actor's
+ * own mover re-cells it in front whenever it moved. An instance whose cell point moved to another sector without a
+ * clock run would stay in its old chain in the original (the port re-cells such an instance at once instead, the
+ * simplification INSTANCE.md 4.1 describes). */
+static void chains_sync(Renderer *r)
+{
+    const GelFile *g = r->gel; InsFile *ins = r->ins;
+    if (!r->chain_ok) {
+        free(r->chain); r->nchain = g->nsectors; r->chain = (Instance **)calloc(r->nchain ? r->nchain : 1, sizeof *r->chain); r->chain_ok = 1;
+        for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) { Instance *in = &ins->models[mi].instances[k]; in->chain_sec1 = 0; in->cell_next = NULL; }
+        for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+            Instance *in = &ins->models[mi].instances[k]; if (in->visible) chain_recell(r, in);   /* 0x4288cf, in file order */
+        }
+        return;
+    }
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+        Instance *in = &ins->models[mi].instances[k];
+        if (!in->visible) { if (in->chain_sec1) chain_unlink(r, in); continue; }      /* message 6: 0x407850 */
+        if (!in->chain_sec1) { chain_recell(r, in); continue; }                       /* shown again (0x4077f0) */
+        int32_t was = in->cell_sec; Vec3 ref = cell_point(in);
+        if (ref.x == in->cell_ref.x && ref.y == in->cell_ref.y && ref.z == in->cell_ref.z) continue;
+        if (in->cell_dy > 0 || (inst_flag20(in) && !in->cell_fixed)) { chain_recell(r, in); continue; }   /* an actor that moved: its own 0x4077f0 */
+        cell_compute(g, in, ref);
+        if (in->cell_sec != was) chain_recell(r, in);                                  /* port: see above */
+    }
+}
 void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, const int32_t *race)
 {
     const GelFile *g = r->gel; InsFile *ins = r->ins;
@@ -886,6 +981,8 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
             else if ((uint32_t)cg < g->ngroups) r->list_grp[cg] = 1;           /* port: the original searches on past the -1 (no bound, 0x42aaf3) */
         }
     }
+    r->frame++;                                                                 /* [[0x509adc]]: the clocks of this frame */
+    chains_sync(r);
     /* message 34 (0x42aa0b): the linked instances of a volume that holds the camera get this frame's stamp first */
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins->models[mi].instances[k].listed = ins->models[mi].instances[k].in_zone = 0;
     for (uint32_t i = 0; i < r->nlinks; i++) {
@@ -893,36 +990,66 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
         for (; i < r->nlinks && r->links[2 * i] == v; i++) if (in) r->links[2 * i + 1]->listed = -1;
         i--;
     }
+    /* ... and that loop first runs the clock (vtbl[2](1)) of every type-1 object of the camera's kd leaf, in .col order
+     * (0x42aa0b..0x42aa2e): each one that is in the world and not flag 0x20 goes in front of its sector's chain */
+    if (r->col_first) {
+        int32_t leaf = gel_cell(g, cam->pos);
+        if (leaf >= 0 && (uint32_t)leaf < r->ncol_cells)
+            for (uint32_t j = r->col_first[leaf]; j < r->col_first[leaf + 1]; j++) {
+                uint32_t idx = r->col_refs[j] & 0xffff; Instance *in = idx < ins->nslots ? ins->slots[idx] : NULL;
+                if (in && in->visible && in->chain_sec1) chain_clock(r, in);   /* 0x42e2c3: out of the world = no clock */
+            }
+    }
     /* the side planes of 0x437b00, from the same camera the renderer uses */
     float aspect = w->height ? (float)w->width / (float)w->height : 1.333f; if (cam->letterbox) aspect /= 0.75f;
     float tv = tanf(cam->fov_deg * 3.14159265f / 360.0f), th = tv * aspect;
     Vec3 fw = cam_forward(cam), rt = cam_right(cam), up = { rt.y * fw.z - rt.z * fw.y, rt.z * fw.x - rt.x * fw.z, rt.x * fw.y - rt.y * fw.x };
-    uint32_t n_sec = 0, n_grp = 0, n_link = 0, n_frus = 0, n_far = 0, n_act = 0, n_nofloor = 0;
+    uint32_t n_sec = 0, n_grp = 0, n_link = 0, n_frus = 0, n_far = 0, n_act = 0, n_nofloor = 0, n_vis = 0, n_seen = 0;
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
-        Instance *in = &ins->models[mi].instances[k];
-        if (in->listed < 0) { in->listed = 0; if (in->visible) n_link++; continue; }
-        if (!in->visible) continue;                                             /* +0x1c == -1: in no sector chain */
-        Vec3 ref = in->cell_dy > 0 ? (Vec3){ in->position.x, in->position.y + in->cell_dy, in->position.z } : ins_anim_centre(in);
-        if (!in->cell_ok || ref.x != in->cell_ref.x || ref.y != in->cell_ref.y || ref.z != in->cell_ref.z) {   /* 0x407790 / 0x4077f0: re-cell */
-            in->cell_ref = ref; in->cell_ok = 1; in->cell_sec = gel_sector(g, ref); in->cell_grp = gel_floor_group(g, ref);
-        }
-        if (in->cell_grp < 0) n_nofloor++;
-        if (!all) {
-            if (in->cell_sec < 0 || (uint32_t)in->cell_sec >= g->nsectors || !r->list_sec[in->cell_sec]) { n_sec++; continue; }
-            if (in->cell_grp < 0 || (uint32_t)in->cell_grp >= g->ngroups || !r->list_grp[in->cell_grp]) { n_grp++; continue; }   /* 0x42a85e: +0x18 == -1 is never listed */
-        }
-        in->in_zone = 1;
-        Vec3 c; float rad;
-        if (sphere_cached(in) && inst_sphere(in, &c, &rad)) {                   /* 0x42a891 */
-            Vec3 d = { c.x - cam->pos.x, c.y - cam->pos.y, c.z - cam->pos.z };
-            float x = d.x * rt.x + d.y * rt.y + d.z * rt.z, y = d.x * up.x + d.y * up.y + d.z * up.z, z = d.x * fw.x + d.y * fw.y + d.z * fw.z, mg = rad * 1.4142f;
-            if (fabsf(x) > z * th + mg || fabsf(y) > z * tv + mg) { n_frus++; continue; }
-            if (racing && d.x * d.x + d.y * d.y + d.z * d.z + rad * rad > 1.21e8f) { n_far++; continue; }   /* 0x4aa2f4 */
-        }
-        if (r->nlist >= r->list_cap) { uint32_t cap = r->list_cap ? r->list_cap * 2 : 256; Instance **nl = (Instance **)realloc(r->list, cap * sizeof *nl); if (!nl) continue; r->list = nl; r->list_cap = cap; }
-        r->list[r->nlist++] = in; in->listed = 1;                               /* 0x42a931..0x42a948 */
-        if (in->type >= 4 && in->type <= 16) n_act++;
+        const Instance *in = &ins->models[mi].instances[k];
+        if (in->visible) { n_vis++; if (in->cell_grp < 0) n_nofloor++; if (in->listed < 0) n_link++; }
     }
+    /* 0x42ab60: the sectors of the pairs, each once, in the order of the camera's .vis entry; 0x42a840 walks the chain of
+     * each (the next pointer is read before the instance is handled, 0x42a85b) and every listed instance runs its clock
+     * (vtbl[2](0x81)), whose re-cell puts it in front of its chain again - so a chain of listed, clocked instances comes
+     * out REVERSED every frame, and the list order (= the draw order of 0x42b380) alternates between two orders.
+     * No .vis (port only): every chain, in sector order. */
+    uint32_t npass = all ? r->nchain : L->npairs;
+    for (uint32_t pk = 0; pk < npass; pk++) {
+        uint32_t s = all ? pk : L->pairs[2 * pk];
+        if (s >= r->nchain) continue;
+        if (!all) { if (r->list_sec[s] == 2) continue; r->list_sec[s] = 2; }        /* the sector stamp +4 (0x42ab8b) */
+        for (Instance *in = r->chain[s], *next; in; in = next) {
+            next = in->cell_next; n_seen++;
+            if (in->listed < 0) { in->listed = 0; continue; }                        /* message 34: stamped (0x42a92f) */
+            if (in->listed > 0) continue;                                            /* re-celled into a sector walked later: already in */
+            if (!all && (in->cell_grp < 0 || (uint32_t)in->cell_grp >= g->ngroups || !r->list_grp[in->cell_grp])) { n_grp++; continue; }   /* 0x42a85e: +0x18 == -1 is never listed */
+            in->in_zone = 1;
+            Vec3 c; float rad;
+            if (sphere_cached(in) && inst_sphere(in, &c, &rad)) {                   /* 0x42a891 */
+                Vec3 d = { c.x - cam->pos.x, c.y - cam->pos.y, c.z - cam->pos.z };
+                float x = d.x * rt.x + d.y * rt.y + d.z * rt.z, y = d.x * up.x + d.y * up.y + d.z * up.z, z = d.x * fw.x + d.y * fw.y + d.z * fw.z, mg = rad * 1.4142f;
+                if (fabsf(x) > z * th + mg || fabsf(y) > z * tv + mg) { n_frus++; continue; }
+                if (racing && d.x * d.x + d.y * d.y + d.z * d.z + rad * rad > 1.21e8f) { n_far++; continue; }   /* 0x4aa2f4 */
+            }
+            if (r->nlist >= r->list_cap) { uint32_t cap = r->list_cap ? r->list_cap * 2 : 256; Instance **nl = (Instance **)realloc(r->list, cap * sizeof *nl); if (!nl) continue; r->list = nl; r->list_cap = cap; }
+            r->list[r->nlist++] = in; in->listed = 1;                               /* 0x42a931..0x42a948 */
+            if (in->type >= 4 && in->type <= 16) n_act++;
+            chain_clock(r, in);                                                     /* vtbl[2](0x81) (not for flag 0x20, 0x42a94e) -> 0x43eee0 -> 0x4077f0 */
+        }
+    }
+    if (all) {                                                                      /* port: instances in no sector are listed too without a .vis */
+        for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+            Instance *in = &ins->models[mi].instances[k];
+            if (!in->visible || in->chain_sec1 || in->listed) continue;
+            if (in->listed < 0) { in->listed = 0; continue; }
+            if (r->nlist >= r->list_cap) { uint32_t cap = r->list_cap ? r->list_cap * 2 : 256; Instance **nl = (Instance **)realloc(r->list, cap * sizeof *nl); if (!nl) continue; r->list = nl; r->list_cap = cap; }
+            in->in_zone = 1; r->list[r->nlist++] = in; in->listed = 1;
+        }
+    }
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) { Instance *in = &ins->models[mi].instances[k]; if (in->listed < 0) in->listed = 0; }
+    n_sec = n_vis > n_seen ? n_vis - n_seen : 0;
+    if (log >= 4) { printf("VIS frame %u order:", r->frame); for (uint32_t i = 0; i < r->nlist && i < 24; i++) printf(" %u", r->list[i]->index); puts(""); }   /* every frame: the alternating chain order */
     if (log) {
         static double next; static uint32_t mx; double t = win_time(); if (r->nlist > mx) mx = r->nlist;
         if (r->nlist > 256) { static int warned; if (!warned) { warned = 1; printf("VIS: %u instances listed - the original's list holds 256 (0x42a4f9)", r->nlist), puts(""); } }
@@ -1564,6 +1691,8 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             inst->drawn = (!r->list_on || inst->in_zone || !list_drawn(inst)) && instance_visible(r, inst, aspect, f, fw, rt, up);
             if ((inst->drawn || shadow_caster(inst)) && r->lit) instance_light(r, inst, dt); } }   /* a caster off screen still needs its light for the shadow */
         if (r->nlinks) links_hide(r, cam->pos);                                /* message 34: 0x42aa0b runs before the sector walk 0x42a840 */
+        if (r->on_drawn) for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) for (uint32_t k = 0; k < r->ins->models[mi].ninstances; k++)
+            if (r->ins->models[mi].instances[k].drawn) r->on_drawn(&r->ins->models[mi].instances[k]);   /* vtbl[26], before the colours are used */
     }
     glEnable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GEQUAL, 127.0f / 255.0f);   /* 0x47ec50/0x47ec5c: ALPHAREF 0x7f, GREATEREQUAL. The device stays on CULL_NONE; the culling is per polygon on the CPU */
     glPolygonMode(GL_FRONT_AND_BACK, r->wireframe ? GL_LINE : GL_FILL);
@@ -1681,8 +1810,22 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
                     for (uint32_t k = 0; k < n->npolys; k++) if (n->polys[k].nverts >= 3 && mat_blended(r, n->polys[k].material)) { r->model_blend[mi] = 1; break; } } }
         }
         static Instance **fl, **al; static float *fd, *ad; static int *fb, *ab; static uint32_t fcap, acap; uint32_t fn = 0, an = 0; float dmax = 1.0f;
-        for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
-            Instance *inst = &m->instances[k]; if (!inst->drawn || inst->type == 60) continue;
+        /* the draw order of 0x42b380: the Perso first (vtbl[2](4 or 6)), then the frame's instance list world+0x64 in its
+         * order (vtbl[2](5 or 7), the Perso skipped), because that order decides which fading instance leaves its depth in
+         * [0x5ac8d4] for the glow batches after it. The port draws a few instances outside the list (the bomb pool, links
+         * an actor draws itself): those come last, in model order. */
+        static Instance **ord; static uint32_t ocap; uint32_t on = 0, ntot = 0;
+        for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) ntot += r->ins->models[mi].ninstances;
+        if (ntot > ocap) { ocap = ntot; ord = (Instance **)realloc(ord, ocap * sizeof *ord); }
+        { Instance *perso = NULL;
+          for (uint32_t mi = 0; mi < r->ins->nmodels && !perso; mi++) for (uint32_t k = 0; k < r->ins->models[mi].ninstances; k++) { Instance *q = &r->ins->models[mi].instances[k];
+              if (!q->scripted && (q->type == 1 || q->type == 2 || q->type == 3 || q->type == 18 || q->type == 19)) { perso = q; break; } }
+          if (perso && perso->drawn) ord[on++] = perso;
+          if (r->list_on) for (uint32_t i = 0; i < r->nlist; i++) { Instance *q = r->list[i]; if (q != perso && q->drawn) ord[on++] = q; }
+          for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) for (uint32_t k = 0; k < r->ins->models[mi].ninstances; k++) { Instance *q = &r->ins->models[mi].instances[k];
+              if (q->drawn && q != perso && !(r->list_on && q->listed)) ord[on++] = q; } }
+        for (uint32_t oi = 0; oi < on; oi++) {
+            Instance *inst = ord[oi]; uint32_t mi = (uint32_t)(inst->model - r->ins->models); if (inst->type == 60) continue;
             int fading = inst_fading(inst), add = r->model_blend[mi];
             if (!fading && !add) continue;
             if (fn == fcap) { fcap = fcap * 2 + 16; fl = (Instance **)realloc(fl, fcap * sizeof *fl); fd = (float *)realloc(fd, fcap * sizeof *fd); fb = (int *)realloc(fb, fcap * sizeof *fb); }
@@ -1694,7 +1837,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             if (fading) { fl[fn] = inst; fd[fn++] = sort_depth; }
             if (add) { al[an] = inst; ad[an++] = sort_depth; }
             if (sort_depth > dmax) dmax = sort_depth;
-        } }
+        }
         for (uint32_t i = 0; i < fn; i++) fb[i] = (int)lrintf(fd[i] * 254.0f / dmax);
         for (uint32_t i = 0; i < an; i++) ab[i] = (int)lrintf(ad[i] * 254.0f / dmax);
         int bmax = -1; for (uint32_t i = 0; i < fn; i++) if (fb[i] > bmax) bmax = fb[i];

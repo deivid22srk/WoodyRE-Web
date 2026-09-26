@@ -101,10 +101,10 @@ Usage = static count of `SEND` across all 28 `extract/Data/*/code`.
 | 1636..1638 | as 1633..1635 | 0 | `0x468500`, `0x46851d`, `0x468564` | queued on the instance |
 | 1639..1645, 1647, 1648, 1651 | – | 0 | `0x4686aa` | nothing |
 | 1646 / 1656 | t | 0 | `vt[0x4c](t·0.01)` `0x468671` | **StopMusic** with fade t/100 s (0 = immediate) |
-| 1649 / 1650 | – | 0 | `0x41fa40` / `0x41fa50` on `[0x4c737c]` | camera manager, no sound (uncertain what for) |
+| 1649 / 1650 | – | 0 | `0x41fa40` / `0x41fa50` on `[0x4c737c]` | set / clear `CamMgr+0x290`, which **nothing reads** (SETUP.md 5); port: a flag (`g_cam_hold`) |
 | **1652** | id, t, mask, 0 | 84 | `vt[0x80](id, t·0.01, mask, x)` `0x4685dc` → `0x46c390` | **stop 2D**: all playing non-3D voices of this sample fade out over t/100 s and stop; mask 3 = all, **1 = loops only**, 2 = one-shots only. Key = **id only** |
 | 1653 | type, freq, amp | 0 | `vt[0x64]` + `vt[0x68]` `0x468603` | LFO for the *next* voice (volume resp. pitch modulation, waveform 1..4: sine/|sine|/square/noise `0x4698f0`), then `0x41fa40` |
-| 1654 | type, freq, amp | 0 | `0x46862c` | only `vt[0x64]`+`vt[0x68]` |
+| 1654 | type, freq, amp | 0 | `0x46862c` | enters after 1653's `vt[0x64]` call: only `vt[0x68]`, then `0x41fa40` as well |
 | **1655** | track | 26 | `vt[0x48](track)` `0x468689` | **PlayMusic** (§4) – *not* StopSound as MESSAGES.md said |
 | 1657 | t | 3 | `vt[0x6c](t·0.01)` `0x468698` → `0x46c500` | fade-in time for the **next** started voice (`[0x5e8230]` → `voice+0x54`; cleared on every Play, `0x469c23`) |
 
@@ -215,15 +215,20 @@ card/driver is not in the exe; the linear law of `0x48f520` is the game's own ch
 
 `0x46b7e0` (when `[0x5e81c0]` ≠ 0): mirrors the source through the listener's median plane – normal `n = normalize(column 1) ×
 normalize(column 2)` = the right axis, `src += −2·dot(n, src − lis)·n` (`0x4a9504` = −2) – i.e. **swaps left and right**
-("reverse stereo"). `[0x5e81c0]` = `[0x4c2c44]` = Woody.cfg struct `+0x74` (file `+0x78`), 0 unless the setup tool sets it;
-not ported.
+("reverse stereo"). `[0x5e81c0]` = `[0x4c2c44]` = Woody.cfg struct `+0x74` (file `+0x78`) = Detect.exe's Sound page checkbox
+**"Invert Left/Right"** (control 0x475, default 0; SETUP.md 3.1). Called with every position commit (`0x46b9e1`, `0x46bf38`,
+`0x46c066`), so it applies to all 3D voices. **Ported**: `voice_geom` negates the pan (the reflection keeps the distance and
+flips the right component), `audio_reverse_stereo`, woodyre.cfg `reverse_stereo=`, `WOODY_REVSTEREO=0/1`.
 
 ### 2.4 Configuration (`0x4691e2..0x4692b9`, from Woody.cfg globals)
 
-`[0x4c2c38]` sfx on → `0x5e81b4` · `[0x4c2c3c]` music on → `0x5e81b8` · `[0x4c2c40]` → `0x5e81bc` · OR of the three →
-`0x5e81e8` (lib init `0x469360`, otherwise silent) · `[0x4c2c50]` **sfx volume 0..100** → `0x5e81ec = v·0.01` · `[0x4c2c54]`
-**music volume** → `0x5e81f0` · `[0x4c2c58]` third volume → `0x5e81f4` (no reader found) · `[0x4c2c68]` speaker config
-1..8 (`0x4693b0`). Setters for the options menu: `vt[0x54/0x5c/0x64]` of the system (`0x469570`, `0x4695a0`, `0x4695d0`).
+`[0x4c2c38]` sfx on → `0x5e81b4` · `[0x4c2c3c]` music on → `0x5e81b8` · `[0x4c2c40]` "Cinematic" → `0x5e81bc` (read only by
+the HNM film player, `0x426a57`: film sound on/off) · OR of the three → `0x5e81e8` (lib init `0x469360`, otherwise silent) ·
+`[0x4c2c44]` reverse stereo → `0x5e81c0` (§2.3) · `[0x4c2c50]` **sfx volume 0..100** → `0x5e81ec = v·0.01` · `[0x4c2c54]`
+**music volume** → `0x5e81f0` · `[0x4c2c58]` third ("cinematic") volume → `0x5e81f4`: **dead**, no reader, no Detect.exe
+slider, the setter `vt[0x64]` is never called · `[0x4c2c5c]` output device index → system+0x108 · `[0x4c2c68]` speaker
+config 1..8 (`0x4693b0`). Setters for the options menu: `vt[0x54/0x5c/0x64]` of the system (`0x469570`, `0x4695a0`,
+`0x4695d0`). Which Detect.exe control writes each field: SETUP.md 1.
 
 ### 2.5 Queued plays
 
@@ -321,8 +326,8 @@ Every file is a canonical 44-byte-header WAV (PCM 16 bit stereo; `data` at +36, 
 pause unless `app+0xe4`) moves them to the active list (`+0x18`, 16 B: id, record*, timer, inst) and plays the record
 `rec = 0x5e5b28 + 24·id` (`0x4670f0`): `{i32 ref, f32 vol, f32 pitch, f32 maxdur, i32 next, f32 delay}`:
 `maxdur > 0` ⇒ loop (`vt[0x40]` with inst / `vt[0x28]` without, `0x468cbb`), otherwise one-shot (`vt[0x38]` / `vt[0x24]`);
-with `inst` thus 3D (dmin 2 m), with `inst = 0` 2D. `pitch` is replaced by `this+0x1c` if that ≠ 1.0 (`0x468c82`; no
-writer found). After starting: `next < 0` ⇒ item removed (loops too: they keep running in the manager); otherwise after `delay` s
+with `inst` thus 3D (dmin 2 m), with `inst = 0` 2D. `pitch` is replaced by `this+0x1c` if that ≠ 1.0 (`0x468c82`); `+0x1c`
+is set to 1.0 by the base ctor `0x468910` (`0x468951`) and never written again (SETUP.md 3.2), so the override is dead. After starting: `next < 0` ⇒ item removed (loops too: they keep running in the manager); otherwise after `delay` s
 (`delay < 0` ⇒ sample duration `vt[0x84]`) moves on to record `next`. `0x468a30(id, inst)` = stop (`vt[0x58](ref, inst, 0)` or
 `vt[0x80](ref, 0, 3, 0)`); `0x468980` = stop everything (level exit `0x44e7b0`).
 Helper "source" object (1 flag byte, e.g. `Perso+0x4a4`): `0x468e40` = "active this frame", `0x468e50(src, inst, id, fx, vol)` starts
@@ -385,7 +390,8 @@ ids are solid. Damage, death, landing and walking of the Perso have **no** code 
 Data: `/Rtc/...wav` in Music.bf (22050 Hz stereo). Message 1130 arg 2 = track (8 = House intro, 9.. per level, table §4.1).
 `vt[0x94](track)` (`0x46cc00`): stop the previous rtc, `mgr+0x1b918 = track`. `vt[0x98](&t0)` (`0x4698b0` → `0x46cc20`):
 `0x490f30(name, 0, &mgr+0x1b91c)` = one-shot stream, **at full lib volume, without the music fader** (no volume is
-set; uncertain whether the lib applies the music master), `t0 = 0`, returns 1. `vt[0x9c]` (`0x46cc60`): stop + close. The
+set; uncertain whether the lib applies the music master; Detect's "Cinematic" switch `[0x5e81bc]` is not consulted, it only
+gates the HNM films, SETUP.md 3.3), `t0 = 0`, returns 1. `vt[0x9c]` (`0x46cc60`): stop + close. The
 level music around it is paused with `vt[0x50](0.45)` / `vt[0x54](0.45)` (CINEMATIC.md §2/§3); the Perso loop 60 is
 stopped (`0x401cdf`).
 
@@ -417,9 +423,11 @@ stopped (`0x401cdf`).
 
 1. ~~Who sets the listener and who calls Update~~: answered in §2.2 (`0x4019b6`, `0x401ee7`, list `world+0x64`).
 2. Exact meaning of stream flag 3 vs. 0 in `0x490f30` (assumed: 3 = loop) and whether rtc streams follow the music master.
-3. `this+0x1c` of SoundFx (global pitch) and `[0x5e81f4]` (third volume) have no found writer/reader.
+3. ~~`this+0x1c` of SoundFx (global pitch) and `[0x5e81f4]` (third volume)~~: both dead (SETUP.md 3.2): `+0x1c` stays at
+   the ctor's 1.0, `[0x5e81f4]` is written from cfg `+0x88` (Setup default 100, no Detect.exe slider) and by the never
+   called `vt[0x64]`, and read nowhere.
 4. The event names of the menu/HUD ids 21..37 and of the bosses (39..54, 63..67) – addresses are correct, meaning not verified.
-5. 1649/1650 (`0x41fa40`/`0x41fa50` on `[0x4c737c]`): camera-related, not investigated; used by no script.
-6. ~~Occlusion and `0x46b7e0`~~: occlusion is a stub in this build (§2.1); `0x46b7e0` = reverse stereo (§2.3). Open: which
-   setup-tool option writes Woody.cfg `+0x78` (`[0x4c2c44]`), and the exact DS3D panning curve (driver-side, not in the exe).
+5. ~~1649/1650~~: set / clear `CamMgr+0x290`, a flag nothing reads (SETUP.md 5); used by no script.
+6. ~~Occlusion and `0x46b7e0`~~: occlusion is a stub in this build (§2.1); `0x46b7e0` = reverse stereo (§2.3), written by
+   Detect.exe's "Invert Left/Right" (SETUP.md 3.1), ported. Open: the exact DS3D panning curve (driver-side, not in the exe).
 7. MESSAGES.md §Sound is wrong on several points (1655 = music, 1628 = stop, 1622/1623 are 3D) and should refer to this document instead.
