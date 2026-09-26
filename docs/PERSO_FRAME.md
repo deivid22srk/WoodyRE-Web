@@ -224,7 +224,7 @@ flag 0x80) ⇒ `M+0x10 = normalize(target − pos)` (look direction towards the 
   `M+0x44 = (dot(new, old)+1)/2 · P+0x1c (600) · min(|stick|,1)` (turning slows you down),
   `M+0x10 = slerp(old, new, |stick|·0.25 (0x4a9ca0))` (`0x45a320`, threshold `0x4aa41c` = 0.9999),
   y = 0, normalize; flag 8.
-  With `+0x4ec` (altMode): **`0x45a7b0`**: keys 0/1 (mirrored if cam+0x61c == 1) with flags
+  With `+0x4ec` (side view, CAMERA_SCRIPT.md §4.2.1): **`0x45a7b0`**: keys 0/1 (mirrored if cam+0x61c == 1) with flags
   `+0x4ed/+0x4ee` ⇒ target speed P+0x1c or 0.
 * otherwise `0x45a1f0` (clear flags 8/0x10/0x20), phase = 0.
 * **`0x45a850` direction**: if `+0x308 == 1` (ground type slippery, PERSO_MOVE.md §6.4) and not flag 0x40 and target speed ≥ 0:

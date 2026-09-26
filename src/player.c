@@ -1669,20 +1669,30 @@ void player_look_camera(Player *p, FreeCamera *cam, float dt)
 /* 0x459c70, the Perso's half of the side view (runs while Perso+0x4ec, after 0x458bf0, before the Mover; 0x44b7be). Only while
  * +0x238 <= 0 (the move lock, 0x459c80): with no attack (+0x5b4), not climbing (+0x50c), not dead (state 2) and the camera in
  * mode index 5, action 0 held sets +0x4ed and clears +0x4ee, action 1 the reverse (0 wins); the flip byte p+0x20 is the OLD value
- * of the flag being cleared (a turn round, for one frame), else 0. On a flip the walking vector +0x500 is negated (0x459d18),
- * which the Mover's facing follows (not ported: the port's side movement is the camera-relative walk). While the move lock
- * runs the byte keeps its value: a lock that starts in the frame right after a flip leaves it at 1, and the camera update then
- * flips again every frame of the lock (a peck released one frame after the turn does it; the original's blend then goes NaN,
- * sv_ahead in main_engine.c avoids that; docs/CAMERA_SCRIPT.md 4.2). The height byte p+4 is the app's behind_key. */
+ * of the flag being cleared (a turn round, for one frame), else 0. On a flip the walking vector +0x500 is negated (0x459d18).
+ * While the move lock runs the byte keeps its value: a lock that starts in the frame right after a flip leaves it at 1, and the
+ * camera update then flips again every frame of the lock (a peck released one frame after the turn does it; the original's
+ * blend then goes NaN, sv_ahead in main_engine.c avoids that; docs/CAMERA_SCRIPT.md 4.2). The height byte p+4 is the app's
+ * behind_key. Then, lock or not and in every Perso state, the facing snaps to the walking vector (0x459def..0x459eaa): RampA's
+ * dir M+0x34 = xzNormalize(+0x500) (|.| < 0.01 -> x = 1), M+0x1c = M+0x10 = it. There is no turn slerp in a side section: a
+ * turn is a snap to -d, and what an attack, a climb start or a hit set as the facing earlier in the frame is overwritten here
+ * (a later SetDir in the same frame, the climb 0x4650c3 or a ride, still wins for that frame). docs/CAMERA_SCRIPT.md 4.2.1. */
 static void side_update(Player *p, const PlayerInput *in)
 {
-    if (!p->side_on || p->move_lock > 0) return;
-    int flip = 0;
-    if (!p->atk && !p->climb_sub && !p->dead_kind && p->cam_mode == 0x20) {
-        if (in->left) { flip = p->side_r; p->side_l = 1; p->side_r = 0; }       /* 0x459cf1 */
-        else if (in->right) { flip = p->side_l; p->side_r = 1; p->side_l = 0; } /* 0x459d84 */
+    if (!p->side_on) return;
+    if (p->move_lock <= 0) {                                                    /* 0x459c80 */
+        int flip = 0;
+        if (!p->atk && !p->climb_sub && !p->dead_kind && p->cam_mode == 0x20) {
+            if (in->left) { flip = p->side_r; p->side_l = 1; p->side_r = 0; }       /* 0x459cf1 */
+            else if (in->right) { flip = p->side_l; p->side_r = 1; p->side_l = 0; } /* 0x459d84 */
+        }
+        if (flip) p->side_walk = (Vec3){ -p->side_walk.x, -p->side_walk.y, -p->side_walk.z };   /* 0x459d18: * -1.0 (0x4a9500) */
+        p->side_flip = flip;                                                    /* 0x459d4e */
     }
-    p->side_flip = flip;                                                        /* 0x459d4e */
+    Vec3 w = { p->side_walk.x, 0, p->side_walk.z }; float l = sqrtf(w.x * w.x + w.z * w.z);   /* 0x459def: y = 0, xz length */
+    if (l > 0) { w.x /= l; w.z /= l; }                                          /* 0x459e28: only when > 0 */
+    if (sqrtf(w.x * w.x + w.z * w.z) < 0.01f) w.x = 1.0f;                       /* 0x459e6b: 0x4a94f8 = 0.01 */
+    p->yaw = atan2f(w.x, w.z); p->move_dir = w;                                 /* 0x459e7e: M+0x1c (+0x3a4) = M+0x10 (+0x398) = M+0x34 (+0x3bc) */
 }
 /* the tail of the Perso's key steps (0x44b7a8..0x44b7ca): 0x44b980 look-around, 0x458bf0 special attack, then 0x459c70 side view.
  * They follow the attack controller 0x457a50, the pick-up 0x44ba70 and ducking 0x465b10 in every Perso state. */
@@ -2069,7 +2079,21 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     float ix = allow ? (float)(in->right - in->left) : 0, iz = allow ? (float)(in->forward - in->back) : 0, stick = 1.0f;
     if (allow && (in->ax != 0 || in->az != 0)) { ix = in->ax; iz = in->az; stick = sqrtf(ix * ix + iz * iz); if (stick > 1.0f) stick = 1.0f; }   /* 0x45a4b0: the deflection scales speed and turn */
     float len = sqrtf(ix * ix + iz * iz);
-    if (len > 0) {
+    if (p->side_on) {
+        /* 0x45b292..0x45b2af: with flag 2 (allow) and Perso+0x4ec the Mover runs the side walk 0x45a7b0 instead of 0x45a4b0. It clears
+         * flags 8/0x10/0x20 (0x45a1f0) and reads only Held(0) / Held(1) (the left / right keys, or the stick past its dead zone): the held
+         * key must be the one the facing belongs to, (Held(0) && +0x4ed) || (Held(1) && +0x4ee) - the swap of both pairs for
+         * CamMgr+0x61c == 1 (0x45a7eb) changes nothing. Then target M+0x44 = M+0x48 (= P+0x1c, 600, copied by 0x45b0a3) and flag 8, no
+         * turn slow-down and no stick scaling; else target 0 and flag 0x10 (= no input: the ramp runs out). The direction is the facing
+         * that 0x459c70 (side_update) snapped to +0x500 earlier this frame, so a turn reverses him at full speed. Up / down only move the
+         * camera (p+4, 0x459db3); jump, attack, duck work as anywhere. */
+        int key = allow && ((in->left && p->side_l) || (in->right && p->side_r));
+        if (key) {
+            p->ramp_target = P_WALK_SPEED;
+            if (p->ramp_phase == 0 || p->ramp_phase == 3) { p->ramp_phase = 1; p->ramp_t = sqrtf(p->speed / P_WALK_SPEED) * acc_T; }   /* 0x45ad30: 0/3 -> 1 */
+        } else if (!allow && !p->look) { p->ramp_phase = 0; p->speed = 0; }   /* flag 2 off: 0x45a1f0 + phase 0 (0x45b2b8) */
+        else if (p->ramp_phase == 1 || p->ramp_phase == 2) { p->ramp_phase = 3; p->ramp_t = 0; p->ramp_v0 = p->speed; }
+    } else if (len > 0) {
         ix /= len; iz /= len;
         float cs = cosf(cam_yaw), sn = sinf(cam_yaw);
         /* camera forward = (sin yaw, 0, cos yaw); camera right (right-handed, +x left when looking +z) = (-cos yaw, 0, sin yaw) */
@@ -2135,6 +2159,12 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (!p->use_atk_disp && !hlock && p->slide_speed > 0) { disp.x += p->slide_dir.x * p->slide_speed * dt; disp.z += p->slide_dir.z * p->slide_speed * dt; }
     disp.y += dt * p->vy_corr;
+    if (p->side_on) {                                                      /* 0x44bcd8 -> 0x459eb0, the last step of Perso_Move (so not in the states 1/4/5/7/8) */
+        float m = sqrtf(disp.x * disp.x + disp.y * disp.y + disp.z * disp.z);   /* |disp|, 3D (the jumper's dy counts) */
+        float e = p->side_n.x * p->pos.x + p->side_n.y * p->pos.y + p->side_n.z * p->pos.z + p->side_pd;   /* signed distance of the feet (+0x1f4) */
+        if (e > m) e = m; if (e < -m) e = -m;                              /* 0x459f38 / 0x459f53: at most |disp| per frame */
+        disp.x -= e * p->side_n.x; disp.y -= e * p->side_n.y; disp.z -= e * p->side_n.z;   /* 0x459faf: disp += -e n */
+    }
     }
     p->vel = (Vec3){ disp.x / dt, disp.y / dt, disp.z / dt };
     if (disp.y < 0) p->jumper.fallen -= disp.y;                                      /* 0x44b914: fallen height accumulates */
@@ -2480,6 +2510,24 @@ void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44c
      * what the rest of the tick does with the camera has to win over it. The follow camera still seats itself one frame later,
      * on the position and facing a door action gives him (mode 1 of message 26 carries no direction), because SetMode(0, 0)
      * only clears cam_init and player_camera() re-seats on the next camera update - which runs after the tick. */
+}
+/* the Perso half of message 1088 (0x459960, first call; a repeat while +0x4ec is set only re-enters camera mode 5), docs/CAMERA_SCRIPT.md
+ * 4.2.1. d = xzNormalize(B - A) of the marker (type 0, n 0), (1, 0, 0) when shorter than 0.01. */
+void player_side_start(Player *p, Vec3 a, Vec3 d, int v)
+{
+    Vec3 from = p->pos;
+    p->yaw = atan2f(d.x, d.z); p->move_dir = d;                        /* 0x459a48..0x459ad3: RampA dir M+0x34 = d, M+0x1c = M+0x10 = d: the facing */
+    if (!p->script_act) {                                               /* 0x459ad8 -> 0x44a650(p, &A): nothing in state 5 */
+        p->pos = a; p->lanim = -1; p->step_u = -1.0f; p->board_lanim = -1;   /* feet onto the marker's FIRST point, A->Reset (+0x494), B->Reset (+0x498) */
+        player_ground_snap(p);                                          /* 0x44a678 */
+    }
+    player_ground_snap(p);                                              /* 0x459adf: 0x462990 again, outside the state-5 test */
+    p->side_l = v == 1; p->side_r = v != 1;                             /* 0x459ae9: v == 1 -> +0x4ed (the left key walks along d), else +0x4ee */
+    p->side_n = (Vec3){ -d.z, 0, d.x };                                 /* 0x459bbf..0x459c13: +0x4f0 = normalize(d x (0,1,0)) (0x41af10 = this x arg, 0x4239f0) */
+    p->side_pd = -(p->side_n.x * a.x + p->side_n.z * a.z);              /* 0x459c09..0x459c4f: +0x4fc = -n.A */
+    p->side_walk = d;                                                   /* 0x459c52: +0x500 = d */
+    printf("  PLAYER side view: marker A %.0f %.0f %.0f d %.3f %.3f, v %d; feet %.0f %.0f %.0f -> %.0f %.0f %.0f%s\n", a.x, a.y, a.z, d.x, d.z, v,
+           from.x, from.y, from.z, p->pos.x, p->pos.y, p->pos.z, p->script_act ? " (state 5: not moved)" : "");
 }
 void player_script_hold(Player *p, float t) { p->atk = 0; p->charge = 0; p->use_atk_disp = 0; lock_move(p, t); }
 

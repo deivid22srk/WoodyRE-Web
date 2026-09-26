@@ -120,8 +120,10 @@ typedef struct Player {
      * before every update. Mode 0x200 block CamMgr+0x540: facing at the start (+0x54), yaw +0x78, pitch +0x7c, deltas +0x28/+0x2c */
     int look, look_prev6, look_key, look_show, cam_mode, look_dx, look_dy; float look_yaw0, look_yaw, look_pitch;   /* look_show = +0x268 */
     /* side view (camera mode 0x20, docs/CAMERA_SCRIPT.md 4.2): side_on = Perso+0x4ec (the app copies its plane lock in before every
-     * update), side_l / side_r = +0x4ed / +0x4ee (facing the left / right key's way), side_flip = CamMgr+0x63c (p+0x20), written by 0x459c70 */
-    int side_on, side_l, side_r, side_flip;
+     * update), side_l / side_r = +0x4ed / +0x4ee (facing the left / right key's way), side_flip = CamMgr+0x63c (p+0x20), written by 0x459c70;
+     * side_walk = +0x500 (the walking vector: d at the start, negated on every turn, the facing snaps to it), side_n / side_pd = the plane
+     * +0x4f0..+0x4fc (n, -n.A) that 0x459eb0 pulls the displacement onto; all set by player_side_start (0x459960) */
+    int side_on, side_l, side_r, side_flip; Vec3 side_walk, side_n; float side_pd;
     Instance *ride; int ride_state; Vec3 ride_seat, ride_p0; Quat ride_q, ride_q0, ride_cur; float ride_t; int ride_jprev, ride_aprev;
     /* Perso state 7 (docs/PERSO_STATE7.md): +0x55c, the object whose first type-0 vector marker carries him (message 1044 -> 0x44e140,
      * every frame 0x44e1c0, message 1045 -> 0x44e1a0); non-NULL = state 7. No shipped level script sends 1044 */
@@ -167,6 +169,7 @@ int  player_mount(Player *p, Instance *obj);           /* 0x465740: only in stat
 int  player_state_free(const Player *p);               /* Perso state +0x21c == 0: he has his own controls (0x44bcf0) */
 void player_brake_charge(Player *p);                   /* 0x458e40: message 1042 stops the charge run the release just started */
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir);   /* message 26 (0x44ce11); the caller leaves all volumes in the VM */
+void player_side_start(Player *p, Vec3 a, Vec3 d, int v);   /* the Perso half of message 1088 (0x459960): facing d, placed at marker point A, plane through A */
 /* message 1040 / 1140 (0x44dda0): the action number IS the raw .ins animation. 17 = into a door, 18 = out of it;
  * 10..16, 19 and 72..78 (the results animations) run with the root motion of 0x44e290. */
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);

@@ -242,7 +242,7 @@ Perso **state** 7, which never touches the camera (PERSO_STATE7.md §3.4): the c
 if (perso->planeMode (+0x4ec)) { if (cam->modeIdx != 5) { SetTransition(2 /*cut*/); SetMode(5,0); } return; }
 perso->+0x4e8 = inst; perso->planeMode = 1;
 marker(inst, type 0, n 0) -> 2 points A,B (0x42f6b0);  d = xzNormalize(B - A); (|d| < 0.01 -> (1,0,0))
-perso->M.dir (+0x3bc, +0x3a4, +0x398) = d;  0x44a650(perso, &pos); 0x462990(perso);
+perso->M.dir (+0x3bc, +0x3a4, +0x398) = d;  0x44a650(perso, &A /*marker point 1*/); 0x462990(perso);   // §4.2.1
 if (v == 1) { p->side (CamMgr+0x61c) = 0; perso->+0x4ed = 1; perso->+0x4ee = 0; }
 else        { p->side = 1;                perso->+0x4ed = 0; perso->+0x4ee = 1; }
 p->+0x28..+0x44 = defaults (1000, 300, 340, 500, 0, 400(+0x3c), 700(+0x40), 200);      // 0x459b19..0x459b5f
@@ -358,9 +358,8 @@ ramps between 0 and 300 (W1B sends `1110 [4, 300]` on leaving, port log).
 `sv_ramp` = `0x425300`/`0x425220`/`0x4253e0` (called only while value ≠ target, as `0x424d7f..0x424dce`); `sv_ahead` =
 `0x4250b0`; `side_update` (player.c, in the Perso update after `look_update`/`special_update`) = the turn part of `0x459c70`
 with `Player.side_l/side_r` = `+0x4ed/+0x4ee` (set by `cam_side_start` from `v`) and `Player.side_flip` = `p+0x20`; the app
-copies the plane lock into `Player.side_on` (= `+0x4ec`) before each Perso update. Not ported: the side walk `0x45a7b0` and the
-facing snap to `±d` (`+0x500` → `M+0x3bc`): the port walks camera-relative on the plane, so a turn is a quick turn instead of a
-snap, and pressing the other key walks at once. `WOODY_SIDELOG=1` prints A, H, Lat, blend, sign and `ahead` 10× per second and
+copies the plane lock into `Player.side_on` (= `+0x4ec`) before each Perso update. The Perso side (placement at the marker's
+first point, the facing snap to `+0x500`, the side walk `0x45a7b0` and the plane lock `0x459eb0`) is §4.2.1. `WOODY_SIDELOG=1` prints A, H, Lat, blend, sign and `ahead` 10× per second and
 on every flip frame. Test: W1B `WOODY_SETVAR="1.0 42 1" WOODY_KEYS="4.5:RIGHT:3 7.5:LEFT:1.5 9.2:RIGHT:1.5" --pos -8500 400
 -16806 --yaw -90 --peck 1.5 0.1`: 1088 `[0x100019b, 2]`, A 300 → 0 in the start volume and back to 300 when he leaves it, a turn
 at 7.44 s keeps `s = +1` and sweeps it to −1 in 0.86 s (8.30 s), the turn back sweeps +1 again in 0.86 s; W1A door 164
@@ -398,6 +397,102 @@ open, the rock behind it.
 (CAMERA.md §1.2 gives the defaults in offset order `+0x28..0x44` = 1000, 300, 340, 500, 0, 400, 700, 200; note that
 `0x459b55/0x459b4b` set `+0x3c = 400` and `+0x40 = 700`.) Usage: W1A/K1A/S1A 29×, W1B 24×, W2B 51×, W2D 84×, W3C 124×,
 W3D 114×; typically `1110 2 150; 1110 1 500; 1110 3 0; 1110 7 200` around a volume, and `1088 inst 1|2` on entry.
+
+### 4.2.1 The Perso in a side section: placement, facing, side walk `0x45a7b0`, plane lock `0x459eb0`
+
+The camera half is above; this is what the plane lock does to Woody. Four functions, all keyed on `Perso+0x4ec`. The Mover is
+the object at `Perso+0x388` (`M`; `0x44bb83`), so `M+0x10` = `Perso+0x398` (the facing that Orient `0x44bd30` turns into the
+matrix via `0x445780`), `M+0x1c` = `+0x3a4` (the unit direction of the total displacement), `M+0x34` = `+0x3bc` (RampA, whose
+first field is its direction; `0x459ff0` builds it with `0x467110`), `M+0x108` = the flag byte, `M+0x44` = target speed,
+`M+0x48` = P+0x1c = 600 (copied from the parameter block every frame by `0x45b0a0`, `0x45b0b3`).
+
+**1. Start (`0x459960`, message 1088, first call only).** After the marker direction `d` (see 4.2) the Perso gets:
+```c
+M+0x34 = (d.x, 0, d.z);  0x424720(&M+0x34);  if (|M+0x34| < 0.01) M+0x34.x = 1;    /* 0x459a48..0x459a9b: xz-normalise (no-op) */
+M+0x1c = M+0x10 = M+0x34;                                                          /* 0x459aa2..0x459ad3: he FACES d */
+0x44a650(P, &A);          /* 0x459ad8: A = the marker's FIRST point ([esp+0x34] = the buffer 0x42f6b0 filled). Not in state 5:
+                             pos (+0x1f4) = A, SnapToGround 0x462990, A->Reset (+0x494), B->Reset (+0x498) */
+0x462990(P);              /* 0x459adf: ground snap again, also in state 5 */
+if (v == 1) { CamMgr+0x61c = 0; +0x4ed = 1; +0x4ee = 0; } else { CamMgr+0x61c = 1; +0x4ed = 0; +0x4ee = 1; }   /* 0x459ae9 */
+... camera block, SetMode(5) (4.2) ...
+n = normalize(d x (0,1,0)) = (-d.z, 0, d.x);                 /* 0x459bbf..0x459bf2: 0x43ff80 up, 0x41af10 = this x arg, 0x4239f0 */
++0x4f0..+0x4f8 = n;  +0x4fc = -(n . A);                      /* 0x459c03..0x459c4f */
++0x500 = (d.x, 0, d.z);                                      /* 0x459c52: the walking vector */
+```
+So 1088 **puts Woody on the marker's first point**, facing `d`, on the plane. In the port's two test sections that is a short hop:
+W1A door 164: feet (5830, 1700, −7533) → A (5760, 1703, −7527); W1B 392→409: (−11168, 187, −14629) → A (−11231, 198, −14608).
+With `v == 2` (both of them) the right key walks along `d`, which is screen right (4.2, "Which side").
+
+**2. Every frame (`0x459c70`, 4.2):** the flip part (turn = the other key held: set `+0x4ed`/`+0x4ee`, negate `+0x500`), gated by
+the move lock `+0x238 <= 0`, then **always** (lock or not, every Perso state, `0x459def..0x459eaa`):
+```c
+M+0x34 = (+0x500.x, 0, +0x500.z);  if (|.| > 0) normalise;  if (|.| < 0.01 /*0x4a94f8*/) M+0x34.x = 1;
+M+0x1c = M+0x10 = M+0x34;                                    /* the facing SNAPS to +-d: no turn slerp at all */
+```
+It runs after the attack controller `0x457a50`, the pick-up `0x44ba70`, ducking `0x465b10`, look `0x44b980` and the special
+attack `0x458bf0` (`0x44b7a8..0x44b7ca`), so whatever those set as the facing this frame (a homing dive's `Mover_SetDir`
+`0x458b07`, a hit) is overwritten; only a SetDir later in the frame (the climb start `0x4650c3` inside the state dispatch, the
+rocket state 8, whose Orient is skipped) lasts for that one frame.
+
+**3. The side walk (`0x45a7b0`).** The Mover update `0x45b110` (only caller of `0x45a7b0`, `0x45b2aa`): with flag 2 (= the
+`arg` of Perso_Move: 1 in states 0/6, 0 in 2/3 and while `+0x474 > 0`, `+0x238 > 0` or `+0x5b4 != 0`, `0x44bb48..0x44bb78`) it
+calls `0x45a7b0` if `Perso+0x4ec`, else the normal stick walk `0x45a4b0` (`0x45b292..0x45b2b6`); without flag 2 `0x45a1f0` and
+phase 0. The whole function (52 instructions):
+```c
+void Mover_SideWalk(Mover *M)                                   /* 0x45a7b0 */
+{
+    M->flags &= 0xc7;                                           /* 0x45a1f0: clear 8, 0x10, 0x20 */
+    bool l = Pad_Held(M->pad, 0), r = Pad_Held(M->pad, 1);      /* 0x467400: action 0 = left, 1 = right (INPUT.md 4) */
+    bool fl = P->+0x4ed, fr = P->+0x4ee;
+    if (CamMgr->+0x61c == 1) { swap(l, r); swap(fl, fr); }     /* 0x45a7eb: both pairs swap, so the test is unchanged */
+    if ((l && fl) || (r && fr)) { M->target (+0x44) = M->+0x48 /*600*/; M->flags |= 8; }     /* 0x45a814 */
+    else                        { M->target = 0;                   M->flags |= 0x10; }     /* 0x45a82e */
+}
+```
+No direction, no `atan2`, no `(dot+1)/2` turn slow-down and no stick deflection: the speed target is the full walk speed, the
+direction is the facing `M+0x10` that `0x459c70` snapped to `+0x500` (RampA takes it in `0x45a850` as in any walk; on slippery
+ground the usual blend). The rest of the Mover is unchanged: the phase automaton `0x45ad30` (flag 8 in phase 0 → accelerate
+`0x467130`, phase 1; flag 8 gone in phase 1/2 → decelerate `0x467180`, phase 3), RampA 0.25 s / 0.1 s, slide, push. Consequences:
+* Only the key the facing belongs to walks. Pressing the other key turns him (`0x459c70`, same frame, before the Mover) and then
+  it IS the facing key, so a turn while walking reverses him **at full speed** in one frame (phase 2 stays, flag 8 stays).
+  Pressing both: left wins in `0x459c70` (`0x459cf1` is tested first).
+* While a lock runs (`+0x238 > 0`), a peck or the attack (`+0x5b4`), climbing (`+0x50c`), death (state 2) or a camera that is
+  not in mode index 5, `0x459c70` does not turn him, and the Mover gets flag 2 = 0 anyway for the lock and the attack: he keeps
+  facing the old way, and holding the other key does nothing until the turn is allowed again.
+* Up/down (actions 2/3) never walk here: they only pick the camera height `p->h` (`0x459d51..0x459dcd`: up 0, down or duck
+  (action 5) 2, else 1). Jump (`0x462d70`/Jumper), attacks `0x457a50`, ducking `0x465b10`, climbing and the look-around are
+  the normal code; they move along whatever the facing is (an attack's own displacement `+0x5bc` is built from `M+0x10` inside
+  `0x457a50`, before the snap of that frame).
+
+**4. The plane lock (`0x459eb0`)**, the last call of Perso_Move `0x44bb20` (`0x44bcd8`, after `disp (+0x204)` has been chosen
+from the attack `+0x5bc`, `+0x69c` or walk + push and `disp.y += dt · +0x244`), so it runs in the states that use Perso_Move
+(0, 2, 3, 6) and not in 1, 4, 5, 7, 8:
+```c
+void Perso_ClampToPlane(Perso *P)                               /* 0x459eb0 */
+{
+    if (!P->+0x4ec) return;
+    float m = |P->disp|;                                       /* 3D length, the jumper's dy included */
+    float e = n . P->pos (+0x1f4) + P->+0x4fc;                 /* signed distance of the feet from the plane */
+    e = clamp(e, -m, m);                                        /* 0x459f38, 0x459f53 */
+    P->disp += -e * n;                                          /* 0x459f64..0x459faf (0x43ffd0 = vec add) */
+}
+```
+It is **not** a projection: the displacement is bent towards the plane by at most its own length, before the collision
+(`0x4624f0`). Standing still (disp 0) he is not pulled at all; a wall push-out or a platform can leave him off the plane until
+he moves again. Since 1088 starts him on the plane and the walk runs along `±d` (in the plane), the lock normally only has to
+undo collision push-outs and off-plane attack displacements.
+
+**Port** (`src/player.c`, `src/main_engine.c`): `player_side_start` = the Perso part of `0x459960` (facing, `player_ground_snap`
+at A unless `script_act` = state 5, one more ground snap, `side_l/side_r`, `side_n/side_pd` = `+0x4f0..+0x4fc`, `side_walk` =
+`+0x500`), called by `cam_side_start`; `side_update` = `0x459c70` (turn under the lock gate, negates `side_walk`; the facing snap
+`p->yaw`/`move_dir` every frame outside it); the `p->side_on` branch of the Mover input in `player_update` = `0x45a7b0`; the clamp
+at the end of the non-race displacement = `0x459eb0`. The app's old hard projection after the Perso update is gone. Checked
+(`WOODY_POSLOG=1 WOODY_SIDELOG=1`): W1A door 164 (`--pos 6160 1830 -2394 --yaw 180 --peck 0.7 0.1`, 1088 at 3.9 s,
+`WOODY_KEYS="4.5:RIGHT:0.6 5.3:LEFT:1.0 6.5:UP:0.6 7.3:RIGHT:0.05 7.8:DOWN:0.5 8.6:RIGHT:0.6 8.7:SPACE:0.2"`): right walks
+−x (screen right), left turns (yaw −90 → 90) and walks back, up/down only move the camera (H 340 → 500 → 0), a 0.05 s tap of
+right only turns him, the jump carries him along −x; z stays −7527 throughout. W1B (`WOODY_SETVAR="1.0 42 1"
+WOODY_KEYS="4.5:RIGHT:3 7.5:LEFT:1.5 9.2:RIGHT:1.5" --pos -8500 400 -16806 --yaw -90 --peck 1.5 0.1`): 600 u/s along +z,
+the turn at 7.5 s reverses him at once (150 units per 0.25 s either side of it), x stays −11231.
 
 ### 4.3 Mode 0x80 = camera from an instance's animation (doors and cinematics)
 
@@ -521,7 +616,8 @@ P = C + sideV * (side * Lat);   view = lookAt(P, C, up=(0,1,0));
 1. Letterbox: whether the black of the bars comes from an explicit clear or from simply not drawing outside the viewport was not
    checked (renderer `0x4843b0`); it is certain that there is no bar animation in the CamMgr.
 2. Mode 0x20: (a) ~~the sign of `side`~~ settled statically and geometrically (§4.2); (b) ~~the exact flip blend~~ decompiled in §4.2 (`0x4250b0`, `0x424b30`, `0x459c70`);
-   (c) the plane calculation in `0x459bbf..0x459c57` (`0x41af10`, `0x4239f0`) is not spelled out; (d) K1A sends a series of
+   (c) ~~the plane calculation in `0x459bbf..0x459c57`~~ spelled out in §4.2.1 (`n = normalize(d × up) = (−d.z, 0, d.x)`,
+   `+0x4fc = −n·A`, A = the marker's first point, where 1088 also places him); (d) K1A sends a series of
    1110 messages right **before** 1088, while `0x459960` resets the defaults on a new start – whether those 1110 values
    are then lost, or whether `+0x4ec` is already set at that point, was not investigated.
 3. Mode 0x200: settled in PERSO_LOOK.md §3.3 — `p+0x78` is the yaw (`0x437970` = RotY, multiplied on the right: world axis),

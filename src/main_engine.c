@@ -119,7 +119,7 @@ static void cam_side_start(Instance *in, int v)                   /* Perso::0x45
     Vec3 A = ins_point_world(in, mo->nodes[node].point_base), B = ins_point_world(in, mo->nodes[node].point_base + 1), d = { B.x - A.x, 0, B.z - A.z };
     float l = sqrtf(d.x * d.x + d.z * d.z); if (l < 0.01f) d = (Vec3){ 1, 0, 0 }; else { d.x /= l; d.z /= l; }
     g_cam.plane_on = 1; g_cam.plane_a = A; g_cam.plane_d = d; g_cam.side = v == 1 ? 0 : 1;
-    if (g_player) { g_player->side_l = v == 1; g_player->side_r = v != 1; }   /* 0x459ae9: v == 1 -> +0x4ed = 1 (facing d = the left key), else +0x4ee = 1 */
+    if (g_player) player_side_start(g_player, A, d, v);           /* facing d, feet onto A (not in state 5), +0x4ed/+0x4ee, plane, walk vector */
     memcpy(g_cam.sv_par, k_sv_defaults, sizeof k_sv_defaults);
     g_cam.cut = 1; cam_set_mode(0x20);                             /* 0x459baf / 0x459bba; the mode init 0x424b30 sets A, H, Lat and the blend */
 }
@@ -3748,10 +3748,8 @@ int main(int argc, char **argv)
             }
             L.player.dead_cam_req = 0;
             if (!cin_running()) enemies_update(&g_enemies, &L.player, cam.pos, dt);
-            if (g_cam.plane_on && !L.player.follow) {                               /* 0x459eb0: the player stays on the vertical plane through the marker (Perso_Move only: not in state 7) */
-                Vec3 n = { -g_cam.plane_d.z, 0, g_cam.plane_d.x }; float off = (L.player.pos.x - g_cam.plane_a.x) * n.x + (L.player.pos.z - g_cam.plane_a.z) * n.z;
-                L.player.pos.x -= n.x * off; L.player.pos.z -= n.z * off;
-            }
+            /* the plane lock itself (0x459eb0) is the last step of Perso_Move in player.c: a pull of the displacement onto the plane, at most
+             * |disp| per frame, before the collision - not a hard projection here (docs/CAMERA_SCRIPT.md 4.2.1) */
             if (L.player.look != g_cam.look_prev) {                               /* 0x4590fb: the camera controller follows a change of Perso state 3 */
                 if (L.player.look) { player_look_start(&L.player); g_cam.cut = 1; cam_set_mode(0x200); }   /* 0x459050 */
                 else if (!L.player.script_act) { g_cam.cut = 1; cam_set_mode(1); }     /* 0x45910e (not into state 5): 0x41f9f0(2), +0x368 = 0, SetMode(0, 0) */
