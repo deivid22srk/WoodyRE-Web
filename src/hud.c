@@ -1263,14 +1263,30 @@ int hud_sky_images(uint32_t out[5])
     return 1;
 }
 
-static void world_line_uv(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, GLuint tex, int flip);
+/* The UV sets of 0x470d80(S, mode, which) (jump table 0x470ef4, modes 0..6) for the sprite corners k0..k3 at 45, 135, 225,
+ * 315 deg: which = 0 writes the sprite's vertex set S+0x00..0xc0 (k1 = +0x40 gets eax, k0 = +0x00 edx, k3 = +0xc0 esi, k2 =
+ * +0x80 edi); which = 1 writes the LINE's vertex set S+0x100..0x1c0 of 0x471a10 (v0 = +0x100 eax, v3 = +0x1c0 edx, v2 =
+ * +0x180 esi, v1 = +0x140 edi, 0x470d91..0x470da3), so line vertex v gets the entry of sprite corner (v + 1) & 3. Mode 5
+ * writes nothing (0x470eeb); every other mode also stores itself in S+0x200 (the sprite's "last set", 0x470e00..0x470ee1). */
+static const float k_uvset[7][4][2] = {
+    { {1,0}, {0,0}, {0,1}, {1,1} }, { {1,1}, {0,1}, {0,0}, {1,0} }, { {0,0}, {1,0}, {1,1}, {0,1} }, { {0,1}, {1,1}, {1,0}, {0,0} },
+    { {1,1}, {1,0}, {0,0}, {0,1} }, { {1,0}, {0,0}, {0,1}, {1,1} }, { {0,0}, {0,1}, {1,1}, {1,0} } };
+/* The line's UV set PERSISTS: S is one shared object, the ctor 0x470d60 sets both vertex sets to mode 0, and the only
+ * call that changes the line's set is the lightning bolt's 0x470d80(kind, 1) (0x46d932) before each of its segments. The
+ * reset after a line (0x471eb7: 0x470d80(0, 1) when S+0x204 != 0) never fires, because nothing writes S+0x204. So every
+ * later textured line - the storm's rod arcs, the rain streaks, the laser beams, the hit-star speed lines - is drawn
+ * with the uv mirror of the LAST bolt segment until the next bolt. v0/v1 = the start's two sides, v2/v3 the end's (0x471b80..
+ * 0x471cd5): u runs along the line, v across it. */
+static int g_line_uv;
+static void world_line_uv(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, GLuint tex, int mode);
 static void world_line(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, GLuint tex)
 {
-    world_line_uv(a, b, eye, hw, rgb, alpha_a, alpha_b, tex, 0);
+    world_line_uv(a, b, eye, hw, rgb, alpha_a, alpha_b, tex, -1);
 }
-/* flip = the uv mode of 0x470d80: bit 0 mirrors v (across the line), bit 1 mirrors u (along it) */
-static void world_line_uv(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, GLuint tex, int flip)
+/* mode = a uv mode of 0x470d80 to set first (the bolt), -1 = keep the current set (every other line) */
+static void world_line_uv(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, GLuint tex, int mode)
 {
+    if (mode >= 0 && mode <= 6 && mode != 5) g_line_uv = mode;
     if (!H.ok) return;
     float d[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, m[3] = { (a[0] + b[0]) * 0.5f - eye[0], (a[1] + b[1]) * 0.5f - eye[1], (a[2] + b[2]) * 0.5f - eye[2] };
     float s[3] = { d[1] * m[2] - d[2] * m[1], d[2] * m[0] - d[0] * m[2], d[0] * m[1] - d[1] * m[0] };      /* perpendicular to the segment and to the view ray */
@@ -1280,12 +1296,12 @@ static void world_line_uv(const float *a, const float *b, const float *eye, floa
     if (tex) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tex); } else glDisable(GL_TEXTURE_2D);
     glBegin(GL_QUADS);
     glColor3f(rgb[0] * alpha_a, rgb[1] * alpha_a, rgb[2] * alpha_a);
-    float u0 = flip & 2 ? 1.0f : 0.0f, u1 = 1.0f - u0, v0 = flip & 1 ? 1.0f : 0.0f, v1 = 1.0f - v0;
-    glTexCoord2f(u0, v0); glVertex3f(a[0] - s[0], a[1] - s[1], a[2] - s[2]);
-    glTexCoord2f(u0, v1); glVertex3f(a[0] + s[0], a[1] + s[1], a[2] + s[2]);
+    const float (*t)[2] = k_uvset[g_line_uv];                                      /* mode 0: v0 (0,0) v1 (0,1) v2 (1,1) v3 (1,0) */
+    glTexCoord2f(t[1][0], t[1][1]); glVertex3f(a[0] - s[0], a[1] - s[1], a[2] - s[2]);
+    glTexCoord2f(t[2][0], t[2][1]); glVertex3f(a[0] + s[0], a[1] + s[1], a[2] + s[2]);
     glColor3f(rgb[0] * alpha_b, rgb[1] * alpha_b, rgb[2] * alpha_b);
-    glTexCoord2f(u1, v1); glVertex3f(b[0] + s[0], b[1] + s[1], b[2] + s[2]);
-    glTexCoord2f(u1, v0); glVertex3f(b[0] - s[0], b[1] - s[1], b[2] - s[2]);
+    glTexCoord2f(t[3][0], t[3][1]); glVertex3f(b[0] + s[0], b[1] + s[1], b[2] + s[2]);
+    glTexCoord2f(t[0][0], t[0][1]); glVertex3f(b[0] - s[0], b[1] - s[1], b[2] - s[2]);
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
 }
@@ -1303,8 +1319,13 @@ void hud_world_quad(int image, const float v[4][3], const float uv[4][2], const 
 void hud_world_streak(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b) { int k = fx_slot(image); if (k >= 0 && H.fx[k]) world_line(a, b, eye, hw, rgb, alpha_a, alpha_b, H.fx[k]); }
 void hud_world_streak_flip(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, int flip) { int k = fx_slot(image); if (k >= 0 && H.fx[k]) world_line_uv(a, b, eye, hw, rgb, alpha_a, alpha_b, H.fx[k], flip); }
 
+/* S+0x208, the position field of the one shared sprite object [0x5e823c]+0xb00: every effect writes it before it calls
+ * 0x470f10, drawn or not, and it keeps the last value. The skeleton flash registers its light there (0x477db3). */
+static float g_spr_pos[3];
+void hud_last_sprite_pos(float out[3]) { out[0] = g_spr_pos[0]; out[1] = g_spr_pos[1]; out[2] = g_spr_pos[2]; }
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha)
 {
+    g_spr_pos[0] = pos[0]; g_spr_pos[1] = pos[1]; g_spr_pos[2] = pos[2];
     int n = fx_slot(image), blend = image == 10 || image == 11 || image == 24; if (!H.ok || n < 0 || !H.fx[n] || alpha <= 0 || size <= 0) return;   /* the stars and the bomb smoke (sprite flag 8) are alpha blended, the rest additive */
     /* 0x470fee..0x4710b3: every corner is (size*cos t, size*sin t) with t = rot +- 45 deg, so `size` is the half
      * DIAGONAL, not the half width: the half width is size/sqrt(2) and the side is 1.4142*size */
@@ -1326,6 +1347,7 @@ void hud_world_fx(int image, const float *pos, float size, float turns, const fl
  * round the two in-plane axes point does not matter: any pair perpendicular to `n` gives the same square. */
 void hud_world_fx_plane(int image, const float *pos, const float *n, float size, const float *rgb, float alpha)
 {
+    g_spr_pos[0] = pos[0]; g_spr_pos[1] = pos[1]; g_spr_pos[2] = pos[2];
     int k = fx_slot(image); if (!H.ok || k < 0 || !H.fx[k] || alpha <= 0 || size <= 0) return;
     float N[3] = { n[0], n[1], n[2] }, l = (float)sqrt(N[0] * N[0] + N[1] * N[1] + N[2] * N[2]);
     if (l < 1e-6f) return;
@@ -1386,10 +1408,9 @@ static void plane_axes(const float *n, float *u, float *v)          /* 0x471ee0:
 }
 void hud_world_spr_mode(int mode, int image, const float *pos, float size, int rot, const float *rgb, float alpha, int flags, const float *basis, int mirror)
 {
+    g_spr_pos[0] = pos[0]; g_spr_pos[1] = pos[1]; g_spr_pos[2] = pos[2];
     static const float def[4] = { 0.5f, 0.5f, 0.5f, 1.0f };                             /* 0x4b7a84 */
-    static const float uv[7][4][2] = {                                                  /* 0x470d80 cases 0..6 for the corners at 45, 135, 225, 315 deg */
-        { {1,0}, {0,0}, {0,1}, {1,1} }, { {1,1}, {0,1}, {0,0}, {1,0} }, { {0,0}, {1,0}, {1,1}, {0,1} }, { {0,1}, {1,1}, {1,0}, {0,0} },
-        { {1,1}, {1,0}, {0,0}, {0,1} }, { {1,0}, {0,0}, {0,1}, {1,1} }, { {0,0}, {0,1}, {1,1}, {1,0} } };
+    const float (*uv)[4][2] = k_uvset;                                                 /* 0x470d80 cases 0..6 for the corners at 45, 135, 225, 315 deg */
     int k = fx_slot(image); if (!H.ok || k < 0 || !H.fx[k] || size == 0) return;
     const float *c = (flags & 2) ? rgb : def; float a = (flags & 2) ? alpha : def[3];
     if (a <= 0) return;
