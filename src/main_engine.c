@@ -2731,10 +2731,12 @@ static void fx_particle(FxRec *e, float u, float dt)
                 float size = i == 0 ? 120.0f : i == 3 ? 75.0f : 55.0f; int mode = i == 3 ? 0x1a : 0x12, rot = i == 0 ? head : 0;
                 hud_world_spr_mode(mode, img[e->shape][i], pos, size, rot, NULL, 1.0f, 0x4d, NULL, mir[row + i]);          /* the bone, alpha blended */
                 hud_world_spr_mode(mode, img[e->shape][6 + i], pos, size + jit, rot, NULL, 1.0f, 0x45, NULL, mir[row + i]); /* its flickering glow, additive */
-                e->dir = (Vec3){ pos[0], pos[1], pos[2] };                   /* S+0x208: where the light goes */
             }
         }
-        rnd_light_add(0, e->dir, white255, fx_rnd() * 100.0f + 200.0f);      /* 0x498790: registered every frame, never drawn by the original (LIGHTING.md 7) */
+        /* 0x477d9d..0x477dc6: 0x498790(kind 0, S+0x208, white, rnd * 100 + 200) every frame, never drawn by the original (LIGHTING.md 7).
+         * S+0x208 is the position of the shared sprite object, so in a skeleton phase the last bone's glow (the right leg) and
+         * in a model phase whatever effect drew a sprite last - this frame or an earlier one */
+        { float lp[3]; hud_last_sprite_pos(lp); rnd_light_add(0, (Vec3){ lp[0], lp[1], lp[2] }, white255, fx_rnd() * 100.0f + 200.0f); }
         break; }
     case FX_FLAME: {                                                         /* 0x47cd00: rises 40 a second, shrinks to nothing, white -> red, additive */
         e->pos.y += dt * 40.0f;                                              /* +0xc += dt * 0x4ab294 */
@@ -3404,6 +3406,8 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     if (getenv("WOODY_CELLLOG")) printf("  gel: %u cells, %u sectors, %u kd nodes | lit: %u lights, %u sector light lists\n", L->gel.ncells, L->gel.nsectors, L->gel.nkd, L->lit.nlights, L->lit.nsectors);
     rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL, L->have_vis ? &L->vis : NULL);
     water_reset(&L->tex); L->rnd.post_models = water_draw;   /* class 60 (water.c) */
+    L->rnd.on_drawn = storm_rod_drawn;                       /* class 80 vt[26] 0x452010: the rod colour, per drawn rod (storm.c) */
+    snprintf(path, sizeof path, "%s/%s/%s.col", dir, lvl, lvl); rnd_load_col(&L->rnd, path);   /* 0x4271e0: the objects of every kd leaf (0x42aa0b) */
     L->have_player = player_init(&L->player, &g_ins, &L->gel, &L->tex) == 0;
     g_player = L->have_player ? &L->player : NULL; g_rnd = &L->rnd; g_gel = &L->gel;
     for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);

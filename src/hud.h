@@ -109,7 +109,10 @@ void hud_world_beam(const float *a, const float *b, const float *eye, float hw, 
 void hud_world_line(const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b);
 /* the same additive line with a bank 0 image along it, u from a (0) to b (1): the drops of the water splash (image 57, docs/SPLASH.md 4) */
 void hud_world_streak(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b);
-/* the same with the texture mirrored as 0x470d80 mode `flip` does it (bit 0 = v, bit 1 = u): the storm's lightning bolt, image 30 (docs/STORM.md 5) */
+/* the same after setting the line's uv set to 0x470d80 mode `flip` (0 plain, 1 v mirrored, 2 u mirrored, 3 both, 4/6 turned): the storm's
+ * lightning bolt, image 30 (docs/STORM.md 5). The set persists: every later line (hud_world_streak/_beam) keeps it, as in the original */
+/* S+0x208 of the shared sprite object: the position of the last world sprite handed to 0x470f10 (drawn or not) */
+void hud_last_sprite_pos(float out[3]);
 void hud_world_streak_flip(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, int flip);
 /* an additive textured quad in world space, colour per vertex (already times alpha): the fire ring of the special attack (docs/PERSO_SPECIAL.md 3.3) */
 void hud_world_quad(int image, const float v[4][3], const float uv[4][2], const float rgb[4][3]);

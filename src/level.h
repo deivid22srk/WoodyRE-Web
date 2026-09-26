@@ -155,6 +155,13 @@ typedef struct Instance {
      * sector and the floor group of the cell point (0x407790), recomputed when cell_ref moves; cell_dy > 0: the cell point is
      * position + (0, cell_dy, 0) (an enemy's collision centre, 0x4077f0 in 0x41b2c0), otherwise the animated root inst+0x60 (the clock 0x43f2f1) */
     int listed, in_zone; int32_t cell_sec, cell_grp; Vec3 cell_ref; int cell_ok; float cell_dy;   /* in_zone: passed the sector / group / link part (the draw gate) */
+    /* flag 0x20 of +8 without an own mover (messages 61 / 62 set it on the boss links, 0x40e749 / 0x40d55d): the clock 0x43f2ed
+     * never re-cells it, so its cell point stays the .ins position +0xc of the last explicit 0x407790 / 0x4077f0 */
+    int cell_fixed;
+    /* the sector chain sector+0x44 -> inst+0x24 (0x407790 pushes in front, 0x407850 unlinks) that 0x42a840 walks, and the
+     * frame of the last clock run inst+0x58 (0x43eeee: once per frame); render_gl.c keeps them (docs/INSTANCE.md 4.1).
+     * chain_sec1 = the sector whose chain holds it + 1, 0 = in no chain */
+    struct Instance *cell_next; int32_t chain_sec1; uint32_t clock_frame;
 } Instance;
 
 typedef struct Model {

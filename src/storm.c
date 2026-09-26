@@ -22,7 +22,7 @@
 #include "audio.h"
 
 #define MAXZ 64                                             /* 0x451aad: list 0x5e58cc[0x40] */
-typedef struct { Instance *inst; float r, h, glow; int inside; } Zone;   /* +0x108, +0x10c, +0x110, +0x114 */
+typedef struct { Instance *inst; float r, h, glow; int inside; uint32_t upd; } Zone;   /* +0x108, +0x10c, +0x110, +0x114 */
 static Zone g_z[MAXZ]; static int g_nz;
 static struct { int on; float timer, interval; } S;         /* 0x5e59ec, 0x5e59e4, 0x5e59e8 */
 /* the sky flash 0x46e030 / 0x46e0d0: 0x5e827c on, 0x5e8280 t (counts down), 0x5e8284 t0, 0x4b7a20 flashes, 0x4b7a24 k,
@@ -34,6 +34,9 @@ static Bolt g_bolt[16]; static Arc g_arc[40];
 static float g_T;                                           /* [0x5e85d0]: += dt, modulo 2 s (0x46d040) */
 static uint32_t g_seed = 0x5707d;
 static int g_log = -1;
+static int g_actor_next;
+static uint32_t g_upd;                                             /* logic frames that ran storm_update (the rods' glow steps once per such frame) */
+static float g_rod_dt;
 
 static float rnd01(void) { g_seed = g_seed * 214013u + 2531011u; return (float)((g_seed >> 16) & 0x7fff) / 32767.0f; }   /* 0x43ff40 */
 static int log_on(void) { if (g_log < 0) g_log = getenv("WOODY_STORMLOG") != NULL; return g_log; }
@@ -57,7 +60,7 @@ static void basis(Vec3 w, Vec3 *u, Vec3 *v)
 void storm_reset(void)
 {
     memset(&S, 0, sizeof S); memset(&F, 0, sizeof F); g_nz = 0;
-    memset(g_bolt, 0, sizeof g_bolt); memset(g_arc, 0, sizeof g_arc);
+    memset(g_bolt, 0, sizeof g_bolt); memset(g_arc, 0, sizeof g_arc); g_actor_next = 0;
 }
 void storm_add(Instance *in)
 {
@@ -144,14 +147,21 @@ void storm_stop(void)                                              /* 0x451bd0 *
     F.on = 0; S.on = 0;                                             /* 0x46e3a0: the flash overlay off */
 }
 
+/* actor list 1 (0x4c52d8, count 0x4c531c) is a COPY: the actors append themselves to 0x4c5218 (0x40c080, 8 entries) during
+ * their updates, and the app frame 0x401ab0 copies that list over at its very start (0x40bf60 at 0x401bd9) and empties it.
+ * So the storm, first thing in the Game tick, sees who registered during the PREVIOUS frame. The Perso registers in its
+ * update 0x44b530 when not frozen (+0x690, 0x44b68b), not dead (+0x26c = the death kind, 0 = alive: written by Kill 0x44c453 /
+ * 0x44c6d3, cleared by Reset 0x44ab54) and not in state 5 (+0x21c, 0x44b6a3). The port's player_update runs before
+ * storm_update, so the flag taken here is the one of this frame's Perso update, and it is used on the next frame. */
 void storm_update(float dt, Player *pl, int frozen)
 {
-    g_T = fmodf(g_T + dt, 2.0f);
+    g_T = fmodf(g_T + dt, 2.0f); g_upd++; g_rod_dt = dt;
+    int actor = g_actor_next && pl && pl->inst;                    /* registered during the previous frame */
+    g_actor_next = pl && pl->inst && !frozen && !pl->dead_kind && !pl->script_act;
     if (S.on) {                                                    /* 0x451cc0 */
         int above = S.timer > 1.7f;
         S.timer -= dt;
         if (!(S.timer > 1.7f) && above) { audio_fx(8, NULL, NULL); if (log_on()) printf("STORM warning (thunder), strike in %.2f s\n", S.timer); }
-        int actor = pl && pl->inst && !frozen && !pl->script_act;   /* actor list 1: the Perso registers unless frozen / in state 5 (0x44b6a0) */
         Vec3 top;
         if (actor) { Zone *z = zone_at(pl->pos, &top); if (z) z->inside = 1; }
         if (S.timer <= 0) {
@@ -180,22 +190,29 @@ void storm_update(float dt, Player *pl, int frozen)
             } else if (log_on()) printf("STORM strike (no actor)\n");
         }
     }
-    /* vt[26] 0x452010, the render colour of each rod: an added grey pulsing 3..253 with a 2 s period; while Woody is in
-     * its zone the red goes out of it within 1 s (and comes back as slowly), leaving a cyan glow */
-    int k = ftoi_round(g_T * 0.5f * 512.0f) & 0x1ff;
-    float pulse = cosf(k * 0.012271846f) * 250.0f * 0.5f + 128.0f;
-    for (int i = 0; i < g_nz; i++) {
-        Zone *z = &g_z[i];
+    if (log_on() && g_nz && (int)(g_T * 1) != (int)((g_T - dt) * 1) && S.on) {
+        for (int i = 0; i < g_nz; i++) if (g_z[i].glow > 0) printf("STORM rod %u glow %.2f%s\n", g_z[i].inst->index, g_z[i].glow, g_z[i].inst->drawn ? "" : " (not drawn: held)");
+    }
+}
+/* vt[26] 0x452010, the render colour of a rod, called by the renderer for each rod it DRAWS: an added grey pulsing 3..253
+ * with a 2 s period; while Woody is in its zone the red goes out of it within 1 s (and comes back as slowly), leaving a
+ * cyan glow. The glow and the inside flag +0x114 only move here, so a rod off screen keeps both until it is drawn again
+ * (its flag set by 0x451cc0 stays up meanwhile). dt = the frame's (once per logic frame; nothing moves while paused). */
+void storm_rod_drawn(Instance *in)
+{
+    if (in->type != 80) return;
+    Zone *z = zone_of(in); if (!z) return;
+    if (z->upd != g_upd) {                                         /* the logic frame whose dt it already took */
+        z->upd = g_upd; float dt = g_rod_dt;
         if (z->inside) { z->glow += dt; if (z->glow > 1.0f) z->glow = 1.0f; z->inside = 0; }
         else if (z->glow > 0) z->glow -= dt;
-        float rgb[3] = { pulse, pulse, pulse };
-        if (z->glow > 0) { float g = z->glow > 1.0f ? 1.0f : z->glow; rgb[0] = (1.0f - g) * pulse; rgb[1] = pulse * 0.84313726f; }
-        z->inst->tint_mode = 2;
-        for (int q = 0; q < 3; q++) z->inst->tint_rgb[q] = rgb[q] / 255.0f;
     }
-    if (log_on() && g_nz && (int)(g_T * 1) != (int)((g_T - dt) * 1) && S.on) {
-        for (int i = 0; i < g_nz; i++) if (g_z[i].glow > 0) printf("STORM rod %u glow %.2f\n", g_z[i].inst->index, g_z[i].glow);
-    }
+    int k = ftoi_round(g_T * 0.5f * 512.0f) & 0x1ff;
+    float pulse = cosf(k * 0.012271846f) * 250.0f * 0.5f + 128.0f;
+    float rgb[3] = { pulse, pulse, pulse };
+    if (z->glow > 0) { float g = z->glow > 1.0f ? 1.0f : z->glow; rgb[0] = (1.0f - g) * pulse; rgb[1] = pulse * 0.84313726f; }
+    in->tint_mode = 2;                                             /* [0x5ac850] = 2: added to the lit colour */
+    for (int q = 0; q < 3; q++) in->tint_rgb[q] = rgb[q] / 255.0f;
 }
 
 static void bolt_draw(Bolt *o, const float *eye, float dt)          /* 0x46d520 */
@@ -224,10 +241,14 @@ static void bolt_draw(Bolt *o, const float *eye, float dt)          /* 0x46d520 
     static const float white[3] = { 1, 1, 1 }, glow[3] = { 0.8f, 0.8f, 1.0f };
     for (int i = 0; i < o->n; i++) {
         /* line 0x471a10 flags 0xe00: bank 0 image 30 (0x1001e), half width 30, (1,1,1,alpha) at both ends, additive;
-         * the texture flipped by the stored kind (0x470d80: 1 = v, 2 = u, 3 = both) */
-        hud_world_streak_flip(30, &o->p[i].x, &o->p[i + 1].x, eye, 30.0f, white, alpha, alpha, o->kind[i + 1] & 3);
-        /* and at the struck point, once per segment: sprite 0x470f10(3) bank 0 image 6, colour (.8,.8,1) alpha .7, size 25..45 */
-        hud_world_fx(6, &o->b.x, rnd01() * 20.0f + 25.0f, 0, glow, 0.7f);
+         * the texture mirrored by the stored kind (0x470d80(kind, 1): the LINE's vertex set; 1 = v, 2 = u, 3 = both, 4 (rnd = 1.0)
+         * turned), which stays set for every later line until the next bolt segment (hud.c k_uvset) */
+        hud_world_streak_flip(30, &o->p[i].x, &o->p[i + 1].x, eye, 30.0f, white, alpha, alpha, o->kind[i + 1]);
+        /* and at the struck point, once per segment: sprite 0x470f10(3) bank 0 image 6, colour (.8,.8,1) alpha .7, size 25..45.
+         * S+0x260 = 0x12 is the SHAPE of the quad: the index into the corner-angle table [0x5e823c]+0x800 (0x470f1e..0x470f24,
+         * filled at 0x4024bb: atan(2^(0x12/8 - 0x12%8)) = 45 deg), i.e. the plain square every other sprite uses; flags 3 =
+         * camera facing + own colour, no flag 8 = additive ONE/ONE (0x4719c0). So the glow is drawn exactly like this. */
+        hud_world_spr_mode(0x12, 6, &o->b.x, rnd01() * 20.0f + 25.0f, 0, glow, 0.7f, 3, NULL, 0);
     }
 }
 static void arc_draw(Arc *o, const float *eye, float dt)            /* 0x46da00 */
