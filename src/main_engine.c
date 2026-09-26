@@ -24,6 +24,7 @@
 #include "hud.h"
 #include "water.h"
 #include "storm.h"
+#include "ambient.h"
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
@@ -2352,7 +2353,8 @@ static void rockets_draw(float dt)
  * number of butterflies (0x46cdcc), and the think function spawns them once at random points in the instance's volume
  * and then latches off. Each butterfly is a camera-facing sprite from bank 0 image 53..56 of Common/<character>.rck
  * that wanders inside that volume for ever. House slots 60/61/62 put 3 + 2 + 3 of them around the treehouse: they are
- * what flies over the title screen. Only mode 0 is ported; House is the only level that uses these at all. */
+ * what flies over the title screen (the hubs and W2D have mode-0 instances too). Modes 1 (motes) and 2 (rain) are in
+ * ambient.c (docs/AMBIENT.md). */
 typedef struct { Instance *inst; int mode, count, spawned; } EnvInst;
 typedef struct { Instance *owner; Vec3 pos, dir; float phase, wander, floor_y; int img, state; } Fly;
 static EnvInst g_env[8]; static int g_nenv;
@@ -2541,7 +2543,8 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1505: if (in && m->nargs > 1) game_splash(in->position, 1000.0f, (float)(int32_t)m->args[1] * 0.01f); break;   /* splash 0x46cdfd -> 0x478660 (docs/SPLASH.md 1) */
     case 1506: if (in && m->nargs > 4) water_param(in, (int32_t)m->args[1], (int32_t)m->args[2], (int32_t)m->args[3], (int32_t)m->args[4]); break;   /* SetWaterVolumeParameter 0x46ce38 */
     case 1500: if (in && m->nargs > 4) game_bubble(in, (int32_t)m->args[1], (int32_t)m->args[2] * 0.01f, (float)(int32_t)m->args[3], (float)(int32_t)m->args[4], NULL); break;   /* speech bubble 0x46ccc0: [inst, kind, duration cs, offY, offX] (K2R, S2R) */
-    case 1501: case 1504: {                                                         /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
+    case 1501: case 1504: case 1502: case 1503: case 1511: {                        /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
+        ambient_msg(in, (int)m->id, m->args, (int)m->nargs);                        /* modes 1 / 2, 1502 colour + life + count, 1503 rain force, 1511 off (ambient.c, docs/AMBIENT.md) */
         EnvInst *E = in ? env_of(in) : NULL;
         if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
         break; }
@@ -2758,6 +2761,7 @@ static void level_free(Level *L)
     if (L->have_player) player_free(&L->player);
     car_forget();
     memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); g_nenv = 0; g_nflies = 0; water_reset(NULL); storm_reset(); g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    ambient_reset();                                                               /* class 90 modes 1 / 2 (ambient.c) */
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -3057,6 +3061,7 @@ int main(int argc, char **argv)
             }
         }
         if (!paused) env_update(dt);
+        if (!paused) ambient_update(dt);                                          /* class 90 modes 1 / 2 (ambient.c) */
         if (!paused) water_update(dt, g_player);
         if (getenv("WOODY_FLYLOG") && (int)g_now != (int)(g_now - dt)) {
             printf("  FLY t %.0f env %d flies %d:", g_now, g_nenv, g_nflies);
@@ -3097,6 +3102,7 @@ int main(int argc, char **argv)
                     }
                 }
                 env_draw(); water_fx_draw(); storm_fx_draw(&cam.pos.x, paused ? 0 : dt);
+                ambient_draw(&cam.pos.x);                                          /* class 90 motes and rain (ambient.c) */
                 for (int li = 0; li < g_nlasers; li++) {                            /* Lazer_Draw 0x46e530: core (1,.7,.7) width 6 + glow (1,.4,.4) width 30 pulsing 0.5..1, ends fade over 70, then laser_fx_draw */
                     Laser *z = &g_lasers[li]; if (!z->on || !z->inst->visible) continue;
                     if (!paused) z->phase += dt * 127.75f;
