@@ -433,7 +433,13 @@ void SweepCylinder(vec3 *out, vec3 *old, vec3 target, float H, float step /*40*/
 Consequences for a reimplementation:
 * **No iterative "slide"**: per substep (≤ 10 units) a single push-out vector in xz, x0.9; the sliding along walls arises
   because only the component along the polygon normal is pushed back. At 600 units/s and 60 Hz that's 1 to 2 substeps per frame.
-* **Player dimensions (column 0)**: radius **69**, height **193** (crouched **61**), wall test from feet+41 (ground) or feet+5 (air) to feet+H.
+* **Player dimensions (column 0)**: radius **69**, height **193** (crouched **61**), wall test from feet+41 (ground) or feet+5 (air) to feet+H,
+  with the cone bottom of §6.5 below the body centre.
+* **GetHeight probes from the body centre** (`0x4372a2`, `0x4373d5`: `&cur`, not feet + 43), so while falling (mode 2) any floor
+  between the feet and the centre (up to 96 above the feet) lifts him onto it; walking (mode 1) only clings downwards.
+* Against a wall, `[0x53a554] = 3` (`0x4373a7`) whenever `0x407000` reported a hit, even with a zero vector; that is `P+0x2e0`, read by
+  `0x45ae50` next frame: `0x4672d0(RampA, 0.25)`: only in the braking phase (`+0x2c == 3`) the phase timer moves a quarter of the
+  way to T_dec (`t += (T − t)·0.25`), i.e. he stops faster against a wall.
   The vertical displacement is never blocked by walls/ceilings (only the floor via GetHeight); there is no ceiling collision
   except the crush test §6.6.
 * Stepping up to 40–43 units happens "for free": the wall test ignores the bottom 41, and `0x436f00` sets `pos.y = ground`
@@ -442,6 +448,9 @@ Consequences for a reimplementation:
   phase 3 (falling, §4.2).
 * Against a wall (`P+0x2e0 ≠ 0`): `0x4672d0(RampA, 0.25)` – only during the deceleration phase does the phase timer jump 25% per frame
   towards T_dec (stops faster).
+* **Port** (`src/player.c` `move_collide`, `body_push`, `cyl_poly`): the sweep, `0x408600` for world polygons and instance press nodes,
+  the body-centre GetHeight, the wall-contact braking and the actor push (normalised to 60 fps, §6.6) follow the code above; test hook
+  `WOODY_PUSHLOG=1` logs every contact of the sweep. The crouched sub-ray (`step − half + d.y > 0`, `0x437464`) is not ported.
 
 ### 6.3 Finding the floor: `0x435650` GetHeight → `0x498440` → `0x498520`
 
@@ -486,25 +495,72 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   slopes steeper than ≈ 45° make the player slide down at 600 units/s).
 * **Ground type `P+0x308`** = 0, except on a world polygon (`[0x53a554] == 1`) whose `poly+8` (texture index) does not have bit 15 set:
   `P+0x308 = byte(level->tex[poly+8]->+0x47)` (`level+0x5c`, records of 0x24 B, `+0x20` = texture object) – this is the "ground type" byte from the .tex file.
-  Use: **1 = slick/ice** (`0x45a850`: the walking direction turns slowly: RampA times 0.75 s / 1.0 s instead of 0.25 / 0.1 and
-  `dir = lerp(dir, facing direction, clamp(v/600, 0, 0.95)·1.0)`), **2 = dust/sand/snow** (footstep effect kind 3 instead of 2 `0x464231`, dust cloud on landing `0x464486`).
+  Use: **1 = slick/ice** (`0x45a850`, called every frame from `0x45b2c8`: if `P+0x308 == 1`, not inverted controls (`M+0x108 & 0x40`)
+  and RampA's target ≥ 0: RampA times `P+0x34`/`P+0x38` = 0.75 s / 1.0 s instead of `P+0x2c`/`P+0x30` = 0.25 / 0.1, and
+  `k = clamp(M+0xe0 / P+0x1c, 0, 0.95)·P+0x3c` (|v| of the previous frame / 600; `0x4a9c9c` = 0.95, P+0x3c = 1.0),
+  `RampA.dir = k·normalize(RampA.dir) + (1 − k)·normalize(M+0x10)` (`0x45a9ad`; the result is **not** normalised again, so a
+  reversal on ice first slows him down); otherwise `RampA.dir = M+0x10`, the facing (`0x45aa48`). So on ice he faces where the
+  stick points at once but keeps sliding the old way, 95 % of it per frame at full speed. No shipped level has ground type 1:
+  no texture group of any `.tex` has byte 3 = 1 on a floor polygon (type 2 is on W1A/W2A/W2B/W2D/WWS and their K/S copies)),
+  **2 = dust/sand/snow** (footstep effect kind 3 instead of 2 `0x464231`, dust cloud on landing `0x464486`).
   There is **no lethal ground type** in the Perso code: death by water/pit comes from scripts (volume → message → `Kill(1)` `0x44516a`) or from `Kill(7)` (`0x4747f0`).
 
 ### 6.5 `0x407000` cylinder vs. world + instances (push-out vector)
 
 1. `0x40aa30(c, r, up, down, cel)` collects the cells the cylinder touches in `0x4c4be8[0x4c4be4]`.
-2. Per cell, per world polygon (once per call, via stamp `poly+4`): **`0x408600(poly; c, r, up, down, &pos, &neg)`**:
-   `dist = n·c + d`; rejected if `dist < 0` (back face) or if the interval `[dist − down·n.y, dist + up·n.y]` is entirely outside `[−r, r]`;
-   the polygon is clipped to the height band `−down ≤ y ≤ up` (14-way jump table `0x409a94`); for every clipped edge, the
-   intersection with the circle in xz is solved (quadratic equation, `0x4a94c0` = 4.0), the midpoint of the intersection
-   interval (clamped to [0,1]) is the closest point; **below the midpoint (y < 0), the radius tapers linearly: r(y) = r·(down + y)/down** (the "cylinder" has a
-   cone-shaped bottom, `0x4096c7`/`0x4098b9`); penetration `pen = r(y) − distance_xz`; contribution `pen·(n.x, n.z)`, split per axis into
-   a positive (max) and negative (min) accumulator. If the center lies inside the xz projection without an edge intersection ⇒ hit with vector 0.
+2. Per cell, per world polygon (once per call, via stamp `poly+4`): **`0x408600(poly; c, r, up, down, &pos, &neg)`**, fully read
+   (`0x408600..0x409a8e`, `ret 0x18`; poly = `this`: `+0` nverts, `+0xc..0x18` plane n, d, `+0x1c` vertex indices). All vertices
+   are taken relative to `c`, so the band is `−down ≤ y ≤ up` around the body centre:
+   ```c
+   int CylPoly(Poly *P, vec3 c, float r, float up, float down, vec3 *pos, vec3 *neg)      /* 0x408600 */
+   {
+       float dist = dot(P->n, c) + P->d;  if (dist < 0) return 0;                       /* 0x40863e: c behind the polygon */
+       float lo = dist - down*P->n.y, hi = dist + up*P->n.y;
+       if (lo <= -r && hi <= -r) return 0;  if (lo >= r && hi >= r) return 0;          /* 0x40867a / 0x4086a5 */
+       /* Sutherland-Hodgman against the band, jump table 0x409a94 on code(prev) + 4*code(cur) - 1,
+          code(y) = (y < up) + (y < 0) + (y < -down): 0 above, 1 [0, up), 2 [-down, 0), 3 below.
+          Per edge prev -> cur (starting with vertex n-1 -> 0): emit prev if its code is 1 or 2, then the crossings of
+          y = up / 0 / -down in the order the edge meets them, t = (prev.y - Y) / (prev.y - cur.y). Crossings of y = 0
+          also go to a second list M (the chord where the polygon cuts the centre plane). Globals 0x4c4c28..0x4c4c80. */
+       vec3 L[..], M[..]; int nL, nM;   /* L at esp+0xbc, M at esp+0x5c */
+       if (nL == 0) return 0;                                                           /* 0x409653 */
+       bool hit = 0;
+       for (each edge P0 -> Q of L, closing edge L[nL-1] -> L[0] first; then the open polyline M[0] -> M[1] -> ...) {   /* 0x409698, switch 0x4099dd */
+           float r0 = r, dr = 0;
+           if (Q.y < -0.01f || P0.y < -0.01f) {                                          /* 0x4096c7: the cone */
+               r0 = r*(down + P0.y)/down;  dr = r*(down + Q.y)/down - r0; }
+           vec2 d = (Q - P0).xz;  float a = |d|^2 - dr^2;  if (a <= 0.01f) continue;     /* 0x4a94f8 */
+           float b = 2*(dot(P0.xz, d) - dr*r0), cq = |P0.xz|^2 - r0^2, D = b*b - 4*a*cq;   /* 0x4a94c0 = 4 */
+           if (D < 0) continue;
+           float t1 = (-b - sqrt(D))/(2a), t2 = (sqrt(D) - b)/(2a);  if (t1 > 1 || t2 < 0) continue;
+           if (!hit) { hit = 1; *pos = *neg = 0; }                                       /* 0x40981f */
+           float tm = clamp((t1 + t2)*0.5f, 0, 1), y = P0.y + (Q.y - P0.y)*tm, pen;
+           if (y < 0) pen = (y + down)*r/down - |(P0 + (Q - P0)*tm).xz|;                 /* 0x4098a5: cone radius at y */
+           else       pen = r - sqrt(a*tm*tm + b*tm + cq + r*r);                         /* 0x409907 */
+           for (axis in x, z) { v = pen*P->n.axis;  if (v < 0) neg.axis = min(neg.axis, v); else pos.axis = max(pos.axis, v); }
+       }
+       if (hit) return 1;
+       /* 0x409a1e: no edge contact - is the centre inside the xz outline of L? cr = cur.z*prev.x - prev.z*cur.x per edge */
+       if (all cr <= 0 || all cr >= 0) { *pos = *neg = 0; return 1; }                    /* hit with push 0 */
+       return 0;
+   }
+   ```
+   So the body is a cylinder of radius r above the centre and a **cone** below it (radius 0 at the bottom of the band): a low
+   wall that only reaches into the lower half lets him come closer (at a wall top `h` above the band bottom only
+   `r·h/down`); a floor or a step lower than the band is clipped away entirely, which is why there is no walkable-normal test.
+   The push is `pen·(n.x, n.z)` - along the polygon normal, not along the contact direction. The loop over M adds the chord at
+   the centre height (full radius) to the edges. With a negative `down` (crouched on the ground: half 30.5 < margin 41) the
+   codes and the cone formula are used unchanged (the crossing for codes 1/2 is still interpolated at y = 0).
 3. Per cell the static instances (`cel+0x40/+0x44`) and then all dynamic ones (`0x4c3bb4[]`, id `| 0xffff0000`):
    `inst->vt[8](c, r, up, down, &pos, &neg, id)` = **`0x433140`**: skipped if the instance has no cell (`+0x1c == −1`), was already tested,
    **flag `+8 & 0x40` set** (non-collidable), the model has no press node (`model+0x58 == 0`), or `inst+0xd0 & id & 0xffff0000 == 0` (collision mask);
-   skeleton updated if needed (`vt[2](1)`); per **press node** (list `model+0x5c`, node flag 0x01; `0x433245`) the center is transformed into node space (uniform scale: r/scale) and
-   the same polygon test `0x435b90` is used; result type 4 with `[0x4c4bdc]` = instance, `[0x4c4be0]` = node.
+   skeleton updated if needed (`vt[2](1)`); per **press node** (list `model+0x5c`, node flag 0x01; `0x433245`), uniform scale branch:
+   a bounding test with the node radius (`node+0x2c`·scale) and the band, then the node's vertices are transformed into **world
+   space** with the node matrix (`0x433329`), the polygon's plane normal (the loader's plane, `0x4280c2`: n = (R − Q) × (R − P) of the
+   longest consecutive vertex triple) is rotated, `d = −n·v0`, and `0x435b90` - the same code as `0x408600` with the vertices
+   passed as an array (cdecl) - runs against the world-space centre; result type 4 with `[0x4c4bdc]` = instance, `[0x4c4be0]` = node.
+   The non-uniform branch (`0x4335d7`) was not read. On every press node of the shipped levels the loader's winding normal points
+   away from the node (checked for all 17 play levels), so the front-face rule `dist ≥ 0` means "outside the node".
 4. Result: `push.x = max⁺.x + min⁻.x`, `push.z = max⁺.z + min⁻.z`, `push.y = 0` → `[0x4c4bb4..bc]`.
 
 ### 6.6 Other
@@ -518,6 +574,10 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   float k = 1.0f - sqrt(d2) / R;  out = ((B.x-A.x)·k, 0, (B.z-A.z)·k);  return 3;
   ```
   Not a penetration depth: the push is `dist·(1 − dist/R)` per **frame** (R/4 at half the distance), not scaled by dt.
+  The original's dt is the raw `QueryPerformanceCounter` delta (`0x42a3f0`, called from `0x401810`; clamped to 0.1 s at `0x40185b`,
+  or `1/[0x4b3a8c]` when `[0x5d7b89]` is set; stored in `World+0x38`, initialised to 1/30 at `0x42a474`), with no frame cap, so this
+  push is frame-rate dependent there. Port: the recurrence `s ← s·(2 − s/R)` is run `60·dt` times per frame (identical at 60 fps,
+  no overshoot at low rates).
 * **Crushing** (`0x462a40`, after the dispatch): ray `0x4359b0` from feet+1 upward to feet+H−1; a hit (t < 1) while the player is on the ground
   and either the touching instance is animating (`inst+0xa0 ≠ 0`) or the player is standing on a platform (`att298 ≠ 0`) ⇒ `P+0x2e8` (z scale of the model)
   `= clamp(max(free height, 2.0) / H, …, 1)`; **< 0.3 (`0x4aab98`) ⇒ `Kill(4)`**.
@@ -556,11 +616,12 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   verified with a .ins dump of W1A (type of the Perso instance).
 * Turn direction of `0x440d40` (sign of the rotation around y for "right"): not written out; fix it in the reimplementation with the rule
   "action 1 (→) must walk right on screen" and verify with `tools/wtrace.py`.
-* The facing-direction slerp (`0.25·|stick|` per frame) and the wall push-out (x0.9 per substep) are **framerate-dependent**; the original runs on
-  vsync (60 Hz?) – the reference framerate has not been established.
-* `0x408600`/`0x435b90` (polygon-cylinder, ±1400 instructions) have only been read at a high level (rejection tests, clipping, cone bottom,
-  push-out vector); the 14 clip cases have not been checked one by one. For the reimplementation, a custom cylinder/cone-polygon test with the same
-  output (pen·n.xz, per axis max⁺ + min⁻) suffices.
+* The facing-direction slerp (`0.25·|stick|` per frame), the wall push-out (x0.9 per substep), the actor push (§6.6), the ice direction
+  blend and the braking boost after a wall contact (§6.4) are **framerate-dependent**; the original's dt is real time (QPC, §6.6) with
+  no frame cap, so there is no reference framerate in the code. The port normalises these to 60 fps.
+* `0x408600` is decoded (§6.5); the 14 clip cases were checked by the number of points each emits into L and M (all match
+  plain Sutherland-Hodgman with the y = 0 crossings added), not instruction by instruction. `0x435b90` was only compared at its
+  start (same rejection tests, same layout).
 * Behavior without a floor (GetHeight "NotFound", §6.6) is derived from the code but not seen in the game.
 * `0x432480` (press-node floor test, vt[7]) and the non-uniform-scale branch of `0x433140` (`0x4335d7`) have not been read in detail.
 * **Press nodes, not hulls.** All four instance tests (floor vt[7] `0x432480`, cylinder vt[8] `0x433140`, sphere vt[9] `0x433ff0`,

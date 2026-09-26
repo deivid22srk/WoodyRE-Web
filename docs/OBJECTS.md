@@ -191,8 +191,19 @@ case 4: p->[+0x524] = 2 * AnimLen(0x16, 0); Anim(0x16);                /* 0x4656
 case 5: SetState(0); p->sub = 0; Jumper_ForceFall(&p->J, 0); return;   /* 0x4656e8, 0x463170 */
 }
 ```
-Uncertain: the exact branch for `hitKind == 1` (the code jumps to `0x4655ec`, the top test, on `!= 2` as well, so also on a world hit;
-simplified above) and the content of `0x44e290` (only the start was read: `0x42f7e0` = node matrix of anim `+0x540`).
+`hitKind == 1` (world) takes the same path as 0 (`0x465510`: `jne 0x4655ec` on `!= 2`), so a world wall in front counts as "the top"
+and lets go unless the marker is within 50. `0x44e290` is §1.5. The displacement `+0x204..0x20c` is cleared at the start of every
+Perso frame (`0x44b662`), so sub 1, 3, 4 move nothing and sub 2 without left/right only presses against the wall. **State 4 runs
+the full collision**: the dispatch calls `0x4651d0` and then `Perso_MoveCollide 0x4624f0` (`0x44b834 → 0x44b857`, PERSO_MOVE.md §6.1),
+plus the crush test `0x462a40`; only `Perso_Move`/the Jumper are skipped. So the wall he climbs stops the 200 u/s press at the body
+radius (69 from the face), a side wall or a neighbouring press node stops the sideways climb, and near the top the cone bottom of the
+body (PERSO_MOVE.md §6.5) lets him lean over the edge: at wall 495 the climb-over starts about 43 closer to the wall (z 1879 instead of
+1836) and ends at z ≈ 1990 on top. A non-peckable press node in front sets sub 4 but that frame still moves; the let-go runs next frame.
+
+Port (`src/player.c` `climb_update` + `move_collide`): as above. Test: `WOODY_TAP=1 W1A --pos 500 -990 1780 --yaw 0 --peck 1.0 0.15`
+(climb and over the top at ≈ 9.5 s), sideways `WOODY_KEYS=1.6:LEFT:3.0` (slides along a neighbouring press node near x 690, lets go past
+the node's edge). At more than 250 fps the first climb frame rises less than 1 unit and the ground probe of `0x4624f0` puts him back on
+the floor, as it would in the original; he gets away on the first longer frame.
 
 **W1A climb walls** (no script; objects 52 and 495 are empty):
 
@@ -324,7 +335,8 @@ Called from state 4 sub 3 (`0x465670`): starts at `0x465622` with `total538 = re
 `Perso_RootMotion(p, 1)`; otherwise `Perso_RootMotion(p, 0)`.
 
 Effects during sub 3:
-* `p->pos` (`+0x1f4`) doesn't change (sub 3 sets no `disp`; uncertain: whether `0x4624f0` still does something with a leftover `disp` from the previous frame) and
+* `p->pos` (`+0x1f4`) doesn't change (sub 3 sets no `disp`, and disp is cleared every frame at `0x44b662`; `0x4624f0` still runs with the zero
+  displacement, so only a push-out could move him) and
   `inst.pos` (`+0xc`) also stays put: `0x44bf10(useRootPos)` skips the copy `+0x1f4 → +0xc` when `+0x550 = 1` and only sets the
   sphere center `+0x60 = rootPos + (0, +0x110, 0)` and the world cell (`0x4077f0`). **So the model is drawn at the climb position and the
   animation itself (root track of anim 15) carries Woody over the edge**; the W in the formulas is therefore constant.

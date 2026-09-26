@@ -227,10 +227,10 @@ flag 0x80) ⇒ `M+0x10 = normalize(target − pos)` (look direction towards the 
   With `+0x4ec` (altMode): **`0x45a7b0`**: keys 0/1 (mirrored if cam+0x61c == 1) with flags
   `+0x4ed/+0x4ee` ⇒ target speed P+0x1c or 0.
 * otherwise `0x45a1f0` (clear flags 8/0x10/0x20), phase = 0.
-* **`0x45a850` direction**: if `+0x308 == 1` (wall mode?) and not flag 0x40 and target speed ≥ 0:
-  `k = clamp(M+0xe0 / P+0x1c, 0, 0.95) · P+0x3c (1.0)`; RampA.dir = lerp(normalize(RampA.dir),
-  normalize(M+0x10), k) (slow turn; RampA T = P+0x34 (0.75)/P+0x38 (1.0)); otherwise RampA.dir =
-  `M+0x28` (flag 0x40) or `M+0x10`.
+* **`0x45a850` direction**: if `+0x308 == 1` (ground type slippery, PERSO_MOVE.md §6.4) and not flag 0x40 and target speed ≥ 0:
+  `k = clamp(M+0xe0 / P+0x1c, 0, 0.95) · P+0x3c (1.0)`; RampA.dir = k·normalize(RampA.dir) + (1 − k)·normalize(M+0x10)
+  (keeps k of the old direction, not normalised again; RampA T = P+0x34 (0.75)/P+0x38 (1.0)); otherwise RampA T =
+  P+0x2c/P+0x30 and RampA.dir = `M+0x28` (flag 0x40) or `M+0x10`.
 * **`0x45aa60` sliding**: `n = normalize(M+0xd0)`; if `n.y < 0.71` (`0x4ab2d8`, f64) and onGround
   and not already sliding: RampB.max = P+0x40, start accelerating, RampB.dir = (n × up) × n (downhill),
   `M+0xdc = 1`. If sliding and onGround (flatter): decelerate, `M+0xdc = 0`, reset RampA to M+0x10;
@@ -383,7 +383,7 @@ animation speed, `+0x1c` cell, `+0xf8` model.
 | 0x2f4 | ptr | input `[0x5e6188]` | `0x44ae40` |
 | 0x2f8 | f32 | **dt** | `0x44baf0`; getter `0x44bb00` |
 | 0x2fc..0x304 | vec3 | camera position | `0x44c000`; getter `0x44c020` |
-| 0x308 | int | 1 = turn-in mode (`0x45a850`) | `0x462920/0x462962` |
+| 0x308 | int | ground type: 1 = slippery (`0x45a850`), 2 = dust (PERSO_MOVE.md §6.4) | `0x462920/0x462962` |
 | 0x30c, 0x318 | vec3 | start position (2×) | `0x44a3d0` |
 | 0x324..0x32c | vec3 | start look direction (−rot[1][0], rot[1][1], −rot[1][2]) | `0x44a3d0`; `0x44ab20` → M |
 | 0x334 | obj | push/impulse object | |

@@ -6,8 +6,8 @@
  * events (trigger volumes, world_collision press nodes, msgmask 0x200).
  * Attacks (0x457a50): peck dash, rebounds, charge run and brake; logical animation chains (table 0x4b6180).
  * Ducking (action 5, 0x465b10, docs/PERSO_DUCK.md) is ported, and so is the follow camera's breadcrumb trail (0x423ab0).
- * Look-around (action 7, Perso state 3 + camera mode 0x200, docs/PERSO_LOOK.md) is ported. Not ported yet: cfg key mapping. The ground type of the floor (Perso+0x308) is read, but only the
- * footstep effect uses it: the slippery turn ramp of type 1 is not ported. */
+ * Look-around (action 7, Perso state 3 + camera mode 0x200, docs/PERSO_LOOK.md) is ported. Not ported yet: cfg key mapping. The ground type of the floor (Perso+0x308) drives the footstep effect
+ * and the slippery turn ramp of type 1 (0x45a850). */
 #ifndef WOODY_PLAYER_H
 #define WOODY_PLAYER_H
 #include "level.h"
@@ -54,6 +54,8 @@ typedef struct Player {
     int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus, race_total;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264, [0x5e54f4] */
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
     int ground_kind;                /* Perso+0x308 (0x4628e0): 0 normal, 1 slippery, 2 dust/sand/snow (docs/PERSO_MOVE.md 6.4) */
+    int wall_contact;               /* Perso+0x2e0: the last sweep touched a wall (0x437180); speeds up the Mover's braking (0x45ae50) */
+    Vec3 move_dir;                  /* Mover RampA.dir (M+0x34): the walking direction; the facing except on slippery ground (0x45a850) */
     float step_u;                   /* footsteps (docs/FOOTSTEPS.md): the fraction of the walk cycle at the previous frame, -1 = not walking */
     /* attack controller (Perso+0x5b4..): sub-state, timer, displacement, air window, charge; move lock = Perso+0x238 */
     /* peck climbing, Perso state 4 (0x4651d0, docs/OBJECTS.md 1.3): sub 1 grab, 2 climbing, 3 over the top, 4 let go */

@@ -34,7 +34,7 @@ docs/FORMAT_TEX_COL_VIS_LIT.md §1):
 | kind | meaning | use in the original |
 |---|---|---|
 | 0 | normal | – |
-| 1 | slippery / ice | slow turn-in ramp in `0x45a850` (0.75 s / 1.0 s instead of 0.25 / 0.1) — **not ported** |
+| 1 | slippery / ice | slow turn-in ramp in `0x45a850` (0.75 s / 1.0 s instead of 0.25 / 0.1, the walking direction keeps up to 95 % of itself per frame, PERSO_MOVE.md §6.4) — ported; no shipped level has it |
 | 2 | dust / sand / snow | footstep kind 3 instead of 2 (`0x464231`), dust cloud on landing (`0x464486`) |
 
 A floor that comes from an instance node (lift, platform, crate) has no ground kind: that applies to
@@ -69,7 +69,7 @@ Ground type 2 exists in W1A (groups 34, 37), W2A (1, 11, 12), W2B, W2D, the hubs
 
 ## 5. Open points
 
-1. **Ground kind 1 (slippery)**: `P+0x308` is read, but `0x45a850` (slow turn-in ramp on ice) is not ported — see
-   TODO.md.
+1. **Ground kind 1 (slippery)**: `0x45a850` is ported (PERSO_MOVE.md §6.4), but no floor polygon of any shipped level has a
+   texture group with ground type 1, so it only shows with the test hook `WOODY_ICE=1` (every floor slippery).
 2. The print's rim image 69 is drawn with UV set 1 (v flipped) for both feet; whether the art expects a mirrored print
    for the other foot is a question for the data, not the code (the original never looks at the foot flag `+0x2c`).
