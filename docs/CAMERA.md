@@ -396,9 +396,14 @@ Three mechanisms, all inside `0x4231e0`/`0x422790`:
    (`corr = out − (P+move)` then carries the extra step); without contact the result is not used. The push-out of `0x407340`
    is the per-axis maximum of the positive plus the minimum of the negative pushes of every world polygon (`0x409ad0`) and
    every instance press node (`vt[9]` = `0x433ff0`) the sphere touches, and it is added on **all three axes** (the actor sweep
-   `0x437580` uses only x/z). Whether any step touched is the returned flag (`[0x4c4bd0]` kept in `edi`). The rounding
-   assumes the default FPU control word (no `fldcw` outside the CRT; Direct3D leaves the rounding mode alone) – not traced
-   live. Port: `camera_sweep()` with `nearbyintf(n + 0.5)`, the sphere test is `player_sphere_push()` (world + press nodes).
+   `0x437580` uses only x/z). Whether any step touched is the returned flag (`[0x4c4bd0]` kept in `edi`). **Verified live**
+   (`tools/wverify.py --probe fpu`, W1A): the x87 control word at the `fistp` `0x439cb3` (and at every VM tick) is **`0x007F`** =
+   all exceptions masked, **precision 24 bit** (Direct3D's single-precision setup; the game has no `fldcw` outside the CRT),
+   **rounding to nearest-even**; with Woody standing still every frame gives `fistp 1.5 → n = 2`, i.e. the double sweep. The
+   24-bit precision rounds every x87 intermediate to a float mantissa, which is what the port's `float` arithmetic does (SSE,
+   no FMA contraction on the generic x86-64 target), and `_ftol` `0x499580` forces truncation itself (`or ah, 0xc` +
+   `fldcw` around its `fistp`), so every C `(int)` cast of the port matches it; only the inline `fistp`s round. No port
+   formula changes. Port: `camera_sweep()` with `nearbyintf(n + 0.5)`, the sphere test is `player_sphere_push()` (world + press nodes).
 2. **Line-of-sight veto** `0x423a40(newP, T)`: ray `0x4359b0(newP, T, -1)`; allowed if nothing is hit
    (`[0x53a554] == 0`) or if the object hit has category 7 (`0x422140`: `[0x53a554] == 2` and
    `([0x53a560]->vtable[4]()[0] & 0x1f) == 7`). Otherwise (`'Center ... Blind Move'`): `move = 0` and
@@ -691,6 +696,17 @@ Message 540 `(cam, d)` sets `p3b0.traj (+0x4c)`, `p3b0.+0x44 = (float)d`, `SetMo
   W1A 295 (the first climb shaft: a vertical rail 564 units beside the wall, `d` 300 → never met, so the camera rides the rail at
   Woody's height and films the climb from the side; `--pos 500 -990 1780 --yaw 0 --peck 1.0 0.15` with `WOODY_TAP=1`), W1A 284
   (the fan ledge, `--pos 2063 -892 -578 --yaw 90`) and the W1B boss (403, with 710).
+* **Verified live** on the W1B side rails (`tools/wverify.py --probe cam --level W1B --onto 605 200`: Woody put on the shuttle
+  platform 605, which carries him along z through volume 41 → object 334 sends `570 [335, 100]; 580 [335, 1]; 540 [335, 50]`;
+  volume 40 / object 332 does the same with rail 333, and leaving sends `500`). The original switches to mode index 3 (bit 8) on
+  entering, travels to the rail in the 1.0 s of the 570, and then sits exactly on the rail point: rail 335 runs from
+  (−5256, 623, −5738) to (−5238, 623, −11100), the player rides at x −4577 (676 away, `d` = 50 is never met), and the camera
+  point is the rail's point nearest to him - x −5252.8 at z −6699, −5250.0 at z −7511, i.e. the rail's own interpolation to
+  0.1 unit, y 622.6 - looking straight at his feet: camera forward (0.847, −0.531, 0.003) in the original and
+  (0.8468, −0.5319, 0.0025) in the port at the same spot (`WOODY_POSAT="2 -4577 400 -6134" WOODY_POSLOG=1 WOODY_CAMLOG=1`,
+  port on 605 from 2 s; the platform starts at ~4.4 s). The port's mode-8 path gives the same points; the small z offset of
+  the camera against the player (2-5 units) is the slant of the rail (18 units over 5362) plus the frame at which each
+  log samples the player. A hazard kills the rider after ~2-3 s in both (kind 2).
 
 The TRAJ is thus a **rail along which the camera follows the player at a fixed distance**, not a path played back over time.
 (A time-driven TRAJ player for cameras has not been found in the CamMgr.)

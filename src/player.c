@@ -2382,7 +2382,8 @@ static Vec3 camera_breadcrumbs(Player *p, Vec3 T, float dt)
  * (set by 0x434820) is pushed out of the world and the instance press nodes by 0x407340, on all three axes. n = floor(|N-P| / 35)
  * + 1, but it reaches the loop through an inline fistp of n + 0.5 into [0x5ac8ac] (not the truncating _ftol 0x499580 the other
  * sweeps use), so under the FPU's round-to-nearest-even an odd n becomes n + 1 while the step stays |N-P| / n: the sweep goes one
- * step PAST N, and a move under 35 units is swept twice. Returns whether any step touched something ([0x4c4bd0]). */
+ * step PAST N, and a move under 35 units is swept twice (verified live, tools/wverify.py --probe fpu: control word 0x007F =
+ * nearest-even, 24-bit precision; W1A standing still: fistp 1.5 -> 2). Returns whether any step touched something ([0x4c4bd0]). */
 static int camera_sweep(const Player *p, Vec3 P, Vec3 N, Vec3 *out)
 {
     Vec3 d = vsub(N, P); float k = floorf(sqrtf(vdot(d, d)) / 35.0f) + 1.0f; int n = (int)nearbyintf(k + 0.5f), hit = 0;

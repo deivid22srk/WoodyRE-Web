@@ -165,7 +165,9 @@ void Font_Draw(Font *f, float *x, float *y, const u16 *s) {
 ```
 `y` is the **top** of the 62k-tall cell, not the baseline. The source y is passed mirrored
 (`pageH − y`, height negative) because `0x481040` computes v = 1 − y/H; net effect: file row `y` ends up at the top.
-`ftol` (`0x499580`) = truncate according to the FPU mode (the game leaves it on round-to-nearest: **uncertain**).
+`ftol` (`0x499580`) **always truncates**: it saves the control word, sets RC = 11 (`or ah, 0xc`), `fistp`s and restores it
+(`0x499587..0x49959c`). The control word the game runs with is `0x007F` (24-bit precision, round to nearest-even), verified
+live with `tools/wverify.py --probe fpu` (CAMERA.md §3.6); only inline `fistp`s round to nearest-even.
 
 ### 2.2 `Font::Measure` = `0x441b30(font, const u16 *str, float *w, float *h)`
 
@@ -647,7 +649,8 @@ Level banks: one string "TOTO" (test leftover). Full dump: `python tools/fontren
 4. Results screen (`0x4549xx..0x455dxx`) and menu layout (`0x45bxxx..0x4622xx`): only localized. The port
    has its own layout for it (§6); once the original can be traced again: compare y positions, font sizes and the
    icons of the two categories.
-5. Texture filter of the 2D layer and the rounding mode of `ftol` (`0x499580`).
+5. Texture filter of the 2D layer. (~~Rounding mode of `ftol` `0x499580`~~: it always truncates, §2.1; the live control
+   word is `0x007F`.)
 6. Sprite 15 (0,96,31,31 in image 63) appears empty; no user found. Sprite 12 (63,0,64,64 in
    image 64) is also not drawn by the HUD; the port uses it as the enemy icon on the
    results screen (**uncertain**).

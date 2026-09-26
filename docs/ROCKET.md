@@ -491,9 +491,14 @@ still > 600 from the explosion point for 323 (725), but **not** automatically fo
 
 ## 10. Uncertain / not checked
 
-1. **Axis direction of the start orientation**: with the quaternion from the `.ins` "as stored," the nose (−Y) of 323 points toward (0, −0.38, +0.92), i.e. away from the target, and the rocket
-   turns more than 150° in state 3; with the conjugated reading it points toward (0, −0.38, −0.92). Which is correct follows from the port's existing instance convention
-   (`inst->quat`); not visually verified. The target matrix of §3.2 is unambiguous either way (rows = model axes).
+1. ~~**Axis direction of the start orientation**~~ - **verified live** (`tools/wverify.py --probe rocket`, W1A, Woody teleported to
+   (8845, 1160, 385), attack tapped at 7 s): the rows `+0x28` of 323 start as (1, 0, 0), (0, 0.3827, −0.9239), (0, 0.9239, 0.3827), so the
+   nose (−Y) points toward (0, −0.38, +0.92), away from the target, exactly the port's `.ins` reading; state 2 stores q0 = (0.5556, 0, 0,
+   0.8315) and q1 = (−0.0416, 0.6275, 0.7768, −0.0336) (x, y, z, w; the rows are the transposed matrix of the quaternion), the 2 s of
+   state 3 follow `slerp(q0, q1, t/2)` to within 0.001 over all 1517 traced frames, and the end rows (−0.9943, 0, −0.1069),
+   (−0.1045, −0.2102, 0.9721), (−0.0225, 0.9777, 0.2090) are the port's (`WOODY_ROCKETLOG=1` prints the port's rows; max difference
+   against the same slerp 0.0006). The drawn node matrices (palette `[0x509adc]+0xa0`) follow the rows with one frame of lag, so
+   the rocket visibly turns. State timings: 0.83 s mount, 1 frame state 2, 2.0 s turn, 0.3 s ignition, then the flight.
 2. The channel of the flash color: `[0x5ac854]` is the first component of the vertex color `+0x24`; assumed to be red (vertex colors are R,G,B).
 3. ~~Explosion kind 1: the particle records `0x4767f0` and `0x4764f0` are not decompiled~~ — resolved, PARTICLES.md §5.
 4. Camera: state 8 only sets the behind flag (`0x4591ec`); the stored direction is row 1 of the rocket matrix and has a **y component** here. How `0x424760` handles

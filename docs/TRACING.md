@@ -76,6 +76,32 @@ and from `--from` s onward logs, every tick, the Perso (pos `+0x1f4`, instance `
 the camera-mode index, `0x44a650` calls with their position, and the GetHeight result after the snap at the end of a cinematic.
 The ISO must be mounted (E:).
 
+### 3.2 Probes for single claims: `tools/wverify.py`
+
+One debugger run, several probes (`--probe list,fpu,carousel,rocket,cam,crush`), plus what the other tools lack:
+* `--keys "T:KEY[:D] ..."` - synthetic keyboard. The DirectInput poll `0x467ef0` is replaced by a stub that writes the wanted
+  internal key codes (`RET ESC UP DOWN LEFT RIGHT JUMP ATTACK DUCK` or hex) into the keyboard state `kbd+4`, so the menus and the
+  Perso react as to real keys, the window needs no focus and the real keyboard is dead. T counts from INIT.
+* `--sav FILE` - `CreateFileA("Woody.sav")` is pointed at FILE (a string written into the game with `VirtualAllocEx`): `game/`
+  has no save, and a copy of the port's `woodyre.sav` (same layout) lets Load game reach the carousel without touching `game/`.
+* `--pos x y z --at T` as `wiris.py`; `--onto INST DY` puts the Perso DY above the animated root `inst+0x60` of an instance
+  (first at its `.ins` position until it has been clocked); `--every S` thins the per-tick lines.
+
+```bash
+python tools/wverify.py game --level W1A --probe list,fpu --from 15 --frames 16 --seconds 105 --out out/trace/v_list.txt
+python tools/wverify.py game --probe carousel --sav <copy of woodyre.sav> --keys "4:RET 6:DOWN 7.5:RET 10:RET 14:RIGHT" --seconds 125
+python tools/wverify.py game --level W1A --probe rocket --inst 323 --pos 8845 1160 385 --at 5 --keys "7:ATTACK:0.15" --from 6 --until 16
+python tools/wverify.py game --level W1B --probe cam --onto 605 200 --at 5 --from 4.5 --until 35 --every 0.05
+python tools/wverify.py game --level W1A --probe crush,cam --pos 2249 1120 -7577 --at 5 --from 5 --until 15 --every 0.25
+```
+
+Results of 2026-09-26 (each is written up where the claim lives): the instance list keeps stationary instances in place
+(pose cache, MODEL_RENDER.md §9.1), the carousel matrices (MENU_LOAD.md §4.4), the FPU control word `0x007F` (CAMERA.md §3.6),
+the rocket turn (ROCKET.md §10.1), the W1B rail camera (CAMERA.md §6.2) and Kill(4) under the W1A stampers (PERSO_MOVE.md §6.6).
+Side observation: the traced original's frame rate varies between runs and even within one run, from ~30 to ~900 frames
+per second (the frame counter `[[0x509adc]]` against the wall clock; no frame cap without vsync, DISPLAY.md), so per-frame
+effects have to be judged by the frame number, not the time.
+
 ## 4. Result
 
 House, 854 ticks (~21 s), with no input: the message stream of the C VM ([src/ekovm.c](../src/ekovm.c)) is identical to that of the original, including the `DELAY`-timed message 1141 at tick 3 (time=10). Two discrepancies were found and fixed along the way: the emulators forwarded the messages of the first init pass (the original discards them), and the `TICK` output of `ekorun` had to come before the tick to be diffable.

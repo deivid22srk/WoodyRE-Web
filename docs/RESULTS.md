@@ -316,8 +316,8 @@ HUD_TEXT §5.2 (`rgb = min(1, 2·c/255)`). No "OK" item, no dim panel, no backgr
 ## 8. Uncertain / open
 
 1. The grey "W" top-right from the screenshot (§2.7).
-2. Rounding of `fistp` in the counter and the icon positions (default FPU mode = round to nearest, assumed);
-   `_ftol` for the time truncates.
+2. ~~Rounding of `fistp` in the counter and the icon positions~~: round to nearest-even (control word `0x007F`, verified
+   live with `tools/wverify.py --probe fpu`); `_ftol` for the time truncates.
 3. Draw order alpha vs. additive list within the 2D bucket (§2) is inferred from the structure of `0x428ee0`, not
    traced in full detail.
 4. `vt[6]` `0x455db0` (0 if the panel is visible, else 3): no reader found.

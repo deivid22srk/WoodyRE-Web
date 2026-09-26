@@ -70,7 +70,7 @@ typedef struct {
     /* the sector chains sector+0x44 (0x407790 pushes in front) in the order 0x42a840 walks them, the clock frame counter
      * [[0x509adc]] (once per frame per instance, 0x43eeee) and the .col object list of every kd leaf (0x4271e0: cell+0x40
      * count, +0x44 refs (mask << 16 | object index)), whose type-1 objects of the camera's leaf are clocked first (0x42aa0b) */
-    Instance **chain; uint32_t nchain; uint32_t frame; int chain_ok;
+    Instance **chain; uint32_t nchain; uint32_t frame; int chain_ok; uint32_t link_done;
     uint32_t *col_first; uint32_t *col_refs; uint32_t ncol_cells;
     /* called once per frame for every instance that is drawn, after the visibility pass and before any model is drawn:
      * the render-colour vtbl[26] of the class (the lightning rod 0x452010 updates its glow only when drawn) */
@@ -91,6 +91,9 @@ int rnd_load_col(Renderer *r, const char *path);
 void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, const int32_t *race);
 /* message 1120 SetRaceInfo (0x455f10..0x455fed): the region list from the race polyline; NULL = none (the full .vis path) */
 void rnd_set_race(Renderer *r, const Trajectory *path);
+/* message 1200 SetTypeInstance (0x403502..0x403e7a): the old object is unlinked (0x407850) and the new class object linked IN FRONT
+ * of its sector's chain (0x407790), in the order of the messages; the chains take that over on the next list */
+void rnd_note_link(Instance *in);
 void rnd_set_sky(Renderer *r, const uint32_t tex[5]);   /* level bank images 3,0,1,2,4 replace the group's own frames when the bank has >= 5 images (0x5e8670) */
 int  rnd_screenshot(const Window *w, const char *path);   /* binary PPM of the current back buffer */
 /* an HNM film frame (RGB565, docs/HNM.md) over the whole window, 4:3 kept with black bars; px NULL frees the texture */

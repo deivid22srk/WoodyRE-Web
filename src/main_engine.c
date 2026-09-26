@@ -1007,8 +1007,9 @@ static void car_rotate(float dt)
  * one figure every 90 deg and the one at `pos` in front, 7 deg to the right. Design camera space: x right, y DOWN,
  * z ahead, scaled back by the projection (1, 1/1.3333, 1/1.2) so that it lands on screen at (P.x / P.z, P.y / P.z).
  * The .ins models are z-up and face -y: model z goes to camera up, model -y to the outside of the ring, so the front
- * figure looks into the lens, and everything leans 10 deg with the ring (0x489780; the exact angle order there is
- * not traced, this is the reading that looks right). */
+ * figure looks into the lens, and everything leans 10 deg with the ring. Verified live (tools/wverify.py --probe carousel):
+ * 0x489780(-10 deg, theta, 0) builds L = Rx * Ry * Rz * Basis (row-vector matrices) and 0x489210 takes the COLUMNS of L as
+ * the model axes, each put through the scaled inverse camera matrix and normalised - exactly the axes below. */
 static void car_place(const FreeCamera *cam)
 {
     Vec3 F = cam_forward(cam), R = cam_right(cam), U = { R.y * F.z - R.z * F.y, R.z * F.x - R.x * F.z, R.x * F.y - R.y * F.x };
@@ -1018,9 +1019,12 @@ static void car_place(const FreeCamera *cam)
         float px = 150.0f * s, py = 100.0f + 26.047f * c, pz = 560.0f - 150.0f * c;
         Vec3 P = { cam->pos.x + R.x * px - U.x * py * 0.75f + F.x * pz / 1.2f, cam->pos.y + R.y * px - U.y * py * 0.75f + F.y * pz / 1.2f, cam->pos.z + R.z * px - U.z * py * 0.75f + F.z * pz / 1.2f };
         float ax[3][3] = { { c, 0, s }, { -s, 0, c }, { 0, -1, 0 } }, m[16] = { 0 };   /* model x, y, z in camera space, before the tilt */
-        for (int a = 0; a < 3; a++) {
+        for (int a = 0; a < 3; a++) {   /* model axis a = column a of 0x489780's Rx(-10)*Ry(theta)*Basis, through the same scaled inverse as the position, then normalised (0x489210) */
             float x = ax[a][0], y = ax[a][1] * ct - ax[a][2] * st, z = ax[a][1] * st + ax[a][2] * ct;   /* tilt about camera x: the front goes down */
-            m[a * 4 + 0] = R.x * x - U.x * y + F.x * z; m[a * 4 + 1] = R.y * x - U.y * y + F.y * z; m[a * 4 + 2] = R.z * x - U.z * y + F.z * z;
+            y *= 0.75f; z /= 1.2f;
+            Vec3 v = { R.x * x - U.x * y + F.x * z, R.y * x - U.y * y + F.y * z, R.z * x - U.z * y + F.z * z };
+            float l = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); if (l > 1e-6f) { v.x /= l; v.y /= l; v.z /= l; }
+            m[a * 4 + 0] = v.x; m[a * 4 + 1] = v.y; m[a * 4 + 2] = v.z;
         }
         m[12] = P.x; m[13] = P.y; m[14] = P.z; m[15] = 1;
         Instance *two[2] = { g_car.fig[k], g_car.ped[k] };
@@ -2913,6 +2917,9 @@ static void rockets_update(float dt, Player *pl, int have_player)               
         }
         if (r->exhaust == 1 && (r->ex_t += dt) >= 1.0f) r->exhaust = 2;
         if (r->state) rocket_place(r);
+        if (getenv("WOODY_ROCKETLOG") && r->state) { const float *m = in->world.m;   /* the model axes in world space = the rows +0x28 of the original (tools/wverify.py --probe rocket) */
+            printf("rocket %u state %d t %.3f pos %.1f %.1f %.1f rows %.4f %.4f %.4f | %.4f %.4f %.4f | %.4f %.4f %.4f", in->index, r->state, r->t, in->position.x, in->position.y, in->position.z,
+                   m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]), puts(""); }
         if (getenv("WOODY_FXLOG") && r->state >= 5 && r->state <= 7) printf("rocket %u state %d t %.2f pos %.0f %.0f %.0f speed %.0f", in->index, r->state, r->t, in->position.x, in->position.y, in->position.z, r->speed), puts("");
     }
     if (have_player && pl->ride) { Rocket *r = rocket_of(pl->ride); Vec3 d;
@@ -3050,6 +3057,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
     if (m->id == 1200 && in && m->nargs > 1 && m->args[1] == 36 && g_nuniq < 64) g_uniq[g_nuniq++] = in;   /* 0x44f67e: the sequence number n */
+    if (m->id == 1200 && in) rnd_note_link(in);   /* 0x403e7a: the new class object is linked in front of its sector chain (the list order, INSTANCE.md 4.1) */
     switch (m->id) {
     /* The black outline (SetFlags bit 0x20) comes from the level script alone: every level sends message 45 with 0x21
      * right after this message to each actor the original draws with a rim, the bosses included. The exceptions are

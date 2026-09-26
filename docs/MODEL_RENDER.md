@@ -352,13 +352,26 @@ The list is built by `0x42a980` → `0x42a840` (INSTANCE.md §4.1), and its orde
   (`0x42a85b`), appending whatever passes (floor group, message-34 link, cached-sphere frustum / race distance).
 * The chain is a stack: `0x407790` links an instance **in front** (`0x4077da..0x4077dd`), `0x407850` unlinks it
   (`+0x1c = +0x18 = −1`, `0x407889..0x407897`), and the re-cell `0x4077f0` is unlink + link in front. The loader links the
-  `.ins` objects in file order (`0x4288cf`; cameras too, `0x428a4a`), so a chain starts as the reverse file order.
-* **Every clock run re-cells.** `0x42e2b0` with arg bit 0 runs the clock `0x43eee0` (`0x42e310`), which works at most once per
-  frame (`inst+0x58 == [[0x509adc]]`, `0x43eeee`) and ends, unless the instance has flag 0x20, with `inst+0x60` = the
-  animated root and `0x4077f0(inst+0x60)` (`0x43f2ed..0x43f351`). The list build calls `vtbl[2](0x81)` for every instance it
-  appends that has no flag 0x20 (`0x42a94b..0x42a95b`), so each listed instance goes to the front of its chain **while the walk goes on behind it**: after
-  the walk a chain of listed, clocked instances is reversed, and next frame it is walked in the reverse order. **The list
-  order of a static scene therefore alternates between two orders every frame** (and with it the draw order of `0x42b380`).
+  `.ins` objects in file order (`0x4288cf`; cameras too, `0x428a4a`), so a chain starts as the reverse file order. Every
+  SetTypeInstance **1200** of the level script's init then unlinks the old object (`0x40351c`) and links the new class object
+  in front (`0x403e7a`), in message order.
+* **A clock run re-cells - unless the pose cache hits.** `0x42e2b0` with arg bit 0 runs the clock `0x43eee0` (`0x42e310`), which
+  works at most once per frame (`inst+0x58 == [[0x509adc]]`, `0x43eeee`) and ends, unless the instance has flag 0x20, with
+  `inst+0x60` = the animated root and `0x4077f0(inst+0x60)` (`0x43f2ed..0x43f351`). But when the instance is opaque (fade
+  `+0x6c < 0.01`, `0x42e2cc`), `0x42e2b0` first asks the **pose cache** `+0x7c` (`0x42f3d0`: clock speed `+0xa0 == 0` and the
+  record's position, animation position `+0xac` and slot0 `+0xb0` equal to the instance's) and hands a hit to the clock as
+  `ext`; without a TRAJ the clock then copies the cached matrices (`0x43efff..0x43f048`) and **returns before the re-cell**
+  (`0x43f06e`). The draw stores that cache (`0x42ecf8 → 0x42f490`, fade ≤ 0.98) whenever the speed is 0 (and `+0x84 ≠ 0`,
+  `0x42f460`) and clears it otherwise (`0x42f483`). The list build calls `vtbl[2](0x81)` for every instance it appends that has
+  no flag 0x20 (`0x42a94b..0x42a95b`), so each listed instance whose clock really runs (animating, moving, fading, or not yet
+  drawn with its current pose) goes to the front of its chain **while the walk goes on behind it**; a stationary, opaque one
+  keeps its place. So only the animated instances of a chain alternate between two orders every frame; after the first
+  frame of a level (which reverses every chain once, nothing being cached yet) a static scene's list is **stable**.
+  **Verified live** (`tools/wverify.py --probe list`, W1A start, 16 consecutive frames at 15 s and the first 8 frames):
+  frame 1 lists 77 instances in the chain order of the load (`300 299 298 296 295 308 294 …`), frame 2 the once-reversed
+  order (`294 308 296 298 299 300 295 …`), and from then on the 70 entries stay put except the looping pairs 11/12, 14/15
+  and 77/79, which swap every frame. (The earlier reading here - "the whole list alternates every frame" - missed the
+  cache branch; the port reproduced that wrong reading until 2026-09-26.)
   Actors and the links of messages 61/62 (flag 0x20) keep their place unless their own mover re-cells them.
 * Before the walk, the message-34 loop (`0x42aa0b`) runs `vtbl[2](1)` = the clock on every type-1 object of the camera's
   kd leaf, in `.col` order (`0x4271e0` list `cell+0x40/+0x44`, `0x42aa0b..0x42aa2e`), so those move to the front first.
@@ -368,15 +381,20 @@ chain history and the frame parity; a glow batch of a non-fading instance betwee
 frame.
 
 **Port** (`rnd_instance_list` in `src/render_gl.c`): `Renderer.chain` holds one chain per sector (`Instance.cell_next`,
-`chain_sec1`), built in `.ins` order on the first list of a level; `chains_sync` unlinks hidden instances, links shown ones in
+`chain_sec1`), built in `.ins` order on the first list of a level, then the 1200 relinks in message order (`rnd_note_link`,
+`Instance.link_seq`, `chains_relink`); `chains_sync` unlinks hidden instances, links shown ones in
 front, re-cells a moved actor / flag-0x20 link (its own `0x4077f0`) in front; the camera leaf's `.col` objects are clocked
 first (`rnd_load_col`, `.col` loaded by `level_load`); the walk follows the `.vis` pairs and `chain_clock` (once per frame,
-`Instance.clock_frame`) re-links every listed non-0x20 instance in front. The sort loop of the fade / additive buckets then
+`Instance.clock_frame`) re-links every listed non-0x20 instance in front unless its pose cache hits (`Instance.pc_ok`,
+`pc_pos`, `pc_ac`, `pc_slot`: stored when the speed is 0 and fade ≤ 0.98, used when fade < 0.01 and there is no TRAJ).
+The sort loop of the fade / additive buckets then
 takes the Perso, the list in order, and last the few instances the port draws outside the list (model order). `WOODY_VISLOG=4`
-prints the first 24 list ids every frame (W1A start: two orders alternating, e.g. `308 294 300 299 298 296 …` /
-`296 298 299 300 294 308 …`). Port simplification kept: an instance whose cell point moves to another sector without a clock
-run is re-linked at once (the original leaves it in the old chain until a clock runs). Start frames of W1A, W1B, W2D and
-WWS render as before (0-755 differing pixels at a fixed 60 fps, animation phase only).
+prints the whole list every frame; at the W1A start it now equals the original's (above) except: the `.ins` cameras (295, 285,
+1, 284) are in the original's list but are not instances in the port, and a few entries whose start history the port does not
+model sit elsewhere in their chain (lasers 196-198: `196 198 292 197` in the original, `196 197 198 292` in the port;
+`13 30 45 17 29` / `13 17 29 30 45`; `34 36 481 35 33` / `33 34 35 36 481`; 37 before 77/79 in the port, after them in the
+original). Port simplification kept: an instance whose cell point moves to another sector without a clock
+run is re-linked at once (the original leaves it in the old chain until a clock runs).
 
 **Texture surfaces** (`0x47fa60`). The file's RGB565 goes through `0x47f090(v, 0)` to ARGB8888 with **the low bits 0**
 (`r5 << 3`, `g6 << 2`, `b5 << 3`), the colour key test (`0x47fc0e`), and back through `0x47f170` to the surface format:

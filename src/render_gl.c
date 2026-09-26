@@ -921,15 +921,41 @@ static int inst_flag20(const Instance *in)
 {
     return in->cell_dy > 0 || in->cell_fixed || (!in->scripted && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19));
 }
-/* the clock 0x43eee0 runs at most once per frame (inst+0x58 = [[0x509adc]]) and ends with the re-cell 0x43f351 */
+/* the clock 0x43eee0 runs at most once per frame (inst+0x58 = [[0x509adc]]) and ends with the re-cell 0x43f351 - unless
+ * the pose cache hits: 0x42e2b0 asks 0x42f3d0 for it when fade +0x6c < 0.01 (valid while the clock speed is 0 and the
+ * position +0xc, the animation position +0xac and slot0 +0xb0 are those of the stored pose), and the clock then copies the
+ * cached matrices and returns before the re-cell (0x43efff -> 0x43f06e; with a TRAJ +0x78 it never takes that branch).
+ * The draw stores the cache (0x42ecf8, fade <= 0.98) when the speed is 0 and clears it otherwise (0x42f460 -> 0x42f483).
+ * So a stationary opaque instance keeps its place in its chain, and only animated, moving or fading ones go to the front
+ * (verified live with tools/wverify.py --probe list: W1A start, only the looping pairs 11/12, 14/15 and 77/79 swap each frame) */
 static void chain_clock(Renderer *r, Instance *in)
 {
     if (in->clock_frame == r->frame) return;
     in->clock_frame = r->frame;
-    if (!inst_flag20(in)) chain_recell(r, in);
+    int hit = in->pc_ok && in->fade < 0.01f && in->a_speed == 0 && !in->traj.npoints && in->a_pos == in->pc_ac && in->slot[0] == in->pc_slot
+              && in->position.x == in->pc_pos.x && in->position.y == in->pc_pos.y && in->position.z == in->pc_pos.z;
+    if (in->a_speed != 0) in->pc_ok = 0;
+    else if (in->fade <= 0.98f) { in->pc_ok = 1; in->pc_pos = in->position; in->pc_ac = in->a_pos; in->pc_slot = in->slot[0]; }
+    if (!hit && !inst_flag20(in)) chain_recell(r, in);
+}
+static uint32_t g_link_seq;
+void rnd_note_link(Instance *in) { if (in) in->link_seq = ++g_link_seq; }
+static int link_cmp(const void *a, const void *b) { uint32_t x = (*(Instance *const *)a)->link_seq, y = (*(Instance *const *)b)->link_seq; return x < y ? -1 : x > y; }
+/* the SetTypeInstance relinks (0x403e7a) since the last list, in message order: each new object goes in front of its chain */
+static void chains_relink(Renderer *r)
+{
+    InsFile *ins = r->ins; Instance *buf[256]; uint32_t n = 0, top = r->link_done;
+    for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+        Instance *in = &ins->models[mi].instances[k];
+        if (in->link_seq > r->link_done) { if (in->link_seq > top) top = in->link_seq; if (n < 256) buf[n++] = in; }
+    }
+    if (!n) return;
+    qsort(buf, n, sizeof *buf, link_cmp);
+    for (uint32_t i = 0; i < n; i++) if (buf[i]->visible) chain_recell(r, buf[i]);
+    r->link_done = top;
 }
 /* keep the chains in step with what happened since the last frame: 0x4288cf put every instance of the .ins in front of
- * its sector's chain in file order at load; message 6 unlinks (0x407850) and a show links in front again; an actor's
+ * its sector's chain in file order at load, then the script's 1200s (chains_relink); message 6 unlinks (0x407850) and a show links in front again; an actor's
  * own mover re-cells it in front whenever it moved. An instance whose cell point moved to another sector without a
  * clock run would stay in its old chain in the original (the port re-cells such an instance at once instead, the
  * simplification INSTANCE.md 4.1 describes). */
@@ -942,8 +968,10 @@ static void chains_sync(Renderer *r)
         for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
             Instance *in = &ins->models[mi].instances[k]; if (in->visible) chain_recell(r, in);   /* 0x4288cf, in file order */
         }
+        chains_relink(r);                                                              /* then the level script's init 1200s */
         return;
     }
+    chains_relink(r);
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
         Instance *in = &ins->models[mi].instances[k];
         if (!in->visible) { if (in->chain_sec1) chain_unlink(r, in); continue; }      /* message 6: 0x407850 */
@@ -1011,8 +1039,9 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
     }
     /* 0x42ab60: the sectors of the pairs, each once, in the order of the camera's .vis entry; 0x42a840 walks the chain of
      * each (the next pointer is read before the instance is handled, 0x42a85b) and every listed instance runs its clock
-     * (vtbl[2](0x81)), whose re-cell puts it in front of its chain again - so a chain of listed, clocked instances comes
-     * out REVERSED every frame, and the list order (= the draw order of 0x42b380) alternates between two orders.
+     * (vtbl[2](0x81)), whose re-cell puts it in front of its chain again unless the pose cache hits (chain_clock) - so the
+     * animated instances of a chain come out reversed every frame and alternate between two orders, while stationary ones
+     * keep their place (verified live, MODEL_RENDER.md 9.1).
      * No .vis (port only): every chain, in sector order. */
     uint32_t npass = all ? r->nchain : L->npairs;
     for (uint32_t pk = 0; pk < npass; pk++) {
@@ -1049,7 +1078,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
     }
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) { Instance *in = &ins->models[mi].instances[k]; if (in->listed < 0) in->listed = 0; }
     n_sec = n_vis > n_seen ? n_vis - n_seen : 0;
-    if (log >= 4) { printf("VIS frame %u order:", r->frame); for (uint32_t i = 0; i < r->nlist && i < 24; i++) printf(" %u", r->list[i]->index); puts(""); }   /* every frame: the alternating chain order */
+    if (log >= 4) { printf("VIS frame %u order:", r->frame); for (uint32_t i = 0; i < r->nlist; i++) printf(" %u", r->list[i]->index); puts(""); }   /* every frame: the list order (tools/wverify.py --probe list prints the original's) */
     if (log) {
         static double next; static uint32_t mx; double t = win_time(); if (r->nlist > mx) mx = r->nlist;
         if (r->nlist > 256) { static int warned; if (!warned) { warned = 1; printf("VIS: %u instances listed - the original's list holds 256 (0x42a4f9)", r->nlist), puts(""); } }
