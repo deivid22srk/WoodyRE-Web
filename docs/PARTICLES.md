@@ -15,7 +15,11 @@ Constants: `rnd` = `0x43ff40` = `rand()/32767` ⇒ [0, 1] inclusive; `ftol` = `0
 drops the new record. Record: `+0` age, `+4` lifetime (−1 = free it), `+0x4c` callback, the rest is the callback's own.
 The driver `0x470c70` calls `+0x4c` for every record with `+4 > 0` and swaps a dead one with the last; it re-reads the
 bound, so a record created this frame is also run (and drawn) this frame. Every callback starts with
-`age += dt; u = age / life` and frees itself with `+4 = −1` once `u ≥ 1` (exceptions noted).
+`age += dt; u = age / life` and frees itself with `+4 = −1` once `u ≥ 1` (exceptions noted). A freed record keeps its
+slot until the driver visits it again, the next frame (`0x470c8f`: the life test comes before the call), so dead
+records count against the 2000 for one frame; the creators do not clear the memory they take (a field a creator does
+not write keeps the previous occupant's value, AMBIENT.md §3.5). Class 90 (butterflies, motes, rain) uses this pool
+too (AMBIENT.md §5).
 
 **Start age.** Some creators write `+0` ≠ 0 (§3 `t0`, §2.2 `rnd·0.2`): the record then starts part of the way through
 its life.
