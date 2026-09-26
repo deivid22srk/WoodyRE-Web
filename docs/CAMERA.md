@@ -73,7 +73,7 @@ translation `T' = T·R_B + T_B`. When building the view matrix (`0x41ef3d..0x41e
 
 | offset | type | meaning | source |
 |---|---|---|---|
-| +0x00 | u32 | "race info active" (0/1); +4, +8 = saved distance/height of the follow camera (150.0, 50.0 default) | `0x41dd67`, `0x41fab0` |
+| +0x00 | u32 | "follow parameters saved" (0/1, set once by message 650, never cleared within a level); +4, +8 = saved distance/height of the follow camera (ctor 120.0, 50.0) | `0x41dd67`, `0x41fab0` |
 | +0x0c | u32 | flag: transition parameters set this frame | `0x41f9b0`, `0x41f9d0` |
 | +0x10 | u32 | flag: transition mode set this frame | `0x41f9f0` |
 | +0x14 | u32 | flag: camera mode switched this frame | `0x41f49a` |
@@ -470,7 +470,7 @@ At `SetMode(0, arg)`: `p->flags &= ~1`; `C->prev = CamMgr state`; `state = 0` (`
 
 | question | answer |
 |---|---|
-| distance | xz distance to T is kept between 300 and 400 (`+0x7e0` = 400, dead zone 100); message 680 sets it |
+| distance | xz distance to T is kept between `+0x7e0` − 100 and `+0x7e0` (300..400; `0x4243a3`, `0x424516`; catching up stops at `+0x7e4`, always the same value); message 680 sets both together with the behind distance `+0x280`. `+0x7e0`/`+0x7e4` are written only by the ctor, 680 (`0x41fa80`) and 660 (`0x41fb00`); every other writer of the distance also goes through `0x41fa80` (`0x404dbd`, `0x405824`, `0x405858`, `0x44c513`, `0x45630e`, `0x456bd9`: race start, race pause menu, race crash) |
 | height | `P.y → player.y + 120 + 180` at `6·dt` per frame; message 670 sets the 180 |
 | look target | player + (0,140,0), unlagged |
 | smoothing | xz: linear speed ∝ distance (433·d/400 /s catching up; 66.7·400/d /s backing off, ×10 if the player looks at the camera); y: exponential 6/s |
@@ -499,14 +499,14 @@ Byte tables `0x498e84` (500–580) and `0x498f00` (600–800).
 | 580 | cam, mode | transition mode: 1 = smooth (`+0x10a=0`), 2 = hard cut (`+0x10a=1`) | `0x498d4e` → `0x41f9f0` |
 | 590 | cam | `+0x690 = 1` | `0x498d63` → `0x41f630` |
 | 600 | cam | `+0x690 = 0` | `0x498db8` → `0x41f640` |
-| 650 | cam | race info on: saves follow-camera distance/height (+0x280, +0x7d8 of sub118) in `CamMgr+4/+8`, resets follow camera (`0x422350`, `0x4247f0(0)`) | `0x498df9` → `0x41fab0` |
-| 660 | cam | race info off: restores distance/height | `0x498e0a` → `0x41fb00` |
+| 650 | cam | **save follow parameters + re-seat**: only the first time in a level (`CamMgr+0 == 0`): `CamMgr+4/+8 = C+0x280 / C+0x7d8`, flag = 1; always: `C+0x9cc = CamMgr+0x338` (already so), state CENTER (`0x422350`), `0x4247f0(0)` = the camera settles behind the player. Not race-specific: W1A, W3A, K1A, S1A, K3A, S3A, W2D, W3B and the races send it at level start | `0x498df9` → `0x41fab0` |
+| 660 | cam | **restore follow parameters**: if saved, `C+0x7e0 = +0x7e4 = +0x280 = CamMgr+4`, `C+0x7d8 = CamMgr+8`; nothing before a 650 | `0x498e0a` → `0x41fb00` |
 | 670 | cam, h | follow-camera **height**: `sub118+0x7d8 = (float)h` | `0x498dc9` → `0x41fa60` |
 | 680 | cam, d | follow-camera **distance**: `sub118+0x7e0 = +0x7e4 = +0x280 = (float)d` | `0x498de1` → `0x41fa80` |
 | 690 | cam, z | zoom factor `+0x678 = z·0.01` (only if > 0) | `0x498e1b` → `0x41f660` |
 | 700 | cam | zoom factor back to 1.2 | `0x498e39` → `0x41f680` |
 | 710 | cam | auto-zoom on (`+0x66c |= 4`) | `0x498e4a` → `0x41f650` |
-| 800 | cam, inst | `CamMgr+0x664 = inst[inst]` (camera instance that follows the position) | `0x498d93` |
+| 800 | cam | `CamMgr+0x664 = inst[arg 0]` = **this camera object itself**: from now on it takes the camera position every frame and is a volume actor (EVENTS.md §2.1, §6); K2R 483, S2R 328, W2B 395 | `0x498d93` |
 
 `SetMode(bitIndex, arg)` = **`0x41f410`** (`mode = 1 << bitIndex`): warns if no
 transition mode (+0x10) or parameters (+0xc) have been set; saves `prevMode/prevArg/prevState`
@@ -711,3 +711,15 @@ Constants: `0x4a9004`=0, `0x4a900c`=1, `0x4a9010`=100, `0x4a9014`=0.5, `0x4a9030
 8. Action 0xa: which key/button this is by default is in the input table (`[0x5e6188]`), not checked.
 9. `0x41fb50(m, &pos, f)` (callers `0x459030`, `0x46496a`, `0x464aab`): helper routine "look from point `pos` toward the
    player" (mode 2, speed 100, smooth) – used by the engine itself, context not investigated.
+
+## Port notes (messages 650..800, 2026-09-26)
+
+`src/main_engine.c` `cam_msg`: 650/660/670/680/690/700/710/800 as in §4 (650 saves once per level in `g_cam.fsaved` and
+clears `cam_init`, which re-seats the follow camera through `player_camera_reset`; 670/680 write `Player.cam_height` /
+`cam_dist`, and `camera_step` in player.c now takes the distance band from `cam_dist` instead of the constants 300/400).
+Auto-zoom (710) is evaluated in `cam_update` after the mode update with the mode's target point T (`+0x278`; for mode 1 the
+player position, for the others the port's T, which may differ by the +50 of `0x41f960`), `zoom = (1−t)·1.1 + t·0.2`,
+`t = clamp((d − 300)/2700)`; the resulting zoom (`Player.cam_zoom` = `+0x678`) now applies in every mode except 0x80/0x200,
+with 0.5625 instead of 0.75 in the letterboxed mode 4. The camera reset `0x41df70` (level start `0x402b0d` and `0x458f90`,
+i.e. teleport 26 and respawn) is `cam_reset()`: shake off, zoom 1.2, auto-zoom off. Messages 530, 550, 590, 600 are sent
+by no level and stay unported (logged by `WOODY_MSGUNK`).

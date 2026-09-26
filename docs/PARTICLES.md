@@ -222,8 +222,8 @@ original's flags as they are (§1); the alpha-blended path uses `GL_COMBINE` wit
 
 Deviations: the splinter's rotation (§4); the player's facing at the skeleton flash is set to face the camera's look
 direction at once (0x459ff0 resets the Mover ramps; the port sets `yaw`); the plane sprites get a GL polygon offset
-instead of the original's 0.1-unit lift only (depth writes are off in both). Message 1509 (explosion at an instance
-vector) is still not handled by the port's message switch.
+instead of the original's 0.1-unit lift only (depth writes are off in both). Message 1509 and the smoke plume are ported
+(§8).
 
 Testing (`WOODY_FXLOG=1` logs every footstep, ring, peck, explosion and skeleton flash):
 * footsteps + prints on sand: `W2A --pos 7220 1100 -13973 --yaw 45 --walk 2.5`; landing dust: the same with `--jump 1.0`
@@ -244,3 +244,25 @@ Testing (`WOODY_FXLOG=1` logs every footstep, ring, peck, explosion and skeleton
 * PROJECTILES.md §5.3 / ROCKET.md §5.3 uncertain 3, BOMB.md §4.3: `0x4767f0`, `0x4764f0`, `0x476cd0` and `0x476140`
   are read (§3, §5).
 * FOOTSTEPS.md §1 swapped nothing, but the port did: foot 1 is the step at 0.38, foot 0 the one at 0.9.
+
+## 8. Message 1509 and the smoke plume `0x475f30`
+
+**1509 `[a, inst, mode, x]`** (`0x46cf6f`, subsystem `0x46cca0`; `a` = arg 0 is not read, the instance is arg **1**):
+mode 5 = `0x42f6b0(0, &v, x)` (typecode-0 marker x of inst) then `0x477060(1, &v, 0)` = explosion kind 1 (§5); mode 4 with
+`x == 1` = `0x475f30(inst, 0)`, `(inst, 1)`, `(inst, 2)`; mode 4 with any other x = bytes `0x5e857c..0x5e857e` = 0 (the
+plumes die out); other modes nothing. Only W1B sends it: object 397 around cinematic 73 with the cinematic saucer 399
+(`[405, 399, 4, 1]`, then `[.., 5, 0]`, `[.., 5, 1]`, `[.., 5, 2]`, finally `[.., 4, 0]`).
+
+**Plume `0x475f30(inst, n)`**: one pool record (life 100000 s, callback `0x475d90`, `+8` inst, `+0xc` n, `+0x10..+0x18`
+prev = the marker's position now) and `smoke_on[n] = [0x5e857c + n] = 1`. The buzz boss uses the same function on hits
+(BOSS14.md §9.2). **Emitter `0x475d90`**: `age += dt`; if `smoke_on[n] != 1` the record frees itself; else
+`k = fistp(age·300)` (`0x4a986c`; fistp rounds to nearest), `age −= k·(1/300)` (`0x4aa3e4`), p = marker n now, D = prev − p,
+and for i = 0..k−1 a puff at `p + (i/k)·D + (rnd·30 − 15, 0, rnd·30 − 15)` (`0x4a9740` = 30, `0x4a9864` = 15); `prev` becomes
+the position of the LAST puff (jitter included), so the trail lags behind a moving marker. **Puff `0x475cd0`** (0.5 s):
+`u = age/0.5`; position `(x, y + 50u, z)` (`0x4a9030`), colour (1, 1, 1), alpha `0.5 − 0.5u` (`0x4a9014`), size
+`rnd·10 + 50u + 20` (`0x4a9750`, `0x4a9994`), rotation `fistp(rnd·512)` (`0x4a9874`), image 14 (`0x1000e`), mode 0x12,
+flags **7** (camera facing, own colour, rotation; additive). Port: `smoke_attach` / `game_boss_smoke` / `game_msg1509` /
+`boss_fx_draw` in main_engine.c (replacing the earlier reconstruction: grey 0.6, size `(rnd·10 + 20)(1 + u)`, rise 50t).
+Test: `W1B --pos -7257 1400 -7200 --cam -6650 4900 -7600 180 0` with
+`WOODY_MSGAT="1 6 399 1; 1.5 1509 405 399 4 1; 2 1509 405 399 5 0; 2.5 1509 405 399 5 1; 3 1509 405 399 5 2; 5 1509 405 399 4 0"`
+(399 stands on its cinematic track, its markers are ~4800 up) and `WOODY_FXLOG=1`.
