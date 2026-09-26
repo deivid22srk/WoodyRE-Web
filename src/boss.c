@@ -314,8 +314,8 @@ void boss_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         b->y_low = (found ? gy : in->position.y) + B_LOW; b->y_low_ok = 1;
     }
     if (b->mode == 0) { if (b->rec >= 0) { rec_tick(in, b->rec, &b->rec, &b->sub); if (b->link) rec_tick(b->link, b->lrec, &b->lrec, &b->lsub); } }   /* beaten: the last record plays out */
-    /* Think 0x41a320: only within 3000 of the camera (or dead) */
-    if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;
+    /* Think 0x41a320: only for an instance of this frame's list world+0x64 (0x42b400), and only within 3000 of the camera (or dead) */
+    if (!in->visible || !game_enemy_thinks(in) || (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0)) return;
     /* mailbox 0x410be0, first thing in every update */
     { int v = game_var_get(b->mail_var);
       if ((v == 1 || v == 2) && b->mode != v) { b->mode = v; boss_reset(e); printf("  BOSS %u: mode %d", in->index, v), puts(""); }
@@ -592,7 +592,7 @@ void boss15_update(Enemy *e, Player *pl, Vec3 cam, float dt)
 {
     BossBState *b = &e->bb; Instance *in = e->inst;
     g_b15_pl = pl;
-    if (!in->visible) return;                                        /* out of the world (0x407850): no Think */
+    if (!in->visible || !game_enemy_thinks(in)) return;              /* out of the world (0x407850) or not in this frame's list world+0x64: no Think (0x42b400) */
     if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;    /* Think 0x41a320: 3500 */
     ground_follow(e, pl, dt); enemy_place(e);                        /* Enemy::Update 0x41a3e0; its vtbl[45] is empty */
     if (!b->crush[0]) return;
@@ -729,7 +729,7 @@ static void wave_tick(Enemy *e, float dt)                            /* the reco
 void boss16_update(Enemy *e, Player *pl, Vec3 cam, float dt)
 {
     BossBState *b = &e->bb; Instance *in = e->inst;
-    if (!in->visible) return;
+    if (!in->visible || !game_enemy_thinks(in)) return;              /* list world+0x64 (0x42b400) */
     if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;    /* Think 0x41a320: 3000 */
     ground_follow(e, pl, dt); enemy_place(e);
     if (!b->grp[0][0]) return;

@@ -174,7 +174,7 @@ void game_land_dust(Vec3 pos, Vec3 normal);
 void game_smoke_ring(Vec3 pos, Vec3 normal, int kind, float t0, float life);
 void game_splash(Vec3 c, float speed, float radius);   /* 0x478660, docs/SPLASH.md */
 void game_special_fx(void);                            /* 0x47ab90: the streaks and fire rings of the special attack (docs/PERSO_SPECIAL.md 3) */
-int  game_enemy_thinks(const Instance *inst);           /* is the actor in a sector drawn last frame, i.e. did its Think run (list 0x4c5258)? */
+int  game_enemy_thinks(const Instance *inst);           /* is the instance in this frame's list world+0x64 (rnd_instance_list), i.e. does its Think vtbl[3] run (0x42b400)? */
 /* the comic speech bubble 0x478980(inst, kind, duration, offY, offX, live) (docs/PERSO_DEATH.md 4.1): kind 0 "?!" (Kill 1),
  * 1 curse (hard landing), 2 "$", 3 "...", 4 "zzz"; with `live` it lasts while *live != 0 instead of `duration` */
 void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, const int *live);

@@ -54,6 +54,9 @@ typedef struct {
     void (*post_models)(const TexFile *tex, Vec3 eye);
     uint8_t *model_blend;                              /* per .ins model: 1 = a drawn mesh node has a polygon of a blended group (list +0x1cc), built on the first frame */
     Instance **links; uint32_t nlinks, links_cap;     /* message 34 pairs (volume instance, hidden instance), level+0x50 / +0x4c (docs/INSTANCE.md 10.1) */
+    /* the per-frame instance list world+0x60/+0x64 (0x42a980 / 0x42a840, docs/INSTANCE.md 4.1): rebuilt by rnd_instance_list */
+    Instance **list; uint32_t nlist, list_cap;
+    uint8_t *list_sec, *list_grp;                      /* sector stamp +4 / group stamp +0 of this frame: the pairs of the camera's .vis list */
 } Renderer;
 
 int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis);   /* lit / vis may be NULL */
@@ -62,6 +65,9 @@ void rnd_fade(float brightness);             /* darken the finished frame: 1 = n
 void rnd_free(Renderer *r);
 /* message 34 [inst, other] (0x42dc21): while the camera is inside one of inst's volume nodes, `other` is not drawn (0x42aa0b) */
 void rnd_link(Renderer *r, Instance *inst, Instance *other);
+/* 0x42a980 -> 0x42a840: rebuild this frame's instance list (Renderer.list, Instance.listed) from the camera's .vis list. race =
+ * the race region list world+0xc0 (Perso subtypes 4/5, filled by 1120), NULL otherwise. Call once per frame before the Thinks. */
+void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, const int32_t *race);
 void rnd_set_sky(Renderer *r, const uint32_t tex[5]);   /* level bank images 3,0,1,2,4 replace the group's own frames when the bank has >= 5 images (0x5e8670) */
 int  rnd_screenshot(const Window *w, const char *path);   /* binary PPM of the current back buffer */
 /* an HNM film frame (RGB565, docs/HNM.md) over the whole window, 4:3 kept with black bars; px NULL frees the texture */

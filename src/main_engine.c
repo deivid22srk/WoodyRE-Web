@@ -31,6 +31,7 @@ static InsFile g_ins;
 static int g_log_msgs = 1;
 static Player *g_player;
 static const Renderer *g_rnd; static const GelFile *g_gel;              /* the current level's renderer and world, for game_enemy_thinks() */
+static int32_t g_race_rgn[6] = { -1, -1, -1, -1, -1, -1 };               /* world+0xc0..0xd4: the race region list of 1120 (0x455dc0, docs/RACE.md 2.1) */
 static EnemySet g_enemies;
 static float g_now; static double g_clock;           /* game time in seconds (VM time base): World+0x20 / +0x30 (0x401880), the sum of the CLAMPED frame times */
 /* messages 12/13 wait for the running animation to end: offered again every frame (max 32 in the original, 0x4012f0 clears) */
@@ -2109,11 +2110,9 @@ static void torch_update(float dt)                                           /* 
         }
     }
 }
-int game_enemy_thinks(const Instance *inst)                                  /* Think runs for the instances of the drawn sectors (world+0x64, 0x42a980) */
+int game_enemy_thinks(const Instance *inst)                                  /* Think 0x42b400 runs for the instances of this frame's list world+0x64 (rnd_instance_list) */
 {
-    if (!g_rnd || !g_gel || !g_rnd->cull || !g_rnd->sec_vis || !g_gel->nsectors) return 1;   /* culling off (F4): sec_vis is not kept */
-    int32_t s = gel_sector(g_gel, inst->position);
-    return s < 0 || (uint32_t)s >= g_gel->nsectors || g_rnd->sec_vis[s];
+    return !g_rnd || inst->listed;
 }
 static Vec3 drop_pt(const FxRec *e, float wx, float wy)                      /* a drop at fraction wx along its path; the height uses wy (fistp rounds) */
 {
@@ -2809,10 +2808,9 @@ static void env_draw(void)
     }
 }
 
-/* the per-frame instance list the sound Update gets (world+0x64, 0x401ee7): in the world (0x407850 takes an instance out) and
- * in a drawn sector (0x42a840). Not ported: 0x42a8b4 also drops a stationary instance (sphere cached, +0x88 == 1) whose
- * bounding sphere is outside the view frustum or whose centre is more than 11000 from the camera (0x42a907, 0x4aa2f4) */
-static int snd_owner_active(const void *owner) { const Instance *in = owner; return in->visible && game_enemy_thinks(in); }
+/* the per-frame instance list the sound Update gets (world+0x64, 0x401ee7): rnd_instance_list, built at the start of the frame
+ * (0x42a980 -> 0x42a840, with the frustum / race-distance test of stationary instances, docs/INSTANCE.md 4.1) */
+static int snd_owner_active(const void *owner) { const Instance *in = owner; return in->visible && in->listed; }
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
@@ -2996,6 +2994,15 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             Camera *pc = slot_camera(m->args[1]);
             if (!pc || !pc->traj.npoints) { puts("  Message SetRaceInfo : on doit envoyer une camera avec une polyline en 2eme argument"); break; }   /* 0x444b67 */
             g_player->board = in; g_player->race_path = &pc->traj; in->scripted = 0; in->anim_speed = 0;
+            {   /* 0x455dc0: the distinct floor groups (0x40a0c0) under the polyline points in track order, at most 5, into world+0xc0 */
+                int k = 0; for (int q = 0; q < 6; q++) g_race_rgn[q] = -1;
+                for (uint32_t q = 0; g_gel && q < pc->traj.npoints; q++) {
+                    int32_t gq = gel_floor_group(g_gel, pc->traj.points[q]); if (gq == -1) continue;
+                    if (g_race_rgn[k] == -1) g_race_rgn[k] = gq;
+                    else if (g_race_rgn[k] != gq) { if (++k == 5) break; g_race_rgn[k] = gq; }
+                }
+                if (getenv("WOODY_VISLOG")) printf("VIS race regions %d %d %d %d %d", g_race_rgn[0], g_race_rgn[1], g_race_rgn[2], g_race_rgn[3], g_race_rgn[4]), puts("");
+            }
             g_player->board_lanim = -1;                                                                     /* B = new AnimCtl(board): not reset, nothing requested */
             memset(&g_player->bfx, 0, sizeof g_player->bfx); g_player->bfx.inst = in; g_player->bfx.mode = 2; g_player->bfx.size_idx = 3;   /* the spray emitter (0x34 B) */
             { Vec3 p0, d; while (g_player->bfx.n < 4 && inst_vector_at(in, 9, (uint32_t)g_player->bfx.n, &p0, &d)) g_player->bfx.n++; }   /* its type-9 markers (0x455e58) */
@@ -3168,7 +3175,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL, L->have_vis ? &L->vis : NULL);
     water_reset(&L->tex); L->rnd.post_models = water_draw;   /* class 60 (water.c) */
     L->have_player = player_init(&L->player, &g_ins, &L->gel, &L->tex) == 0;
-    g_player = L->have_player ? &L->player : NULL; g_rnd = &L->rnd; g_gel = &L->gel;
+    g_player = L->have_player ? &L->player : NULL; g_rnd = &L->rnd; g_gel = &L->gel; for (int k = 0; k < 6; k++) g_race_rgn[k] = -1;
     for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) inst_init(&g_ins.models[mi].instances[k]);
     if (L->have_player) { L->player.inst->scripted = 0; L->player.enemies = &g_enemies; }
 { static const char *chr[3] = { "Woody", "Knothead", "Splinter" }; static int bank0 = -1;
@@ -3382,6 +3389,9 @@ int main(int argc, char **argv)
             if (br[1] && !br_prev[1]) { sel->anim = (sel->anim + 1) % (int)sel->model->nanims; sel->anim_time = 0; printf("anim %d (%u frames, %.2f s)\n", sel->anim, sel->model->anims[sel->anim].nframes, sel->model->anims[sel->anim].duration_s); }
         }
         br_prev[0] = br[0]; br_prev[1] = br[1];
+        /* frame step 9 (0x401c06..0x401c63): this frame's instance list from the camera as it stands, before any Think; the region
+         * list world+0xc0 goes along while the Perso is a rider (subtypes 4/5) */
+        rnd_instance_list(&L.rnd, &win, &cam, L.have_player && L.player.race_char ? g_race_rgn : NULL);
         static double pf[5]; static int pfn; static const int prof = 1; double pt0 = win_time();
         /* player (provisional controller) + follow camera */
         if (L.have_player && !paused) {
