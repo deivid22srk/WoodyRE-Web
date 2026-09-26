@@ -18,10 +18,15 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_CLOSE: case WM_DESTROY: if (w) w->quit = 1; return 0;
     case WM_SIZE: if (w) { w->width = LOWORD(lp); w->height = HIWORD(lp); } return 0;
-    case WM_KEYDOWN: case WM_KEYUP: {                                /* Esc is a menu key now (docs/MENU_NEWGAME.md 1.3), not quit */
-        int down = msg == WM_KEYDOWN;
+    case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP: {   /* Esc is a menu key now (docs/MENU_NEWGAME.md 1.3), not quit */
+        int down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN, sc = (int)(lp >> 16) & 0xff, ext = (int)(lp >> 24) & 1;
         if (w && wp < 256) w->keys[wp] = down;
-        if (w && wp == VK_CONTROL) w->keys[(lp >> 24) & 1 ? VK_RCONTROL : VK_LCONTROL] = down;   /* extended-key bit: right Ctrl (the special attack) */
+        /* the sides of Ctrl / Shift / Alt and the numpad whatever Num Lock says: Woody.cfg binds DirectInput keys (docs/INPUT.md) */
+        if (w && wp == VK_CONTROL) w->keys[ext ? VK_RCONTROL : VK_LCONTROL] = down;   /* extended-key bit: right Ctrl (the special attack) */
+        if (w && wp == VK_SHIFT) w->keys[sc == 0x36 ? VK_RSHIFT : VK_LSHIFT] = down;
+        if (w && wp == VK_MENU) w->keys[ext ? VK_RMENU : VK_LMENU] = down;
+        if (w && !ext && sc >= 0x47 && sc <= 0x53) { static const unsigned char np[13] = { VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9, 0, VK_NUMPAD4, VK_NUMPAD5, VK_NUMPAD6, 0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD0, VK_DECIMAL }; if (np[sc - 0x47]) w->keys[np[sc - 0x47]] = down; }
+        if (msg == WM_SYSKEYDOWN || msg == WM_SYSKEYUP) break;        /* Alt+F4 and friends */
         return 0;
     }
     case WM_RBUTTONDOWN: if (w) { w->mouse_right = 1; SetCapture(h); } return 0;

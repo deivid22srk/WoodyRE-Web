@@ -17,6 +17,7 @@
 typedef struct {
     int forward, back, left, right, jump, action, duck, special;   /* current key state; duck = action 5 (docs/PERSO_DUCK.md), special = action 11 (docs/PERSO_SPECIAL.md) */
     float cam_turn;                                  /* -1..1 manual camera orbit */
+    float ax, az;                                    /* the stick (actions 0/1 and 2/3 values, docs/INPUT.md 3): x right, z forward; 0, 0 = only the keys above */
 } PlayerInput;
 
 struct EnemySet;
@@ -47,7 +48,7 @@ typedef struct Player {
     Vec3 push_dir; float push_t, push_speed;                         /* knockback (Mover RampC) */
     int game_state; float game_t; int mask10_frames;                 /* Game sequence 0x4459c0 */
     float iris_from, iris_to, iris_dur, iris_t, iris; int iris_on;  /* its iris Game+4 (0x4776b0); iris_on = drawn this tick, iris = its value */
-    Vec3 spawn_pos; float spawn_yaw;
+    Vec3 spawn_pos; float spawn_yaw; Vec3 start_pos;                  /* respawn point +0x318 / facing +0x324 (checkpoint), start +0x30c */
     int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus, race_total;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264, [0x5e54f4] */
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
     int ground_kind;                /* Perso+0x308 (0x4628e0): 0 normal, 1 slippery, 2 dust/sand/snow (docs/PERSO_MOVE.md 6.4) */
@@ -102,6 +103,7 @@ int  player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex
 void player_bind(Player *p, Instance *inst);           /* SetTypeInstance 1/2/3/18/19: this instance is the player */
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
 void player_game_tick(Player *p, EkoVM *vm, float dt); /* 0x4459c0: level-start iris, death -> iris closes -> respawn -> iris opens */
+void player_restart(Player *p);                        /* pause menu "Start again" (0x40584d): 0x445930 + race restart 0x4560f0 */
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_camera_reset(Player *p);                   /* SetMode(0, 0) / message 500: put the camera behind the player now */
 int  volume_contains(const Instance *inst, uint32_t node, Vec3 p);   /* 0x4300c0: is the point inside this volume node of the instance? */
