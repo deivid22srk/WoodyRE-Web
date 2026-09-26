@@ -10,6 +10,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <mmsystem.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -388,20 +389,58 @@ static void save_auto(void) { if (g_slot >= 0) { g_file.slot[g_slot] = g_save; f
  * volumes are linear amplitude v / 100: -2000 log10(100 / v) mB in 0x48bf50 is exactly that. */
 static struct { int sfx, music, vib; } g_opt = { 100, 70, 0 };   /* port defaults (audio.c's 1.0 / 0.7); vibration: no joystick = 0% (0x4674b0), rumble is a no-op on PC */
 static void opt_apply(void) { audio_master(g_opt.sfx * 0.01f, g_opt.music * 0.01f); }   /* 0x469570 / 0x4695a0 */
+/* ---- display (docs/DISPLAY.md; everything here is a PORT EXTRA). The original runs exclusive fullscreen at the Woody.cfg mode
+ * (Detect's list, default 640x480), always 4:3 in the layout, and paces itself only by Flip(DDFLIP_WAIT) = vsync (0x47ee90);
+ * no frame cap, dt clamped to 0.1 s (0x40185b). The port: a window of any size or borderless fullscreen, 4:3 pillarboxed or a
+ * wide Hor+ view (the vertical fov stays, the HUD / menus keep their 640x480 layout centred), vsync, an optional frame cap. */
+typedef struct { int wide, w, h, full, vsync, cap; } Display;
+static Display g_disp = { 1, 1280, 800, 0, 1, 0 };      /* woodyre.cfg; 1280x800 wide = the port's window before these options */
+static Display g_dnow;                                  /* what runs: g_disp, or the defaults for a --shot run, plus the overrides */
+static int g_disp_dirty;                                /* the main loop applies g_dnow (window mode, vsync) */
+static const int k_disp_res[][2] = { {640,480}, {800,600}, {1024,768}, {1280,960}, {1280,720}, {1280,800}, {1600,900}, {1920,1080}, {2560,1440}, {3840,2160} };
+static const int k_disp_cap[] = { 0, 30, 60, 120, 144, 240 };
+#define NRES (int)(sizeof k_disp_res / sizeof k_disp_res[0])
+#define NCAP (int)(sizeof k_disp_cap / sizeof k_disp_cap[0])
 static void opt_read(void)
 {
     FILE *f = fopen("woodyre.cfg", "r"); char line[128];
-    if (f) { while (fgets(line, sizeof line, f)) { int v; if (sscanf(line, "sfx=%d", &v) == 1) g_opt.sfx = v; else if (sscanf(line, "music=%d", &v) == 1) g_opt.music = v; else if (sscanf(line, "vibration=%d", &v) == 1) g_opt.vib = v; } fclose(f); }
+    if (f) { while (fgets(line, sizeof line, f)) { int v, v2; char s[16];
+        if (sscanf(line, "sfx=%d", &v) == 1) g_opt.sfx = v; else if (sscanf(line, "music=%d", &v) == 1) g_opt.music = v; else if (sscanf(line, "vibration=%d", &v) == 1) g_opt.vib = v;
+        else if (sscanf(line, "aspect=%15s", s) == 1) g_disp.wide = strcmp(s, "4:3") != 0;
+        else if (sscanf(line, "window=%dx%d", &v, &v2) == 2) { if (v >= 320 && v2 >= 240 && v <= 7680 && v2 <= 4320) { g_disp.w = v; g_disp.h = v2; } }
+        else if (sscanf(line, "fullscreen=%d", &v) == 1) g_disp.full = v != 0; else if (sscanf(line, "vsync=%d", &v) == 1) g_disp.vsync = v != 0;
+        else if (sscanf(line, "fpscap=%d", &v) == 1) g_disp.cap = v < 0 ? 0 : v > 1000 ? 1000 : v; } fclose(f); }
     int *o[3] = { &g_opt.sfx, &g_opt.music, &g_opt.vib }; for (int i = 0; i < 3; i++) { if (*o[i] < 0) *o[i] = 0; if (*o[i] > 100) *o[i] = 100; }
 }
-static void opt_write(void) { FILE *f = fopen("woodyre.cfg", "w"); if (f) { fprintf(f, "sfx=%d\nmusic=%d\nvibration=%d\n", g_opt.sfx, g_opt.music, g_opt.vib); fclose(f); } }
+static void opt_write(void)
+{
+    FILE *f = fopen("woodyre.cfg", "w"); if (!f) return;
+    fprintf(f, "sfx=%d\nmusic=%d\nvibration=%d\n", g_opt.sfx, g_opt.music, g_opt.vib);
+    fprintf(f, "aspect=%s\nwindow=%dx%d\nfullscreen=%d\nvsync=%d\nfpscap=%d\n", g_disp.wide ? "wide" : "4:3", g_disp.w, g_disp.h, g_disp.full, g_disp.vsync, g_disp.cap);
+    fclose(f);
+}
+/* the 3D view in the window (GL origin bottom left): narrower than 4:3 = letterboxed in both modes, wider = pillarboxed in 4:3 mode */
+static void disp_view(const Window *w, int *x, int *y, int *vw, int *vh)
+{
+    int W = w->width, H = w->height; *x = *y = 0; *vw = W; *vh = H;
+    if (W <= 0 || H <= 0) return;
+    if (W * 3 < H * 4) { *vh = W * 3 / 4; *y = (H - *vh) / 2; }
+    else if (!g_dnow.wide && W * 3 > H * 4) { *vw = H * 4 / 3; *x = (W - *vw) / 2; }
+}
+static void disp_apply(Window *w)
+{
+    win_mode(w, g_dnow.w, g_dnow.h, g_dnow.full);
+    if (win_vsync(g_dnow.vsync) < 0) printf("display: no WGL_EXT_swap_control, vsync is up to the driver\n");
+    if (g_dnow.cap > 0) timeBeginPeriod(1);                                          /* Sleep(1) of the frame cap: 1 ms, not 15.6 */
+    printf("display: %dx%d %s, %s, vsync %s, fps cap %d\n", w->width, w->height, g_dnow.full ? "fullscreen" : "window", g_dnow.wide ? "wide (Hor+)" : "4:3", g_dnow.vsync ? "on" : "off", g_dnow.cap);
+    g_disp_dirty = 0;
+}
 
 /* ---- input (docs/INPUT.md): the key bindings of Woody.cfg, the joystick and the action layer of 0x402940. Everything
  * the game reads goes through 14 actions (the controller [0x5e6188], PERSO_MOVE 3.2): 0/1 left/right, 2/3 forward/back
  * (values -1/+1, the stick gives its deflection), 4 jump (+12 = menu confirm), 5 duck (menu back), 6 attack, 7 look
  * around, 8 duck while riding, 9 pause, 10 camera behind, 11 special. Bindings: app+0x108, two per action (config 1 / 2
  * of Detect.exe); a code < 0x200 is a DirectInput key, 0x200 + n joystick button n. The port keeps VK codes. */
-#include <mmsystem.h>
 #define IN_JOY 0x200
 static struct {
     int bind[12][4];                  /* per action: up to 4 VK codes or IN_JOY + button, 0 ends the list (Woody.cfg fills 2, the port defaults more) */
@@ -682,7 +721,8 @@ static struct {
     int save_s;                                /* app+0x60: the slot chosen on page 5 */
     int hs_char;                               /* page 4 +0x3c: whose high scores (set by page 3's SEE HIGH SCORES) */
     int wait, wait_r;                          /* app+0x5c: the frames a wait page 0xb / 0xc / 0xe still stands; the read result it hands on */
-} M = { -1, 0, 0, { 0 }, 0, 1, 1, { 0 }, 0, 35.0f };
+    Display disp;                              /* port page 0x40: the display settings being edited (applied on Continue) */
+} M ={ -1, 0, 0, { 0 }, 0, 1, 1, { 0 }, 0, 35.0f };
 static float g_title_t;                        /* seconds since the title pose (action 0x49) started: the orbit phase (docs/TITLE.md 1.4) */
 static int g_intro_obj;                        /* message 1160 arg 2 & 0xffffff: script object 115 */
 
@@ -697,7 +737,34 @@ static const MenuItem k_page17[] = { {61,2}, {5,1}, {6,1} };
 static const MenuItem k_page18[] = { {4,1}, {36,1}, {2,1} };
 static const MenuItem k_page19[] = { {4,1}, {19,1}, {36,1}, {2,1} };   /* 0x4b5d18: Continue (5), Start again (18), Options (6), Quit (7) */
 static const MenuItem k_page1c[] = { {3,2}, {5,1}, {6,1} };
-static MenuItem k_page1b[] = { {36,2}, {38,0x10}, {39,0x10}, {132,0x10}, {4,1} };
+static MenuItem k_page1b[] = { {36,2}, {38,0x10}, {39,0x10}, {132,0x10}, {4,1}, {0,1} };   /* item 5 "Display" (y 424.5): port extra, id set on enter */
+/* port page 0x40 "Display" (docs/DISPLAY.md 4), the list class of 0x1b with choices (flag 0x100): ids and values are
+ * port strings or Common 133 "On" / 134 "Off", filled in by disp_items */
+static MenuItem k_page40[7] = { {0,2}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100}, {4,1} };
+static int disp_res_index(const Display *d) { for (int i = 0; i < NRES; i++) if (k_disp_res[i][0] == d->w && k_disp_res[i][1] == d->h) return i; return -1; }
+static void disp_items(void)
+{
+    const Display *d = &M.disp; char b[24];
+    k_page40[0].id = hud_port_str("Display");
+    k_page40[1].id = hud_port_str("Aspect ratio");     k_page40[1].value = (int)hud_port_str(d->wide ? "Wide" : "4:3");
+    snprintf(b, sizeof b, "%dx%d", d->w, d->h);
+    k_page40[2].id = hud_port_str("Window size");      k_page40[2].value = (int)hud_port_str(b);
+    k_page40[3].id = hud_port_str("Fullscreen");       k_page40[3].value = d->full ? 133 : 134;
+    k_page40[4].id = hud_port_str("VSync");            k_page40[4].value = d->vsync ? 133 : 134;
+    snprintf(b, sizeof b, "%d", d->cap);
+    k_page40[5].id = hud_port_str("Frame rate limit"); k_page40[5].value = d->cap ? (int)hud_port_str(b) : 134;
+}
+static void disp_step(int item, int dir)               /* left / right on a choice: round the list */
+{
+    Display *d = &M.disp;
+    switch (item) {
+    case 1: d->wide ^= 1; break;
+    case 2: { int i = disp_res_index(d); i = i < 0 ? (dir > 0 ? 0 : NRES - 1) : (i + dir + NRES) % NRES; d->w = k_disp_res[i][0]; d->h = k_disp_res[i][1]; break; }
+    case 3: d->full ^= 1; break;
+    case 4: d->vsync ^= 1; break;
+    case 5: { int i = 0; while (i < NCAP && k_disp_cap[i] != d->cap) i++; i = i == NCAP ? 0 : (i + dir + NCAP) % NCAP; d->cap = k_disp_cap[i]; break; }
+    }
+}
 static const MenuItem *menu_items(int page, int *n, float *yfrac)
 {
     #define PG(t, y) { *n = (int)(sizeof t / sizeof t[0]); *yfrac = y; return t; }
@@ -705,6 +772,7 @@ static const MenuItem *menu_items(int page, int *n, float *yfrac)
     case 0: PG(k_page0, 0.7f)  case 1: PG(k_page1, 0.55f)  case 6: PG(k_page6, 0.4f)  case 7: PG(k_page7, 0.4f)
     case 8: PG(k_page8, 0.4f)  case 9: PG(k_page9, 0.4f)   case 0xa: PG(k_pagea, 0.4f) case 0x17: PG(k_page17, 0.4f)
     case 0x18: PG(k_page18, 0.05f) case 0x19: PG(k_page19, 0.05f) case 0x1b: PG(k_page1b, 0.4f) case 0x1c: PG(k_page1c, 0.55f)
+    case 0x40: PG(k_page40, 0.25f)
     }
     #undef PG
     *n = 0; *yfrac = 0; return NULL;
@@ -946,7 +1014,9 @@ static void menu_enter(int page)
     case 5: panel_enter(); panel_iris(1.0f, 0.37f); break;           /* 0x45e230: you come from the game */
     case 0x1b:                                                         /* 0x460240: the cursor on "Sound FX volume", the values backed up */
         M.opt_bak[0] = g_opt.sfx; M.opt_bak[1] = g_opt.music; M.opt_bak[2] = g_opt.vib;
-        k_page1b[1].value = g_opt.sfx; k_page1b[2].value = g_opt.music; k_page1b[3].value = g_opt.vib; M.sel = 1; break;
+        k_page1b[1].value = g_opt.sfx; k_page1b[2].value = g_opt.music; k_page1b[3].value = g_opt.vib; M.sel = 1;
+        k_page1b[5].id = hud_port_str("Display"); break;                  /* port extra */
+    case 0x40: M.disp = g_dnow; disp_items(); M.sel = 1; break;        /* port page: the cursor on the first choice */
     case 0x1c: M.sel = 2; break;                                       /* 0x45bd40: on "No" */
     case 0x18: case 0x19: case 0x1f: M.sel = 0; hud_logo_off(); break; /* 0x45b390 */
     default: M.sel = menu_first(); break;
@@ -1092,8 +1162,14 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
             opt_apply();
         }
         if (k->ok && M.sel == 4) { opt_write(); menu_back_to_level_menu(); }                          /* Continue keeps the values */
+        else if (k->ok && M.sel == 5) menu_enter(0x40);                                                /* port extra: the Display page */
         else if (k->back) { g_opt.sfx = M.opt_bak[0]; g_opt.music = M.opt_bak[1]; g_opt.vib = M.opt_bak[2]; opt_apply(); menu_back_to_level_menu(); }   /* 0x4602a0 */
         break; }
+    case 0x40:                                                         /* port page (docs/DISPLAY.md 4): left/right change a choice, Continue applies + saves, back drops the edit */
+        if ((k->right || k->left) && M.sel >= 1 && M.sel <= 5) { disp_step(M.sel, k->right ? 1 : -1); disp_items(); hud_menu_blink(0.25f); }
+        if (k->ok && M.sel == 6) { g_disp = g_dnow = M.disp; g_disp_dirty = 1; opt_write(); }
+        if ((k->ok && M.sel == 6) || k->back) { M.page = 0x1b; M.sel = 5; M.delay = 0; hud_menu_blink(0); }   /* back to Options on "Display", its backups kept */
+        break;
     case 3: if (!M.p.lock) carousel_update(k, dt); break;
     case 4: if (!M.p.lock && k->back) { panel_close(0, 24); panel_iris(0, 0); } break;   /* 0x45bb30 -> 0x45bb40: iris +0x30 = 0 -> 0; confirm is vt[19] = ret */
     case 7: case 0xa: if (k->ok) menu_enter(1); break;               /* 0x405075: only "Continue" */
@@ -1124,8 +1200,8 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
 }
 
 /* table 0x405af8: the half-black backdrop and whether the world stands still */
-static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 0xb || page == 0xc || page == 0xe || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && page >= 0x18 && page <= 0x1c); }
-static int menu_pauses_world(void) { return g_level != 0 && M.page >= 0x18 && M.page <= 0x1c; }
+static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 0xb || page == 0xc || page == 0xe || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && ((page >= 0x18 && page <= 0x1c) || page == 0x40)); }   /* 0x40: port page, as 0x1b */
+static int menu_pauses_world(void) { return g_level != 0 && ((M.page >= 0x18 && M.page <= 0x1c) || M.page == 0x40); }
 
 /* the page layer of a frame: items, then the iris, then the logo (docs/TITLE.md 5.4) */
 static void menu_draw(float dt)
@@ -3249,6 +3325,7 @@ int main(int argc, char **argv)
     int door_inst = -1, door_act = 17; double door_at = -1;                        /* --door INST ACT T (testing) */
     int new_game = 0, logo = -1; const char *next_name = NULL; double next_at = 0;   /* --nologo / --logo: the logo films off / on even for a scripted run */                              /* --next LVL T: change to level LVL after T s (testing) */
     double walk_for = 0, walk_at = getenv("WOODY_WALKAT") ? atof(getenv("WOODY_WALKAT")) : 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
+    int res_w = 0, res_h = 0, full_arg = -1, wide_arg = -1;                          /* --res WxH, --windowed / --fullscreen, --aspect 4:3|wide (port extras) */
     for (int i = (argc > 2 && argv[2][0] != '-') ? 3 : 2; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--cam") && i + 5 < argc) { for (int k = 0; k < 5; k++) cam_args[k] = (float)atof(argv[i + 1 + k]); have_cam = 1; i += 5; fly = 1; }
@@ -3275,8 +3352,26 @@ int main(int argc, char **argv)
             g_stats.have = 1; g_stats.stats[0] = atoi(argv[i + 1]); g_stats.stats[2] = atoi(argv[i + 2]);
             g_stats.stats[1] = atoi(argv[i + 3]); g_stats.stats[3] = atoi(argv[i + 4]); g_stats.time = (float)atof(argv[i + 5]); i += 5; }
         else if (!strcmp(argv[i], "--next") && i + 2 < argc) { next_name = argv[i + 1]; next_at = atof(argv[i + 2]); i += 2; }
+        else if (!strcmp(argv[i], "--res") && i + 1 < argc) { if (sscanf(argv[i + 1], "%dx%d", &res_w, &res_h) != 2 || res_w < 320 || res_h < 240) res_w = res_h = 0; i += 1; }   /* port extras (docs/DISPLAY.md 5) */
+        else if (!strcmp(argv[i], "--windowed")) full_arg = 0;
+        else if (!strcmp(argv[i], "--fullscreen")) full_arg = 1;
+        else if (!strcmp(argv[i], "--aspect") && i + 1 < argc) { wide_arg = strcmp(argv[i + 1], "4:3") != 0; i += 1; }
+    }
+    SetProcessDPIAware();                                                              /* port extra: real pixels on a scaled desktop, so 4K is 4K */
+    opt_read();                                                                        /* woodyre.cfg: the volumes (applied at sound start) and the display */
+    {   /* the display that runs: the cfg's, but a screenshot run keeps the fixed default (1280x800 window, wide, vsync) whatever the
+         * cfg says; the command line and WOODY_VSYNC / WOODY_FPSCAP override both */
+        static const Display def = { 1, 1280, 800, 0, 1, 0 };
+        g_dnow = shot_path || getenv("WOODY_SHOTSEQ") || getenv("WOODY_LOGOSHOT") ? def : g_disp;
+        if (res_w) { g_dnow.w = res_w; g_dnow.h = res_h; }
+        if (full_arg >= 0) g_dnow.full = full_arg;
+        if (wide_arg >= 0) g_dnow.wide = wide_arg;
+        if (getenv("WOODY_VSYNC")) g_dnow.vsync = atoi(getenv("WOODY_VSYNC")) != 0;
+        if (getenv("WOODY_FPSCAP")) g_dnow.cap = atoi(getenv("WOODY_FPSCAP")) < 0 ? 0 : atoi(getenv("WOODY_FPSCAP"));
     }
     Window win; if (win_open(&win, "WoodyRE", 1280, 800)) return 1;
+    if (g_dnow.full || g_dnow.w != 1280 || g_dnow.h != 800) disp_apply(&win);
+    else { win_vsync(g_dnow.vsync); if (g_dnow.cap > 0) timeBeginPeriod(1); }
     if (g_stats.have) g_stats.level = g_prev_level;                                    /* --stats belongs to the level --prev says we came from */
     save_reset(); if (file_read() <= 0) file_reset();                                     /* boot: the active struct is a reset one (0x402587); the slots come from woodyre.sav */
     if (!new_game && level_index(lvl) != 0) {                                          /* testing: straight into a level plays with a saved slot (WOODY_SLOT=1..4, else the first used one) */
@@ -3285,7 +3380,7 @@ int main(int argc, char **argv)
         if (s >= 0 && s < 4) { g_save = g_file.slot[s]; g_slot = s; }
     }
     if (!getenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
-    opt_read(); opt_apply();                                                           /* 0x4691e2: the volumes from the cfg at sound start */
+    opt_apply();                                                                       /* 0x4691e2: the volumes from the cfg at sound start */
     in_read_cfg(dir);                                                                  /* 0x405e0f: Woody.cfg (key bindings, controller mode) */
     if (logo < 0) logo = !(argc > 2 && argv[2][0] != '-') && !getenv("WOODY_NOLOGO") && !shot_path && enter_at < 0 && !getenv("WOODY_KEYS") && !getenv("WOODY_SHOTSEQ");
     if (logo) logos_play(&win, dir);                                                   /* boot state 2 (0x402649): only when booting to the title; a level on the command line or a scripted run skips them */
@@ -3301,7 +3396,7 @@ int main(int argc, char **argv)
     if (!L.have_player) fly = 1;
     if (L.have_player && have_pos) { L.player.pos.x = pos_args[0]; L.player.pos.y = pos_args[1]; L.player.pos.z = pos_args[2]; L.player.floor_y = L.player.pos.y - 1000.0f; }
     if (L.have_player && have_yaw) L.player.yaw = yaw_arg;
-    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, l_prev = 0; static int key_prev[256]; int paused = 0, dbg_paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[4] = {0, 0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
+    double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, l_prev = 0; static int key_prev[256]; int paused = 0, dbg_paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[4] = {0, 0, 0, 0}, p_prev = 0, f5_prev = 0, f11_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
         {   /* WOODY_KEYS="T:KEY T:KEY:D ...": each entry holds KEY (RET ESC UP DOWN LEFT RIGHT SPACE CTRL RCTRL SHIFT BACK NUM0, a
@@ -3321,7 +3416,11 @@ int main(int argc, char **argv)
             for (int k = 0; k < 256; k++) if (held_until[k] > 0 && wt >= held_until[k]) { win.keys[k] = 0; held_until[k] = 0; }
         }
         { static double cap = -1; if (cap < 0) cap = getenv("WOODY_FPS") ? atof(getenv("WOODY_FPS")) : 0;   /* WOODY_FPS=N: testing, frame-rate dependent code at N fps */
-          if (cap > 0) while (win_time() - last < 1.0 / cap) Sleep(0); }
+          if (cap > 0) while (win_time() - last < 1.0 / cap) Sleep(0);
+          else if (g_dnow.cap > 0) { double due = last + 1.0 / g_dnow.cap, tn; while ((tn = win_time()) < due) if (due - tn > 0.002) Sleep(1); } }   /* port extra: the frame cap of the Display page / WOODY_FPSCAP (the original has none) */
+        if (win.keys[VK_F11] && !f11_prev) { g_dnow.full ^= 1; g_disp_dirty = 1; }   /* port extra: F11 = fullscreen / window for this run (the Display page saves it) */
+        f11_prev = win.keys[VK_F11];
+        if (g_disp_dirty) disp_apply(&win);
         double now = win_time(); float dt = (float)(now - last); last = now;
         if (dt > 0.1f) dt = 0.1f;
         g_clock += dt; g_now = (float)g_clock;         /* 0x401880: everything (Perso timers, animations, the script VM) runs on this one clock, so a hitch cannot make script delays
@@ -3508,7 +3607,9 @@ int main(int argc, char **argv)
         uniq_update();                                                                 /* 0x44f770 */
         if (M.quitting && (M.quit_t -= dt) <= 0) win.quit = 1;                       /* 0x404cb0 -> app+4 */
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
-        rnd_frame(&L.rnd, &win, &cam, g_now);                  /* the same game clock as the instances: a texture override (message 16) starts on it */
+        int vx, vy, vw, vh; disp_view(&win, &vx, &vy, &vw, &vh);                     /* port extra (docs/DISPLAY.md 3): the 3D view box, 4:3 or the whole window */
+        Window view = win; view.vx = vx; view.vy = vy; view.width = vw; view.height = vh;
+        rnd_frame(&L.rnd, &view, &cam, g_now);                 /* the same game clock as the instances: a texture override (message 16) starts on it */
         audio_update(snd_owner_active);                                             /* 0x401ee7: after the draw, with this frame's instance list */
         {   /* 2D layer (docs/HUD_TEXT.md 5.4): HUD, then the text box, then the fades. No HUD in menus, BlackBox, cinematics and the fall death camera (0x401e19) */
             {   /* pickups: no mesh, a pulsing sprite (50..110, period 1 s) 50 above the instance; type 34 sits on its animated volume node */
@@ -3579,11 +3680,12 @@ int main(int argc, char **argv)
                 printf("  --door: 1040 [inst %d, action %d]", door_inst, door_act), puts("");
             }
             for (int i = 0; i < g_npick; i++) {                          /* 0x448510: the flight starts from where the bonus was on screen */
-                float sc[2]; int on = rnd_project(&win, &cam, g_pick[i].pos, &sc[0], &sc[1]);
+                float sc[2]; int on = rnd_project(&view, &cam, g_pick[i].pos, &sc[0], &sc[1]);
+                if (on && vw * 3 > vh * 4) { float hw = 240.0f * vw / vh; sc[0] = 320.0f - hw + sc[0] / 640.0f * 2.0f * hw; }   /* 0..640 over a wide view -> the HUD's virtual x (port extra) */
                 hud_anim_pickup(g_pick[i].kind, on ? sc : NULL, g_char);
             }
             g_npick = 0;
-            hud_begin(win.width, win.height);
+            hud_begin_view(vx, vy, vw, vh);                              /* port extra: 640x480 kept 4:3 and centred (docs/DISPLAY.md 3) */
             storm_overlay_draw(paused, dt);                              /* 0x46e0d0: after the effects (0x46d040), before the HUD */
             if (L.have_player && !fly)                                   /* 0x448450: 1 on the pause pages (extended HUD), 2 hidden on every other page and the results (0x404e9d) */
                 hud_state(g_res.on ? 2 : M.page < 0 ? 0 : (M.page == 0x18 || M.page == 0x19) ? 1 : 2, L.player.inst->type == 18 || L.player.inst->type == 19);
@@ -3664,6 +3766,7 @@ int main(int argc, char **argv)
           if (g_sfade.rest > 0 && g_sfade.total > 0) { float k = g_sfade.rest / g_sfade.total, b = g_sfade.out ? k : 1.0f - k; if (b < f) f = b; g_sfade.rest -= dt; if (g_sfade.rest <= 0 && g_sfade.out && !g_sfade.script) g_sfade.hold = 1; }
           /* a finished fade-out keeps the 3D picture black until the next fade-in; that is drawn under the 2D layer (above) */
           if (f < 1.0f) rnd_fade(f); }
+        hud_bars(win.width, win.height, vx, vy, vw, vh);                              /* port extra: the pillar- / letterbox bars black */
         {   /* WOODY_SHOTSEQ="prefix start step count": a burst of screenshots prefix_NNN.ppm (testing: popping, flicker) */
             static char pre[200]; static double st, sp; static int cnt = -1, k; if (cnt < 0) { cnt = 0; if (getenv("WOODY_SHOTSEQ")) sscanf(getenv("WOODY_SHOTSEQ"), "%199s %lf %lf %d", pre, &st, &sp, &cnt); }
             if (k < cnt && now - t0 >= st + k * sp) { char fn[256]; snprintf(fn, sizeof fn, "%s_%03d.ppm", pre, k); rnd_screenshot(&win, fn); k++; }
@@ -3682,6 +3785,7 @@ int main(int argc, char **argv)
             t0 = L.t0; last = win_time(); sel = (g_ins.nmodels && g_ins.models[0].ninstances) ? &g_ins.models[0].instances[0] : NULL;
             lvl = L.name; continue;
         }
+        if (now - fps_t > 2.0 && getenv("WOODY_FPSLOG")) printf("fps %.1f\n", frames / (now - fps_t));   /* testing: the frame cap / vsync */
         if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE%s - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", g_level == 0 ? " - TITLE: Enter = new game, L = continue" : "", lvl, frames / (now - fps_t), L.vm.time, L.vm.frame, L.vm.stat_msgs_total, fly ? "fly" : "play", L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.on_ground ? "ground" : "air", L.player.events_sent, L.player.health, L.player.lives, L.player.bonus_got, L.player.bonus_total); SetWindowTextA((HWND)win.hwnd, title); if (L.have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.vel.x, L.player.vel.y, L.player.vel.z, L.player.on_ground ? (L.player.floor_is_hull ? "hull" : "ground") : "air", L.player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
     }
     opt_write(); level_free(&L); audio_shutdown(); win_close(&win);   /* 0x401130: the cfg is written back at exit */

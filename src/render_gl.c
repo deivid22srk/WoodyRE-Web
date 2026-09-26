@@ -58,6 +58,27 @@ int win_open(Window *w, const char *title, int width, int height)
 }
 void win_poll(Window *w) { MSG m; w->mouse_dx = w->mouse_dy = 0; while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageA(&m); } }
 void win_swap(Window *w) { SwapBuffers((HDC)w->hdc); }
+void win_mode(Window *w, int width, int height, int full)
+{
+    HWND h = (HWND)w->hwnd; MONITORINFO mi = { sizeof mi };
+    GetMonitorInfoA(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
+    if (full) {
+        SetWindowLongA(h, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        return;
+    }
+    RECT rc = { 0, 0, width, height }; AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+    int fw = rc.right - rc.left - width, fh = rc.bottom - rc.top - height, aw = mi.rcWork.right - mi.rcWork.left - fw, ah = mi.rcWork.bottom - mi.rcWork.top - fh;
+    if (width > aw || height > ah) { float s = (float)aw / width < (float)ah / height ? (float)aw / width : (float)ah / height; printf("window %dx%d does not fit the screen: %dx%d\n", width, height, (int)(width * s), (int)(height * s)); width = (int)(width * s); height = (int)(height * s); }
+    SetWindowLongA(h, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
+    SetWindowPos(h, HWND_NOTOPMOST, mi.rcWork.left + (aw - width) / 2, mi.rcWork.top + (ah - height) / 2, width + fw, height + fh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+}
+int win_vsync(int interval)
+{
+    typedef BOOL (WINAPI *SwapFn)(int);
+    SwapFn f = (SwapFn)(void (*)(void))wglGetProcAddress("wglSwapIntervalEXT");
+    return f && f(interval) ? 0 : -1;
+}
 
 /* screen brightness like the original's fader 0x4776d0: 1 = normal, 0 = black */
 void rnd_fade(float brightness)
@@ -1297,7 +1318,7 @@ static void draw_dyn_world(Renderer *r)
 
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s)
 {
-    glViewport(0, 0, w->width, w->height);
+    glViewport(w->vx, w->vy, w->width, w->height);
     g_tex_now = time_s; g_cam_pos = cam->pos;
     for (uint32_t g = 0; g < r->tex->ngroups; g++) {                 /* texture animation: frame_count frames over anim_duration seconds */
         TexGroup *tg = &r->tex->groups[g];
@@ -1336,7 +1357,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
     if (cam->letterbox) {                     /* image strip y = 30..390 of 480: black above (30) and below (90), docs/CAMERA_SCRIPT.md 2.4 */
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
-        glViewport(0, (int)(w->height * (cam->letterbox == 1 ? 0.125f : 0.1875f)), w->width, (int)(w->height * 0.75f));   /* 1 = centred (cinematics, 0x41f8d0), 2 = shifted up (mode 4) */
+        glViewport(w->vx, w->vy + (int)(w->height * (cam->letterbox == 1 ? 0.125f : 0.1875f)), w->width, (int)(w->height * 0.75f));   /* 1 = centred (cinematics, 0x41f8d0), 2 = shifted up (mode 4) */
     }
     float proj[16] = { f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (zf + zn) / (zn - zf), -1, 0, 0, 2 * zf * zn / (zn - zf), 0 };
     glMultMatrixf(proj);
