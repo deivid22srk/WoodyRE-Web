@@ -680,6 +680,8 @@ static struct {
     int results;                               /* the save pages were opened by the results screen */
     int quitting; float quit_t;                /* 0x404cb0: fade out, then leave */
     int save_s;                                /* app+0x60: the slot chosen on page 5 */
+    int hs_char;                               /* page 4 +0x3c: whose high scores (set by page 3's SEE HIGH SCORES) */
+    int wait, wait_r;                          /* app+0x5c: the frames a wait page 0xb / 0xc / 0xe still stands; the read result it hands on */
 } M = { -1, 0, 0, { 0 }, 0, 1, 1, { 0 }, 0, 35.0f };
 static float g_title_t;                        /* seconds since the title pose (action 0x49) started: the orbit phase (docs/TITLE.md 1.4) */
 static int g_intro_obj;                        /* message 1160 arg 2 & 0xffffff: script object 115 */
@@ -866,7 +868,7 @@ static void carousel_update(const MenuKeys *k, float dt)
     if (k->ok) {                                                                    /* 0x45ee50: only a free figure; no sound */
         if (!g_car.open[kk]) return;
         if (M.sel == 0) { panel_iris(0.37f, 0); M.p.closing = M.p.lock = 1; M.p.t = M.p.ti = 0; M.p.result = 14 + kk; M.p.wait = 0.5f; g_car.slide_out = 1; g_car.slide_in = 0; M.p1_iris = 0; }
-        else if (kk != 3) printf("menu: SEE HIGH SCORES (page 4, class 0x45bfb0) is not ported\n");
+        else if (kk != 3) { panel_iris(0.37f, 0); M.p.closing = M.p.lock = 1; M.p.t = M.p.ti = 0; M.p.result = 4; M.p.wait = 0.5f; g_car.slide_out = 1; g_car.slide_in = 0; M.hs_char = kk; }   /* the same close, result 4, [0x5e5a8c]+0x3c = k */
     } else if (k->back) { panel_close(0, 24); g_car.slide_out = 1; g_car.slide_in = 0; }
 }
 static int car_location(const SaveSlot *s, int c)                                  /* 0x450790: the first unfinished level of that character, -1 = all done */
@@ -875,13 +877,13 @@ static int car_location(const SaveSlot *s, int c)                               
     for (int L = a; L <= b; L++) if (!s->chr[c].rec[L].done) return L;
     return -1;
 }
+/* 0x45ec50 (table 0x45ed60), the same pairs as the rows of page 4: 47 Space / 48 Pirate / 49 House + 51..54 Part A..D / 55 Race */
+static const uint8_t k_loc_w[29] = { [2]=47,[3]=47,[4]=48,[5]=48,[6]=48,[7]=49,[8]=49,[9]=49,[10]=49, [12]=47,[13]=47,[14]=48,[15]=48,[16]=49,[17]=49, [19]=47,[20]=47,[21]=48,[22]=48,[23]=49,[24]=49 };
+static const uint8_t k_loc_p[29] = { [2]=51,[3]=52,[4]=51,[5]=52,[6]=53,[7]=51,[8]=52,[9]=53,[10]=54, [12]=51,[13]=55,[14]=51,[15]=55,[16]=51,[17]=55, [19]=51,[20]=55,[21]=51,[22]=55,[23]=51,[24]=55 };
 static void carousel_draw(float dt)
 {
     (void)dt;
     if (M.p.lock && M.p.ti >= 0.5f) return;                                        /* 0x45b990: no content once the close has run out */
-    /* 0x45ec50 (table 0x45ed60): 47 Space / 48 Pirate / 49 House + 51..54 Part A..D / 55 Race */
-    static const uint8_t LW[29] = { [2]=47,[3]=47,[4]=48,[5]=48,[6]=48,[7]=49,[8]=49,[9]=49,[10]=49, [12]=47,[13]=47,[14]=48,[15]=48,[16]=49,[17]=49, [19]=47,[20]=47,[21]=48,[22]=48,[23]=49,[24]=49 };
-    static const uint8_t LP[29] = { [2]=51,[3]=52,[4]=51,[5]=52,[6]=53,[7]=51,[8]=52,[9]=53,[10]=54, [12]=51,[13]=55,[14]=51,[15]=55,[16]=51,[17]=55, [19]=51,[20]=55,[21]=51,[22]=55,[23]=51,[24]=55 };
     static const int face[4] = { 0, 2, 1, 1 };                                     /* record +0x58 */
     const SaveSlot *s = &g_save; int k = g_car.sel - 1;
     HudCarousel h; memset(&h, 0, sizeof h);
@@ -890,7 +892,7 @@ static void carousel_draw(float dt)
     if (h.stats) {
         const SaveChar *sc = &s->chr[k]; int L = car_location(s, k);
         h.face = face[k]; h.lives = sc->lives; h.unique = sc->unique; h.charges = sc->charges; h.health = sc->health; h.pct = slot_char_pct(s, k);
-        if (L >= 0) { h.world = LW[L]; h.part = LP[L]; }
+        if (L >= 0) { h.world = k_loc_w[L]; h.part = k_loc_p[L]; }
     }
     float t = M.p.t, sl = g_car.slide_in ? 0.5f - t : g_car.slide_out ? t : 0;
     h.off = sl * -600.0f;
@@ -902,6 +904,29 @@ static void carousel_draw(float dt)
     for (int c = 0; c < 3; c++) for (int L = 0; L < 29; L++) h.total += s->chr[c].rec[L].best;
     h.total += s->extra;                                                           /* 0x450a10 */
     hud_carousel(&h);
+}
+
+/* ---- page 4: the high scores of one character (docs/MENU_LOAD.md 4.8; class 0x45bfb0, 0x40 B, vtable 0x4ab368,
+ * global [0x5e5a8c]). A panel page whose enter 0x45bfd0 zeroes the iris target +0x30 right after the base enter, so
+ * the panel base draws a black screen instead of the ring (0x45ba29); the page has one empty item (0x4b5e20: string 1,
+ * result 5, y 0.8) and never draws a list. Confirm does nothing (vt[19] is an empty function), "back" closes with
+ * SoundFx 0x3f and result 24, which the handler 0x405749 turns into page 3 again. The rows (0x45ca40 / 0x45cd80 /
+ * 0x45cf90) follow the play order of the character's levels and stop at the first one not done (0x4509e0). */
+static void scores_draw(void)
+{
+    static const int8_t first[3] = { 2, 12, 19 }, last[3] = { 10, 17, 24 }, face[3] = { 0, 2, 1 };   /* 0x45c150 -> 0x45c230(k): 0 -> 0, 1 -> 2, 2 -> 1 */
+    int c = M.hs_char >= 0 && M.hs_char < 3 ? M.hs_char : 0;
+    HudScores h; memset(&h, 0, sizeof h); h.face = face[c];
+    float ti = M.p.ti;                                                             /* 0x45bff0: +0x28 against +0x34 = 0.5 */
+    if (ti <= 0.5f) { h.slide = (M.p.closing ? ti : 0.5f - ti) * 600.0f / 0.5f; h.grow = (M.p.closing ? 0.5f - ti : ti) / 0.5f; } else { h.slide = 0; h.grow = 1; }
+    for (int L = first[c]; L <= last[c] && h.nrows < 9; L++) {
+        const SaveRec *r = &g_save.chr[c].rec[L]; if (!r->done) break;
+        HudScoreRow *w = &h.row[h.nrows++];
+        w->world = k_loc_w[L]; w->part = k_loc_p[L]; w->best = r->best; w->time = r->time;
+        w->race = L == 13 || L == 15 || L == 17 || L == 20 || L == 22 || L == 24;  /* 0x45c702: 0xd 0xf 0x11 0x14 0x16 0x18 */
+        w->en_got = r->st[1]; w->en_tot = r->st[0]; w->w_got = r->st[3]; w->w_tot = r->st[2];   /* 0x4502c0 / 0x450290, 0x450320 / 0x4502f0 */
+    }
+    hud_scores(&h);
 }
 
 static void title_music_next(void) { if (++M.title_music == 2) M.title_music = 0; audio_music(M.title_music == 1 ? 0 : 48); }   /* 0x404e30: track 0 "Menu" after a load, 48 "Menu02" after an attract */
@@ -917,6 +942,7 @@ static void menu_enter(int page)
         break;
     case 2: panel_enter(); for (int k = 0; k < 4 && !slot_pct(&g_file.slot[M.slot2_sel - 1]); k++) if (M.slot2_sel < 4) M.slot2_sel++; break;   /* 0x45dd30 */
     case 3: carousel_enter(); break;
+    case 4: panel_enter(); panel_iris(0, 0); M.sel = 0; break;          /* 0x45bfd0: base enter, then +0x30 = 0 */
     case 5: panel_enter(); panel_iris(1.0f, 0.37f); break;           /* 0x45e230: you come from the game */
     case 0x1b:                                                         /* 0x460240: the cursor on "Sound FX volume", the values backed up */
         M.opt_bak[0] = g_opt.sfx; M.opt_bak[1] = g_opt.music; M.opt_bak[2] = g_opt.vib;
@@ -946,16 +972,27 @@ static void menu_new_game(EkoVM *vm, int attract)
     else if (!attract) { save_reset(); g_slot = -1; request_level(1, 0.5f); menu_off(); return; }   /* no intro in this House script */
     M.page = 0x1f; M.sel = 0;
 }
-static void menu_load_chain(void)                                     /* 0x4051da + page 0xb 0x405276 */
+static void menu_load_chain(void)                                     /* 0x4051da: no file -> page 7, else the wait page 0xb (app+0x5c = 0) */
 {
     int r = file_read();
-    menu_enter(r == 0 ? 7 : r < 0 ? 0xa : 2);
+    if (r == 0) { menu_enter(7); return; }
+    M.wait = 0; M.wait_r = r; menu_enter(0xb);                           /* 0x405276 reads one frame later: failed -> 0xa, else page 2 */
 }
-static void menu_save_slot(int s)                                     /* 0x405536 / 0x405609 -> 0x456dc0 + write */
+static void menu_save_slot(int s)                                     /* 0x405536 / 0x405609 -> 0x456dc0, then the wait page 0xc (app+0x5c = 2) */
 {
     g_file.slot[s] = g_save; g_file.music[s] = (uint32_t)g_opt.music; g_file.sfx[s] = (uint32_t)g_opt.sfx; g_file.vib[s] = g_opt.vib * 0.01f;
-    int ok = file_write(); if (ok) g_slot = s;
-    menu_enter(ok ? 8 : 9);
+    M.save_s = s; M.wait = 2; menu_enter(0xc);
+}
+/* the wait pages 0xb (read for "Load game"), 0xc (write) and 0xe (read before page 5): empty pages over the dim layer;
+ * the handler counts app+0x5c down once per frame and acts on the frame after it reached 0 (0x4052a4) */
+static void menu_wait(void)
+{
+    if (M.wait > 0) { M.wait--; return; }
+    switch (M.page) {
+    case 0xb: menu_enter(M.wait_r < 0 ? 0xa : 2); break;                 /* 0x405276 */
+    case 0xe: menu_enter(M.wait_r < 0 ? 6 : 5); break;                   /* 0x405483: unreadable -> back to "Do you want to save?" */
+    case 0xc: { int ok = file_write(); if (ok) g_slot = M.save_s; menu_enter(ok ? 8 : 9); break; }   /* 0x405662 */
+    }
 }
 
 /* one frame of the current page; runs after the world (0x404e90: Game_Frame first, then the menu), not while a
@@ -964,7 +1001,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
 {
     if (M.quitting || g_next_level >= 0) return;
     /* the panel clock: the deferred result of pages 1, 2, 3, 5 */
-    if (M.page == 1 || M.page == 2 || M.page == 3 || M.page == 5) {
+    if (M.page == 1 || M.page == 2 || M.page == 3 || M.page == 4 || M.page == 5) {
         M.p.t += dt; M.p.ti += dt; M.p.iris_t += dt;
         if (M.p.opening && M.p.t >= 0.5f) M.p.opening = 0;
         if (M.p.closing && M.p.ti > M.p.wait) {
@@ -986,6 +1023,10 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
                 car_hide();                                                                               /* 0x45e870: the 8 figures go with the result */
                 if (r == 24) { menu_enter(1); return; }
                 if (r >= 14 && r <= 17) { static const int hub[4] = { 1, 11, 18, 25 }; M.p1_iris = 0; menu_off(); request_level(hub[r - 14], 0.4f); }   /* 0x4056c8 */
+                else if (r == 4) menu_enter(4);                                                           /* 0x40573b: SEE HIGH SCORES */
+                return;
+            case 4:
+                if (r == 24) menu_enter(3);                                                               /* 0x405749 */
                 return;
             case 5:
                 if (r == 24) { menu_enter(6); return; }
@@ -995,6 +1036,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
             }
         }
     }
+    if (M.page == 0xb || M.page == 0xc || M.page == 0xe) { menu_wait(); return; }
     if (M.delay > 0) { M.delay -= dt; return; }                      /* 0x4464f0: no input while the delay runs */
     int32_t *iv = g_have_intro && (g_intro_var & 0xffffff) < vm->nvars ? &vm->varval[g_intro_var & 0xffffff] : NULL;
     int n; float yf; const MenuItem *it = menu_items(M.page, &n, &yf);
@@ -1053,6 +1095,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
         else if (k->back) { g_opt.sfx = M.opt_bak[0]; g_opt.music = M.opt_bak[1]; g_opt.vib = M.opt_bak[2]; opt_apply(); menu_back_to_level_menu(); }   /* 0x4602a0 */
         break; }
     case 3: if (!M.p.lock) carousel_update(k, dt); break;
+    case 4: if (!M.p.lock && k->back) { panel_close(0, 24); panel_iris(0, 0); } break;   /* 0x45bb30 -> 0x45bb40: iris +0x30 = 0 -> 0; confirm is vt[19] = ret */
     case 7: case 0xa: if (k->ok) menu_enter(1); break;               /* 0x405075: only "Continue" */
     case 2: case 5: {
         int *sel = M.page == 2 ? &M.slot2_sel : &M.slot5_sel;
@@ -1063,7 +1106,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
         else if (k->back) panel_close(0, 24);
         break; }
     case 6:                                                            /* 0x405358 */
-        if (k->ok && M.sel == 1) { if (file_read() <= 0) file_reset(); menu_enter(5); }            /* no file / unreadable: four free slots */
+        if (k->ok && M.sel == 1) { int r = file_read(); if (r == 0) { file_reset(); menu_enter(5); } else { M.wait = 0; M.wait_r = r; menu_enter(0xe); } }   /* 0x405358: no file -> four free slots (0x456e20) */
         else if (k->ok && M.sel == 2) menu_off();                                                   /* results_update closes the panel */
         break;
     case 0x17: if (k->ok && M.sel == 1) menu_save_slot(M.save_s); else if ((k->ok && M.sel == 2) || k->back) menu_enter(6); break;   /* 0x405586 */
@@ -1081,7 +1124,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
 }
 
 /* table 0x405af8: the half-black backdrop and whether the world stands still */
-static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && page >= 0x18 && page <= 0x1c); }
+static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 0xb || page == 0xc || page == 0xe || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && page >= 0x18 && page <= 0x1c); }
 static int menu_pauses_world(void) { return g_level != 0 && M.page >= 0x18 && M.page <= 0x1c; }
 
 /* the page layer of a frame: items, then the iris, then the logo (docs/TITLE.md 5.4) */
@@ -1099,6 +1142,7 @@ static void menu_draw(float dt)
         HudSlots h; slots_info(&h, page); if (!(M.p.lock && M.p.ti >= 0.5f)) hud_slot_list(&h, dt);
         break; }
     case 3: if (M.p.opening && M.p.t == 0) hud_iris(0); hud_iris(panel_iris_v()); carousel_draw(dt); break;
+    case 4: hud_rect(0xfe000000); if (!(M.p.lock && M.p.ti >= 0.5f)) scores_draw(); break;   /* 0x45ba29: iris target 0 = a black rect, then vt[17] */
     case 0x1f: case -1: break;
     default: if (it) hud_menu_items(it, n, yf, M.sel, M.delay <= 0); break;
     }
@@ -1894,6 +1938,20 @@ static void fx_rotmat(int a0, int a1, int a2, float M[9])                    /* 
     M[6] = S1;       M[7] = -S0 * C1;                M[8] = C0 * C1;
 }
 static struct { int kind; Vec3 pos; } g_pick[8]; static int g_npick;        /* pickups waiting to be projected: 0x448510 needs the view matrix, which the frame loop owns */
+/* ---- unique items, type 36 (docs/BONUS.md 2.3 / 2.5): the ctor 0x44f67e numbers them in the order the level script
+ * makes them (1200 [slot, 36]; counter [0x5e54f0], back to 0 with the level). Collecting one (0x44f700) sets the byte
+ * rec+0x05+n of this level in the save block of the Perso's character (0x450760(cfg+0x380, level, n)); the update
+ * 0x44f770 tests that byte (0x450730) every frame and takes the item out of the world (0x407850) while it is set, so
+ * an item taken once never comes back in that save, not even after a reload of the level. */
+static Instance *g_uniq[64]; static int g_nuniq;
+static uint8_t *uniq_flag(const Instance *in)
+{
+    int n = 0; while (n < g_nuniq && g_uniq[n] != in) n++;
+    if (n >= g_nuniq || n >= 32 || g_level < 0 || g_level >= 29) return NULL;   /* rec+0x05 holds 32; the original does not check (0x450760) */
+    return &g_save.chr[g_char].rec[g_level].uniq[n];
+}
+static void uniq_update(void) { for (int i = 0; i < g_nuniq; i++) { const uint8_t *f = uniq_flag(g_uniq[i]); if (f && *f) g_uniq[i]->visible = 0; } }
+
 void game_pickup_fx(int n, Vec3 pos)                                         /* 0x4793d0: n = 0 life, 1 charge, 2 W, 3 unique, 4 race/invincible */
 {
     FxRec *e;
@@ -2743,6 +2801,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     (void)user;
     Instance *in = m->nargs ? slot_instance(m->args[0]) : NULL;
     if (m->id >= 500 && m->id <= 800 && m->nargs && slot_camera(m->args[0])) cam_msg(m, slot_camera(m->args[0]));
+    if (m->id == 1200 && in && m->nargs > 1 && m->args[1] == 36 && g_nuniq < 64) g_uniq[g_nuniq++] = in;   /* 0x44f67e: the sequence number n */
     switch (m->id) {
     /* The black outline (SetFlags bit 0x20) comes from the level script alone: every level sends message 45 with 0x21
      * right after this message to each actor the original draws with a rim, the bosses included. The exceptions are
@@ -2809,6 +2868,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             int fx = t == 30 ? 0 : t == 35 ? 1 : t == 34 ? 2 : t == 36 ? 3 : (t == 37 || t == 38) ? 4 : -1;
             int kind = t == 30 ? 1 : t == 36 ? 2 : t == 35 ? 3 : t == 34 ? 4 : t == 37 ? 5 : 0;       /* 0x448510; type 38 has no HUD animation */
             in->visible = 0;                                                        /* 0x407850: cell = -1 */
+            if (t == 36) { uint8_t *f = uniq_flag(in); if (f) { *f = 1; printf("  unique item %d of level %d taken (character %d)\n", (int)(f - g_save.chr[g_char].rec[g_level].uniq), g_level, g_char); } }   /* 0x44f755: 0x450760 */
             if (fx >= 0) game_pickup_fx(fx, fp);
             if (kind && g_npick < 8) { g_pick[g_npick].kind = kind; g_pick[g_npick].pos = fp; g_npick++; }   /* projected and started in the frame loop, where the camera is */
         }
@@ -2982,7 +3042,7 @@ static void level_free(Level *L)
 {
     g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); memset(g_sparks, 0, sizeof g_sparks); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
-    car_forget();
+    car_forget(); g_nuniq = 0;                                                    /* 0x44f6c6: [0x5e54f0] = 0 */
     memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); g_nenv = 0; g_nflies = 0; water_reset(NULL); storm_reset(); g_nfx = 0; g_ntorch = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); g_nbplume = 0; memset(g_smoke_on, 0, sizeof g_smoke_on); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     ambient_reset();                                                               /* class 90 modes 1 / 2 (ambient.c) */
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
@@ -3344,6 +3404,7 @@ int main(int argc, char **argv)
         double pt2 = win_time();
         if (g_level != 0 && M.page < 0 && mk.esc_prs && L.have_player && !fly && !g_res.on && !cin_running() && g_next_level < 0 && (L.player.game_state == 2 || g_level == 25)) { pause_open(); paused = 1; }   /* 0x403331: action 9, in state 1 only while 0x445980 (Game state 2) */
         if (L.have_player && !fly) { menu_update(&L.vm, &mk, dt); carousel_frame(&cam, dt); }   /* the carousel sits in front of the final title camera */
+        uniq_update();                                                                 /* 0x44f770 */
         if (M.quitting && (M.quit_t -= dt) <= 0) win.quit = 1;                       /* 0x404cb0 -> app+4 */
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
         rnd_frame(&L.rnd, &win, &cam, g_now);                  /* the same game clock as the instances: a texture override (message 16) starts on it */
@@ -3423,10 +3484,12 @@ int main(int argc, char **argv)
             g_npick = 0;
             hud_begin(win.width, win.height);
             storm_overlay_draw(paused, dt);                              /* 0x46e0d0: after the effects (0x46d040), before the HUD */
+            if (L.have_player && !fly)                                   /* 0x448450: 1 on the pause pages (extended HUD), 2 hidden on every other page and the results (0x404e9d) */
+                hud_state(g_res.on ? 2 : M.page < 0 ? 0 : (M.page == 0x18 || M.page == 0x19) ? 1 : 2, L.player.inst->type == 18 || L.player.inst->type == 19);
             if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && !g_res.on && (M.page < 0 || M.page == 0x18 || M.page == 0x19) && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
                 const Player *pl = &L.player; int race = pl->inst->type == 18 || pl->inst->type == 19;
                 HudState hs = { g_char, race, pl->lives, race ? pl->race_bonus : pl->bonus_count, race ? pl->race_bonus : pl->bonus_got, pl->bonus_total,
-                                g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, paused || g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };
+                                g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };
                 hud_draw(&hs, dt);
                 if (g_bossbar.on) { hud_boss_bar(g_bossbar.cur, g_bossbar.max, g_bossbar.t); if (!paused) g_bossbar.t += dt; }   /* hud+0x48: drawn by the HUD animator after the HUD */
             }
@@ -3473,6 +3536,7 @@ int main(int argc, char **argv)
             while (e && L.have_player && sscanf(e, "%f %f %f %f%n", &pa[0], &pa[1], &pa[2], &pa[3], &used) == 4) { if (!(posat_done >> k & 1) && now - t0 >= pa[0]) { posat_done |= 1 << k; L.player.pos = (Vec3){ pa[1], pa[2], pa[3] }; L.player.floor_y = pa[2] - 1000.0f; L.player.on_ground = 0; } e += used; k++; } }
         { static int setvar_done; float sv[3]; const char *e = getenv("WOODY_SETVAR"); int k = 0, used;   /* testing: WOODY_SETVAR="T var val [...]" = SetVar T s into the level (W2B boss fight: "1 1 1") */
             while (e && L.have_player && sscanf(e, "%f %f %f%n", &sv[0], &sv[1], &sv[2], &used) == 3) { if (!(setvar_done >> k & 1) && now - t0 >= sv[0]) { setvar_done |= 1 << k; game_var_set((uint32_t)sv[1], (int)sv[2]); } e += used; k++; } }
+        if (getenv("WOODY_DOLLAR")) { double a = 0, b = 0; sscanf(getenv("WOODY_DOLLAR"), "%lf %lf", &a, &b); if (now - t0 >= a && now - t0 < b) g_hud_ext = 1; }   /* testing: WOODY_DOLLAR="T0 T1" = message 1172 every frame between T0 and T1 s (the Jackpot door) */
         {   /* testing: WOODY_MSGAT="T id a0 a1 ...[; T id ...]" = send a script message T s into the level, once (a0 = slot number or
              * reference, e.g. "2 17 216 255 1 100" = message 17 to slot 216: messages no level script sends, like 15/17) */
             static int msgat_done; const char *e = getenv("WOODY_MSGAT"); int k = 0;
