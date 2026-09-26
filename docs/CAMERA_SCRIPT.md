@@ -253,29 +253,117 @@ End: Perso state switch `0x44de44` sets `+0x4ec = 0`; the script switches the ca
 Also the respawn after death (`0x445930` → `0x44a810` → Reset `0x44ab20`, `0x44ad22`) sets `+0x4ec = 0`, and `0x458f90` cuts
 back to the follow camera: the side view only returns once the script sends 1088 again (PERSO_DEATH §3.4).
 
-**Per frame**, `Perso::0x459c70` (only if `+0x4ec`) fills the block `p = CamMgr+0x61c`:
-`p->pos (+8) = player pos`; `p->dir (+0x14)` = walking direction along the plane; `p->h (+4)` = **0** if action 2 (↑) is held,
-**2** if action 3 (↓) or 5 (duck), otherwise **1**; `p->flip (+0x20)` = 1 on the frame the player flips left↔right
-(actions 0/1, `+0x4ed/+0x4ee`; only if mode index 5, not in state 2, `+0x5b4 == 0`, `+0x50c == 0`).
+**Per frame**, `Perso::0x459c70` (called from `0x44b7ca` only while `+0x4ec`, after the key steps `0x457a50`, `0x44ba70`,
+`0x465b10`, `0x44b980`, `0x458bf0` and before the Mover `0x45b0a0`) fills part of the block `p = CamMgr+0x61c`:
+
+```c
+void Perso_SideView(Perso *P)                                          /* 0x459c70 */
+{
+    if (P->moveLock /*+0x238*/ <= 0) {                                /* 0x459c80: while the lock runs, p->flip keeps its value */
+        bool l = Held(0), r = Held(1), flip = false;                  /* 0x459c9f, 0x459cae */
+        if (P->atk /*+0x5b4*/ || P->climbSub /*+0x50c*/ || P->state /*+0x21c*/ == 2 || C->idx /*+0x138*/ != 5)
+            P->+0x4ef = 0;                                            /* 0x459da8 */
+        else if (l) { flip = P->faceR /*+0x4ee*/; P->+0x4ef = 1; P->faceL /*+0x4ed*/ = 1; P->faceR = 0; }   /* 0x459cf1 */
+        else if (r) { flip = P->faceL;            P->+0x4ef = 1; P->faceR = 1; P->faceL = 0; }            /* 0x459d84 */
+        else        P->+0x4ef = 0;
+        if (flip) P->walk (+0x500) *= -1.0f;                          /* 0x459d18, 0x4a9500 = -1.0 */
+        p->flip (+0x20) = flip;                                       /* 0x459d4e: one frame */
+    }
+    p->h (+4) = Held(2) ? 0 : (Held(3) || Held(5)) ? 2 : 1;          /* 0x459db3 */
+    p->pos (+8) = *P->vt[34]();                                       /* 0x459dd4: the feet (+0x1f4, or +0x544 on a platform) */
+    M->dir (+0x3bc) = xzNormalize(P->walk);  |dir| < 0.01 -> dir.x = 1;  M+0x3a4 = M+0x398 = dir;   /* 0x459def..0x459eaa */
+}
+```
+`p->dir (+0x14)` is written **only** by `0x459960` (`0x459b93`: `= d`, the marker direction); the walking vector `+0x500` also
+starts as `d` (`0x459c52`) and is negated on every turn, and the Mover's facing snaps to it every frame. `+0x4ed`/`+0x4ee` say
+which key's way he faces: `v == 1` starts with `+0x4ed` (the left key walks along `d`), `v == 2` with `+0x4ee`. The walk
+`0x45a7b0` moves him (target speed `+0x48`) only while the held key matches the facing (`(Held(0) && +0x4ed) || (Held(1) &&
++0x4ee)`; its swap for `p->side == 1` at `0x45a7eb` swaps both pairs and so changes nothing). `+0x4ef` is written only here.
+A lock that begins in the frame right after a turn (`0x44cce0`; the lock is decremented at the top of the Perso update and tested
+here, and a ground attack that starts on the attack key's release locks at once) leaves `p->flip` at 1, and the camera update
+then flips on every frame of the lock. In `Ahead` the second flip has `start = -(-1) = 1`, so `T = 0` and `0x4251a1` divides
+0 by 0: a NaN that sticks in the blend (`blend != 1.0`, and every later `start = -blend` copies it) until the next SetMode(5) —
+the side camera would be lost (derived from the code, not seen in the original). The port reproduces the stuck byte (W1B,
+`WOODY_KEYS="4.5:RIGHT:3 7.99:CTRL:0.02 8.0:LEFT:0.3"`: the turn at 8.0, the peck on the release one frame later, `flip 1`
+for the 0.47 s of the peck's lock) but takes `t/T = 1` when `T == 0`, so `s` stays where it was and the parity of the lock's
+frames decides whether the look-ahead then sweeps to the new side.
+
+**Init `0x424b30`** (SetMode(5) → `0x41f56b` → `0x41e4e0`, on **every** SetMode(5), also the re-entry path `0x4599a8`):
+```c
+p->flip = 0;  S->A = p->+0x2c;  p->Htarget (+0x24) = p->+0x30;  S->H = p->Htarget;  S->Lat = p->+0x28;   /* no ramp at the start */
+S->blend (+0x340) = 1.0f;  S->sign (+0x344, byte) = 1;  S+0x348..0x38c (blend and ramp states) = 0;
+```
 
 **Update `0x424bf0(dt)`** (sub `S = [CamMgr+0x130]`, `S+0x28c` = A "look-ahead", `S+0x290` = H height, `S+0x294` = Lat side distance):
 
 ```c
 if (!in_world(S->P (+0x298))) S->P = S->prev.pos;
 dir  = normalize(p->dir);  side = normalize((0,-1,0) x dir);
-p->Htarget (+0x24) = (p->h == 0) ? p->+0x34 /*500*/ : (p->h == 1) ? p->+0x30 /*340*/ : p->+0x38 /*0*/;
-ramp(&S->A,   p->+0x2c /*300*/,  rate p->+0x40 /*700 u/s*/);      // 0x425300
-ramp(&S->H,   p->Htarget,        rate p->+0x3c /*400 u/s*/);      // 0x425220
-ramp(&S->Lat, p->+0x28 /*1000*/, rate p->+0x44 /*200 u/s*/);      // 0x4253e0
-   // ramp: on a new target: T = |target - start| / rate; then linear start + (target-start)*(t/T), t += dt, until t/T > 1
-side *= (p->side == 0) ? -S->Lat : +S->Lat;
-ahead = (S->A < 0.001) ? dir : (dir.x*S->A, 0, dir.z*S->A) * s;   // 0x4250b0; s = ±blend (S+0x340, S+0x344):
-   // on p->flip: sign flips and the blend runs linearly from -current to 1 over (|ahead| / p->+0x40)*(1 - start) s
+switch (p->h) { case 0: p->Htarget = p->+0x34 /*500*/; case 1: p->+0x30 /*340*/; case 2: p->+0x38 /*0*/; }   /* 0x424d4e */
+if (S->A   != p->+0x2c)    Ramp(&S->A,   p->+0x2c /*300*/,  p->+0x40 /*700 u/s*/, S+0x368);   /* 0x425300 */
+if (S->H   != p->Htarget)  Ramp(&S->H,   p->Htarget,        p->+0x3c /*400 u/s*/, S+0x354);   /* 0x425220 */
+if (S->Lat != p->+0x28)    Ramp(&S->Lat, p->+0x28 /*1000*/, p->+0x44 /*200 u/s*/, S+0x37c);   /* 0x4253e0 */
+side *= (p->side == 0) ? -S->Lat : (p->side == 1) ? +S->Lat : 1;  /* 0x424dd3 */
+ahead = dir;  Ahead(S, dt, &ahead);                                /* 0x4250b0, below */
 C = p->pos + ahead + (0, S->H, 0);                               // look point: A units ahead of the player, H above
 S->P = C + side;                                                  // camera: same height, Lat units to the side of the plane
 S->lookOffset (+0x280) = C - p->pos;   -> CamMgr+0xc4;  CamMgr+0x278 = p->pos
 R = lookAt(S->P -> C, up (0,-1,0));  state = [I|-P]*[R|0];
 ```
+The three ramps are the same function on different fields (`r` = t, T, target − start, start, target at `+0x368/+0x36c/+0x370/
++0x374/+0x378` for A, `+0x354..+0x364` for H, `+0x37c..+0x38c` for Lat):
+```c
+void Ramp(float *v, float target, float rate, R *r, float dt)          /* 0x425300 */
+{
+    if (r->t == 0 || r->target != target) {                           /* idle, or the target moved: restart from here */
+        r->t = 0; r->target = target; r->diff = target - *v; r->T = fabs(r->diff / rate); r->start = *v;
+    }
+    float f = r->t / r->T;
+    if (f > 1) { r->t = 0; *v = target; return; }                    /* 0x4253c4 */
+    *v = f * r->diff + r->start;  r->t += dt;                         /* the first call leaves *v where it is */
+}
+```
+The look-ahead with its turn blend (`0x4a94c4` = 0.001, `0x4a900c` = 1.0; every float compared with `1.0` bitwise at `0x42512b`
+and `0x425194`):
+```c
+void Ahead(S, float dt, vec3 *a /* in: the unit dir */)                 /* 0x4250b0 */
+{
+    if (S->A < 0.001f) { if (p->flip) S->sign = !S->sign; return; }   /* a stays the unit vector: no scale, no sign */
+    a->x *= S->A;  a->y = 0;  a->z *= S->A;
+    if (p->flip) {                                                    /* 0x425106 */
+        S->sign = !S->sign;
+        S->start (+0x34c) = (S->blend == 1.0f) ? -1.0f : -S->blend;   /* the same thing either way */
+        S->blend = -1.0f;  S->t (+0x348) = 0;
+        S->T (+0x350) = |a| / p->+0x40 * (1 - S->start);              /* 0x42515f..0x425187 */
+    }
+    if (S->blend != 1.0f) {                                           /* 0x425194 */
+        S->blend = S->t / S->T * (1 - S->start) + S->start;           /* 0x42519b */
+        if (S->blend > 1.0f) S->blend = 1.0f;                         /* 0x4251ce */
+        S->t += dt;                                                   /* after the use: the flip frame shows `start` */
+    }
+    *a *= S->sign ? S->blend : -S->blend;                             /* 0x4251e8 */
+}
+```
+So at a turn `s = ±blend` stays where it was (the sign and the blend both change sign), and the look point then sweeps
+**linearly in time** across the player to `A` on the other side, at the speed of A (`p+0x40`, 700 u/s): a full sweep `2A` takes
+`2A / 700` s (0.86 s for A = 300); a turn in mid-sweep starts from the current `s`. The flip is only seen by the camera in mode 5,
+and the sign is the only thing that follows the facing: `SetMode(5)` resets it to +1 = look along `+d`, which is the facing
+`0x459960` gave him. In the scripts, A itself is often 0: W1A (the section behind door 164) and W1B (behind 392) send `1110 4 0`
+**every frame** while the player is in certain volumes of the walkway (`VOL_FLAG5`) and `1110 4 var` once when he leaves one
+(`VOL_FLAG3`; W1B objects 419/420 on volumes 107/108 with var 63, W1A the same pattern with var 11), so there the look-ahead
+ramps between 0 and 300 (W1B sends `1110 [4, 300]` on leaving, port log).
+
+**Port** (`src/main_engine.c`, `src/player.c`): `cam_side_init` = `0x424b30`, run by `cam_set_mode(0x20)` on every entry;
+`sv_ramp` = `0x425300`/`0x425220`/`0x4253e0` (called only while value ≠ target, as `0x424d7f..0x424dce`); `sv_ahead` =
+`0x4250b0`; `side_update` (player.c, in the Perso update after `look_update`/`special_update`) = the turn part of `0x459c70`
+with `Player.side_l/side_r` = `+0x4ed/+0x4ee` (set by `cam_side_start` from `v`) and `Player.side_flip` = `p+0x20`; the app
+copies the plane lock into `Player.side_on` (= `+0x4ec`) before each Perso update. Not ported: the side walk `0x45a7b0` and the
+facing snap to `±d` (`+0x500` → `M+0x3bc`): the port walks camera-relative on the plane, so a turn is a quick turn instead of a
+snap, and pressing the other key walks at once. `WOODY_SIDELOG=1` prints A, H, Lat, blend, sign and `ahead` 10× per second and
+on every flip frame. Test: W1B `WOODY_SETVAR="1.0 42 1" WOODY_KEYS="4.5:RIGHT:3 7.5:LEFT:1.5 9.2:RIGHT:1.5" --pos -8500 400
+-16806 --yaw -90 --peck 1.5 0.1`: 1088 `[0x100019b, 2]`, A 300 → 0 in the start volume and back to 300 when he leaves it, a turn
+at 7.44 s keeps `s = +1` and sweeps it to −1 in 0.86 s (8.30 s), the turn back sweeps +1 again in 0.86 s; W1A door 164
+(`--pos 6160 1830 -2394 --yaw 180 --peck 0.25 0.1`): 1088 `[0x1000090, 2]`, A 300 → 0 in 0.43 s (the volume sends `1110 4 0`).
 So a horizontally-looking side camera at 1000 units from the plane, looking 300 ahead in the walking direction, with
 ↑/↓ putting the camera 500/0 instead of 340 above the player. No collision.
 
@@ -347,7 +435,8 @@ restores the camera: it stays on the last track frame until the level changes or
 ### 4.4 Mode 0x200 = first person (Perso state 3)
 
 `0x459050`: `0x44c080(Perso, p540, 1)` (eye position/direction in `p = CamMgr+0x540`), `p+0x28 = p+0x2c = 0`, cut,
-`SetMode(9)`. Per frame `0x459090` (idx 9) puts the mouse deltas or ±5 (arrow keys) into `p+0x28/+0x2c`; update `0x425b80`:
+`SetMode(9)`. Per frame `0x459090` (idx 9) puts the mouse deltas or ±5 (arrow keys) into `p+0x28/+0x2c` (the mouse is never
+polled, so its deltas are always 0: INPUT.md §1.3); update `0x425b80`:
 delta clamped to ±64, `yaw (p+0x78) ∓= min(|dx|·dt·0.19635 (0x4aa1e4 = π/16), 0.31416 (0x4aa1e0 = π/10))`, likewise
 `pitch (p+0x7c)` with `p+0x2c`; pitch clamped to ±72° by `p+0x80/+0x84`, the yaw pair `p+0x88/+0x8c` = (−1, 1) fails the clamp guards
 (free yaw); rotation = Rx(pitch) · base `p+0x54` · Ry(yaw) (`0x437940`, `0x437970`, `0x440b40`). Corrected and worked out in
@@ -418,8 +507,11 @@ void cam_fixed_update(float dt) {                                   /* mode 2 an
 /* on 1088(inst, v): d = xz direction of marker type 0 of inst; side = (v == 1) ? -1 : +1; A = 300; H = 340; Lat = 1000; cut */
 Vec3 sideV = normalize(cross((Vec3){0,-1,0}, d));           /* = (-d.z, 0, d.x); sign settled in 4.2 */
 Htarget = up_held ? h_up : (down_or_crouch ? h_down : h_norm);      /* 500 / 0 / 340, via 1110 n = 1 / 3 / 2 */
-A = ramp(A, a_target, 700*dt);  H = ramp(H, Htarget, 400*dt);  Lat = ramp(Lat, lat_target, 200*dt);   /* linear */
-C = playerPos + (d.x*A*s, H, d.z*A*s);                      /* s = +1/-1 walking direction, blended linearly on flip */
+/* SetMode(5) (0x424b30): A = a_target, H = h_norm, Lat = lat_target at once; blend = 1, sign = +1 */
+A = Ramp(A, a_target, 700);  H = Ramp(H, Htarget, 400);  Lat = Ramp(Lat, lat_target, 200);   /* linear in time, 0x425300 */
+if (flip) { sign = !sign; start = -blend; blend = -1; t = 0; T = A / 700 * (1 - start); }    /* flip = a turn this frame (0x459c70) */
+if (blend != 1) { blend = min(start + (1 - start) * t / T, 1); t += dt; }
+C = playerPos + (d.x*A*s, H, d.z*A*s);                      /* s = sign ? blend : -blend (0x4250b0); A < 0.001: C = playerPos + d + (0,H,0) */
 P = C + sideV * (side * Lat);   view = lookAt(P, C, up=(0,1,0));
 ```
 
@@ -427,7 +519,7 @@ P = C + sideV * (side * Lat);   view = lookAt(P, C, up=(0,1,0));
 
 1. Letterbox: whether the black of the bars comes from an explicit clear or from simply not drawing outside the viewport was not
    checked (renderer `0x4843b0`); it is certain that there is no bar animation in the CamMgr.
-2. Mode 0x20: (a) ~~the sign of `side`~~ settled statically and geometrically (§4.2); (b) the exact flip blend (`S+0x340..+0x350`, `0x4250e8..0x42520e`) is shown simplified;
+2. Mode 0x20: (a) ~~the sign of `side`~~ settled statically and geometrically (§4.2); (b) ~~the exact flip blend~~ decompiled in §4.2 (`0x4250b0`, `0x424b30`, `0x459c70`);
    (c) the plane calculation in `0x459bbf..0x459c57` (`0x41af10`, `0x4239f0`) is not spelled out; (d) K1A sends a series of
    1110 messages right **before** 1088, while `0x459960` resets the defaults on a new start – whether those 1110 values
    are then lost, or whether `+0x4ec` is already set at that point, was not investigated.

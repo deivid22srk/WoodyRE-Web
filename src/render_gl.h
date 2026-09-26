@@ -12,7 +12,9 @@ typedef struct {
 typedef struct {
     int width, height;
     int keys[256];                            /* current key state (VK codes) */
-    int mouse_dx, mouse_dy, mouse_right;
+    int mouse_dx, mouse_dy, mouse_right;      /* window pixels moved with the right button held (the F5 free camera) */
+    int raw_dx, raw_dy;                       /* relative mouse counts since the last win_poll (WM_INPUT, only while the window is in the
+                                               * foreground), the port's stand-in for DirectInput's DIMOUSESTATE lX / lY (docs/INPUT.md 1.3) */
     int quit;
     void *hwnd, *hdc, *hglrc;
     int vx, vy;                               /* port extra (docs/DISPLAY.md 3): rnd_frame draws into the box vx, vy, width, height of the real window */

@@ -118,6 +118,9 @@ typedef struct Player {
      * action 7 last frame, cam_mode = the camera manager's active mode (CamMgr+0x134, 0x100 = the free camera), written by the app
      * before every update. Mode 0x200 block CamMgr+0x540: facing at the start (+0x54), yaw +0x78, pitch +0x7c, deltas +0x28/+0x2c */
     int look, look_prev6, look_key, look_show, cam_mode, look_dx, look_dy; float look_yaw0, look_yaw, look_pitch;   /* look_show = +0x268 */
+    /* side view (camera mode 0x20, docs/CAMERA_SCRIPT.md 4.2): side_on = Perso+0x4ec (the app copies its plane lock in before every
+     * update), side_l / side_r = +0x4ed / +0x4ee (facing the left / right key's way), side_flip = CamMgr+0x63c (p+0x20), written by 0x459c70 */
+    int side_on, side_l, side_r, side_flip;
     Instance *ride; int ride_state; Vec3 ride_seat, ride_p0; Quat ride_q, ride_q0, ride_cur; float ride_t; int ride_jprev, ride_aprev;
     /* statistics */
     float play_time;                /* Perso+0x710 accumulator (0x453ca0): seconds played in this level, one of the five result stats */

@@ -1562,8 +1562,11 @@ static void look_update(Player *p, const PlayerInput *in)
     int rel = !in->look && p->look_key; p->look_key = in->look;
     /* 0x459346 (read by the camera controller in the same frame): the relative mouse, overruled by the direction keys,
      * each worth 5 counts: right (action 1) +5, left (0) -5, back (3) -5, forward (2) +5 */
-    p->look_dx = in->right ? 5 : in->left ? -5 : in->mouse_dx;
-    p->look_dy = in->back ? -5 : in->forward ? 5 : in->mouse_dy;
+    {   /* ftol(Value * 5) (0x459393 0x4a9884 = 5.0, 0x4593b3 0x4ab2c8 = -5.0): a keyboard key is worth 1.0, the stick its deflection */
+        float vx = in->ax != 0 ? fabsf(in->ax) : 1.0f, vz = in->az != 0 ? fabsf(in->az) : 1.0f;
+        p->look_dx = in->right ? (int)(vx * 5.0f) : in->left ? (int)(vx * -5.0f) : in->mouse_dx;
+        p->look_dy = in->back ? (int)(vz * -5.0f) : in->forward ? (int)(vz * 5.0f) : in->mouse_dy;
+    }
     /* 0x44b4a0 is frame step 24, AFTER the render of the frame in which the state changed: the fade follows one frame late
      * (for one frame the eye camera sits in a visible Woody, and the follow camera sees an invisible one) */
     if (p->look) { p->inst->fade = p->inst->fade_target = 1.0f; p->inst->fade_rate = 100.0f; }                         /* state 3: 0x44e7f0(1, 1) */
@@ -1595,9 +1598,19 @@ void player_look_start(Player *p) { p->look_yaw0 = p->yaw; p->look_yaw = 0; p->l
  * he turns with the view, one frame behind) and moves the eye (0x44c080(.., 0)); then the mode update 0x425b80 turns by the
  * deltas: min(min(|d|, 64) * dt * pi/16, pi/10) per frame, d > 0 turns right / down, d < 0 left / up; yaw (+0x78) free, pitch
  * (+0x7c) within +-72 deg. The view = RotX(pitch) * base * RotY(yaw), eye unchanged (+0x24 = 0), no smoothing, no shake. */
+static Vec3 s_look_fwd;   /* -row 1 of CamMgr+0x570 (L+0x30), the view matrix of the LAST 0x425b80: never reset (the CamMgr ctor
+                           * 0x41dca0 leaves it alone), so on the entry frame it holds the previous look-around's view, zero the first time */
 void player_look_camera(Player *p, FreeCamera *cam, float dt)
 {
-    p->yaw = p->look_yaw0 + p->look_yaw;                                    /* 0x459405..0x4594cf */
+    {   /* 0x459405..0x4594cf: d = (-L+0x3c, 0, -L+0x44) normalised in xz, |d| < 0.01 -> d.x = 1; M+0x34 = M+0x1c = M+0x10 = d.
+         * One frame behind the view; in the entry frame (0x459050 has just run) it is the stale matrix: (1, 0, 0) the first time */
+        Vec3 d = { s_look_fwd.x, 0, s_look_fwd.z }; float l = sqrtf(d.x * d.x + d.z * d.z);   /* M+0x38 = 0 (0x459433) */
+        if (l > 0) { d.x /= l; d.z /= l; }
+        if (sqrtf(d.x * d.x + d.z * d.z) < 0.01f) d.x = 1.0f;                 /* 0x459495 (0x4a94f8) */
+        float was = p->yaw; p->yaw = atan2f(d.x, d.z); p->move_dir = d;
+        if (getenv("WOODY_LOOKLOG") && fabsf(remainderf(p->yaw - was, 6.2831853f)) > 0.01f)
+            printf("  LOOK facing %.1f -> %.1f (the view of the last update; stale in the entry frame) pos %.1f %.1f %.1f\n", was * 57.2958f, p->yaw * 57.2958f, p->pos.x, p->pos.y, p->pos.z);
+    }
     Vec3 eye = { p->pos.x, p->pos.y + player_body_height(p) * p->inst->scale.y * 0.9f, p->pos.z };   /* 0x44c0a4: 0x4624c0 * 0.9 */
     const float k = 0.19634954f, cap = 0.31415927f;                         /* 0x4aa1e4 pi/16, 0x4aa1e0 pi/10 */
     int dx = p->look_dx, dy = p->look_dy;
@@ -1606,8 +1619,30 @@ void player_look_camera(Player *p, FreeCamera *cam, float dt)
     if (p->look_pitch > 1.2566371f) p->look_pitch = 1.2566371f;             /* 0x425cb7..0x425d28: +0x80 / +0x84 */
     if (p->look_pitch < -1.2566371f) p->look_pitch = -1.2566371f;
     cam->pos = eye; cam->yaw = p->look_yaw0 + p->look_yaw; cam->pitch = p->look_pitch; cam->fov_deg = CAM_FOV_Y; cam->letterbox = 0;
+    s_look_fwd = (Vec3){ sinf(cam->yaw) * cosf(cam->pitch), sinf(cam->pitch), cosf(cam->yaw) * cosf(cam->pitch) };   /* -R.row1: the view's forward */
     if (getenv("WOODY_LOOKLOG") && (int)(p->play_time * 4) != (int)((p->play_time - dt) * 4)) printf("  LOOK view yaw %.1f pitch %.1f eye %.0f %.0f %.0f\n", cam->yaw * 57.2958f, cam->pitch * 57.2958f, eye.x, eye.y, eye.z);
 }
+/* 0x459c70, the Perso's half of the side view (runs while Perso+0x4ec, after 0x458bf0, before the Mover; 0x44b7be). Only while
+ * +0x238 <= 0 (the move lock, 0x459c80): with no attack (+0x5b4), not climbing (+0x50c), not dead (state 2) and the camera in
+ * mode index 5, action 0 held sets +0x4ed and clears +0x4ee, action 1 the reverse (0 wins); the flip byte p+0x20 is the OLD value
+ * of the flag being cleared (a turn round, for one frame), else 0. On a flip the walking vector +0x500 is negated (0x459d18),
+ * which the Mover's facing follows (not ported: the port's side movement is the camera-relative walk). While the move lock
+ * runs the byte keeps its value: a lock that starts in the frame right after a flip leaves it at 1, and the camera update then
+ * flips again every frame of the lock (a peck released one frame after the turn does it; the original's blend then goes NaN,
+ * sv_ahead in main_engine.c avoids that; docs/CAMERA_SCRIPT.md 4.2). The height byte p+4 is the app's behind_key. */
+static void side_update(Player *p, const PlayerInput *in)
+{
+    if (!p->side_on || p->move_lock > 0) return;
+    int flip = 0;
+    if (!p->atk && !p->climb_sub && !p->dead_kind && p->cam_mode == 0x20) {
+        if (in->left) { flip = p->side_r; p->side_l = 1; p->side_r = 0; }       /* 0x459cf1 */
+        else if (in->right) { flip = p->side_l; p->side_r = 1; p->side_l = 0; } /* 0x459d84 */
+    }
+    p->side_flip = flip;                                                        /* 0x459d4e */
+}
+/* the tail of the Perso's key steps (0x44b7a8..0x44b7ca): 0x44b980 look-around, 0x458bf0 special attack, then 0x459c70 side view.
+ * They follow the attack controller 0x457a50, the pick-up 0x44ba70 and ducking 0x465b10 in every Perso state. */
+static void perso_keys_tail(Player *p, const PlayerInput *in, float dt) { look_update(p, in); special_update(p, in, dt); side_update(p, in); }
 /* message 30 [_, cs] (0x44cde9): LockMove(cs * 0.01, 0) = the longer of the two locks, and the idle record 1 (.ins 0, prio 6500).
  * No state test: it works in every Perso state. No level script sends it. */
 void player_lock(Player *p, float t)
@@ -1769,8 +1804,6 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     bonus_blink(p, dt);
     if (p->game_state == 0) return;                                      /* waiting for the respawn */
     if (!p->dead_kind && !p->race_char && (p->script_act || p->ride || p->climb_sub)) duck_update(p, in, dt, 1, p->ride ? 1 : p->on_ground);   /* 0x465b10 also in the states 5 / 8 / 4, which return early below; before 0x44b980 as in 0x44b797 */
-    look_update(p, in);                                                 /* 0x44b980 runs in every Perso state too (the original calls it after the attack controller) */
-    special_update(p, in, dt);                                            /* 0x458bf0 runs in every Perso state */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
         p->health -= 1.0f; printf("  PLAYER fall damage, health %.0f\n", p->health);
@@ -1780,6 +1813,9 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->regrab > 0) p->regrab -= dt;
     if (p->hit_anim_t > 0) p->hit_anim_t -= dt;
     if (p->dead_kind) p->dead_T += dt;
+    /* 0x44b980 / 0x458bf0 / 0x459c70 run in every Perso state, after the attack controller and ducking (0x44b7a8): here for the
+     * states 5 / 8 / 4, which return below, and after the attack block for the others */
+    if (!p->dead_kind && !p->race_char && (p->script_act || p->ride || p->climb_sub)) perso_keys_tail(p, in, dt);
     if (!p->dead_kind && p->script_act) {                                  /* state 5, 0x44db50: the Perso stands still, the movement is in the root track of the animation */
         int door = p->script_act == 17 || p->script_act == 18;
         anim_request(p, p->script_log, 1.0f);
@@ -1838,7 +1874,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     int racing = p->race_char && !p->dead_kind;                           /* Perso state 1: no attacks, no Mover (0x44b530) */
-    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return; } duck_update(p, in, dt, 0, p->on_ground); }
+    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; perso_keys_tail(p, in, dt); player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return; } duck_update(p, in, dt, 0, p->on_ground); }
+    perso_keys_tail(p, in, dt);                                           /* 0x44b980, 0x458bf0, 0x459c70 after 0x457a50 / 0x44ba70 / 0x465b10 (0x44b7a8) */
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
     else {
