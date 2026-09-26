@@ -351,7 +351,10 @@ in a row, i.e. once the bounce speed has become small (roughly < ~140 u/s at 300
 
 ### 5.2 `Move` `0x449cc0` for a bomb
 
-`HitActors` first (§5.3); then (only when carried) moves along with a platform via probe `P+0x24` (`0x437040`); then the ray `0x4359b0(old, new, −1)`
+`HitActors` first (§5.3); then (only when carried) the "platform" step via probe `P+0x24` (`0x437040`) — **a no-op**: both of its sphere queries are
+`0x435b60`, a stub that only clears `[0x53a554]`, so the push is always 0 and the probe is reset; and no code reads the platform delta `0x436d20` of the press
+probe `P+0` for a projectile (its readers are the enemy move, the path follower and the Perso). **A bomb is not carried by a moving platform**; while it
+lies on one (5 frames within 1 unit) it only follows its height through `pos.y = ground`. Then the ray `0x4359b0(old, new, −1)`
 with **`bomb->flags8 |= 0x40`** set while the ray runs (skip its own hull; old value restored, `0x449d97..0x449dcf`). Hit kind `[0x53a554]` (jump table `0x449ea0`):
 
 | kind | what | bomb |
@@ -359,14 +362,15 @@ with **`bomb->flags8 |= 0x40`** set while the ray runs (skip its own hull; old v
 | 0 | nothing | flies on |
 | 1 | **terrain** (gel) | **bounces** (`max_bounce = −1`: always), plane stored in `P+0xf0`, `bounced = 1` → normal for explosion kind 0 |
 | 2 | **press node** of an instance | own bomb → ignore; otherwise bounce |
-| 3 | `0x497ed0` answers **2** (`0x435b4a`): no plane, no instance recorded — **not** "hull of an instance" (correction, see below) | own bomb → ignore; otherwise **projectile gone** (`0x449e82`) → `CheckProj` → **explosion 2 frames later** |
+| 3 | `0x497ed0` answers **2** (`0x435b4a`): the segment **starts inside a press node** of an instance (`0x4330c0`, PROJECTILES.md §2.3), no plane, t = 0, that instance in `[0x53a560]` | own bomb → ignore; otherwise **projectile gone** (`0x449e82`) → `CheckProj` → **explosion 2 frames later** (ported, `inst_point_in_press`) |
 
 Bounce `0x449eb0` (PROJECTILES §2.3): end point mirrored in the plane, speed preserved (no restitution loss); the only loss is the drag.
 
 **Correction (checked while porting, `0x4359b0` read line by line):** the ray sets hit kind 1 if `0x497ed0` answers 3 (world, plane from `0x4c4bc0`),
 hit kind **2** if it answers 4 (an instance polygon: node `[0x4c4be0]` → `[0x53a58c]`, instance via `[0x4c4c0c]+0x40` → `[0x53a560]`) and hit kind 3
 if it answers 2 — then without a plane and without an instance. Hitting an instance is always kind 2 = **bounce**; there is no separate hull kind. A bomb
-therefore does not explode against a chest or a rock but bounces off it and comes to rest there. What answer 2 of `0x497ed0` is has not been figured out. The port tests
+therefore does not explode against a chest or a rock but bounces off it and comes to rest there. Answer 2 of `0x497ed0` = the start point lies behind every
+plane of an instance's press node (see the table; a platform or crusher that moves onto a lying bomb sets it off 2 frames later). The port tests
 (like all instance tests of the original) the press nodes (node kind 1) and leaves out hit kind 3. First attempt with hulls (kind 4) as "projectile gone":
 every bomb-thrower bomb died instantly in its own launcher's hull.
 
