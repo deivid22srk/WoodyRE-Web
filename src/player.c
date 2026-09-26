@@ -769,17 +769,20 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
  * 0x463c90: every way out of state 6 other than the throw lets go of the bomb where it is, straight down at speed 0 */
 static void bomb_drop(Player *p)
 {
+    p->state6 = 0;                                                          /* the callers stand for SetState(!= 6) */
     if (!p->bomb) return;
-    game_bomb_launch(p->bomb, (Vec3){ 0, -1, 0 }, 0); p->bomb = NULL; p->carrying = 0; p->bsub = 0;
+    game_bomb_launch(p->bomb, (Vec3){ 0, -1, 0 }, 0); p->bomb = NULL; p->carrying = 0;   /* 0x463c90 leaves the sub-state +0x58c alone */
 }
 /* 0x463530, after the animation choice: part A holds the bomb on the track of Woody's top-level 0x80 node (the node the
  * camera mode 0x80 reads) and lets go of it at a fixed moment of the throw animations; part B is the sub-state machine:
  * 0 / 1 pick-up (1.2 s, no walking), 2 carrying, attack -> 3 / 4 ground throw (0.933 s, no walking) or 5 / 6 air throw (0.6 s).
  * The room test before a ground throw (0x434830) is a stub in this build: always free. Sub-states 7 / 8 (putting it
- * down) are never reached. */
+ * down) are never reached. Part A needs the bomb in his hands (+0x594), part B only state 6: after the look-around bug
+ * (docs/PERSO_LOOK.md 5) the sub-states run on without a bomb, and the next attack is an empty throw that ends state 6. */
 static void carry_frame(Player *p, float dt)
 {
-    if (!p->bomb) return;
+    if (!p->state6) return;
+    if (p->bomb) {
     int ins = p->inst->anim, rel = 0;
     switch (ins) {                                                          /* jump table 0x463bfc */
     case 61: rel = p->bt < 0.46667f; break;                                 /* ground throw (0x43) */
@@ -789,7 +792,7 @@ static void carry_frame(Player *p, float dt)
     if (rel) {
         Vec3 dir = { 0, -1, 0 }; float sp = 0; int thrown = p->bsub == 4 || p->bsub == 6;
         if (thrown) { Vec3 f = { sinf(p->yaw), 1.0f, cosf(p->yaw) }; float l = sqrtf(vdot(f, f)); dir = (Vec3){ f.x / l, f.y / l, f.z / l }; sp = 1000.0f; }   /* 0x46380f: 45 degrees up */
-        game_bomb_launch(p->bomb, dir, sp); p->bomb = NULL; p->carrying = 0; p->bsub = 0;
+        game_bomb_launch(p->bomb, dir, sp); p->bomb = NULL; p->carrying = 0; p->bsub = 0; p->state6 = 0;
         p->throw_hold = thrown ? p->bt : 0;                                 /* state 0 at once; the throw plays on under its move lock */
         if (getenv("WOODY_BOMBLOG")) printf("  BOMB leaves Woody's hands (%s)\n", thrown ? "thrown" : "dropped");
         return;
@@ -797,13 +800,14 @@ static void carry_frame(Player *p, float dt)
     const Model *m = p->inst->model; Vec3 hand, tgt;
     float ph = (uint32_t)ins < m->nanims && m->anims[ins].duration_s > 0 ? p->inst->anim_time / m->anims[ins].duration_s : 0;
     if (ins_camera_eval(p->inst, ins, ph, &hand, &tgt)) game_bomb_hold(p->bomb, hand, p->inst->quat);   /* no track: it stays where it was */
+    }
     switch (p->bsub) {                                                      /* jump table 0x463c28 */
     case 0: p->bt = anim_len(p, 0x45, 0); lock_move(p, p->bt); p->bsub = 1; /* fallthrough */
     case 1: if ((p->bt -= dt) <= 0) p->bsub = 2; break;
     case 2: if (p->carry_pressed && !p->duck) p->bsub = p->on_ground ? 3 : 5; break;   /* 0x463963: no throw while ducking */
     case 3: p->bt = anim_len(p, 0x43, 0); lock_move(p, p->bt); p->bsub = 4; break;
     case 5: p->bt = anim_len(p, 0x44, 0); p->bsub = 6; break;
-    case 4: case 6: if ((p->bt -= dt) <= 0) bomb_drop(p); break;           /* no release moment reached (landed during an air throw): SetState(0) drops it */
+    case 4: case 6: if ((p->bt -= dt) <= 0) { bomb_drop(p); if (getenv("WOODY_BOMBLOG")) puts("  BOMB throw over: state 0"); } break;   /* no release moment reached (landed during an air throw, or an empty throw): SetState(0) drops it */
     }
     p->carry_pressed = 0;
 }
@@ -811,10 +815,11 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
 {
     int held = in->action, pressed = held && !p->action_prev, released = !held && p->action_prev;
     p->action_prev = held;
-    if (p->bomb) { if (pressed) p->carry_pressed = 1; return; }           /* state 6: 0x457330 wants state 0 */
+    if (p->look) return;                                                   /* state 3: 0x44ba70 picks up only in state 0, 0x457330 wants state 0 */
+    if (p->state6) { if (pressed) p->carry_pressed = 1; return; }         /* state 6: 0x457330 wants state 0 */
     if (pressed && p->on_ground && !p->atk) {             /* 0x44bae1 -> 0x463430 before the trigger: the same press picks up a bomb within 69 + 200 */
         struct Bomb *b = game_bomb_pick(p->pos, 69.0f + 200.0f);
-        if (b) { p->bomb = b; p->carrying = 1; p->bsub = 0; p->charge = 0; p->carry_pressed = 0; p->throw_hold = 0; return; }
+        if (b) { p->bomb = b; p->carrying = 1; p->state6 = 1; p->bsub = 0; p->charge = 0; p->carry_pressed = 0; p->throw_hold = 0; return; }
     }
     if (p->jumper.state != 2 && p->jumper.state != 6) p->charge = 0;       /* no charge in the air */
     if (p->air_win > 0) p->air_win -= dt;
@@ -831,9 +836,9 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
 
 /* Perso state (+0x21c), set by SetState 0x44c980 and read by 0x44bcf0: 0 means the player has his own controls.
  * The port keeps that state in the fields that stand for it - 2 = dead, 4 = hanging in a peckable wall, 5 = a
- * scripted action, 8 = riding a class-20 rocket - so the messages that only answer "when the Perso is free"
+ * scripted action, 8 = riding a class-20 rocket, 6 = state6, 3 = look - so the messages that only answer "when the Perso is free"
  * (1042, and 0x465740 when he steps onto a rocket) ask here. */
-int player_state_free(const Player *p) { return !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride && !p->bomb; }
+int player_state_free(const Player *p) { return !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride && !p->state6 && !p->look; }
 
 /* 0x458e40 Perso_BrakeCharge, the one brake that is called from outside the attack controller: the game code calls it
  * at 0x44542f, in the handler of message 1042, when the player is standing at a peck switch. Releasing the attack
@@ -876,6 +881,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
     else if (kind != 2 && kind != 9) jumper_force_fall(&p->jumper, 0);
     p->nograv_t = kind == 1 ? anim_len(p, 0x2f, 0) : (kind == 2 || kind == 9) ? anim_len(p, 0x30, 0) : 0;   /* +0x240: no fall while he hangs / is zapped */
     p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL; bomb_drop(p);   /* SetState(2) 0x44c9ad lets go of a bomb */
+    p->look = 0;                                                        /* out of state 3 without +0x268: he stays faded out until Reset (docs/PERSO_LOOK.md 4) */
     p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;      /* state := 2 */
     if (kind == 1) game_bubble(p->inst, 0, 2.5f, 180.0f, 50.0f, NULL);  /* 0x44c2a9: "?!" over him as he drops into the pit */
     printf("  PLAYER killed (kind %d), lives %d\n", kind, p->lives);
@@ -891,7 +897,8 @@ int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39
     if (p->invuln_hit < 0.6f) p->invuln_hit = 0.6f;
     p->move_lock = 0; p->atk = 0;
     p->hit_anim = p->on_ground ? (p->duck ? 0x23 : 0x1f) : 0x20; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->lanim = -1;   /* 0x464b70: priority 5110, plays out over walking / jumping; 0x23 lying down (he stays down) */
-    if (p->bomb) { p->hit_anim = p->on_ground ? (p->duck ? 0x24 : 0x21) : 0x22; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->bsub = 2; }   /* with a bomb: he keeps it, a throw or pick-up is broken off */
+    if (p->state6 && p->bomb) { p->hit_anim = p->on_ground ? (p->duck ? 0x24 : 0x21) : 0x22; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->bsub = 2; }   /* with a bomb: he keeps it, a throw or pick-up is broken off */
+    else if (p->state6) p->hit_anim_t = 0;                               /* 0x464b84: state 6 with empty hands (the look-around bug) requests no hit animation */
     if (getenv("WOODY_ONEHIT")) damage = 99;                             /* testing: every hit kills */
     p->health -= damage; if (p->health < 0) p->health = 0;
     printf("  PLAYER hit, health %.0f\n", p->health);
@@ -907,6 +914,7 @@ static void player_reset(Player *p)                                     /* vt[17
     p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->step_u = -1.0f; p->cam_init = 0; idle_reset(p);   /* 0x44abcf */
     p->duck = 0; p->duck_t = 0;                                          /* 0x44ad28 */
+    p->look = 0; p->look_show = 0; p->inst->fade = p->inst->fade_target = 0; p->inst->fade_rate = 100.0f;   /* 0x44ac15 +0x268 = 0; 0x44ad6a: 0x44e7f0(0, 1), visible again after a death in state 3 */
     p->special_st = 0; p->special_t = 0;                                 /* 0x44ad5e / 0x44ad64 */
     if (p->race_char) race_enter(p);                                   /* 0x44ac33: SurfEnter + state 1 */
     player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
@@ -1272,7 +1280,7 @@ float player_body_height(const Player *p)                                 /* 0x4
 static void duck_update(Player *p, const PlayerInput *in, float dt)
 {
     if (p->dead_kind || p->atk) return;                                     /* state 2 / +0x5b4: nothing, no LockMove either */
-    int b = p->bomb != NULL;
+    int b = p->state6;                                                      /* 0x465bc0: the bomb set whenever state == 6, bomb or not */
     switch (p->duck) {
     case 0: if (in->duck && p->on_ground) { p->duck = 1; p->duck_anim = b ? 0x4e : 0x31; p->duck_t = anim_len(p, p->duck_anim, 0); p->lanim = -1; } break;
     case 1: if ((p->duck_t -= dt) <= 0) p->duck = 2; break;
@@ -1288,6 +1296,71 @@ static void duck_update(Player *p, const PlayerInput *in, float dt)
     }
     if (p->duck && p->move_lock < dt) p->move_lock = dt;                     /* 0x44cce0(dt, 0): keeps a longer lock */
     if (getenv("WOODY_DUCKLOG")) { static int prev = -1; if (p->duck != prev) printf("  DUCK %d -> %d (t %.2f, key %d, lock %.3f, ramp %d)\n", prev, p->duck, p->play_time, in->duck, p->move_lock, p->ramp_phase); prev = p->duck; }
+}
+/* ---- look-around, Perso state 3 + camera mode 0x200 (docs/PERSO_LOOK.md) ----------------------------------------------
+ * 0x44b980, every frame: action 7 RELEASED (0x467440(7)) toggles. In state 3 it goes back to the previous state (0x44c9f0,
+ * +0x220 = 0 or 6, no SetState) and raises +0x268 (made visible by 0x44b4a0); the same happens without the key as soon as
+ * the camera is no longer in mode 0x200 (a script camera, a teleport's camera reset). Entry wants state 0 without an attack
+ * or state 6 in sub-state 2 (carrying), on the ground and the follow camera (index 0); otherwise sound 9. The entry is
+ * 0x464620 (idle count reset) + SetState(3), which drops a carried bomb - and the way back restores state 6 anyway. */
+static void look_update(Player *p, const PlayerInput *in)
+{
+    int rel = !in->look && p->look_key; p->look_key = in->look;
+    /* 0x459346 (read by the camera controller in the same frame): the relative mouse, overruled by the direction keys,
+     * each worth 5 counts: right (action 1) +5, left (0) -5, back (3) -5, forward (2) +5 */
+    p->look_dx = in->right ? 5 : in->left ? -5 : in->mouse_dx;
+    p->look_dy = in->back ? -5 : in->forward ? 5 : in->mouse_dy;
+    /* 0x44b4a0 is frame step 24, AFTER the render of the frame in which the state changed: the fade follows one frame late
+     * (for one frame the eye camera sits in a visible Woody, and the follow camera sees an invisible one) */
+    if (p->look) { p->inst->fade = p->inst->fade_target = 1.0f; p->inst->fade_rate = 100.0f; }                         /* state 3: 0x44e7f0(1, 1) */
+    if (p->look_show) { p->look_show = 0; p->inst->fade = p->inst->fade_target = 0; p->inst->fade_rate = 100.0f; }   /* +0x268: 0x44e7f0(0, 1) */
+    int forced = p->look && p->cam_mode != 0x200;                           /* 0x44b99c: state 3 and CamMgr+0x138 != 9 */
+    if (!rel && !forced) return;
+    if (p->look) {                                                          /* 0x44b9f0 */
+        p->look = 0; p->state6 = p->look_prev6; p->look_show = 1;
+        if (getenv("WOODY_LOOKLOG")) printf("  LOOK off (%s), back to state %d, facing %.0f\n", forced ? "camera left mode 0x200" : "key", p->state6 ? 6 : 0, p->yaw * 57.2958f);
+        return;
+    }
+    int ok = !p->race_char && !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride && (p->state6 ? p->bsub == 2 : !p->atk);
+    if (ok && p->on_ground && p->cam_mode == 1) {                           /* 0x44ba11: +0x22c, CamMgr+0x138 == 0 */
+        idle_reset(p);                                                      /* 0x464620 */
+        p->look_prev6 = p->state6; bomb_drop(p);                            /* SetState(3): 0x44c9ad lets go of the bomb, +0x220 = 6 */
+        p->atk = 0; p->use_atk_disp = 0; p->target = NULL; p->has_target = 0; p->throw_hold = 0;   /* SetState clears +0x5b4, +0x5cd, +0x5f0 */
+        p->look = 1;
+        if (getenv("WOODY_LOOKLOG")) printf("  LOOK on (from state %d), facing %.0f\n", p->look_prev6 ? 6 : 0, p->yaw * 57.2958f);
+    } else {
+        audio_fx(9, NULL, NULL);                                            /* 0x44ba5f: "can't" (only while the App is in a game) */
+        if (getenv("WOODY_LOOKLOG")) printf("  LOOK refused (ground %d, camera mode %d)\n", p->on_ground, p->cam_mode);
+    }
+}
+/* 0x459050 (camera controller, the frame the Perso enters state 3): 0x44c080(Perso, CamMgr+0x540, 1) = eye at the feet +
+ * 0.9 * body height * scale, both angles 0, the Perso's rotation as the base (+0x54), limits +-1.2566 (72 deg) on +0x7c and
+ * the pair (-1, 1) on +0x78, which the clamp test reads as "no limit"; deltas 0; then 0x41f9f0(2) cut + SetMode(9) */
+void player_look_start(Player *p) { p->look_yaw0 = p->yaw; p->look_yaw = 0; p->look_pitch = 0; }
+/* per frame: 0x459346 writes the view's horizontal direction of the LAST update back into the Mover (M+0x34, +0x1c, +0x10:
+ * he turns with the view, one frame behind) and moves the eye (0x44c080(.., 0)); then the mode update 0x425b80 turns by the
+ * deltas: min(min(|d|, 64) * dt * pi/16, pi/10) per frame, d > 0 turns right / down, d < 0 left / up; yaw (+0x78) free, pitch
+ * (+0x7c) within +-72 deg. The view = RotX(pitch) * base * RotY(yaw), eye unchanged (+0x24 = 0), no smoothing, no shake. */
+void player_look_camera(Player *p, FreeCamera *cam, float dt)
+{
+    p->yaw = p->look_yaw0 + p->look_yaw;                                    /* 0x459405..0x4594cf */
+    Vec3 eye = { p->pos.x, p->pos.y + player_body_height(p) * p->inst->scale.y * 0.9f, p->pos.z };   /* 0x44c0a4: 0x4624c0 * 0.9 */
+    const float k = 0.19634954f, cap = 0.31415927f;                         /* 0x4aa1e4 pi/16, 0x4aa1e0 pi/10 */
+    int dx = p->look_dx, dy = p->look_dy;
+    if (dx) { float a = (float)(dx < 0 ? (dx < -64 ? 64 : -dx) : (dx > 64 ? 64 : dx)) * dt * k; if (a > cap) a = cap; p->look_yaw += dx < 0 ? a : -a; }
+    if (dy) { float a = (float)(dy < 0 ? (dy < -64 ? 64 : -dy) : (dy > 64 ? 64 : dy)) * dt * k; if (a > cap) a = cap; p->look_pitch += dy < 0 ? a : -a; }
+    if (p->look_pitch > 1.2566371f) p->look_pitch = 1.2566371f;             /* 0x425cb7..0x425d28: +0x80 / +0x84 */
+    if (p->look_pitch < -1.2566371f) p->look_pitch = -1.2566371f;
+    cam->pos = eye; cam->yaw = p->look_yaw0 + p->look_yaw; cam->pitch = p->look_pitch; cam->fov_deg = CAM_FOV_Y; cam->letterbox = 0;
+    if (getenv("WOODY_LOOKLOG") && (int)(p->play_time * 4) != (int)((p->play_time - dt) * 4)) printf("  LOOK view yaw %.1f pitch %.1f eye %.0f %.0f %.0f\n", cam->yaw * 57.2958f, cam->pitch * 57.2958f, eye.x, eye.y, eye.z);
+}
+/* message 30 [_, cs] (0x44cde9): LockMove(cs * 0.01, 0) = the longer of the two locks, and the idle record 1 (.ins 0, prio 6500).
+ * No state test: it works in every Perso state. No level script sends it. */
+void player_lock(Player *p, float t)
+{
+    if (t > p->move_lock) p->move_lock = t;
+    p->ramp_phase = 0; p->speed = 0;                                        /* +0x238 > 0 zeroes the walk vector (0x44bc16) */
+    anim_request(p, 1, 1.0f);
 }
 static void race_crouch(Player *p, const PlayerInput *in, float dt)
 {
@@ -1361,6 +1434,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->invuln_respawn > 0) p->invuln_respawn -= dt;
     if (p->invuln_hit > 0) p->invuln_hit -= dt;
     if (p->game_state == 0) return;                                      /* waiting for the respawn */
+    look_update(p, in);                                                   /* 0x44b980 runs in every Perso state too (the original calls it after the attack controller) */
     special_update(p, in, dt);                                            /* 0x458bf0 runs in every Perso state */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
@@ -1428,8 +1502,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
     else {
-    /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking */
-    int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind);
+    /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking; states 2 and 3 call it with arg 0 (0x44b8a3) */
+    int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind || p->look);
     /* input direction relative to the camera */
     float ix = allow ? (float)(in->right - in->left) : 0, iz = allow ? (float)(in->forward - in->back) : 0;
     float len = sqrtf(ix * ix + iz * iz);
@@ -1444,7 +1518,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         p->ramp_target = (cosf(d) + 1.0f) * 0.5f * P_WALK_SPEED;
         p->yaw += d * (1.0f - powf(1.0f - P_TURN_BLEND, dt * P_REF_FPS));
         if (p->ramp_phase == 0 || p->ramp_phase == 3) { p->ramp_phase = 1; p->ramp_t = sqrtf(p->speed / P_WALK_SPEED) * P_ACC_TIME; }   /* 0x45ad30: 0/3 -> 1 */
-    } else if (!allow) { p->ramp_phase = 0; p->speed = 0; }
+    } else if (!allow && !p->look) { p->ramp_phase = 0; p->speed = 0; }   /* state 3 has no lock: the Mover runs out (0.1 s) as when the keys are let go */
     else if (p->ramp_phase == 1 || p->ramp_phase == 2) { p->ramp_phase = 3; p->ramp_t = 0; p->ramp_v0 = p->speed; }                  /* 2 -> 3 */
     /* Ramp tick (0x4671d0) */
     if (p->ramp_phase == 1) { p->ramp_t += dt; float k = p->ramp_t / P_ACC_TIME; if (k >= 1.0f) { k = 1.0f; p->ramp_phase = 2; } p->speed = k * k * p->ramp_target; }
@@ -1556,7 +1630,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         else if (p->hit_anim_t > 0) want = p->hit_anim;
         else if (p->special_st) want = 0x13;                               /* priority 5500: only deaths and scripted actions (6000) beat it */
         else if (p->duck) want = p->duck_anim;                             /* 0x464630 does nothing while he ducks: no landing, idle or carry anims */
-        else if (p->bomb) {                                                /* state 6: 0x4646b0 (docs/BOMB_CARRY.md 1.4) */
+        else if (p->look) want = 0;                                        /* state 3: 0x463e77 requests anim 0 (he is faded out anyway) */
+        else if (p->state6) {                                              /* state 6: 0x4646b0 (docs/BOMB_CARRY.md 1.4); also without a bomb after the look-around bug */
             if (js == 2 || p->on_ground) {
                 if (p->bsub <= 1) want = 0x45;                             /* pick-up */
                 else if (p->bsub == 4) want = 0x43;                        /* ground throw */
@@ -1590,7 +1665,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         else anim_request(p, want, rate);
         carry_frame(p, dt);                                                /* 0x463530 (frame step 16) */
         /* 0x464630: not idle on the ground, or one of the actions 0,3,2,1,6,4,10,5 pressed (0x44cc30) -> 0x464620 */
-        if (!p->idle_hold && !p->duck && (!idling || in->forward || in->back || in->left || in->right || in->jump || in->action)) idle_reset(p);
+        if (!p->idle_hold && !p->duck && !p->look && (!idling || in->forward || in->back || in->left || in->right || in->jump || in->action)) idle_reset(p);
         /* footsteps (docs/FOOTSTEPS.md): in the walk cycle (logical animation 3) 0x463f40 puts a foot down when the
          * fraction of the cycle passes 0.38 (0x4ab278) and 0.9 (0x4a94b8) and calls the effect 0x47cba0 for it. */
         {
@@ -1760,7 +1835,7 @@ int player_mount(Player *p, Instance *obj)                              /* 0x465
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
 {
     if (p->dead_kind) return;                                       /* 0x44dda0 refuses state 2 (dead) */
-    bomb_drop(p); p->throw_hold = 0;                                /* SetState(5) */
+    bomb_drop(p); p->throw_hold = 0; p->look = 0;                   /* SetState(5); out of state 3 without +0x268 (docs/PERSO_LOOK.md 4) */
     int lg = log_from_raw(act);                                     /* the action number is the raw .ins animation (docs/CINEMATIC.md 6) */
     if (lg < 0) { printf("  scripted action %d: no logical record, standing still", act), puts(""); player_script_hold(p, 2.0f); return; }
     p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
