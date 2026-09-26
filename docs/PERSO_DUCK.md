@@ -320,8 +320,10 @@ The Perso plays them 2D. In the port, `src/main_engine.c` (line 2060, "animation
 * `0x4359b0` clears `[0x53a554]`, `[0x53a560]`, `[0x53a55c]` and calls `0x497ed0(a, b, −1)`; raw result `[0x4c4bd0]`: 3 (world polygon) ⇒
   `[0x53a554] = 1`; 4 (instance polygon, node `[0x4c4be0]`: the press nodes, BOMB.md §5.2 correction) ⇒ 2; 2 ⇒ 3; otherwise 0. `[0x53a558]` = t.
   **Any** value ≠ 0 blocks standing up. The −1 is the start cell (`0x497fb0` looks it up with `0x408180`, `0x49802b`), not an instance to skip (OBJECTS.md §2.1).
-* Uncertain: whether `0x497ed0` hits polygons from both sides (the ray goes upward and so would hit the underside of a ceiling); the port
-  functions `gel_ray_frac` and `player_ray_instances` are two-sided, which gives the expected behavior for this test.
+* One-sided (read since, PERSO_MOVE §6.6): a world or press-node polygon counts only when `a` is on its front side and `b`
+  behind it, so the upward ray hits the underside of a ceiling (whose front faces down, into the room) and of a press node
+  (outward-wound); answer 2 (kind 3) = `a` inside a press node. The port uses the shared `ray_4359b0` (player.c) for this test
+  now instead of the two-sided `gel_ray_frac` / `player_ray_instances`.
 * A ceiling between 132 and 193 does not block: he then ends up standing "inside" the ceiling (the wall sweep only pushes in xz). Derived.
 
 ## 5. Port recipe (`src/`; built - this is the recipe it was built from, with the later changes marked **done**)
@@ -412,7 +414,7 @@ The Perso plays them 2D. In the port, `src/main_engine.c` (line 2060, "animation
 ## 6. Open questions
 
 1. Whether RampA accelerates from 0 or from its old speed after standing up (`0x467130` not read); the port starts at 0.
-2. `0x497ed0`: one-sided or two-sided against polygons (§4.3); answer 2 (hit kind 3) not investigated.
+2. ~~`0x497ed0`: one-sided or two-sided against polygons~~ – one-sided, answer 2 = start inside a press node: PERSO_MOVE §6.6.
 3. ~~`0x433d40` (actor pushing): exact height condition~~ – decoded in PERSO_MOVE §6.6.
 4. The edge cases of §1.3/§2.6 (ducking in state 3/4/5/7/8/9, picking up or grabbing while lying down) are only derived from the code
    (§1.6 has the code evidence for the states; not replayed in the original).

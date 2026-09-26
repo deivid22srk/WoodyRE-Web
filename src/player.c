@@ -97,17 +97,6 @@ float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, i
     return best;
 }
 
-/* floor provided by the press nodes (kind 1) of visible instances (inst->vt[7] = 0x432480 walks S+0x58/0x5c only):
- * highest upward-facing polygon under p within [p.y - max_drop, p.y + step_up]. GetHeight (0x435650) reports it
- * as hit type 4 against 3 for a world polygon (docs/PERSO_MOVE.md 6.3); hit_inst/hit_node return what was hit so
- * the caller can raise world_collision events. */
-static int point_in_tri_xz(Vec3 a, Vec3 b, Vec3 c, Vec3 q)
-{
-    float d1 = (b.x - a.x) * (q.z - a.z) - (b.z - a.z) * (q.x - a.x);
-    float d2 = (c.x - b.x) * (q.z - b.z) - (c.z - b.z) * (q.x - b.x);
-    float d3 = (a.x - c.x) * (q.z - c.z) - (a.z - c.z) * (q.x - c.x);
-    return (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0);
-}
 /* Horizontal distance from p to an instance, measured from its animated root node (as the renderer's cull does), not
  * from the .ins origin: an animation can carry the whole model far away - the W1B shuttle platforms (model 42) travel
  * 4400 units from their origin and back, and an origin-based reject threw them out at the far end (issue #27). */
@@ -126,38 +115,86 @@ static const Instance *g_rider, *g_rider_board;
 static const Instance *g_carrier, *g_carried, *g_skip_self;   /* g_skip_self: the player, while an actor asks for its own floor */
 void player_set_carried(const Instance *owner, const Instance *follower) { g_carrier = owner; g_carried = follower; }
 static int skip_inst(const Instance *in, const Instance *skip) { return in == skip || (skip && skip == g_rider && in == g_rider_board) || (skip && skip == g_carrier && in == g_carried) || in == g_skip_self; }
-static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float max_drop, int *found, const Instance *skip,
-                             const Instance **hit_inst, const InsNode **hit_node)
+/* The loader's plane of a polygon (0x4280c2-0x428375): over every run of three consecutive vertices P, Q, R the longest
+ * n = (R - Q) x (R - P) above 0.01, d = -n.R. Taken here from the world-space vertices: for a transform without a mirror
+ * (no instance of the 28 levels has a negative scale) that is the same side as the node-space plane the original keeps in
+ * poly+8..+0x14, and it is the true plane of the transformed polygon, also under a non-uniform scale. */
+static int loader_plane(const Vec3 *v, uint32_t nv, float pl[4])
 {
-    float best = -1e30f; *found = 0; *hit_inst = NULL; *hit_node = NULL;
+    float best = 0; int ok = 0;
+    for (uint32_t t = 0; t < nv; t++) {
+        Vec3 P = v[t], Q = v[(t + 1) % nv], R = v[(t + 2) % nv], n = vcross(vsub(R, Q), vsub(R, P)); float l = sqrtf(vdot(n, n));
+        if (l > 0.01f && (!ok || l > best)) { best = l; ok = 1; pl[0] = n.x / l; pl[1] = n.y / l; pl[2] = n.z / l; pl[3] = -(pl[0] * R.x + pl[1] * R.y + pl[2] * R.z); }
+    }
+    return ok;
+}
+/* The normal the instance tests REPORT for a press-node polygon: the node-space loader normal times the node's world matrix,
+ * normalised - vt[7] 0x4329a9 (-> [0x4c4bc0], the floor normal), vt[8] uniform branch 0x4333ed (times 1/scale) and
+ * non-uniform branch 0x4336fd/0x433762 (normalised). With a non-uniform scale that is not the transformed polygon's true
+ * normal (that would be M^-T n); the cylinder test uses it as the plane all the same. 276 press-node instances of the 28
+ * levels have a non-uniform scale (e.g. WWS model 34, 2.11 x 2.43 x 0.50); on axis-aligned faces it makes no difference. */
+static int press_normal(const Instance *in, const InsPoly *ip, Vec3 *out)
+{
+    const Model *m = in->model; float best = 0; int ok = 0; Vec3 nl = { 1, 0, 0 };
+    int o = ins_point_owner(m, ip->indices[0]); if (o < 0 || !in->node_world) return 0;
+    for (uint32_t t = 0; t < ip->nverts; t++) {
+        Vec3 P = m->points[ip->indices[t]].pos, Q = m->points[ip->indices[(t + 1) % ip->nverts]].pos, R = m->points[ip->indices[(t + 2) % ip->nverts]].pos;
+        Vec3 n = vcross(vsub(R, Q), vsub(R, P)); float l = sqrtf(vdot(n, n));
+        if (l > 0.01f && (!ok || l > best)) { best = l; ok = 1; nl = (Vec3){ n.x / l, n.y / l, n.z / l }; }
+    }
+    if (!ok) return 0;
+    const float *M = in->node_world[o].m;                                /* column major: column j = image of axis j */
+    Vec3 w = { M[0] * nl.x + M[4] * nl.y + M[8] * nl.z, M[1] * nl.x + M[5] * nl.y + M[9] * nl.z, M[2] * nl.x + M[6] * nl.y + M[10] * nl.z };
+    float l = sqrtf(vdot(w, w)); if (!(l > 0)) return 0;
+    *out = (Vec3){ w.x / l, w.y / l, w.z / l }; return 1;
+}
+/* Floor provided by the press nodes (kind 1) of visible instances (inst->vt[7] = 0x432480 walks S+0x58/0x5c only).
+ * GetHeight (0x435650) reports it as hit type 4 against 3 for a world polygon (docs/PERSO_MOVE.md 6.3); hit_inst/hit_node
+ * return what was hit so the caller can raise world_collision events.
+ * Floor test inst->vt[7] = 0x432480(p, id), after the world polygons of GetHeight (0x498475): the ray from p straight down
+ * (to p - (0, 1, 0), taken into node space with the inverse node matrix 0x440fc0, so t is in world units) against the
+ * polygons of every PRESS node. A polygon counts when p is on its front side (loader plane, dist >= 0, 0x432794), the ray
+ * passes inside it (every edge: dir . ((v_i - p) x (v_i+1 - p)) > 0, 0x432886 - one-sided: only faces whose loader normal
+ * points up, i.e. the tops of the outward-wound press nodes; p inside a node finds neither its top nor its bottom), the
+ * normal is not horizontal (|n . dir| > 1e-5, 0x43290c) and t = dist / n.y is below [0x4c4bd4] (0x432941). That value is the
+ * world floor's distance, and 0x498520 starts it at 0 (0x49852e): with no world floor under p no instance can be the floor
+ * either. Culling (uniform scale only, 0x43259a): p within node radius * scale of the node origin in xz and the origin not
+ * more than that above p - the node box here. The hit ([0x4c4bd0] = 4) is the instance, the press-list index, the polygon
+ * and the normal press_normal(). best_dist in/out = the distance below p; returns 1 if an instance polygon won. */
+static int ins_floor_below(const InsFile *ins, Vec3 p, float *best_dist, const Instance *skip, const Instance **hit_inst, const InsNode **hit_node)
+{
+    int won = 0; Vec3 v[32]; *hit_inst = NULL; *hit_node = NULL;
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
         const Model *m = &ins->models[mi];
+        uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn); if (!ncn) continue;
         for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, skip)) continue;
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, skip) || !in->node_world) continue;
             if (inst_dist2_xz(in, p) > 4000.0f * 4000.0f) continue;       /* cheap reject: far away horizontally */
-            uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
                 uint32_t ni = cn[ci]; const InsNode *n = &m->nodes[ni];
-                float nb[6];                                              /* the node's own box: no floor in it, nothing to test */
-                if (ins_node_world_box(in, ni, nb) && (p.x < nb[0] || p.x > nb[1] || p.z < nb[4] || p.z > nb[5] || nb[3] < p.y - max_drop || nb[2] > p.y + step_up)) continue;
+                float nb[6];                                              /* the node's own box: not under p, or wholly above it */
+                if (ins_node_world_box(in, ni, nb) && (p.x < nb[0] || p.x > nb[1] || p.z < nb[4] || p.z > nb[5] || nb[2] > p.y)) continue;
                 for (uint32_t f = 0; f < n->npolys; f++) {
-                    const InsPoly *pl = &n->polys[f]; if (pl->nverts < 3) continue;
-                    Vec3 a = ins_point_world(in, pl->indices[0]);
-                    for (uint32_t t = 1; t + 1 < pl->nverts; t++) {
-                        Vec3 b = ins_point_world(in, pl->indices[t]), c = ins_point_world(in, pl->indices[t + 1]);
-                        Vec3 nrm = vcross(vsub(b, a), vsub(c, a)); float nl = sqrtf(vdot(nrm, nrm)); if (nl < 1e-6f) continue;
-                        if (fabsf(nrm.y) / nl < 0.5f) continue;                   /* not a walkable face */
-                        if (!point_in_tri_xz(a, b, c, p)) continue;
-                        float y = a.y - (nrm.x * (p.x - a.x) + nrm.z * (p.z - a.z)) / nrm.y;
-                        if (y > p.y + step_up || y < p.y - max_drop || y <= best) continue;
-                        best = y; *found = 1; *hit_inst = in; *hit_node = n;
-                        { float sg = nrm.y < 0 ? -1.0f / nl : 1.0f / nl; g_ins_n = (Vec3){ nrm.x * sg, nrm.y * sg, nrm.z * sg }; }
+                    const InsPoly *pl = &n->polys[f]; if (pl->nverts < 3 || pl->nverts > 32) continue;
+                    for (uint32_t t = 0; t < pl->nverts; t++) v[t] = ins_point_world(in, pl->indices[t]);
+                    float P[4]; if (!loader_plane(v, pl->nverts, P)) continue;
+                    float dist = P[0] * p.x + P[1] * p.y + P[2] * p.z + P[3];
+                    if (dist < 0) continue;                                   /* 0x43279f: p behind the polygon */
+                    uint32_t e = 0;
+                    for (; e < pl->nverts; e++) {                             /* 0x432808: (0, -1, 0) . (a x b) > 0 <=> (a x b).y < 0 */
+                        Vec3 a = vsub(v[e ? e - 1 : pl->nverts - 1], p), b = vsub(v[e], p);
+                        if (!(a.z * b.x - a.x * b.z < 0)) break;
                     }
+                    if (e < pl->nverts || !(fabsf(P[1]) > 1e-5f)) continue;
+                    float t = dist / P[1];
+                    if (!(t < *best_dist)) continue;
+                    Vec3 nw; if (!press_normal(in, pl, &nw)) nw = (Vec3){ P[0], P[1], P[2] };
+                    *best_dist = t; won = 1; *hit_inst = in; *hit_node = n; g_ins_n = nw;
                 }
             }
         }
     }
-    return best;
+    return won;
 }
 
 /* is q (on the plane of the convex polygon v[0..n), normal nrm) inside it? */
@@ -242,8 +279,10 @@ static int cyl_poly(const Vec3 *vw, uint32_t nv, const float pl[4], Vec3 c, floa
 /* 0x407000 for the player's sweep: world polygons of the cells the band touches, then the press nodes of the instances
  * (vt[8] 0x433140: skipped when non-collidable (+8 & 0x40); it takes the polygons into world space with the node matrix
  * and uses the loader's plane of each polygon, 0x4280c2: n = (R - Q) x (R - P) of the longest consecutive triple, which
- * on every press node of the shipped levels points away from the node, so the same front-face rule applies). *hit = any
- * polygon touched (the wall contact P+0x2e0); returns (pos max + neg min) in x and z. */
+ * on every press node of the shipped levels points away from the node, so the same front-face rule applies; the uniform
+ * branch 0x43320a and the non-uniform one 0x4335d7 differ only in the node-radius cull the first one does first and in
+ * how the rotated normal is brought to length 1, press_normal()). *hit = any polygon touched (the wall contact P+0x2e0);
+ * returns (pos max + neg min) in x and z. */
 static Vec3 body_push(const Player *p, Vec3 c, float r, float up, float down, int *hit)
 {
     float acc[4] = { 0, 0, 0, 0 }, box[6]; Vec3 v[32]; int any = 0;
@@ -269,12 +308,10 @@ static Vec3 body_push(const Player *p, Vec3 c, float r, float up, float down, in
                 for (uint32_t f = 0; f < nd->npolys; f++) {
                     const InsPoly *ip = &nd->polys[f]; if (ip->nverts < 3 || ip->nverts > 32) continue;
                     for (uint32_t t = 0; t < ip->nverts; t++) v[t] = ins_point_world(in, ip->indices[t]);
-                    float best = 0, pl[4] = { 1, 0, 0, 0 }; int ok = 0;       /* the loader's plane, 0x4280c2 */
-                    for (uint32_t t = 0; t < ip->nverts; t++) {
-                        Vec3 P = v[t], Q = v[(t + 1) % ip->nverts], R = v[(t + 2) % ip->nverts], n = vcross(vsub(R, Q), vsub(R, P)); float l = sqrtf(vdot(n, n));
-                        if (l > 0.01f && (!ok || l > best)) { best = l; ok = 1; pl[0] = n.x / l; pl[1] = n.y / l; pl[2] = n.z / l; pl[3] = -(pl[0] * R.x + pl[1] * R.y + pl[2] * R.z); }
-                    }
-                    if (!ok) continue;
+                    /* the plane handed to 0x435b90: the node-space loader normal times the node matrix, normalised (press_normal),
+                     * d = -n . (first world vertex) (0x4334ab / 0x4337e3) - the same code for the uniform and the non-uniform branch */
+                    Vec3 nw; if (!press_normal(in, ip, &nw)) continue;
+                    float pl[4] = { nw.x, nw.y, nw.z, -(nw.x * v[0].x + nw.y * v[0].y + nw.z * v[0].z) };
                     float before[4] = { acc[0], acc[1], acc[2], acc[3] };
                     any |= cyl_poly(v, ip->nverts, pl, c, r, up, down, acc);
                     if (getenv("WOODY_PUSHLOG") && (before[0] != acc[0] || before[1] != acc[1] || before[2] != acc[2] || before[3] != acc[3])) printf("push: inst %u model %d node %u type %d fade %.2f at %.0f %.0f %.0f", in->index, (int)mi, ni, in->type, in->fade, c.x, c.y, c.z), puts("");
@@ -392,8 +429,10 @@ static float world_ground(const Player *p, Vec3 pt, int *found, const Instance *
         if (poly_contains(g, pl, q)) { best = dist / pl->plane[1]; f1 = 1; gn = (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }; gm = (int32_t)pl->material; }
     }
     float y1 = pt.y - best;
-    float y2 = ins_floor_below(p->ins, pt, 0.0f, 1e9f, &f2, g_ground_skip ? g_ground_skip : p->inst, hit_inst, hit_node);
-    if (f2 && (!f1 || y2 > y1)) { *found = 1; g_ground_n = g_ins_n; g_ground_mat = -1; return y2; }
+    /* the instances only beat a world floor that was found: [0x4c4bd4] starts at 0 (0x49852e), and t < 0 never wins */
+    float bi = f1 ? best : 0.0f;
+    f2 = ins_floor_below(p->ins, pt, &bi, g_ground_skip ? g_ground_skip : p->inst, hit_inst, hit_node);
+    if (f2) { *found = 1; g_ground_n = g_ins_n; g_ground_mat = -1; return pt.y - bi; }
     *hit_inst = NULL; *hit_node = NULL; *found = f1; g_ground_n = f1 ? gn : (Vec3){ 0, 1, 0 }; g_ground_mat = f1 ? gm : -1; return f1 ? y1 : pt.y;
 }
 
@@ -584,7 +623,7 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex)
 {
     memset(p, 0, sizeof *p);
     if (!ins->nmodels || !ins->models[0].ninstances) return -1;
-    p->gel = gel; p->ins = ins; p->tex = tex; p->cur_col = 0xffffffffu; p->step_u = -1.0f;
+    p->gel = gel; p->ins = ins; p->tex = tex; p->cur_col = 0xffffffffu; p->step_u = -1.0f; p->crush = 1.0f;
     player_bind(p, &ins->models[0].instances[0]);
     p->jumper.state = 2; p->jumper.armed = 1;                      /* 0x462c90 reset */
     p->health = 3.0f; p->lives = 3; p->lanim = -1; p->board_lanim = -1;
@@ -1069,6 +1108,7 @@ static void player_reset(Player *p)                                     /* vt[17
     p->att_inst = NULL; p->lanim = -1; p->board_lanim = -1; p->step_u = -1.0f; p->cam_init = 0; idle_reset(p);   /* 0x44abab A/B->Reset(), 0x44abcf */
     p->bonus_inv = p->bonus_inv_acc = 0; p->bonus_inv_cnt = 0; p->inst->tint_mode = 0;   /* 0x44ad46..0x44ad58: +0x704 +0x700 +0x708 +0x70c = 0, no more white blinking */
     p->duck = 0; p->duck_t = 0;                                          /* 0x44ad28 */
+    p->crush = 1.0f;                                                     /* 0x44ab3b: +0x2e8 = 1 (and the scale +0x4c..+0x54) */
     p->look = 0; p->look_show = 0; p->inst->fade = p->inst->fade_target = 0; p->inst->fade_rate = 100.0f;   /* 0x44ac15 +0x268 = 0; 0x44ad6a: 0x44e7f0(0, 1), visible again after a death in state 3 */
     p->special_st = 0; p->special_t = 0;                                 /* 0x44ad5e / 0x44ad64 */
     p->follow = NULL;                                                    /* 0x44ac84: +0x55c = 0; Reset's SetState(0) (0x44ac3f) ends state 7 */
@@ -1311,7 +1351,8 @@ static void player_apply_transform(Player *p)
             }
         }
     }
-    mat4_from_trs(&in->world, in->position, in->quat, in->scale);
+    Vec3 sc = in->scale; if (p->crush > 0) sc.z *= p->crush;          /* 0x44bd00: inst z scale +0x54 = P+0x2e8 (crush test 0x462a40) */
+    mat4_from_trs(&in->world, in->position, in->quat, sc);
 }
 
 /* 0x44bf10: when Perso+0x4b4 (the race board, message 1120) is set, the board gets the Perso's position, centre, rotation
@@ -1517,10 +1558,11 @@ static void special_update(Player *p, const PlayerInput *in, float dt)
         if (anim_len(p, 0x13, 0) <= p->special_t) p->special_st = 0;
     }
 }
-float player_body_height(const Player *p)                                 /* 0x462490 */
+float player_body_height(const Player *p)                                 /* 0x462490; 0x4624c0 = P+0x118 * inst+0x54 (the crush scale) */
 {
-    if (p->race_char) return p->race_crouch ? 81.0f : 160.0f;
-    return p->duck ? P_DUCK_H : P_BODY_H;
+    float s = p->crush > 0 ? p->crush : 1.0f;
+    if (p->race_char) return (p->race_crouch ? 81.0f : 160.0f) * s;
+    return (p->duck ? P_DUCK_H : P_BODY_H) * s;
 }
 /* ducking 0x465b10 (docs/PERSO_DUCK.md 1.2): hold action 5 on the ground -> 0x31 (down, 0.375 s), 0x32 (lying, every frame),
  * released and the segment feet+61 .. feet+132 free -> 0x33 (up, 0.2 s). Sub-states 1 and 3 end on their timer only.
@@ -1532,6 +1574,7 @@ float player_body_height(const Player *p)                                 /* 0x4
  * height (61, for shots and lasers) go on, and he comes out of the state still ducking (Reset 0x44ad28 is the only clear).
  * ground = +0x22c as 0x44bcf0 reads it: the port's on_ground, except on the rocket, where the port keeps on_ground 0 but the
  * original's flag stays 1 from the mount (0x465740 needs the ground; 0x4657f0 never writes +0x22c and MoveCollide does not run). */
+static int ray_4359b0(const Player *p, Vec3 a, Vec3 b, float *t, const Instance **inst_out);
 static void duck_update(Player *p, const PlayerInput *in, float dt, int anim_owned, int ground)
 {
     if (p->dead_kind || p->atk) return;                                     /* state 2 / +0x5b4: nothing, no LockMove either */
@@ -1541,9 +1584,9 @@ static void duck_update(Player *p, const PlayerInput *in, float dt, int anim_own
     case 1: if ((p->duck_t -= dt) <= 0) p->duck = 2; break;
     case 2: p->duck_anim = b ? 0x4f : 0x32;
             if (!in->duck) {                                                /* 0x4359b0 from feet + P+0x10 to feet + P+0x0c - P+0x10: any hit keeps him down */
-                Vec3 a = { p->pos.x, p->pos.y + P_DUCK_H, p->pos.z }, e = { p->pos.x, p->pos.y + (P_BODY_H - P_DUCK_H), p->pos.z }, n; float f;
-                int blocked = gel_ray_frac(p->gel, a, e) <= 1.0f || (player_ray_instances(p, p->inst, a, e, &f, &n, NULL) && f <= 1.0f);
-                if (getenv("WOODY_DUCKLOG") && blocked) { const Instance *hi = NULL; float gw = gel_ray_frac(p->gel, a, e); int ih = player_ray_instances(p, p->inst, a, e, &f, &n, &hi); printf("  DUCK blocked: world %.3f inst %d (%u) f %.3f\n", gw, ih, hi ? hi->index : 0u, f); }
+                Vec3 a = { p->pos.x, p->pos.y + P_DUCK_H, p->pos.z }, e = { p->pos.x, p->pos.y + (P_BODY_H - P_DUCK_H), p->pos.z }; float f;
+                const Instance *hi = NULL; int kind = ray_4359b0(p, a, e, &f, &hi), blocked = kind != 0;   /* 0x465d0b / 0x465d18: [0x53a554] != 0 */
+                if (getenv("WOODY_DUCKLOG") && blocked) printf("  DUCK blocked: kind %d inst %u f %.3f\n", kind, hi ? hi->index : 0u, f);
                 if (!blocked) { p->duck_anim = b ? 0x50 : 0x33; p->duck_t = anim_len(p, p->duck_anim, 0); p->duck = 3; if (!anim_owned) p->lanim = -1; }
             }
             break;
@@ -1735,6 +1778,80 @@ static void bonus_blink(Player *p, float dt)
     p->inst->tint_mode = white ? 2 : 0; p->inst->tint_rgb[0] = p->inst->tint_rgb[1] = p->inst->tint_rgb[2] = 1.0f;
 }
 
+/* The segment test 0x4359b0(a, b, -1) as the sweep's head ray and the crush test use it (docs/PERSO_MOVE.md 6.6):
+ * 0x497ed0 = the world half 0x497fb0 (the cells along a -> b; a polygon counts when a is on its front side and b strictly
+ * behind it, gel_ray_front) and then vt[5] 0x432ab0 of every instance in the visited cells and the dynamic list, in node space:
+ *  - a polygon of a press node counts when a is on its front (loader plane >= 0, 0x432d7f) and b not (<= 0, 0x432dc3) and the
+ *    segment passes inside it (every edge (v_i - a) x (v_i+1 - a) . (b - a) > 0, 0x432ee2); t = -f(a) / n.(b - a). It is
+ *    recorded when t < [0x4c4bd4] OR when [0x53a554] is still 0 (0x432f87) - and 0x4359b0 zeroes [0x53a554] before the cast,
+ *    so any instance polygon on the segment replaces the world hit, and among instances the last one tested wins. The port
+ *    takes the nearest instance polygon (the order of the original's cell lists is not reproduced).
+ *  - a behind every polygon of a node (the count of polygons with f(a) < 0 equals the node's polygon count, 0x4330c0): a starts
+ *    inside that press node -> [0x53a554] = 3, t = 0 ([0x4c4bd0] = 2, turned into kind 3 by 0x435b4f); later polygons then no
+ *    longer override it (t < 0 is impossible and [0x53a554] != 0).
+ * Kinds: 0 nothing, 1 world polygon, 2 instance polygon, 3 a inside a press node. *t = the fraction of a -> b. */
+static int ray_4359b0(const Player *p, Vec3 a, Vec3 b, float *t, const Instance **inst_out)
+{
+    float tw = gel_ray_front(p->gel, a, b), ti = 2.0f; int kind = tw < 1.0f ? 1 : 0; Vec3 v[32], ab = vsub(b, a);
+    const Instance *hi = NULL, *hin = NULL;
+    float sb[6] = { fminf(a.x, b.x) - 1, fmaxf(a.x, b.x) + 1, fminf(a.y, b.y) - 1, fmaxf(a.y, b.y) + 1, fminf(a.z, b.z) - 1, fmaxf(a.z, b.z) + 1 };
+    const InsFile *ins = p->ins;
+    for (uint32_t mi = 0; ins && mi < ins->nmodels && !hin; mi++) {
+        const Model *m = &ins->models[mi]; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn); if (!ncn) continue;
+        for (uint32_t k = 0; k < m->ninstances && !hin; k++) {
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, p->inst) || !in->node_world) continue;
+            for (uint32_t ci = 0; ci < ncn && !hin; ci++) {
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni];
+                float nb[6]; if (ins_node_world_box(in, ni, nb) && (nb[0] > sb[1] || nb[1] < sb[0] || nb[2] > sb[3] || nb[3] < sb[2] || nb[4] > sb[5] || nb[5] < sb[4])) continue;
+                uint32_t behind = 0;
+                for (uint32_t pi = 0; pi < nd->npolys; pi++) {
+                    const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 32) continue;
+                    for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
+                    float P[4]; if (!loader_plane(v, pl->nverts, P)) continue;
+                    float fa = P[0] * a.x + P[1] * a.y + P[2] * a.z + P[3], fb = P[0] * b.x + P[1] * b.y + P[2] * b.z + P[3];
+                    if (fa < 0) { behind++; continue; }                         /* 0x432d8c */
+                    if (fb > 0 || !(fa - fb > 0)) continue;
+                    uint32_t e = 0;
+                    for (; e < pl->nverts; e++) { Vec3 u = vsub(v[e], a), w = vsub(v[(e + 1) % pl->nverts], a); if (!(vdot(vcross(u, w), ab) > 0)) break; }
+                    if (e < pl->nverts) continue;
+                    float tq = fa / (fa - fb); if (tq < ti) { ti = tq; hi = in; }
+                }
+                if (nd->npolys && behind == nd->npolys) hin = in;              /* 0x4330c8: a is inside this press node */
+            }
+        }
+    }
+    if (hin) { *t = 0; if (inst_out) *inst_out = hin; return 3; }
+    if (hi) { *t = ti; if (inst_out) *inst_out = hi; return 2; }
+    *t = kind ? tw : 2.0f; if (inst_out) *inst_out = NULL; return kind;
+}
+
+/* Crush test 0x462a40 (Perso_Update 0x44b87c, right after MoveCollide 0x4624f0 - and 0x4567f0 in state 1 - in the Perso states
+ * 0, 1, 2, 3, 4 and 6; not in 5, 7, 8, 9, which skip MoveCollide). Nothing while dead (+0x26c). h = 0x4624c0 / +0x54 = the
+ * unsquashed body height (193, 61 ducked, 160/81 in the race); the ray 0x4359b0 from feet + 1 to feet + h - 1 (start cell
+ * 0x428ce0 must exist). Crushed when it hits (t < 1), he is on the ground (+0x22c, 0x44bcf0) and either an instance polygon
+ * was hit whose animation is running (kind 2 and inst+0xa0 != 0, 0x462b40) or - world polygon or inside a press node - he is
+ * standing on an instance (+0x298, 0x462b59): P+0x2e8 = max(free height, 2) / (h - 2), at most 1; under 0.3 (0x4aab98)
+ * Kill(4) (vt[38], 0x462bed) and the scale is kept at 0.01 or more. Otherwise P+0x2e8 = 1. Orient 0x44bd00 copies P+0x2e8 into
+ * the instance's z scale inst+0x54 every frame: the model is squashed flat (model z is up) and, since 0x4624c0 = P+0x118 *
+ * inst+0x54, so is every body height of the next frame (the sweep's band, shots, the camera eye). */
+static void crush_test(Player *p)
+{
+    if (p->dead_kind) return;
+    float h = player_body_height(p) / (p->crush > 0 ? p->crush : 1.0f);
+    Vec3 a = { p->pos.x, p->pos.y + 1.0f, p->pos.z }, b = { p->pos.x, p->pos.y + h - 1.0f, p->pos.z };
+    if (gel_cell(p->gel, a) < 0) return;                                  /* 0x462ae3 */
+    float t; const Instance *hi; int k = ray_4359b0(p, a, b, &t, &hi);
+    if (k && t < 1.0f && p->on_ground && (k == 2 ? hi->a_speed != 0 : p->att_inst != NULL)) {
+        float free = (b.y - a.y) * t; if (free < 2.0f) free = 2.0f;           /* 0x4a9870 */
+        float s = free / (h - 2.0f); if (s > 1.0f) s = 1.0f;
+        if (getenv("WOODY_CRUSHLOG")) printf("  CRUSH kind %d inst %u free %.1f of %.1f -> scale %.3f", k, hi ? hi->index : 0u, free, h - 2.0f, s), puts("");
+        p->crush = s;
+        if (s < 0.3f) { player_kill(p, 4); if (p->crush < 0.01f) p->crush = 0.01f; }
+        return;
+    }
+    p->crush = 1.0f;
+}
+
 /* Perso_MoveCollide 0x4624f0 -> SweepCylinder 0x437180 (docs/PERSO_MOVE.md 6.1/6.2): actor push, then move in substeps of
  * at most 10 units; per substep one xz push-out vector of the body (body_push, 0x407000 / 0x408600) x0.9, landing clamp
  * when falling, ground clinging when walking; then the floor under feet + 43. Runs in states 0, 2, 3, 6, 7 after Perso_Move
@@ -1759,6 +1876,7 @@ static void move_collide(Player *p, Vec3 *dispp, float dt, int racing, const Ins
         float gy = world_ground(p, cur, &found, &hit_inst, &hit_node);
         if (found && cur.y - half - 1.0f < gy) { margin = P_STEP + 1.0f; if (mode == 0) mode = 1; }
         for (; n > 0; n--) {
+            Vec3 prev = cur;
             cur.x += d.x; cur.y += d.y; cur.z += d.z;
             float feet = cur.y - half; int hit = 0;
             /* band [feet + margin, feet + H]: up = feet + H - centre, down = centre - (feet + margin) ([0x53a350], [0x53a54c]) */
@@ -1769,6 +1887,21 @@ static void move_collide(Player *p, Vec3 *dispp, float dt, int racing, const Ins
             if (!found) continue;
             if (mode == 2) { if (cur.y - half < gy) cur.y = gy + half; }
             else if (mode == 1) { float f = cur.y - half; if (f - gy < P_STEP && f > gy) cur.y = gy + half; }
+            /* the head ray 0x43744f..0x43753d: [0x10] = (H - half) + d.y (0x4372ed; H, not the step - positive for every substep
+             * of at most 10 units), so it runs every substep, standing or ducked: 0x4359b0 from the previous centre to the head
+             * (cur.x, feet + H, cur.z). A hit (world or instance polygon) puts the head at the hit point, cur.y = hit.y - (H - half),
+             * but never lower than gy + half: a ceiling stops a jump. If the previous centre is inside a press node (kind 3) it
+             * casts again from (cur.x, gy + 0.1, cur.z) to the head (0x4374d1) and applies any hit the same way. */
+            if (body_h - half + d.y > 0) {
+                Vec3 head = { cur.x, cur.y + (body_h - half), cur.z }, from = prev; float t; const Instance *ri;
+                int k = ray_4359b0(p, from, head, &t, &ri);
+                if (k == 3) { from = (Vec3){ cur.x, gy + 0.1f, cur.z }; k = ray_4359b0(p, from, head, &t, &ri); }
+                if (k) {
+                    float y = from.y + (head.y - from.y) * t - (body_h - half);
+                    if (getenv("WOODY_PUSHLOG")) printf("sweep: head ray kind %d inst %u t %.3f centre %.1f -> %.1f (floor %.1f)", k, ri ? ri->index : 0u, t, cur.y, y - half < gy ? gy + half : y, gy), puts("");
+                    cur.y = y - half < gy ? gy + half : y;
+                }
+            }
         }
         p->wall_contact = wall;                                       /* P+0x2e0 ([0x53a554] = 3 after any hit) */
         np.x = cur.x; np.y = cur.y - half; np.z = cur.z;
@@ -1917,6 +2050,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         Vec3 d = climb_update(p, in, dt); const Instance *hi; const InsNode *hn;
         p->vel = (Vec3){ d.x / dt, d.y / dt, d.z / dt };
         move_collide(p, &d, dt, 0, &hi, &hn);
+        crush_test(p);                                                     /* 0x44b87c */
         player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return;   /* state 4 runs 0x4624f0: +0x22c = its probe */
     }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
@@ -2010,6 +2144,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     const float body_h = player_body_height(p);
     move_collide(p, &disp, dt, racing, &hit_inst, &hit_node);
     if (racing) race_check_crash(p, old_pos, disp, body_h);
+    crush_test(p);                                                        /* 0x44b87c: after MoveCollide (and 0x4567f0 in state 1) */
     check_steep(p);                                                       /* 0x44b2e0, after the collision and before Orient */
     if (racing) {                                                         /* 0x44bd30: +0x210 = +0x210 * 0.9 + M+0xd0 * 0.1 per frame (normalised to 60 fps), not renormalised */
         float k = 1.0f - powf(0.9f, dt * P_REF_FPS); Vec3 n = p->race_floor_n;

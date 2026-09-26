@@ -60,6 +60,7 @@ typedef struct Player {
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
     int ground_kind;                /* Perso+0x308 (0x4628e0): 0 normal, 1 slippery, 2 dust/sand/snow (docs/PERSO_MOVE.md 6.4) */
     int wall_contact;               /* Perso+0x2e0: the last sweep touched a wall (0x437180); speeds up the Mover's braking (0x45ae50) */
+    float crush;                    /* Perso+0x2e8: squash scale of the crush test 0x462a40 (1 = none), -> inst z scale +0x54 and every body height */
     Vec3 move_dir;                  /* Mover RampA.dir (M+0x34): the walking direction; the facing except on slippery ground (0x45a850) */
     float step_u;                   /* footsteps (docs/FOOTSTEPS.md): the fraction of the walk cycle at the previous frame, -1 = not walking */
     /* attack controller (Perso+0x5b4..): sub-state, timer, displacement, air window, charge; move lock = Perso+0x238 */
