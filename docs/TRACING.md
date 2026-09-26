@@ -17,9 +17,14 @@ Without a CD, the game shows the message from `WinResource.dll` (string 1/3) and
 `Woody.exe` reads `Woody.cfg` from the working directory (`0x401000`): `u32 magic 0x19072001` + 284 (0x11c) bytes of config that are copied 1:1 into `0x4c2bd0`. If the file is missing, the exe starts `Detect.exe` (an MFC dialog around `Setup.dll`). `Setup.dll` exports `Detect(hwnd)`, `DefaultControlSettings()` and `SaveConfig()`; [tools/native/mkcfg.c](../tools/native/mkcfg.c) calls those three and thereby writes a valid cfg without the dialog:
 
 ```bash
-python -m ziglang cc -target x86-windows-gnu -O2 -o out/mkcfg.exe tools/native/mkcfg.c -lgdi32 -luser32 -lole32
+python -m ziglang cc -target x86-windows-gnu -O2 -o out/mkcfg.exe tools/native/mkcfg.c -lgdi32 -luser32
 cd game && ../out/mkcfg.exe      # writes game/Woody.cfg
 ```
+
+Until 2026-09-26 mkcfg called `CoInitialize` before `Detect`, which makes Setup's sound enumeration bail out, so the cfg
+it wrote had the whole sound section 0 and the original ran **without any sound** (SETUP.md 4). Delete such a
+`game/Woody.cfg` and run the fixed tool again (Detect would read the old zeros back). Every field and the Detect.exe
+control that writes it: SETUP.md 1.
 
 Layout of the 284 bytes (offsets relative to the start of the struct, i.e. file offset +4):
 
@@ -31,8 +36,8 @@ Layout of the 284 bytes (offsets relative to the start of the struct, i.e. file 
 | 0x1c | GUID DirectDraw driver (16 B; all 0 → NULL = primary, `0x4027bd`) |
 | 0x2c..0x3c | mode info (0x1ff, 1, 1, 3); 0x3c = effects quality (2 = max, `cmp [0x4c2c0c],2` in `0x43b43a`) |
 | 0x40, 0x44, 0x48 | width, height, bpp (640, 480, 32 from Detect; `SetDisplayMode` uses them as they are — the 16 pushed at `0x4027eb` is the z-buffer depth, DISPLAY.md §1.1) |
-| 0x50 | Detect's "Disable VSYNC" (`0x47ee16` inverts it on Windows NT; 0 → Flip with DDFLIP_WAIT = vsync, DISPLAY.md §2.2) |
-| 0x58..0x98 | audio settings (device, frequency, volumes ×0.01, speaker config) → `0x5e81bc..` in `0x4691e0` |
+| 0x50 | Detect's "Activate VSync" (`0x47ee16` inverts it on Windows NT; 0 → Flip with DDFLIP_WAIT = vsync, DISPLAY.md §2.2) |
+| 0x68..0x98 | sound page: Sound Fx / Music / Cinematic / Invert Left/Right switches, volumes ×0.01, output device, speaker config → `0x5e81b4..` in `0x4691e0` (SETUP.md 1) |
 | 0x9c..0xa8 | GUID of the joystick Setup found (the game does not read it) |
 | 0xac | 12 × u32 keys "config 1" (DirectInput scancodes: ↑ ↓ ← → Space LShift LCtrl LShift Enter Esc Num0 RCtrl) |
 | 0xdc | 12 × u32 keys "config 2" (R F D G + joystick buttons 0x200..0x207) |

@@ -178,8 +178,10 @@ start index 0 (step 7, `0x4c261c`). The last sound blocks run past the header's 
   The pitch is the frame width, so the decoder is not tied to 640.
 - `logos_play` (`main_engine.c`) runs before the House level is loaded: three films, 4:3 kept with black bars (the
   original stretches to the screen, which is 4:3 there), frames paced by the sound clock (samples per superchunk), sound
-  through `audio_pcm_open/push/close` at full gain (the original has its own DirectSound buffer; the volume options are
-  not applied to it). Action 9 held (Esc) skips a film, as in `0x401500`.
+  through `audio_pcm_open/push/close` at full gain. The original's film buffer gets no SetVolume/SetPan, so neither the
+  Sound Fx nor the Music volume applies; its only switch is Detect's **"Cinematic"** box (Woody.cfg `+0x70` → `[0x5e81bc]`,
+  `0x426a57`: without it the player gets no DirectSound object and the film is mute), ported as woodyre.cfg `film_sound=`
+  (SETUP.md 3.3). Action 9 held (Esc) skips a film, as in `0x401500`.
 - They play only when booting to the title: no level argument, no `--shot` / `--enter` / `WOODY_KEYS` /
   `WOODY_SHOTSEQ`, no `--nologo` or `WOODY_NOLOGO`; `--logo` forces them. Test hooks: `WOODY_LOGOSHOT="file.ppm T"`,
   `WOODY_LOGOESC="T1 T2 .."` (Esc at those seconds since the first film started).

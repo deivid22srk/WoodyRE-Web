@@ -389,6 +389,12 @@ static void save_auto(void) { if (g_slot >= 0) { g_file.slot[g_slot] = g_save; f
  * volumes are linear amplitude v / 100: -2000 log10(100 / v) mB in 0x48bf50 is exactly that. */
 static struct { int sfx, music, vib; } g_opt = { 100, 70, 0 };   /* port defaults (audio.c's 1.0 / 0.7); vibration: no joystick = 0% (0x4674b0), rumble is a no-op on PC */
 static void opt_apply(void) { audio_master(g_opt.sfx * 0.01f, g_opt.music * 0.01f); }   /* 0x469570 / 0x4695a0 */
+/* two switches of Detect.exe's Sound page that the game reads (docs/SETUP.md 3): "Invert Left/Right" = Woody.cfg +0x74 ->
+ * [0x5e81c0] = reverse stereo (0x46b7e0), and "Cinematic" = +0x70 -> [0x5e81bc], which only gates the sound of the HNM films
+ * (0x426a57: no DirectSound for the film player without it). The port keeps them in woodyre.cfg (reverse_stereo=, film_sound=);
+ * a key woodyre.cfg does not have yet comes from Woody.cfg when its sound section is live (setup_import), else the Setup
+ * defaults (0x100032a0: invert 0, cinematic 1). -1 = not in woodyre.cfg. vsync: the same for the display page's key. */
+static struct { int rev, film, vsync; } g_setup = { -1, -1, -1 };
 /* ---- display (docs/DISPLAY.md; everything here is a PORT EXTRA). The original runs exclusive fullscreen at the Woody.cfg mode
  * (Detect's list, default 640x480), always 4:3 in the layout, and paces itself only by Flip(DDFLIP_WAIT) = vsync (0x47ee90);
  * no frame cap, dt clamped to 0.1 s (0x40185b). The port: a window of any size or borderless fullscreen, 4:3 pillarboxed or a
@@ -408,7 +414,8 @@ static void opt_read(void)
         if (sscanf(line, "sfx=%d", &v) == 1) g_opt.sfx = v; else if (sscanf(line, "music=%d", &v) == 1) g_opt.music = v; else if (sscanf(line, "vibration=%d", &v) == 1) g_opt.vib = v;
         else if (sscanf(line, "aspect=%15s", s) == 1) g_disp.wide = strcmp(s, "4:3") != 0;
         else if (sscanf(line, "window=%dx%d", &v, &v2) == 2) { if (v >= 320 && v2 >= 240 && v <= 7680 && v2 <= 4320) { g_disp.w = v; g_disp.h = v2; } }
-        else if (sscanf(line, "fullscreen=%d", &v) == 1) g_disp.full = v != 0; else if (sscanf(line, "vsync=%d", &v) == 1) g_disp.vsync = v != 0;
+        else if (sscanf(line, "fullscreen=%d", &v) == 1) g_disp.full = v != 0; else if (sscanf(line, "vsync=%d", &v) == 1) g_disp.vsync = g_setup.vsync = v != 0;
+        else if (sscanf(line, "reverse_stereo=%d", &v) == 1) g_setup.rev = v != 0; else if (sscanf(line, "film_sound=%d", &v) == 1) g_setup.film = v != 0;
         else if (sscanf(line, "fpscap=%d", &v) == 1) g_disp.cap = v < 0 ? 0 : v > 1000 ? 1000 : v; } fclose(f); }
     int *o[3] = { &g_opt.sfx, &g_opt.music, &g_opt.vib }; for (int i = 0; i < 3; i++) { if (*o[i] < 0) *o[i] = 0; if (*o[i] > 100) *o[i] = 100; }
 }
@@ -417,6 +424,7 @@ static void opt_write(void)
     FILE *f = fopen("woodyre.cfg", "w"); if (!f) return;
     fprintf(f, "sfx=%d\nmusic=%d\nvibration=%d\n", g_opt.sfx, g_opt.music, g_opt.vib);
     fprintf(f, "aspect=%s\nwindow=%dx%d\nfullscreen=%d\nvsync=%d\nfpscap=%d\n", g_disp.wide ? "wide" : "4:3", g_disp.w, g_disp.h, g_disp.full, g_disp.vsync, g_disp.cap);
+    fprintf(f, "reverse_stereo=%d\nfilm_sound=%d\n", g_setup.rev > 0, g_setup.film != 0);
     fclose(f);
 }
 /* the 3D view in the window (GL origin bottom left): narrower than 4:3 = letterboxed in both modes, wider = pillarboxed in 4:3 mode */
@@ -472,16 +480,46 @@ static void in_defaults(void)
         {'X', IN_JOY + 3}, {VK_ESCAPE, IN_JOY + 5}, {'C', VK_NUMPAD0, IN_JOY + 6}, {VK_RCONTROL, 'E', IN_JOY + 7} };   /* table 0x1000c060: 0x200..0x207) */
     memcpy(g_in.bind, D, sizeof D); g_in.mode = 3; g_in.have_cfg = 0;
 }
+/* the Woody.cfg file (magic + 0x11c bytes) into b[0x120]: 1 = read, 0 = none, -1 = obsolete; *used = the path */
+static int wcfg_read(const char *data_dir, unsigned char *b, const char **used)
+{
+    static char alt[600]; const char *try_[3] = { getenv("WOODY_CFG"), "Woody.cfg", alt }; snprintf(alt, sizeof alt, "%s/../Woody.cfg", data_dir);
+    FILE *f = NULL; int k;
+    for (k = 0; k < 3 && !f; k++) if (try_[k]) f = fopen(try_[k], "rb");
+    if (!f) return 0;
+    *used = try_[k - 1];
+    size_t n = fread(b, 1, 0x120, f); fclose(f);
+    return n < 0x120 || (b[0] | b[1] << 8 | b[2] << 16 | (uint32_t)b[3] << 24) != 0x19072001 ? -1 : 1;   /* 0x401092 */
+}
+#define CFG32(o) ((int)((uint32_t)b[(o) + 4] | (uint32_t)b[(o) + 5] << 8 | (uint32_t)b[(o) + 6] << 16 | (uint32_t)b[(o) + 7] << 24))   /* cfg offset o (the file has the magic first) */
+/* boot, before the window (docs/SETUP.md): the Setup keys woodyre.cfg does not have yet come from Woody.cfg.
+ * - vsync: +0x50 is Detect's "Activate VSync" box, which the game inverts at device creation on Windows NT (0x47ee0e:
+ *   [0x4c2c20] = 1 - flag when [0x4c3aa0], GetVersionExA platform 2) and then flips on vsync when the result is not 0
+ *   (0x47eea0); the port only runs on the NT line, so vsync = (flag != 1): the Setup default 0 gives vsync.
+ * - reverse stereo +0x74, film sound +0x70: only from a live sound section (one of the switches +0x68/+0x6c/+0x70 on);
+ *   the cfg that tools/native/mkcfg.c wrote before it stopped calling CoInitialize has the whole section 0 (Setup's
+ *   0x10002770 returns early on S_FALSE), which the original plays without any sound - not something to copy.
+ * WOODY_REVSTEREO=0/1 overrides the reverse stereo for a run without saving it (testing, main). */
+static void setup_import(const char *data_dir)
+{
+    unsigned char b[0x120]; const char *path = NULL; int r = wcfg_read(data_dir, b, &path);
+    if (r > 0) {
+        int live = CFG32(0x68) || CFG32(0x6c) || CFG32(0x70);
+        if (g_setup.vsync < 0) g_disp.vsync = CFG32(0x50) != 1;
+        if (live && g_setup.rev < 0) g_setup.rev = CFG32(0x74) != 0;
+        if (live && g_setup.film < 0) g_setup.film = CFG32(0x70) != 0;
+        printf("setup: %s: vsync flag %d%s, sound section %s (fx %d music %d cinematic %d invert %d, volumes %d %d %d)\n", path, CFG32(0x50),
+               g_setup.vsync >= 0 ? " (woodyre.cfg has vsync=)" : CFG32(0x50) != 1 ? " -> vsync on" : " -> vsync off", live ? "live" : "off (ignored)", CFG32(0x68), CFG32(0x6c), CFG32(0x70), CFG32(0x74), CFG32(0x80), CFG32(0x84), CFG32(0x88));
+    }
+    if (g_setup.rev < 0) g_setup.rev = 0;                                           /* Setup defaults 0x100032a0 */
+    if (g_setup.film < 0) g_setup.film = 1;
+}
 static void in_read_cfg(const char *data_dir)
 {
     in_defaults();
-    char alt[600]; const char *try_[3] = { getenv("WOODY_CFG"), "Woody.cfg", alt }; snprintf(alt, sizeof alt, "%s/../Woody.cfg", data_dir);
-    unsigned char b[0x120]; FILE *f = NULL; int k;
-    for (k = 0; k < 3 && !f; k++) if (try_[k]) f = fopen(try_[k], "rb");
-    if (!f) { puts("input: no Woody.cfg, port keys"); return; }
-    size_t n = fread(b, 1, sizeof b, f); fclose(f);
-    #define CFG32(o) ((int)((uint32_t)b[(o) + 4] | (uint32_t)b[(o) + 5] << 8 | (uint32_t)b[(o) + 6] << 16 | (uint32_t)b[(o) + 7] << 24))   /* cfg offset o (the file has the magic first) */
-    if (n < sizeof b || CFG32(-4) != 0x19072001) { puts("input: Configuration file is Obsolete... (Woody.cfg), port keys"); return; }   /* 0x401092 */
+    unsigned char b[0x120]; const char *path = NULL; int r = wcfg_read(data_dir, b, &path);
+    if (!r) { puts("input: no Woody.cfg, port keys"); return; }
+    if (r < 0) { puts("input: Configuration file is Obsolete... (Woody.cfg), port keys"); return; }   /* 0x401092 */
     static const int act_of[12] = { 2, 3, 0, 1, 5, 6, 4, 8, 7, 9, 10, 11 };   /* cfg key index -> action (0x44fc5a..0x44fe28) */
     memset(g_in.bind, 0, sizeof g_in.bind);
     for (int c = 0; c < 2; c++) for (int i = 0; i < 12; i++) {
@@ -490,9 +528,9 @@ static void in_read_cfg(const char *data_dir)
     }
     g_in.mode = CFG32(0x114) == 1 ? 0 : CFG32(0x110) == 0 ? 2 : 1;   /* 0x44fc05 */
     g_in.have_cfg = 1;
-    printf("input: %s, mode %d (%s)\n", try_[k - 1], g_in.mode, g_in.mode ? "joystick" : "keyboard only");
-    #undef CFG32
+    printf("input: %s, mode %d (%s)\n", path, g_in.mode, g_in.mode ? "joystick" : "keyboard only");
 }
+#undef CFG32
 static void in_joy_poll(double now, double tl)                   /* 0x467a40 poll + 0x467a80 axes + 0x467af0 buttons; tl = the level clock */
 {
     g_in.jx = g_in.jy = 0; g_in.jbtn = 0; g_in.jok = 0;
@@ -2933,6 +2971,7 @@ static void env_draw(void)
  * (0x42a980 -> 0x42a840, with the frustum / race-distance test of stationary instances, docs/INSTANCE.md 4.1) */
 static int snd_owner_active(const void *owner) { const Instance *in = owner; return in->visible && in->listed; }
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
+static int g_cam_hold;                                            /* CamMgr+0x290, messages 1649 / 1650: written, never read (0x41fa40 / 0x41fa50) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
 #define AI(i) ((i) < (int)m->nargs ? (float)(int32_t)m->args[i] : 0.0f)
@@ -2953,6 +2992,10 @@ static void snd_msg(const EkoMsg *m, Instance *in)
     case 1655: audio_music((int)AI(0)); break;
     case 1646: case 1656: audio_music_stop(AI(0) * 0.01f); break;
     case 1657: audio_next_fade_in(AI(0) * 0.01f); break;
+    case 1649: case 1650:                                                           /* 0x46864f / 0x468660: no arguments, [0x4c737c] = CamMgr: 0x41fa40 sets +0x290 = 1,
+                                                                                     * 0x41fa50 clears it (also on every camera mode switch, 0x41f50c..0x41f5dc). Nothing
+                                                                                     * reads CamMgr+0x290 (docs/SOUND.md 8.5), and no script sends either: a flag, no effect */
+        g_cam_hold = m->id == 1649; if (getenv("WOODY_SNDLOG")) printf("  SND %d: camera flag CamMgr+0x290 = %d (unread)\n", m->id, g_cam_hold); break;
     default: break;
     }
     if (!in) return;
@@ -3335,7 +3378,9 @@ static void logos_play(Window *w, const char *dir)
         HnmFile h; if (hnm_open(&h, path)) { printf("logo: %s missing\n", path); continue; }
         int snd = 0, stop = 0, r = 0; double t0 = win_time();
         while (!stop && !w->quit && (r = hnm_next(&h)) > 0) {
-            if (h.npcm) { if (!snd && h.has_sound) snd = !audio_pcm_open(h.rate, h.channels); if (snd) audio_pcm_push(h.pcm, h.npcm); }   /* the first block holds 32 frames of sound */
+            if (h.npcm && g_setup.film) { if (!snd && h.has_sound) snd = !audio_pcm_open(h.rate, h.channels); if (snd) audio_pcm_push(h.pcm, h.npcm); }   /* the first block holds 32 frames of sound; film sound only with
+                * Setup's "Cinematic" switch (0x426a57: [0x5e81bc] = cfg +0x70, else the player gets no DirectSound); no volume option applies,
+                * the core never calls SetVolume on its buffer (docs/SETUP.md 3.3) */
             if (h.frame == 1) t0 = win_time();
             double due = t0 + (h.frame - 1) * h.frame_time;                                                   /* the clock of the sound: one superchunk = one frame of it */
             for (;;) {
@@ -3410,6 +3455,7 @@ int main(int argc, char **argv)
     }
     SetProcessDPIAware();                                                              /* port extra: real pixels on a scaled desktop, so 4K is 4K */
     opt_read();                                                                        /* woodyre.cfg: the volumes (applied at sound start) and the display */
+    setup_import(dir);                                                                 /* the Setup keys woodyre.cfg lacks: from Woody.cfg (docs/SETUP.md) */
     {   /* the display that runs: the cfg's, but a screenshot run keeps the fixed default (1280x800 window, wide, vsync) whatever the
          * cfg says; the command line and WOODY_VSYNC / WOODY_FPSCAP override both */
         static const Display def = { 1, 1280, 800, 0, 1, 0 };
@@ -3432,6 +3478,7 @@ int main(int argc, char **argv)
     }
     if (!getenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
     opt_apply();                                                                       /* 0x4691e2: the volumes from the cfg at sound start */
+    audio_reverse_stereo(getenv("WOODY_REVSTEREO") ? atoi(getenv("WOODY_REVSTEREO")) != 0 : g_setup.rev);   /* 0x4691f4: [0x5e81c0] = cfg +0x74 */
     in_read_cfg(dir);                                                                  /* 0x405e0f: Woody.cfg (key bindings, controller mode) */
     if (logo < 0) logo = !(argc > 2 && argv[2][0] != '-') && !getenv("WOODY_NOLOGO") && !shot_path && enter_at < 0 && !getenv("WOODY_KEYS") && !getenv("WOODY_SHOTSEQ");
     if (logo) logos_play(&win, dir);                                                   /* boot state 2 (0x402649): only when booting to the title; a level on the command line or a scripted run skips them */

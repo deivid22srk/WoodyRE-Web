@@ -108,7 +108,7 @@ translation `T' = T·R_B + T_B`. When building the view matrix (`0x41ef3d..0x41e
 | +0x1dc | Repere | state of the previous frame | `0x41f385` |
 | +0x278 | vec3 | target point ("target"): set by `0x41f960` every frame = playerPos + (0,50,0), then overwritten by the mode update (mode 1: playerPos) | `0x41f05b`, `0x41f960` |
 | +0x284 | vec3 | player look direction (`M->dir`), from `0x41f960` | `0x41f960` |
-| +0x290 | u32 | 1 = camera frozen/paused (`0x41fa40`), 0 = active (`0x41fa50`, on every mode switch) | |
+| +0x290 | u32 | flag: 1 by `0x41fa40` (sound messages 1649, 1653, 1654), 0 by `0x41fa50` (1650 and every mode switch); **never read** (SETUP.md 5) | |
 | +0x294 | u32 | previous mode | `0x41f48b` |
 | +0x298 | u32 | previous mode argument | `0x41f474` |
 | +0x29c | Repere | state at the moment of the last mode switch | `0x41f480` |

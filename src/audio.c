@@ -53,6 +53,7 @@ static struct {
     WAVEHDR hdr[NBLOCKS]; int16_t buf[NBLOCKS][BLOCK * 2];
     Bank bank[AUDIO_BANKS]; Voice v[NVOICES]; int next_handle, paused;
     int last2d, log; unsigned seq;          /* last2d: index+1 of the newest 2D voice (mgr+0x30, tail of the 2D queue); log: WOODY_SNDLOG */
+    int reverse;                            /* reverse stereo [0x5e81c0] = Woody.cfg +0x74, Detect's "Invert Left/Right" (0x46b7e0) */
     float lpos[3], lright[3], m_sfx, m_mus, next_fade;
     FILE *dump;
     char bf_path[260]; BfFile *bf; int nbf; uint32_t bf_data;
@@ -123,12 +124,16 @@ static int stream_open(Stream *s, int track, int loop) {
  * coordinates untransformed (0x48b82e: mode 1, no y flip). Gain dmin/d between dmin and dmax, constant beyond (DS3D
  * rolloff 1, 0x48f830); pan = the direction to the source relative to the listener on that right axis. The software
  * path 0x46ba44 has the same gain but takes its pan from the *absolute* source position (0x46bb36 reloads the raw pos,
- * not pos - listener) - a bug nobody heard, the path is never taken; the port uses the relative direction like DS3D. */
+ * not pos - listener) - a bug nobody heard, the path is never taken; the port uses the relative direction like DS3D.
+ * Reverse stereo 0x46b7e0 (called with every position commit, 0x46b9e1 / 0x46bf38 / 0x46c066, when [0x5e81c0] != 0) mirrors
+ * the source through the listener's median plane: n = col1 x col2 = the right axis, src += -2 (n.(src - lis)) n. A reflection
+ * through a plane that holds the listener keeps the distance and negates the right component, so here: pan = -pan. */
 static float voice_geom(const Voice *v, float *dist, float *pan) {
     float d[3] = { v->ppos[0] - A.lpos[0], v->ppos[1] - A.lpos[1], v->ppos[2] - A.lpos[2] };
     float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), m = len * 0.01f;    /* metres, 0x4a94f8 */
     float dmin = v->dmin > 0 ? v->dmin : 1.0f, dmax = 50.0f * dmin;                  /* 0x46ba8a: dmin <= 0 -> 1 */
     *dist = m; *pan = len > 1.0f ? (d[0] * A.lright[0] + d[1] * A.lright[1] + d[2] * A.lright[2]) / len : 0.0f;   /* -1..1 = 0x46bb8d / 100 */
+    if (A.reverse) *pan = -*pan;                                                     /* 0x46b7e0 */
     if (m > dmax) m = dmax;
     return m > dmin ? dmin / m : 1.0f;
 }
@@ -441,6 +446,7 @@ void audio_listener(const float *pos, const float *right) {
 }
 void audio_pause(int paused) { A.paused = paused; }
 void audio_master(float sfx, float music) { A.m_sfx = sfx; A.m_mus = music; }
+void audio_reverse_stereo(int on) { A.reverse = on != 0; if (A.log && A.ok) printf("  SND reverse stereo %s\n", A.reverse ? "on" : "off"); }
 
 /* ---------------------------------------------------------------- Music.bf (CryoBF 2.01, docs/SOUND.md 4.2) */
 static const uint8_t *bf_dir(const uint8_t *p, const uint8_t *end, const char *prefix) {
