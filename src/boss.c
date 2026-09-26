@@ -198,14 +198,15 @@ static void behav_tick(Enemy *e, Player *pl, float dt)
 /* vtbl[43] 0x410900: hover height, or the fall (flag 4) with the feet k below pos */
 static void height_tick(Enemy *e, Player *pl, float dt)
 {
-    BossState *b = &e->b;
+    BossState *b = &e->b; float h2 = e->P.height * 0.5f, gy0; int f0;
+    game_msgmask(e->inst, 0x200, enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy0, &f0));   /* 0x410973: the probe at pos + h/2 (Press/In/UnPress), 0x410993 / 0x4109ab */
     if (b->grav) {
         float k = m1(e) ? 200.0f : 130.0f, feet = e->pos.y - k; int found;
-        float gy = player_ground_query(pl, e->inst, (Vec3){ e->pos.x, feet + e->P.height * 0.5f, e->pos.z }, &found);
+        float gy; enemy_probe(e, pl, (Vec3){ e->pos.x, feet + h2, e->pos.z }, h2, &gy, &found);   /* 0x41a561 again, with the same probe at the feet */
         int on = found && gy >= feet - 0.5f;
         if (on) b->fall_v = 0; else { b->fall_v += dt * e->P.fall_g - b->fall_v * 0.2f; if (b->fall_v > 0) feet -= b->fall_v; }   /* 0x41a4e0: v in units per FRAME */
         if (found && feet < gy) { feet = gy; on = 1; }
-        b->on_ground = on; e->pos.y = feet + k; return;
+        b->on_ground = on; e->pos.y = feet + k; game_msgmask(e->inst, 0x200, on); return;   /* 0x41a642 / 0x41a65e */
     }
     b->on_ground = 0;
     if (!m1(e) && !b->high && b->st != 9) {                          /* mode 2 hops in the low phase */
@@ -264,6 +265,7 @@ void boss_reset(Enemy *e)                                            /* vtbl[17]
 {
     BossState *b = &e->b;
     e->pos = e->home = e->inst->position; e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp; e->hit_t = 0;   /* WOODY_BOSSHP: testing */ e->inst->visible = 1;   /* 0x407790: back in the world */
+    enemy_reset_probe(e); game_msgmask(e->inst, 0x10, 0);           /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
     wander_start(e); b->grav = 0; b->st = 0; b->t1d8 = 0; b->high = 1; b->acc = 0;
     b->bob_down = 1; b->bob_max = 150.0f; b->bob = 0; b->fall_v = 0; b->knock[0] = b->knock[1] = b->knock[2] = 0;
     b->rec = b->lrec = -1; b->sub = b->lsub = 0;
@@ -515,9 +517,10 @@ static void link_face(Instance *l, Vec3 d)
 }
 static void ground_follow(Enemy *e, Player *pl, float dt)            /* Enemy::Update -> vtbl[43] 0x41a4e0 (flag 4): v += 200 dt - 0.2 v per frame */
 {
-    int found; float gy = player_ground_query(pl, e->inst, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+    int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* 0x41a561 */
     e->vfall += e->P.fall_g * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
-    if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; }
+    if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
+    game_msgmask(e->inst, 0x200, on);                                /* 0x41a642 / 0x41a65e */
 }
 /* 0x40ea70(c, r, base, R, H): a sphere against an upright cylinder: the y gap to [base, base + H], then 3D against r + R */
 static int sphere_cyl(Vec3 c, float r, Vec3 base, float R, float H)
@@ -538,6 +541,7 @@ void boss15_reset(Enemy *e)                                          /* vtbl[17]
 {
     BossBState *b = &e->bb;
     e->pos = e->home; e->vfall = 0; e->inst->visible = 1;           /* 0x407790: back in the world */
+    enemy_reset_probe(e); game_msgmask(e->inst, 0x10, 0);           /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
     e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
     b->st = 1; e->hit_t = 1.0f; b->t_intro = 0; b->row = 0; b->phase = 0; b->t_taunt = 5.0f; b->phase_flag = 0;
     if (b->crush[0]) for (int i = 0; i < 4; i++) {
@@ -673,6 +677,7 @@ void boss16_reset(Enemy *e)                                          /* vtbl[17]
 {
     BossBState *b = &e->bb; float now = game_time();
     e->pos = e->home; e->vfall = 0; e->inst->visible = 1;
+    enemy_reset_probe(e); game_msgmask(e->inst, 0x10, 0);           /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
     e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
     b->st = 1; b->cur = 0; b->interval = 2.0f;
     for (int i = 0; i < 7; i++) {

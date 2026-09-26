@@ -848,7 +848,7 @@ bool enemy_take_damage(Enemy *e, void *att, float dmg, vec3 *dir, vec3 *pt, int 
 
 ## 10. Open questions
 * Base slots 14..16, 23, 24 (`0x41ad80` fills `{pos.x, pos.y + h/2, pos.z, radius, h/2}` = collision cylinder), 27/28/30, 50, 54 are not
-  identified; `vtbl[56]` = `0x41b030` (movement with `0x4359b0`/`0x436dc0`) has not been read – it's not called in type 4.
+  identified; `vtbl[56]` = `0x41b030` (movement with `0x4359b0`/`0x436dc0`) has not been read – it is dead code: no `call [reg + 0xe0]` exists in the exe (EVENTS.md §3.2).
 * `Enemy+0x14c`, `+0x154` (message 11/18, ×0.01): no reader found in type 4. `+0x170` (1.0) = pitch factor of the animation sounds (`vtbl[27]` = `0x40d830`, §8.7).
 * Flag 0x20 of `+0x174` (set by PostLoad, toggled by message 11/30) and flag 8: no reader/setter found in the code read so far.
 * `0x437580` (sweep) has since been read: a **sphere** of radius `P+4`, center `r + up + 1` above the feet, substeps of 30, pushed out against

@@ -193,11 +193,20 @@ return 0;
 NB: on a transition from collision A to collision B in a single frame, only `Press(B)` is
 sent, no `UnPress(A)` (`this->cur` gets overwritten).
 
-Callers (with `actor = own instance id`):
-- enemy classes: `0x410900`, `0x414f10`, `0x416a66`, `0x41a010`, `0x41a4e0` (from `0x410b78`/`0x416a10`), `0x41b030`;
+Signature, read again (`0x436dc0..0x436dd0`): `(this = Probe*, int cell, float* pos, float tol, uint32 actor)`; GetHeight is
+`0x435650(pos, cell, 1)` and "on the ground" is `pos.y - (ground + tol) < 1.0` (`0x4a900c`), as BOMB.md §5.1 corrects. The probe's
+`+0x20` is set to -1 only by its ctor `0x436cf0`; `0x436d10` (the "reset" above) clears `+0` alone.
+
+Callers (with `actor = own instance id`, all with `pos = e->pos + (0, h/2, 0)`, `tol = h/2`, h = `P+0x28`):
+- enemy classes: `0x410900` (Buzz, vtbl[43], at pos + h/2 and, while falling, again through `0x41a4e0` at his feet with the same probe),
+  `0x414f10` (ghost, type 13; not in its states 6/11), `0x416a66` (`0x416a10`, type 10: no shipped enemy), `0x41a010` (Enemy::Reset, after the
+  ground snap `0x41a1a0`, probe `+0x178`), `0x41a4e0` (ground following, types 4..9, 12, 15, 16), `0x41b030` (vtbl[56]: **dead**, there is no
+  `call [reg + 0xe0]` anywhere in the exe);
 - **projectiles**: `0x4490f0(dt)` (from `0x401ab0` at `0x401e7e`, after the VM tick) loops over the 50
   fixed projectile objects `0x5d7d48 + 0x104*i` (active if byte +0xe4) → `0x4493c0(obj, dt)`;
-  after the fall (`0x449bc9..0x449c04`) `0x436dc0(&obj->probe, tol=obj+0x60, pos, -1, actor=obj->inst->id)`.
+  after the fall (`0x449bc9..0x449c04`) `0x436dc0(&obj->probe, -1, pos + (0, r, 0), r, actor = carried->id)`, only with a carried
+  instance (bombs; PROJECTILES.md §2.4). A new projectile (`0x449130`, from the allocator `0x4490a0`) runs the probe ctor `0x436cf0`
+  (`+0x20 = -1`); the throw `0x4492d0` does not, and a projectile that dies on a collision sends no UnPress.
   If the projectile sits still for 5 frames (`+0xe8 >= 5`) it stops (`+0xec`).
 
 ### 3.3 `0x436f00` – Perso variant (player)
@@ -229,10 +238,10 @@ also wakes them). `obj_id` = `inst+4`. Bits found:
 
 | bit | object | set | cleared | meaning |
 |---|---|---|---|---|
-| 0x200 | player | `0x44b89c` (in `0x44b530`, every frame if `perso+0x22c` ≠ 0) | `0x44b8bf` (otherwise) | **player is on the ground** (result of `0x436f00`) |
-| 0x200 | enemy | `0x410993`, `0x41514d`, `0x416c69`, `0x41a642` (`this+0x174` bit 0 = result of `0x436dc0`) | `0x4109ab`, `0x415169`, `0x416c85`, `0x41a65e` | enemy is on the ground |
+| 0x200 | player | `0x44b89c` (in `0x44b530`, every frame after the state dispatch, in **every** Perso state, if `0x44bcf0` = `perso+0x22c` ≠ 0) | `0x44b8bf` (otherwise) | **player is on the ground**: `+0x22c` is written only by `0x4624f0` (`0x462725`/`0x462733`: the result of `0x436f00`; states 0/1/2/3/4/6 and frozen), set to 1 by Reset `0x44abc0`, the ground snap `0x4629da` and a scripted action with a vector `0x44dede`; states 5/7/8/9 keep it (the rocket ride keeps the value from before it) |
+| 0x200 | enemy | `0x410993`, `0x41514d`, `0x416c69`, `0x41a642` (`this+0x174` bit 0 = result of `0x436dc0`, also set when the fall is clamped onto the ground `0x41a5ea`) | `0x4109ab`, `0x415169`, `0x416c85`, `0x41a65e` | enemy is on the ground |
 | 0x10 | player | `0x44c77c` in `0x44c730` (losing a life; sets `perso+0x278 = 2`) | `0x44b5de` (2 frames later, `+0x278` counts down) | **player has died** (2-frame pulse) |
-| 0x10 | enemy | `0x411729` (`this+0x10c \|= 1`, after timer `+0x15c` runs out) | `0x4110ab` (reset), `0x41a167` (landing, `+0x174 = (…&~0x10)\|4`) | enemy state (probably "hit/ready"); exact semantics open |
+| 0x10 | enemy | `0x411729` (type 12 only: `this+0x10c \|= 1` after timer `+0x15c` runs out = dead) | `0x4110ab` (type 12 Reset `0x411020`), `0x41a167` (Enemy::Reset `0x41a010`, every class; `+0x174 = (…&~0x10)\|4`) | the bomb thrower is dead (ENEMY2.md §4) |
 | 0x20 | instance | `0x4309ac`, `0x430a64` in `0x4305c0` (sphere/segment test of a moving object against an instance's press nodes, if flag 0x10 is set in the call) | `0x430acf` (no hit) | **instance touched/pushed** by the player (presumed; `0x4305c0` is called via vtable) |
 | 0x20 | bonus/switch object (class with `+0x100` = scale) | `0x451814` in `0x4517d0` (effect `0x477060`, scale 0.5) | `0x45175c` in `0x451730` (scale 100, reset) | object "taken/activated" (`0x451770` first tests `msgmask & 0x20`; if not set and distance to point < r → `vtable[0x74]`) |
 
@@ -263,10 +272,15 @@ The var ids `+0x294`, `+0x230`, `+0x24c` are set by class-specific messages
 
 ### 4.3 `actor_leave_all` (removing the player from all volumes)
 
-`0x443ff0(perso_id)` is called on: losing a life `0x44c730` (from the death sequence
-`0x4459c0`, states 0→4), teleportation `0x44cde9` (message 26/30 on the Perso class, `'Unknow
-teleportation mode !'`), `0x44ddd8` (Perso state switch via jump table `0x44dfdc`) and reloading
-`SavePos.bin` (`0x44a7f5`). C API: `eko_actor_leave_all(vm, perso_id)`.
+`0x443ff0(perso_id)` has four call sites (corrected): `0x44c771` in losing a life `0x44c730` (from the death sequence
+`0x4459c0`, states 0→4), `0x44cf0a` in teleportation (message 26/30 on the Perso class, `0x44cde9`, `'Unknow
+teleportation mode !'`), `0x44de3a` in the scripted-action start `0x44dda0` (message 1040/1043: the case `0x44de36` of jump table
+`0x44dfdc` that the byte table `0x44dfe8[action - 10]` gives **only actions 17 and 18**, the door walks; 10..16, 19 and 72..78 take
+case 0 at `0x44de42` without it, everything else the error print at `0x44de9b`; state 2 is refused before it; not a generic
+"state switch") and `0x44a8d3` in `0x44a810(load = 1)` after reading `SavePos.bin` (the old "`0x44a7f5`" is the
+`'No Saved game struct !!!'` tail of `0x44a6a0`). `0x44a810(1)` is only called by debug key 0x10 (`0x402b02`, next to
+`0x44a920` = save on key 0xf); the respawn `0x445960` and the race restart `0x456124` pass 0.
+C API: `eko_actor_leave_all(vm, perso_id)`.
 
 ### 4.4 What does NOT exist
 
@@ -306,15 +320,15 @@ over the call operands), and the script side with a scan of all 28 `code` files 
 | `0x4303e0` (Perso volume test, from `0x462760`) | `0x441f00/40/80` Perso Enter/In/Leave | player volumes (§2) | all levels | ported (`player_volumes_y`) |
 | `0x430210` (from Camera::Update `0x41f379`) | `0x441c90` 101/102/103 | the **camera** as a volume actor, only once a script sends message **800** (`CamMgr+0x664`); the object takes the camera position every frame | K2R (camera 483: volumes 72/74 → 670 camera height 10/150 and 660, volumes 136/137 → vars 33/35), S2R (camera 328: volume 14 → 670/660), W2B (camera 395) | **ported this round**: `player_volumes_actor` (player.c) with the VM's own "was inside" list (`0x443e20`), called after `cam_update`; log `WOODY_CAMVOL=1` |
 | `0x436f00` (Perso ground probe, from `0x4624f0`) | `0x441fc0/0x442000/0x442040` | player on a press node with a world_collision (§3.3) | race boosters (`COL_B3_BIT0` in K1R..S3R), W3B tiles 81..84, `COL_FLAG5` | ported |
-| `0x436dc0` (generic probe): enemies `0x410900`, `0x414f10`, `0x416a66`, `0x41a010`, `0x41a4e0`, `0x41b030`, Buzz `0x428ce0` path, bombs `0x4493c0` | `0x442080/0x4420c0/0x442100` Press/In/UnPress | an enemy or a bomb standing on a world_collision | only `COL_B3_BIT0` (flags2 bit 0 = "pressed while empty") can see a non-Perso press; the tested collisions are race boosters and the W3B tiles 81..84 | **not ported** (enemy.c / bomb flight send nothing); no case found where an enemy or bomb reaches those collisions, unverified |
-| `0x41ac11` in the enemy message-11 handler `0x41a78b` | `0x442100` UnPress | an enemy given a new path by message 11 leaves its current collision | as above | not ported (enemy.c owns message 11) |
-| `0x44b89c` / `0x44b8bf` (Perso update) | msgmask 0x200 set/clear | player on the ground | **none** (no `MSGTEST 0x200` in any script) | ported (harmless) |
-| `0x410993`, `0x41514d`, `0x416c69`, `0x41a642` / `…ab`, `0x415169`, `0x416c85`, `0x41a65e` | msgmask 0x200 | enemy on the ground | none | not ported (not needed) |
+| `0x436dc0` (generic probe): enemies `0x410900`, `0x414f10`, `0x41a010`, `0x41a4e0` (`0x416a66` type 10 and `0x41b030` are never reached), bombs `0x4493c0` | `0x442080/0x4420c0/0x442100` Press/In/UnPress | an enemy or a bomb standing on a world_collision | only `COL_B3_BIT0` (flags2 bit 0 = "pressed while the count was 0"; a non-Perso actor raises the count too, so one standing on a tile keeps a later press from setting it) reads them (script scan: 23 `COL_B3_BIT0`, 111 `COL_FLAG5` and 4 `COL_FLAG4`, the latter two Perso-only bits): race boosters K1R..S3R (no enemy, no bomb) and the W3B tiles 81..92 (instances 782..793, type 70: `56 [tile, 100]`, 4 s later `56 [tile, 0]`); the nearest W3B enemy is ~2000 away with a leash of 400/800, so no shipped case reaches one | **ported**: `game_col_probe` (main_engine.c) from `enemy_probe` (enemy.c: ground following, ghost height, Reset; boss.c: Buzz's two probes, classes 15/16, their resets) and the carried bomb's probe (`bombs_fly`, `col_cur` reset on a new flight); log `WOODY_COLLOG=1`; test hooks `WOODY_ENEMYAT`, `WOODY_BOMBAT` (§6.1) |
+| `0x41ac11` in Enemy::HandleMsg `0x41a740`, **message 6** with 0 (`0x41abfd`; corrects "message 11") | `0x442100` UnPress | an enemy taken out of the world (cell ≥ 0) leaves its collision, then `0x407850` | as above | ported (`enemies_msg6_off`, before `inst_msg`) |
+| `0x44b89c` / `0x44b8bf` (Perso update) | msgmask 0x200 set/clear | player on the ground (`0x44bcf0` = `+0x22c`, §4.1; not "Perso state is free") | **none** (no `MSGTEST 0x200` in any script) | ported exactly: every state sets it from `ground_22c` (player.c `perso_mask200`), which follows `on_ground` except in states 5 and 8 (kept) and is 1 after a scripted action with a vector |
+| `0x410993`, `0x41514d`, `0x416c69`, `0x41a642` / `…ab`, `0x415169`, `0x416c85`, `0x41a65e` | msgmask 0x200 | enemy on the ground (probe or clamp) | none | ported (with the probes above) |
 | `0x44c77c` / `0x44b5de` | msgmask 0x10 | player lost a life (2-frame pulse) | `MSGTEST 16` on the player in W1B, W2B, W2D, W3B, W3D, WWS and on the race riders of K1R..S3R | ported (player.c) |
-| `0x411729` / `0x4110ab`, `0x41a167` | msgmask 0x10 | enemy "dead" flag (`+0x10c \|= 1`) | only on the W2B bomb thrower (type 12, slot 533) → 1083 | ported for type 12 (enemy.c); other types not needed |
+| `0x411729` / `0x4110ab`, `0x41a167` | msgmask 0x10 | bomb thrower dead (`+0x10c \|= 1`); every Enemy::Reset clears it | only on the W2B bomb thrower (type 12, slot 533) → 1083 | ported: set by type 12, cleared by every Reset (enemy.c, and the boss resets in boss.c) |
 | `0x4309ac`, `0x430a64` / `0x430acf` (`0x4305c0`) | msgmask 0x20 | instance touched by a moving sphere (`0x4305c0` has no direct caller; dead code per OBJECTS.md §7) | none | not needed |
 | `0x451814` / `0x45175c` (chests 120/121) | msgmask 0x20 | chest opened / reset | `MSGTEST 32` on W2B chests 506, 507, 523, 545 | ported |
-| `0x443ff0` from `0x44c730`, `0x44cde9`, `0x44ddd8`, `0x44a7f5` | leave_all | the player leaves every volume (death, teleport 26, state switch, SavePos load) | implicit | ported for death and 26; state switch `0x44ddd8` and SavePos not |
+| `0x443ff0` at `0x44c771`, `0x44cf0a`, `0x44de3a`, `0x44a8d3` | leave_all | the player leaves every volume (death, teleport 26, the door actions 17/18 of `0x44dda0`, the debug SavePos load) | implicit | ported for death, 26 and 1040 17/18 (`player_leave_all`, log `VOL leave_all`); the debug-key load is not ported (no debug keys); 1043 is still a hold (MESSAGES.md) |
 | replies in `0x444870` (1082, 1084, 1085, 1140, 1173, 1042, 1048..1050) | SetVar | answers to script messages | – | ported |
 | `0x405029`, `0x405143`, `0x4051b9` | SetVar | House intro variable (1160) | House | ported |
 | `0x44eb22` | SetVar | real-time cinematic start: `var = ftol(t0·100)` (t0 = the /Rtc/ stream position, 0) — once, not every frame (corrects §4.2) | every cinematic (1130) | ported |
@@ -323,9 +337,19 @@ over the call operands), and the script side with a scan of all 28 `code` files 
 | `0x454235` | SetVar | end of the results sequence (1140) | hubs | ported |
 | `0x441d87` (callback 100), `0x442d4c` (STOREVAR) | SetVar | not engine events | – | – |
 
-So the only engine → VM event that a shipped script waits for and the port did not raise was the camera actor of
-message 800; the remaining gaps (non-Perso collision presses, enemy msgmasks, leave_all on a Perso state switch) have
-no reader in the scripts that could be found statically.
+Every engine → VM event source is now raised by the port, except the debug-key SavePos load and the unreached
+`0x416a66` / `0x41b030`.
+
+### 6.1 Tests (port)
+
+* Enemy on a W3B tile: `WOODY_COLLOG=1 WOODY_ENEMYAT="1 499 3804 500 -5587" woody.exe Data W3B --pos 3500 700 -5300`: the type-6
+  walker 499 lands on tile 782, `COL press 0x7000051 by instance 499`, object 782 (`COL_B3_BIT0 81`) sends `56 [0x100030e, 100]`; it
+  walks off (`COL unpress`) and 4 s after the press the script sends `56 [0x100030e, 0]`.
+* Bomb on a W2B type-70 tile: `WOODY_COLLOG=1 WOODY_BOMBAT="2 -5631 1400 5028" woody.exe Data W2B --pos -5400 1300 4600`: the dropped
+  bomb bounces on collision 0x1d, one Press per bounce and an UnPress the next frame in the air (BOMB.md §5.1: a bounce is one frame
+  "on the ground").
+* Door action: `WOODY_MSGAT="2 1040 223 17; 4.5 1040 223 17"` in WWS: the second action prints `VOL leave_all 0x3000001`, and the
+  volume is entered again once the walk is over.
 
 ## 7. Open questions
 

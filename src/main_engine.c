@@ -1439,6 +1439,7 @@ typedef struct Bomb {
     int puffed;                                    /* the fuse record 0x478e40: the muzzle smoke of a launcher's bomb, once */
     Enemy *owner_e; int owner_pl;                  /* T.owner (+0x58): the bomb thrower (type 12) or the Perso; neither = a launcher (b->launcher) or nobody */
     Instance *target; float age; Vec3 dir0;        /* T.target (+0x38: the previous owner after a throw), projectile age, T.dir0 */
+    uint32_t col_cur;                              /* the projectile's press probe P+0 (+0x20): its world_collision, 0xffffffff none */
 } Bomb;
 static Bomb g_bombs[16]; static int g_nbombs;
 typedef struct { Vec3 pos, n; float t; int kind; } BombFx;                 /* explosion kind 0 (0x4765f0 + 0x476710) and the muzzle smoke (0x478aa0) */
@@ -1467,6 +1468,7 @@ static Bomb *bomb_start(const BombT *T, Vec3 pos, Vec3 dir, int ground, int32_t 
     b->var = var; b->kind = kind; b->launcher = NULL; b->in_use = 1; b->held = b->ridden = 0; b->owner_e = NULL; b->owner_pl = 0; b->target = NULL; b->age = 0; b->dir0 = dir;
     b->t = 0; b->state = 1; b->blink_acc = 0; b->blink_n = 0; b->puffed = 0;
     b->p_active = 1; b->press = b->grounded = b->bounced = 0; b->n = (Vec3){ 0, 1, 0 };
+    b->col_cur = 0xffffffffu;                                                      /* a new projectile 0x449130: probe ctor 0x436cf0 (a throw 0x4492d0 keeps it) */
     bomb_place(b);
     if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u start at %.0f %.0f %.0f dir %.2f %.2f %.2f speed %.0f fuse %.2f kind %d var %d", b->inst->index, pos.x, pos.y, pos.z, dir.x, dir.y, dir.z, T->speed, b->fuse, kind, var), puts("");
     return b;
@@ -1596,7 +1598,8 @@ static void bombs_fly(float dt, const GelFile *gel)
         } else b->p = e;
         b->inst->position = (Vec3){ b->p.x, b->p.y + 1.0f, b->p.z };
         if (gel_cell(gel, b->inst->position) < 0) { bomb_explode(b); continue; }  /* 0x449bb7: out of the world */
-        int found = 0; float gy = g_player ? player_ground_query(g_player, b->inst, (Vec3){ b->p.x, b->p.y + b->T.radius, b->p.z }, &found) : 0;   /* probe 0x436dc0 */
+        int found = 0; uint32_t col = 0xffffffffu; float gy = g_player ? player_ground_query_col(g_player, b->inst, (Vec3){ b->p.x, b->p.y + b->T.radius, b->p.z }, &found, &col) : 0;   /* probe 0x436dc0 (0x449c04) */
+        game_col_probe(&b->col_cur, found && b->p.y - gy < 1.0f, col, b->inst);   /* Press / In / UnPress with the bomb's id */
         if (found && b->p.y - gy < 1.0f) { if (b->press == 0) audio_fx(12, b->inst, &b->inst->position.x); b->press++; } else b->press = 0;
         b->grounded = b->press >= 5; if (b->grounded) { b->vel.y = 0; b->p.y = gy; }
         b->inst->position = (Vec3){ b->p.x, b->p.y + 1.0f, b->p.z };
@@ -1858,6 +1861,26 @@ int  game_var_get(uint32_t var) { var &= 0xffffff; return g_vm && var < g_vm->nv
 void game_var_set(uint32_t var, int v) { if (g_vm) eko_set_var(g_vm, var, v); }
 void game_cam_shake(float t) { g_cam.shake = t; }
 void game_msgmask(Instance *in, uint32_t bits, int on) { if (g_vm && in) { if (on) eko_msgmask_set(g_vm, in->id, bits); else eko_msgmask_clear(g_vm, in->id, bits); } }
+/* the event half of the generic probe 0x436dc0 (docs/EVENTS.md 3.2), actor = the enemy's or the carried bomb's instance id:
+ * on the ground over a world_collision -> In when it is the probe's current one (+0x20), else Press and it becomes current
+ * (moving from A straight onto B sends no UnPress(A)); otherwise (terrain, a node without collision, in the air) UnPress of
+ * the current one. The non-Perso variants 0x442080 / 0x4420c0 / 0x442100: only COL_B3_BIT0 (and a collision's count) sees them */
+void game_col_probe(uint32_t *cur, int on, uint32_t col, const Instance *actor)
+{
+    if (!g_vm || !actor) return;
+    const char *lg = getenv("WOODY_COLLOG");
+    if (on && col != 0xffffffffu) {
+        if (*cur == col) { eko_col_in(g_vm, col, actor->id); return; }                                     /* 0x436e75 */
+        eko_col_press(g_vm, col, actor->id); *cur = col;                                                    /* 0x436e8d */
+        if (lg) printf("  COL press 0x%x by instance %u", col, actor->index), puts("");
+        return;
+    }
+    if (*cur != 0xffffffffu) {                                                                              /* 0x436eb7 / 0x436ee5 */
+        eko_col_unpress(g_vm, *cur, actor->id);
+        if (lg) printf("  COL unpress 0x%x by instance %u", *cur, actor->index), puts("");
+        *cur = 0xffffffffu;
+    }
+}
 static struct { int on, cur, max; float t; } g_bossbar;      /* hud+0x48, +0x4c, +0x50 and the bar's slide-in clock */
 void game_boss_bar(int on, int cur, int max) { if (on && !g_bossbar.on) g_bossbar.t = 0; g_bossbar.on = on; g_bossbar.cur = cur; g_bossbar.max = max; }   /* 0x4484d0: 0x462470 starts the slide-in */
 void game_explosion(Vec3 p) { fx_explode(1, p, (Vec3){ 0, 1, 0 }); blast_add(p, 1400.0f); blast_add(p, 400.0f); }
@@ -2933,6 +2956,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1: case 2: case 3: case 4: case 5: case 6: case 12: case 13:               /* base class: animation, show/hide, path, fade (instance.c) */
     case 45:                                                                        /* SetFlags (0x42ddb4) is a plain store on every instance, the player included: bit
                                                                                      * 0x20 is what gives a model its black outline (docs/MODEL_RENDER.md 11) */
+        if (in && m->id == 6 && m->nargs > 1 && !m->args[1]) enemies_msg6_off(&g_enemies, in);   /* Enemy::HandleMsg 0x41abfd: UnPress 0x41ac11 before 0x407850 */
         if (in) inst_msg(in, m->id, m->args, m->nargs, g_now);
         break;
     case 42: case 43: case 44: case 46: case 56: case 57:
@@ -3005,7 +3029,11 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */
         if (g_player && m->nargs > 1) {
             plane_release(); Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir);
-            player_script_action(g_player, (int)m->args[1], have, p0, dir);
+            int act = (int)m->args[1];
+            /* 0x44de36: actions 17/18 (jump table 0x44dfdc / byte table 0x44dfe8: action - 10 = 7, 8 -> case 1) first take him out
+             * of every volume, 0x443ff0 (refused like the rest in state 2); 10..16, 19 and 72..78 skip it (case 0) */
+            if ((act == 17 || act == 18) && !g_player->dead_kind) player_leave_all(g_player, vm);
+            player_script_action(g_player, act, have, p0, dir);
             /* 0x44df67 is the tail of 0x44dda0 itself, not a state-change hook (correcting docs/CAMERA_SCRIPT.md 4.3):
              * if the animation this action just started carries a camera track, that track becomes the camera. Woody's
              * animations 17 and 18 both have one, with the eye 371 units off his own axis - that is the sideways shot
@@ -3654,6 +3682,14 @@ int main(int argc, char **argv)
             static int killat_done; if (getenv("WOODY_KILLAT") && !killat_done && L.have_player && now - t0 >= atof(getenv("WOODY_KILLAT"))) {
                 int kk = 0; const char *ks = strchr(getenv("WOODY_KILLAT"), ' '); if (ks) kk = atoi(ks + 1);
                 killat_done = 1; if (kk > 0) player_kill(&L.player, kk); else { EkoMsg em; memset(&em, 0, sizeof em); em.id = 1020; on_msg(&L.vm, &em, NULL); } } }
+        {   /* testing: WOODY_ENEMYAT="T inst x y z" puts that enemy (start, home and position) on x y z T s into the level, once:
+             * for the Press / UnPress of enemies on a world_collision (WOODY_COLLOG) */
+            static int enat_done; float T, x, y, z; unsigned ii;
+            if (getenv("WOODY_ENEMYAT") && !enat_done && sscanf(getenv("WOODY_ENEMYAT"), "%f %u %f %f %f", &T, &ii, &x, &y, &z) == 5 && now - t0 >= T) {
+                enat_done = 1; for (int i = 0; i < g_enemies.n; i++) if (g_enemies.e[i].inst->index == ii) { Enemy *en = &g_enemies.e[i]; en->pos = en->home = en->start = (Vec3){ x, y, z }; en->vfall = 0; enemy_place(en); printf("  ENEMYAT %u -> %.0f %.0f %.0f", ii, x, y, z), puts(""); } }
+            /* WOODY_BOMBAT="T x y z": a bomb of the pool dropped there (template 0, 8 s fuse, no floor snap) T s into the level, once */
+            static int bat_done; if (getenv("WOODY_BOMBAT") && !bat_done && sscanf(getenv("WOODY_BOMBAT"), "%f %f %f %f", &T, &x, &y, &z) == 4 && now - t0 >= T) {
+                BombT bt = BOMB_T0; bt.life = 8.0f; bt.speed = 0; bat_done = 1; bomb_start(&bt, (Vec3){ x, y, z }, (Vec3){ 0, -1, 0 }, 0, -1, 0); } }
         if ((next_name && now - t0 >= next_at && !strcmp(next_name, "END")) || (win.keys[VK_END] && !end_prev)) {   /* End key / --next END T: finish the level as its exit door does (message 1083) */
             EkoMsg em; memset(&em, 0, sizeof em); em.id = 1083; on_msg(&L.vm, &em, NULL); if (next_name && !strcmp(next_name, "END")) next_name = NULL;
         }

@@ -58,6 +58,7 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     if (s->n >= MAX_ENEMIES) return;
     for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst) return;
     Enemy *e = &s->e[s->n++]; Enemy z = { 0 }; *e = z;
+    e->col_cur = 0xffffffffu;                                                   /* the probes' ctor 0x436cf0 */
     e->inst = inst; e->type = type; e->pos = e->home = inst->position; e->P = params_for(type); e->hp = e->P.hp;
     enemy_sensor_init(e); e->need_snap = type < 13 || type == 14;              /* subtypes < 9: types 4..12 and Buzz */
     e->cool = -1; e->attackable = 1; e->speed = e->want_speed = e->P.walk; e->path_dir = 1; e->path_to = 1;
@@ -378,6 +379,34 @@ static void ground_snap(Enemy *e, struct Player *pl)
     else printf("An ennemy (Id=%x) is outside of the world, please check this !!!\n", e->inst->id);   /* 0x41a213 */
 }
 
+/* Probe_Test 0x436dc0 on the probe +0x178 with the enemy's own id (docs/EVENTS.md 3.2): GetHeight under pt, "on the ground"
+ * when pt.y - (ground + tol) < 1 (0x4a900c); standing on a world_collision press node sends Press / In, leaving it UnPress.
+ * Callers: 0x41a4e0 (ground following), 0x414f10 (ghost height), 0x410900 (Buzz), Reset 0x41a010; all with pt = pos + h/2,
+ * tol = h/2. 0x416a10 (type 10) and 0x41b030 (vtbl[56]: no call site through +0xe0) are not used by a shipped enemy. */
+int enemy_probe(Enemy *e, struct Player *pl, Vec3 pt, float tol, float *gy, int *found)
+{
+    uint32_t col = 0xffffffffu;
+    *gy = player_ground_query_col(pl, e->inst, pt, found, &col);
+    int on = *found && pt.y - (*gy + tol) < 1.0f;
+    game_col_probe(&e->col_cur, on, col, e->inst);
+    return on;
+}
+void enemy_reset_probe(Enemy *e)                                  /* 0x41a104..0x41a148: after the ground snap, at the start position */
+{
+    if (!g_epl) return;                                           /* no update has run yet (the level geometry comes with the player): the first ground follow presses */
+    float h2 = e->P.height * 0.5f, gy; int found;
+    enemy_probe(e, g_epl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);
+}
+/* Enemy::HandleMsg 0x41abfd: message 6 with 0 on an enemy that is in the world (cell >= 0) -> UnPress of the probe's
+ * collision (0x41ac11) and out of the world (0x407850, left to inst_msg) */
+void enemies_msg6_off(EnemySet *s, Instance *inst)
+{
+    for (int i = 0; i < s->n; i++) {
+        Enemy *e = &s->e[i]; if (e->inst != inst || !inst->visible) continue;
+        game_col_probe(&e->col_cur, 0, 0xffffffffu, inst);
+    }
+}
+
 /* FindTarget 0x41af80 -> 0x40c0d0: the player within P+0x20 (3D) and |dy| < P+0x24 of the centre -- the enemy itself, or its
  * home point +0x134 when flag 2 (message 11/6, "guard") is set; no view cone, no line of sight */
 static int find_target(const Enemy *e, const struct Player *pl)
@@ -487,17 +516,19 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     if (e->st == 8) wander_avoid(e, dt);
     if (e->type == 13) {                                          /* height control 0x414f10: feet at the player's feet height (home without a target); frozen when hit / dead */
         if (e->st != 9 && e->st != 12) {
-            int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+            int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* 0x414f8d */
             float want = see ? tp.y - e->pos.y : e->home.y - e->pos.y, stp = see ? e->P.run * dt : e->P.walk * dt;
             if (see && want > 0 && (pl->jumper.state == 0 || pl->jumper.state == 1 || pl->jumper.state == 7)) stp *= 0.2f;
-            if (want < -0.01f) { e->pos.y += want < -stp ? -stp : want; if (found && e->pos.y < gy) e->pos.y = gy; }
+            if (want < -0.01f) { e->pos.y += want < -stp ? -stp : want; if (found && e->pos.y < gy) { e->pos.y = gy; on = 1; } }
             else if (want > 0.01f) { float up = want > stp ? stp : want; if (!player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height, e->pos.z }, (Vec3){ e->pos.x, e->pos.y + e->P.height + up, e->pos.z })) e->pos.y += up; }
+            game_msgmask(in, 0x200, on);                              /* 0x41514d / 0x415169: +0x174 bit 0 (hit or clamped); frozen with it while hit / dead */
         }
     } else
     /* ground following 0x41a4e0: v += 200*dt - 0.2*v per frame, y -= v, never below the ground */
-    { int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+    { int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* 0x41a561 */
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
-      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; } }
+      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
+      game_msgmask(in, 0x200, on); }                                /* 0x41a642 / 0x41a65e */
     if (anim == -2) { int r = wander_rec(e, e->w_act); if (r >= 0) er_request(e, r); } else ea_play(e, anim);
     enemy_place(e);
 }
@@ -633,9 +664,10 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     if (e->knock_t > 0) { e->knock_t -= dt; if (e->knock_t < 0) e->knock_t = 0; float v = dt * E_KNOCK * e->knock_t; step = (Vec3){ e->knock_dir.x * v, 0, e->knock_dir.z * v }; }
     if ((step.x != 0 || step.z != 0) && !enemy_move(e, pl, step)) enemy_blocked(e, e->st == S_WANDER, e->st == S_DASH);
     if (e->st == S_WANDER) wander_avoid(e, dt);
-    { int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
+    { int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* ground following 0x41a4e0 */
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
-      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; } }
+      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
+      game_msgmask(in, 0x200, on); }
     /* the throw (priority 1000) plays out over the turn animations (priority 900) of the wait state */
     if (e->throw_hold) { const Model *m = in->model; int s = g_sa[SA_THROW].anim; if (e->st == S_WAIT && (uint32_t)s < m->nanims && in->anim == s && in->anim_time < m->anims[s].duration_s * 0.98f) { anim = SA_THROW; anim_speed = 0; } else if (e->st != S_FIRE) e->throw_hold = 0; }
     if (anim == -2) { int r = wander_rec(e, e->w_act); if (r >= 0) er_request(e, r); } else sa_play(e, anim, anim_speed);
@@ -781,9 +813,10 @@ static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         break;
     }
     if (e->st == 4 || e->st == 7 || e->st == 9 || e->st == 11) anim = -1;   /* the set-up states have no animation of their own */
-    { int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);   /* ground following 0x41a4e0 */
+    { int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* ground following 0x41a4e0 */
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
-      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; } }
+      if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
+      game_msgmask(in, 0x200, on); }
     if (anim >= 0) ba_play(e, anim, speed, hold);
     enemy_place(e);
 }
@@ -807,8 +840,9 @@ static void enemy_reset(Enemy *e)
     e->pos = e->home = e->start; e->ang = e->want_ang = e->start_ang;
     e->hp = e->P.hp; e->hit_t = e->dead_t = e->knock_t = e->vfall = 0; e->removed = 0; e->attackable = 1;
     in->visible = 1; in->fade = 0; in->anim = 0; in->anim_time = 0; e->lanim = -1;
+    e->need_snap = e->type < 13; if (g_epl) ground_snap(e, g_epl); enemy_reset_probe(e);   /* 0x41a0f8..0x41a148: ground snap 0x41a1a0, then the probe (Press/In/UnPress) */
     game_msgmask(in, 0x10, 0);
-    e->cool = e->t = e->atk_t = e->reload = e->turn_t = 0; e->throw_hold = 0; e->path_to = 1; e->path_dir = 1; e->need_snap = e->type < 13;
+    e->cool = e->t = e->atk_t = e->reload = e->turn_t = 0; e->throw_hold = 0; e->path_to = 1; e->path_dir = 1;
     if (e->type == 12) { e->st = 0; e->idle_t = 0; e->nlong = 4; e->idle_a = 9; e->done = 0; e->melee_t = e->windup = 0; e->big_touch = 0; }
     else {
         e->speed = e->want_speed = e->P.walk;
