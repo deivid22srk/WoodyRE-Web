@@ -67,7 +67,7 @@ typedef struct Player {
     /* peck climbing, Perso state 4 (0x4651d0, docs/OBJECTS.md 1.3): sub 1 grab, 2 climbing, 3 over the top, 4 let go */
     int use_root; Vec3 root_pos;   /* climb-over: pos is frozen, the root track carries the model; camera follows root_pos */
     int climb_sub, climb_act_prev; float grip, regrab, peck_t, over_t, over_len; Vec3 wall_n, over_from, over_to; const Instance *wall_inst;
-    int atk; float atk_t; Vec3 atk_dir, atk_disp; int use_atk_disp; float air_win, charge, move_lock, vy_corr; int action_prev;
+    int atk, atk9_first; float atk_t; Vec3 atk_dir, atk_disp; int use_atk_disp; float air_win, charge, move_lock, vy_corr; int action_prev;
     struct EnemySet *enemies; void *target; Vec3 dash_start, aim; int has_target;   /* attack targets (Perso+0x5f0, +0x5e4, +0x5d0, +0x5dc) */
     int lanim, lanim_sub;           /* logical animation (table 0x4b6180) and position in its chain */
     int special_st, special_prev; float special_t;   /* special attack 0x458bf0: +0x750 (0 free, 1 charging up to the hit at 1.5 s, 2 after the hit), key state, +0x74c */

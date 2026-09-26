@@ -97,6 +97,7 @@ int  enemy_hit(Enemy *e, float dmg, Vec3 dir, Vec3 pt, int kind);              /
 void game_hit_star(Vec3 pt);                                                  /* 0x4750e0: flash + 8 sparks with stars (in main_engine.c) */
 void enemies_blast(EnemySet *s, Vec3 c, float r);                          /* bomb blast 0x44d650: every enemy within r dies (vtbl[40] 0x41ae20) */
 void enemies_msg11(EnemySet *s, Instance *inst, int n, int v);                /* Enemy::HandleMsg 0x41a740, id 11 */
+void enemies_msg1201(EnemySet *s, Instance *inst, uint32_t ref, int on);     /* 0x403440: 1201 sets / 1202 clears type-word bit 0x400 (Enemy.attackable) */
 void enemy_warn_dive(Enemy *e, Vec3 d);                                       /* vtbl[37] 0x417ee0: the player starts an air dive at this enemy */
 void game_enemy_stars(Enemy *e);                                              /* vtbl[57] 0x41b000 -> 0x477610: five stars circle over the dying enemy (in main_engine.c) */
 void enemy_player_killed(Enemy *e);                                           /* vtbl[41] 0x417fd0: its projectile killed the player */

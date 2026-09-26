@@ -2210,7 +2210,7 @@ static const float k_fx_shape[12][3] = {                                     /* 
     { 1, 1, 1}, { 1, 1,-1}, { 1,-1, 1}, { 1,-1,-1}, {-1, 1, 1}, {-1, 1,-1}, {-1,-1, 1}, {-1,-1,-1},
     { 0, 0.5f, 0}, {-0.494f,-0.5f, 0.855f}, { 1,-0.5f, 0}, {-0.494f,-0.5f,-0.855f},
 };
-typedef struct { float age, life, acc; Vec3 pos; int kind, shape; Vec3 dir; float D, h, R, acc2; Vec3 n; float acc3, size; int rot, foot; } FxRec;   /* kinds 12..25: the particles of docs/PARTICLES.md (enum FxKind below); the special attack (docs/PERSO_SPECIAL.md 3): 7 = its emitter (0x47a8d0), 8 = a streak (0x47a790), 9 = a fire ring (0x47a4c0);
+typedef struct { float age, life, acc; Vec3 pos; int kind, shape; Vec3 dir; float D, h, R, acc2; Vec3 n; float acc3, size; int rot, foot; AmbFx amb; } FxRec;   /* kind FX_AMB: a class-90 particle (ambient.c, amb = its fields); kinds 12..25: the particles of docs/PARTICLES.md (enum FxKind below); the special attack (docs/PERSO_SPECIAL.md 3): 7 = its emitter (0x47a8d0), 8 = a streak (0x47a790), 9 = a fire ring (0x47a4c0);
     the hit star 0x4750e0: 10 = the flash (0x475040), 11 = a spark (0x474e00, dir = its spoke, R = star size, shape = spin) */   /* kind 0 = shape burst (0x478f70), 1 = sparkle box (0x4792d0), 2 = the particle (0x4791f0);
     the water splash (docs/SPLASH.md): 3 = its emitter (0x478360), 4 = a drop (0x477fa0), 5 = the ripple where a drop lands (0x478290), 6 = a ring (0x4781b0) */
 static FxRec g_fx[2000]; static int g_nfx;
@@ -2222,13 +2222,19 @@ enum FxKind {                                                                 /*
     FX_BURN_EMIT, FX_BURN, FX_TRAIL_SMOKE, FX_TRAIL_SPARK,                   /* 0x476b50, 0x4767f0, 0x476f00, 0x476fb0: the burning debris of explosion kind 1 (5.2) */
     FX_SKELETON,                                                             /* 0x477980: the skeleton flash of Kill 2/9 (6, docs/PERSO_DEATH.md 4.2) */
     FX_BOARD_PUFF                                                            /* 0x475380: a puff of the race board's spray (docs/RACE.md 2.2) */,
-    FX_FLAME                                                                 /* 0x47cd00: one flame of a torch of message 1508 (9) */
+    FX_FLAME,                                                                /* 0x47cd00: one flame of a torch of message 1508 (9) */
+    FX_AMB                                                                   /* class 90 (docs/AMBIENT.md): butterfly 0x47d440, mote 0x47dca0, drop 0x47de10, ripple 0x47df80 */
 };
 static void fx_particle(FxRec *e, float u, float dt);
 static FxRec *fx_new(float life, Vec3 pos, int kind)
 {
     if (g_nfx >= 2000) return NULL;                                          /* 0x4793e7: a full pool silently drops the effect */
     FxRec *r = &g_fx[g_nfx++]; memset(r, 0, sizeof *r); r->life = life; r->pos = pos; r->kind = kind; return r;
+}
+AmbFx *game_fx_amb_new(void)                                                 /* 0x47e050 / 0x47e160 / 0x47e230 / 0x47e310: the same pool, the same full test */
+{
+    FxRec *r = fx_new(1.0f, (Vec3){ 0, 0, 0 }, FX_AMB);
+    return r ? &r->amb : NULL;
 }
 static float fx_rnd(void) { return (float)rand() / (float)RAND_MAX; }        /* 0x43ff40: rand() / 32767, so [0,1] inclusive */
 static void fx_rotmat(int a0, int a1, int a2, float M[9])                    /* 0x46d220; the angles are in 1/512 turn */
@@ -2335,6 +2341,7 @@ static void fx_update(float dt, const float *eye)
     static const float white[3] = { 1, 1, 1 };                               /* rgb 0.5 with the engine's x2 = full white; alpha is a constant 1 */
     for (int i = 0; i < g_nfx; i++) {                                        /* 0x470c70 re-reads the bound, so a particle born this frame also draws this frame */
         FxRec *e = &g_fx[i];
+        if (e->kind == FX_AMB) { if (ambient_fx_run(&e->amb, dt, eye)) continue; g_fx[i] = g_fx[--g_nfx]; i--; continue; }   /* the callback moves, draws and ages the record itself */
         float u = (e->age += dt) / e->life;
         if (e->kind == 4 && u >= 1.0f) { Vec3 q = drop_pt(e, u, u); fx_new(0.6f, q, 5); e = &g_fx[i]; }   /* 0x478100: a drop that lands leaves a ripple */
         if (u < 1.0f) {
@@ -2820,7 +2827,7 @@ static void launchers_draw(const float *eye, float dt)
  * in over 1 s. Class 21 is the bomb cannon of W2x (ROCKET.md 7, BOMB.md 7): the same machine, but at the end of the ignition it
  * fires a class-40 bomb along its own marker (no gravity, speed vmax, fuse fly_time) and the rider sits on that bomb; no
  * exhaust, no flight of its own, no blink, and after the flight time it turns back to its start in 2 s (state 8). */
-typedef struct { Instance *inst; int type, state, exhaust, has_prev; float t, speed, fly_time, vmax, ex_t, f1, f2, f3, puff_acc; Vec3 start_pos, prev_mk, prev_p1; Quat start_q, q0, q1; Bomb *bomb; } Rocket;
+typedef struct { Instance *inst; int type, state, exhaust, has_prev; float t, speed, fly_time, vmax, ex_t, f1, f2, f3, puff_acc; Vec3 start_pos, prev_p1; Quat start_q, q0, q1; Bomb *bomb; } Rocket;
 static Rocket g_rockets[8]; static int g_nrockets;
 static Rocket *rocket_of(const Instance *in) { for (int i = 0; i < g_nrockets; i++) if (g_rockets[i].inst == in) return &g_rockets[i]; return NULL; }
 static void rocket_place(Rocket *r) { Instance *in = r->inst; mat4_from_trs(&in->world, in->position, in->quat, in->scale); ins_pose(in, in->anim, in->anim_time); }
@@ -2831,7 +2838,9 @@ static void rocket_reset(Rocket *r)                                             
     /* type 21: bom->vtbl[17]() on +0x168. The original resets whatever bomb that pointer holds now, even one a launcher has taken
      * from the pool since (BOMB.md 7); the port only resets it while it is still the ridden one */
     if (r->bomb) { if (r->bomb->ridden) bomb_reset(r->bomb); r->bomb = NULL; }
-    r->has_prev = 0; r->exhaust = 0;                                               /* the original leaves the exhaust state alone (ROCKET.md 10.6) */
+    r->has_prev = 0;                                                               /* 0x452baa: only the exhaust's per-marker "has previous" bytes +0x2c[]; its
+                                                                                    * state (+8) stays, so the next ride burns at full size from mounting on until
+                                                                                    * the ignition sets it back to 1 (ROCKET.md 10.6) */
     rocket_place(r);
 }
 static Quat quat_from_axes(Vec3 X, Vec3 Y, Vec3 Z)                                 /* images of the model axes = columns of the rotation */
@@ -2908,130 +2917,43 @@ static void rockets_update(float dt, Player *pl, int have_player)               
  * smoke; the two flashes of explosion kind 1 (R 1400 and 400) are records like any other, see fx_smoke_draw.
  * Glows and flames as on the race board (exhaust_glow_flames): a camera-facing glow, a glow in the plane across d and three
  * 2:1 flame quads crossed on d at 120 degrees, spinning with f3. d is P1 - P0 of the marker the first frame, after that
- * the PREVIOUS frame's P1 minus this frame's P0 (0x47566e; for size index 6 and 9 the stored point is P1, 0x475c2c), so in
- * flight the flame leans back along the way the rocket came. */
+ * the stored point minus this frame's P0 (0x47566e); for size index 6 and 9 the stored point is P1 (0x475c2c), written only
+ * inside the puff loop (0x475c58), so in flight the flame leans back along the way the rocket came.
+ * The list driver (0x46d0a4, before the pool driver) runs the exhaust in every frame the think step marked it (+0xc = 1 at
+ * 0x452e67: every rocket state but 0, not while paused, 0x452e3b), whatever the rocket's visibility: it burns on at the blast
+ * point in states 7 and 9. The smoke is the race board's (board_fx_draw): 200 puffs a second (0x4aa164, 0x4abd08 = 0.005)
+ * from 100 (the size-6 entry of 0x4abcc8) behind the nozzle back along the trail, pool records FX_BOARD_PUFF (0x475380). */
 static void rockets_draw(float dt)
 {
     for (int i = 0; i < g_nrockets; i++) {
-        Rocket *r = &g_rockets[i]; Vec3 m, d; if (!r->state || !r->exhaust || r->state >= 7 || !inst_vector(r->inst, 9, &m, &d)) continue;
-        float s = 1.0f, ta = r->ex_t;
-        if (r->exhaust == 1) s = ta < 0.15f ? ta * 6.667f : (ta > 0.3f && ta < 0.45f) ? (ta - 0.3f) * 6.667f : (ta > 0.85f && ta < 1.0f) ? (ta - 0.85f) * 6.667f : 0;
+        Rocket *r = &g_rockets[i]; Vec3 m, d; if (!r->state || dt <= 0 || !inst_vector(r->inst, 9, &m, &d)) continue;
         r->f1 += dt * 0.05f; r->f2 += dt * 0.15f; r->f3 += dt * 3.0f;             /* wrapped at 1 (0x475469..0x4754dc) */
         if (r->f1 >= 1.0f) r->f1 -= 1.0f;
         if (r->f2 >= 1.0f) r->f2 -= 1.0f;
         if (r->f3 >= 1.0f) r->f3 -= 1.0f;
-        Vec3 p1 = { m.x + d.x, m.y + d.y, m.z + d.z }, t = r->has_prev ? (Vec3){ r->prev_p1.x - m.x, r->prev_p1.y - m.y, r->prev_p1.z - m.z } : d;
-        float l = sqrtf(t.x * t.x + t.y * t.y + t.z * t.z); if (l > 1e-4f) { t.x /= l; t.y /= l; t.z /= l; }
+        if (r->exhaust) r->puff_acc += dt;                                        /* 0x4754e3: in every exhaust state but 0 */
+        int n = (int)(r->puff_acc * 200.0f); r->puff_acc -= n * 0.005f;
+        if (!r->exhaust) continue;
+        float s = 1.0f, ta = r->ex_t;
+        if (r->exhaust == 1) s = ta < 0.15f ? ta * 6.667f : (ta > 0.3f && ta < 0.45f) ? (ta - 0.3f) * 6.667f : (ta > 0.85f && ta < 1.0f) ? (ta - 0.85f) * 6.667f : 0;
+        Vec3 t = r->has_prev ? (Vec3){ r->prev_p1.x - m.x, r->prev_p1.y - m.y, r->prev_p1.z - m.z } : d;
+        r->has_prev = 1;                                                         /* 0x475669 */
+        float len = sqrtf(t.x * t.x + t.y * t.y + t.z * t.z); if (len > 0) { t.x /= len; t.y /= len; t.z /= len; }
         if (s > 0) {                                                             /* state 1 draws only inside its three ramps */
             const float ph[3] = { r->f1, r->f2, r->f3 };
             exhaust_glow_flames(m, t, 6, r->exhaust == 1 ? 1 : 2, s, ph);
         }
-        if (r->has_prev) exhaust_smoke(r->prev_mk, m, &r->puff_acc, dt);           /* 200 puffs a second over the distance covered, also between the ramps (0x4754e3: +0x20 runs in every state but 0) */
-        r->prev_mk = m; r->prev_p1 = p1; r->has_prev = 1;
-    }
-}
-/* ---- environment instances, class 90 (0x472560), and their butterflies (0x47e050 / 0x47d440) -----------------------
- * The instance itself is never drawn - its model is a bare volume node. Message 1501 sets the mode (0x46cd07), 1504 the
- * number of butterflies (0x46cdcc), and the think function spawns them once at random points in the instance's volume
- * and then latches off. Each butterfly is a camera-facing sprite from bank 0 image 53..56 of Common/<character>.rck
- * that wanders inside that volume for ever. House slots 60/61/62 put 3 + 2 + 3 of them around the treehouse: they are
- * what flies over the title screen (the hubs and W2D have mode-0 instances too). Modes 1 (motes) and 2 (rain) are in
- * ambient.c (docs/AMBIENT.md). */
-typedef struct { Instance *inst; int mode, count, spawned; } EnvInst;
-typedef struct { Instance *owner; Vec3 pos, dir; float phase, wander, floor_y; int img, state; } Fly;
-static EnvInst g_env[8]; static int g_nenv;
-static Fly g_flies[64]; static int g_nflies;
-
-static float frand01(void) { return (float)msvc_rand(NULL) / 32767.0f; }
-static EnvInst *env_of(const Instance *in) { for (int i = 0; i < g_nenv; i++) if (g_env[i].inst == in) return &g_env[i]; return NULL; }
-
-/* world AABB of the instance's first volume node, and whether a point is inside the volume itself (0x4300c0) */
-static int env_volume(const Instance *in, float lo[3], float hi[3], uint32_t *node_out)
-{
-    const Model *m = in->model; if (!m->nvolume_nodes || !in->node_world) return 0;
-    uint32_t ni = m->volume_nodes[0] - 1; if (ni >= m->nnodes) return 0;          /* the node lists in the file are 1-based */
-    const InsNode *n = &m->nodes[ni]; if (!n->npoints) return 0;
-    lo[0] = lo[1] = lo[2] = 1e30f; hi[0] = hi[1] = hi[2] = -1e30f;
-    for (uint32_t k = 0; k < n->npoints; k++) {
-        Vec3 w = ins_point_world(in, n->point_base + k); float v[3] = { w.x, w.y, w.z };
-        for (int q = 0; q < 3; q++) { if (v[q] < lo[q]) lo[q] = v[q]; if (v[q] > hi[q]) hi[q] = v[q]; }
-    }
-    *node_out = ni; return 1;
-}
-
-static void env_update(float dt)
-{
-    for (int e = 0; e < g_nenv; e++) {                                            /* 0x4727d3: spawn `count` butterflies once */
-        EnvInst *E = &g_env[e]; float lo[3], hi[3]; uint32_t node;
-        if (E->mode != 0 || E->spawned >= E->count || !env_volume(E->inst, lo, hi, &node)) continue;
-        while (E->spawned < E->count && g_nflies < 64) {
-            Fly *f = &g_flies[g_nflies++]; memset(f, 0, sizeof *f);
-            f->owner = E->inst; f->floor_y = lo[1];                               /* inst+0x10c, 0x472911 */
-            f->pos = (Vec3){ lo[0] + (hi[0] - lo[0]) * frand01(), lo[1] + (hi[1] - lo[1]) * frand01(), lo[2] + (hi[2] - lo[2]) * frand01() };
-            float dx = frand01() * 2 - 1, dy = frand01() * 2 - 1, dz = frand01() * 2 - 1, l = sqrtf(dx * dx + dy * dy + dz * dz);
-            if (l < 1e-3f) { dx = 1; dy = 0; dz = 0; l = 1; }
-            f->dir = (Vec3){ dx / l, dy / l, dz / l };
-            f->phase = frand01() * 10.0f;                                         /* rec+0x00: the wing-flap phase */
-            f->img = (int)(frand01() * 3.99f); if (f->img > 3) f->img = 3;        /* rec+0x28 = 0x10035..0x10038 */
-            E->spawned++;
-        }
-    }
-    for (int i = 0; i < g_nflies; i++) {
-        Fly *f = &g_flies[i]; Instance *in = f->owner;
-        f->phase += dt;
-        if ((f->wander -= dt) <= 0) {                                             /* 0x4aab98: a new direction every 0.3 s */
-            f->wander = 0.3f;
-            float k = f->state == 1 ? -0.8f : (frand01() < 0.5f ? 0.7f : -0.5f);  /* state 1 = coming down to land */
-            f->dir.x += frand01() * (f->dir.x < 0 ? -3.5f : 3.5f);                /* 0x4abd90 = 3.5, along the sign it already has */
-            f->dir.z += frand01() * (f->dir.z < 0 ? -3.5f : 3.5f);
-            f->dir.y += frand01() * k * 3.5f;
-            float l = sqrtf(f->dir.x * f->dir.x + f->dir.y * f->dir.y + f->dir.z * f->dir.z);
-            if (l > 1e-6f) { f->dir.x /= l; f->dir.y /= l; f->dir.z /= l; }
-        }
-        f->pos.x += f->dir.x * 100.0f * dt; f->pos.y += f->dir.y * 100.0f * dt; f->pos.z += f->dir.z * 100.0f * dt;   /* 0x4a9010 = 100 u/s */
-        float lo[3], hi[3]; uint32_t node;
-        if (env_volume(in, lo, hi, &node) && !volume_contains(in, node, f->pos)) {          /* outside: head back to the instance */
-            Vec3 d = { in->position.x - f->pos.x, in->position.y - f->pos.y, in->position.z - f->pos.z };
-            float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
-            if (l > 1e-3f) f->dir = (Vec3){ d.x / l, d.y / l, d.z / l };
-            f->floor_y = lo[1];
-        }
-        float p = dt * 60.0f;                                                     /* the original rolls these per frame */
-        if (f->state == 0) { if (frand01() < 0.001f * p) f->state = 1; }          /* 0x4a94c4 */
-        else if (f->state == 1) { if (f->pos.y <= f->floor_y) { f->pos.y = f->floor_y; f->dir.y = 0; f->state = 2; } }
-        else if (frand01() < 0.008f * p) f->state = 0;                            /* 0x4abd94: take off again */
-    }
-}
-
-/* 0x47d440 draw: a butterfly is not a sprite but two squares hinged along the flight direction. V = the direction
- * flattened with a fixed +0.5 y, B0/B1 an orthonormal pair across it (0x46d320); the hinge angle
- * theta = 134.30 + 45.00 * cos(2 pi f t) sweeps 89.3..179.3 degrees at f = 3.90625 Hz (0x47d866: the table value
- * squared, times 128, subtracted from 255 and used as an angle). Wing 1 takes U = cos(t) B0 + sin(t) B1, wing 2
- * U' = -cos(t) B0 + sin(t) B1, so the two mirror about B1: flat open at one end of the sweep, folded together at
- * the other. Each square is 21.2132 (= 30 cos45) half-extents along V and U, its centre pushed 20.2757 along U so
- * the hinge edge sits on the particle, plus a 3-unit vertical bob in quadrature (0x47da2c). */
-static void env_draw(void)
-{
-    for (int i = 0; i < g_nflies; i++) {
-        Fly *f = &g_flies[i];
-        Vec3 V = { f->dir.x, 0.5f, f->dir.z };
-        float l = sqrtf(V.x * V.x + V.y * V.y + V.z * V.z); if (l < 1e-6f) continue;
-        V.x /= l; V.y /= l; V.z /= l;
-        Vec3 B0 = { V.z, 0, -V.x };                                            /* horizontal, across the flight direction */
-        l = sqrtf(B0.x * B0.x + B0.z * B0.z); if (l < 1e-6f) { B0 = (Vec3){ 1, 0, 0 }; l = 1; }
-        B0.x /= l; B0.z /= l;
-        Vec3 B1 = { V.y * B0.z - V.z * B0.y, V.z * B0.x - V.x * B0.z, V.x * B0.y - V.y * B0.x };
-        float w = 2 * 3.14159265f * 3.90625f * f->phase;
-        float th = (134.30f + 45.0f * cosf(w)) * 3.14159265f / 180.0f, c = cosf(th), sn = sinf(th), bob = 3.0f * sinf(w);
-        for (int k = 0; k < 2; k++) {
-            float cc = k ? -c : c;
-            Vec3 U = { cc * B0.x + sn * B1.x, cc * B0.y + sn * B1.y, cc * B0.z + sn * B1.z };
-            float ctr[3] = { f->pos.x + 20.2757f * U.x, f->pos.y + 20.2757f * U.y + bob, f->pos.z + 20.2757f * U.z };
-            hud_world_wing(f->img, ctr, &U.x, &V.x, 21.2132f);
+        for (int k = n - 1; k >= 0; k--) {                                       /* 0x475b7a: also between the ramps */
+            float dist = (float)k / (float)n * len + 100.0f;
+            FxRec *pf = fx_new(0.2f, (Vec3){ m.x + t.x * dist, m.y + t.y * dist, m.z + t.z * dist }, FX_BOARD_PUFF); if (!pf) continue;
+            pf->age = k * dt / n;                                                /* 0x475bbf */
+            r->prev_p1 = (Vec3){ m.x + d.x, m.y + d.y, m.z + d.z };              /* 0x475c58 */
+            pf->rot = (int)(fx_rnd() * 512.0f);                                  /* 0x475c79 */
         }
     }
 }
-
+/* ---- environment instances, class 90: all three modes (butterflies, motes, rain) are in ambient.c (docs/AMBIENT.md); their
+ * particles are FX_AMB records of the effect pool above. */
 /* the per-frame instance list the sound Update gets (world+0x64, 0x401ee7): rnd_instance_list, built at the start of the frame
  * (0x42a980 -> 0x42a840, with the frustum / race-distance test of stationary instances, docs/INSTANCE.md 4.1) */
 static int snd_owner_active(const void *owner) { const Instance *in = owner; return in->visible && in->listed; }
@@ -3126,7 +3048,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
      * authentic: Woody in Blackbox/Credits/Lang, the W2B end boss (type 12) and the W3B ghosts (type 13). The port used
      * to set the bit here on every actor class because Buzz came out without a rim, but that was the outline distance
      * being measured from the .ins position instead of the animated root inst+0x60 (issue #35, ins_anim_centre). */
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || (in->type >= 12 && in->type <= 16)) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if ((in->type == 20 || in->type == 21) && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->type = in->type; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890; 21 = the bomb cannon */ if (in->type == 40 && !bomb_of(in) && g_nbombs < 16) { Bomb *b = &g_bombs[g_nbombs++]; memset(b, 0, sizeof *b); b->inst = in; b->var = -1; }   /* ctor 0x44d250: into the pool, parked visible where the .ins has it */ if ((in->type == 120 || in->type == 121) && g_nchests < 32) { int k = 0; while (k < g_nchests && g_chests[k] != in) k++; if (k == g_nchests) g_chests[g_nchests++] = in; }   /* ctor 0x451650, list 0x5e581c */ if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 80) storm_add(in);   /* the lightning rod (storm.c, docs/STORM.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->t = PROJ_T[1]; l->T = 1.0f; l->anim = -1; }   /* ctor 0x452140 -> 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || (in->type >= 12 && in->type <= 16)) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if ((in->type == 20 || in->type == 21) && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->type = in->type; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890; 21 = the bomb cannon */ if (in->type == 40 && !bomb_of(in) && g_nbombs < 16) { Bomb *b = &g_bombs[g_nbombs++]; memset(b, 0, sizeof *b); b->inst = in; b->var = -1; }   /* ctor 0x44d250: into the pool, parked visible where the .ins has it */ if ((in->type == 120 || in->type == 121) && g_nchests < 32) { int k = 0; while (k < g_nchests && g_chests[k] != in) k++; if (k == g_nchests) g_chests[g_nchests++] = in; }   /* ctor 0x451650, list 0x5e581c */ if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 80) storm_add(in);   /* the lightning rod (storm.c, docs/STORM.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->t = PROJ_T[1]; l->T = 1.0f; l->anim = -1; }   /* ctor 0x452140 -> 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     /* sent by shipped scripts, nothing to do in the port (docs/MESSAGES.md): 51 = laser rec+0x18 (0x451059, no reader in the exe),
      * 58 = carousel registration (0x451960 -> 0x45e6f0; the port takes the fixed House slots 105..114), 63 = class 17 +0x114 = v
      * + Reset (0x40c5e0; v = 1 = no typecode-9 smoke emitter, which the ctor 0x40c3f8 already set), 1010 = debug print 0x462c60 */
@@ -3139,10 +3061,8 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 33: break;                                                                 /* only ever sent to class 60, whose handler 0x474a40 drops it (like the base 0x42d5e0); docs/WATER.md 1.1 */
     case 1506: if (in && m->nargs > 4) water_param(in, (int32_t)m->args[1], (int32_t)m->args[2], (int32_t)m->args[3], (int32_t)m->args[4]); break;   /* SetWaterVolumeParameter 0x46ce38 */
     case 1500: if (in && m->nargs > 4) game_bubble(in, (int32_t)m->args[1], (int32_t)m->args[2] * 0.01f, (float)(int32_t)m->args[3], (float)(int32_t)m->args[4], NULL); break;   /* speech bubble 0x46ccc0: [inst, kind, duration cs, offY, offX] (K2R, S2R) */
-    case 1501: case 1504: case 1502: case 1503: case 1511: {                        /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
-        ambient_msg(in, (int)m->id, m->args, (int)m->nargs);                        /* modes 1 / 2, 1502 colour + life + count, 1503 rain force, 1511 off (ambient.c, docs/AMBIENT.md) */
-        EnvInst *E = in ? env_of(in) : NULL;
-        if (E && m->nargs > 1) { if (m->id == 1501) E->mode = (int)m->args[1]; else { E->count = (int)m->args[1]; E->spawned = 0; } }
+    case 1501: case 1504: case 1502: case 1503: case 1511: {                        /* environment instance (class 90), handler 0x46cca0 */
+        ambient_msg(in, (int)m->id, m->args, (int)m->nargs);                        /* mode, 1502 colour + life + count, 1503 rain force, 1504 count, 1511 off (ambient.c, docs/AMBIENT.md) */
         break; }
     case 59: case 60:                                                               /* class 14 (the Buzz boss, 0x410070): 59 couples an instance, 60 names its mailbox var */
         if (in && (in->type == 14 || (m->id == 60 && (in->type == 15 || in->type == 16))) && m->nargs > 1) enemies_boss_msg(&g_enemies, in, (int)m->id, m->args[1], m->id == 59 ? slot_instance(m->args[1]) : NULL);
@@ -3344,6 +3264,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
     } break;
     case 11: if (in && m->nargs > 1) enemies_msg11(&g_enemies, in, (int)m->args[1], m->nargs > 2 ? (int)m->args[2] : 0); break;   /* Enemy::HandleMsg 0x41a740 */
+    case 1201: case 1202: if (in) enemies_msg1201(&g_enemies, in, m->args[0], m->id == 1201); break;   /* 0x403440: type-word bit 0x400 (no level sends them) */
     case 50: case 52: case 53: if (in) { Laser *z = laser_of(in); if (z && m->nargs > 1) { if (m->id == 50) z->on = m->args[1] == 1; else if (m->id == 52) z->len = (float)(int)m->args[1]; else z->target = slot_instance(m->args[1]); } } break;
     case 1080: if (m->nargs > 3) { hud_text_open((int)m->args[0], (int)m->args[1], &m->args[3], (int)m->nargs - 3); g_text_var = m->args[2]; printf("  TEXT box at vm t=%d: strings %u %u %u\n", vm->time, m->args[3] & 0xffff, m->nargs > 4 ? m->args[4] & 0xffff : 0, m->nargs > 5 ? m->args[5] & 0xffff : 0); } break;   /* text box 0x456ed0: stays until the script sets var != 0 */
     case 1172: g_hud_ext = 1; break;
@@ -3383,8 +3304,8 @@ static void level_free(Level *L)
     g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); memset(g_sparks, 0, sizeof g_sparks); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     car_forget(); g_nuniq = 0;                                                    /* 0x44f6c6: [0x5e54f0] = 0 */
-    memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); g_nenv = 0; g_nflies = 0; water_reset(NULL); storm_reset(); g_nfx = 0; g_ntorch = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); g_nbplume = 0; memset(g_smoke_on, 0, sizeof g_smoke_on); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
-    ambient_reset();                                                               /* class 90 modes 1 / 2 (ambient.c) */
+    memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); water_reset(NULL); storm_reset(); g_nfx = 0; g_ntorch = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); g_nbplume = 0; memset(g_smoke_on, 0, sizeof g_smoke_on); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    ambient_reset();                                                               /* class 90 (ambient.c); its particles went with g_nfx = 0 */
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -3777,14 +3698,8 @@ int main(int argc, char **argv)
                 anim_sounds(ii);
             }
         }
-        if (!paused) env_update(dt);
-        if (!paused) ambient_update(dt);                                          /* class 90 modes 1 / 2 (ambient.c) */
+        if (!paused) ambient_update(dt);                                          /* class 90 thinks (ambient.c): new butterflies / motes / rain drops */
         if (!paused) water_update(dt, g_player);
-        if (getenv("WOODY_FLYLOG") && (int)g_now != (int)(g_now - dt)) {
-            printf("  FLY t %.0f env %d flies %d:", g_now, g_nenv, g_nflies);
-            for (int i = 0; i < g_nflies; i++) printf("  %d[%.0f %.0f %.0f s%d]", i, g_flies[i].pos.x, g_flies[i].pos.y, g_flies[i].pos.z, g_flies[i].state);
-            puts("");
-        }
         if (!paused) launchers_update((float)g_now, dt, &L.player, &L.gel, L.have_player && !fly && !L.player.dead_kind && !cin_running());
         if (!paused && !cin_running()) bombs_fly(dt, &L.gel);                       /* the carrying projectiles, 0x4490f0 after the VM */
         double pt2 = win_time();
@@ -3817,8 +3732,7 @@ int main(int argc, char **argv)
                     Vec3 rp, rn; float ra;
                     if (!paused && player_landing_ring(&L.player, dt, &rp, &rn, &ra)) hud_world_spr(0x3a, &rp.x, 80.0f, 0x40, grey06, ra, 6, &rn.x, 0);
                 }
-                env_draw(); water_fx_draw(); storm_fx_draw(&cam.pos.x, paused ? 0 : dt);
-                ambient_draw(&cam.pos.x);                                          /* class 90 motes and rain (ambient.c) */
+                water_fx_draw(); storm_fx_draw(&cam.pos.x, paused ? 0 : dt);
                 for (int li = 0; li < g_nlasers; li++) {                            /* Lazer_Draw 0x46e530: core (1,.7,.7) width 6 + glow (1,.4,.4) width 30 pulsing 0.5..1, ends fade over 70, then laser_fx_draw */
                     Laser *z = &g_lasers[li]; if (!z->on || !z->inst->visible) continue;
                     if (!paused) z->phase += dt * 127.75f;

@@ -1,8 +1,10 @@
 # SPLASH.md — the water splash `0x478660`
 
 Static analysis of `game/Woody.exe` (image base 0x400000; all addresses are VAs). Floats are read directly from the
-PE sections. Motivation: the splash of `Kill(7)` (drowning in a water volume, class 60, WATER.md §4) and of
-script message 1505 had not been ported yet (WATER.md §6, PERSO_DEATH.md §4.3, TODO.md).
+PE sections. The splash of `Kill(7)` (drowning in a water volume, class 60, WATER.md §4) and of script message 1505.
+**Ported** following §9 (`game_splash`, fx kinds 3..6 in `src/main_engine.c` `fx_update`, `case 1505`, `player_kill`);
+checked again constant by constant against §2..§6 (rnd order, 0.3 / 500 / 0.002, 5 / 0.2, D = rnd·100 + 150, streak
+u + 0.08 / u + 0.1 half width 4, ripple 25u + 5, ring 2R + 600u, colours not doubled): no difference.
 
 Notation: `fx` = the effect pool `[0x5e823c]+0xdb8` (2000 records of 0x50 B, counter `[0x5e823c]+0x27eb8` = `fx+0x27100`,
 driver `0x470c70`, BONUS.md §2.4), `S` = the sprite/line parameters `[0x5e823c]+0xb00`, `dt` = `[[0x509adc]+0x38]`,
@@ -296,7 +298,7 @@ blue-white ring; drop head `0.5·0.65 = 0.325` grey, tail 0.
 | `0x4aa0ac` | 0.01 | message 1505: `r = f·0.01` |
 | `0x4a9020` | 128.0 | additive submit path: color byte `a·c·128` |
 
-## 9. Port recipe
+## 9. Port recipe (carried out)
 
 Everything goes into the existing pickup pool of `src/main_engine.c` (`FxRec g_fx[2000]`, `fx_new`, `fx_update`) — the same
 pool as the original, and `fx_update` already processes records created during the pass in the same frame.

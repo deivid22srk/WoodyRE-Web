@@ -1,8 +1,8 @@
-# AMBIENT.md — instance class 90, the "environment instance": motes (mode 1) and rain (mode 2)
+# AMBIENT.md — instance class 90, the "environment instance": butterflies (mode 0), motes (mode 1) and rain (mode 2)
 
-Static analysis of `game/Woody.exe` (image base 0x400000; all addresses are VAs). Mode 0 (the butterflies) is described
-in TITLE.md §3.1 / OBJECTS.md §2.4 / INSTANCE.md §7 and stays as it is; this document covers the class as a whole and
-modes 1 and 2. Port: `src/ambient.c` (modes 1/2), `env_update` / `env_draw` in `src/main_engine.c` (mode 0).
+Static analysis of `game/Woody.exe` (image base 0x400000; all addresses are VAs). The drawing of a butterfly (two hinged
+wings) is in TITLE.md §3.1; this document covers the class as a whole and all three modes. Port: `src/ambient.c` (the
+thinks and every particle callback); the records live in the effect pool of `src/main_engine.c` (`FxRec` kind `FX_AMB`).
 
 Notation as in PARTICLES.md: `rnd` = `0x43ff40` = `rand()/32767` ∈ [0, 1]; `dt` = `[[0x509adc]+0x38]`; `frame` =
 `[[0x509adc]]` (the frame counter); `ftol` = `0x499580` (truncates).
@@ -27,7 +27,7 @@ Notation as in PARTICLES.md: `rnd` = `0x43ff40` = `rand()/32767` ∈ [0, 1]; `dt
 | +0x100 | int | wanted particle count (modes 0 and 1) | 1502, 1504 |
 | +0x104 | u32 | frame counter of the last think (`0x472576`) | think |
 | +0x108 | int | particles alive / spawned; a mote that dies decrements it (`0x47ddf2`) | 1502, 1504 (= 0), think |
-| +0x10c | float | world y of the local minY (`0x472911`); only the butterflies read it (`0x47d6dc`, their floor) | think modes 0/1 |
+| +0x10c | float | `minY·M[4] + M[10]` = the y of row 1 times the local minY plus the origin's y (`0x472911`; for the upright cubes the world y of the box bottom); only the butterflies read it (`0x47d6dc`, their floor) | think modes 0/1 |
 | +0x110..0x118 | float | mote colour r, g, b = arg / 255 (`0x4abc5c` = 1/255) | 1502 |
 | +0x11c | float | mote base lifetime in s = arg × 0.01 (`0x4aa0ac`) | 1502 |
 | +0x120 | byte | **off**: modes 0/1 spawn nothing while set (`0x4727d3`) | 1511, cleared by 1502 (`0x472b30`) |
@@ -66,7 +66,7 @@ into world +y and carries the instance's scale (W1A 490: ×3.87; WWS 140: ×4.76
 
 The fifth argument of 1502 is therefore a **lifetime** (hundredths of a second), not a size: the sprite size is fixed.
 
-## 3. Mode 1 — motes
+## 3. Modes 1 and 0 — motes and butterflies
 
 ### 3.1 Think `0x4727d3` (shared with mode 0)
 
@@ -93,7 +93,11 @@ while (live < count) {
 fill = 0;                                                   /* 0x472b13 */
 ```
 
-The y/z mix-up is harmless for the shipped cube (y extent = z extent = 400) and kept in the port.
+The y/z mix-up is harmless for the shipped cube (y extent = z extent = 400) and kept in the port. Mode 0 therefore
+places its butterflies **inside the node's own box, mapped by the node matrix** (`0x4729dc..0x472a2a`: `w = x·R0 + y·R1 +
+z·R2 + T`), not in the world aabb of the node's points: for a volume turned about y the aabb is up to 1.41× wider and its
+corners lie outside the box. The rnd order is x, z (mode 0 only), y (`0x472929`, `0x472953`, `0x47296a`). The normal
+search `0x472a47` runs for mode 1 only (`0x472a34`: `dec eax; jne`), once per think call (`[esp+0x13]`).
 
 ### 3.2 Creation `0x47e160(inst, &w, &N)` — pool record
 
@@ -119,6 +123,65 @@ So a mode-1 instance keeps `count` sparkles alive that rise out of the bottom of
 up for every shipped instance) at `(40..60)·scale` u/s for `life0..life0+2` s, spinning slowly and fading over the last
 30 % of their life. When the camera leaves (the sector is no longer drawn) they all vanish in one frame; when it comes
 back the first think refills the stream at random ages.
+
+### 3.4 Mode 0 — the butterfly `0x47e050(inst, &w)` → callback `0x47d440`
+
+Record (`0x47e050`): `+0` phase `= rnd·10` (`0x4a9750`), `+4` life `1e6` (`0x49742400`), `+8` inst, `+0x0c` pos `= w`,
+`+0x18` dir `= (rnd·2 − 1, rnd·2 − 1, rnd·2 − 1)` normalised only when its length is > 0 (`0x47e12d`), `+0x24` course
+timer `= 0`, `+0x28` image `0x10035 − ftol(rnd·−3.99)` (`0x4abd98`) = bank 0 image 53..56. **`+0x2c` (the state) is not
+written**: the record keeps whatever the record that last used that pool slot left at `+0x2c` (motes and ripples stop
+before it; a rain drop leaves its speed 4000.0 = `0x457a0000` there, a state that is neither 0, 1 nor 2; §3.5).
+
+Callback `0x47d440` (moves, then draws; dt = `[[0x509adc]+0x38]`):
+
+```c
+phase += dt;  timer += dt;                                   /* +0, +0x24 (0x47d457, 0x47d46a) */
+r = rnd;                                                     /* one roll a frame */
+if (state == 0 && r <= 0.001) state = 1;                     /* 0x4a94c4: start coming down */
+if (state == 2 && r <= 0.008) {                              /* 0x4abd94: take off */
+    state = 0;  dir = normalize(inst.pos - pos);             /* inst+0x0c..0x14, 0x47d4a6 */
+}
+if (state == 2) F = 166.667;                                 /* 0x47d767 (0x4326aaab): landed = slow flapping, no movement, no test */
+else {
+    F = 1000;
+    if (timer > 0.3) {                                       /* 0x4aab98; only ONE step per frame (0x47d540) */
+        timer -= 0.3;
+        sx = dir.x < 0 ? -1 : 1;
+        ky = state == 1 ? -0.8 : (rnd·2 − 1 > 0 ? 0.7 : -0.5);   /* 0xbf4ccccd / 0x3f333333 / 0xbf000000 */
+        sz = dir.z < 0 ? -1 : 1;
+        dir += (rnd·sx·3.5, rnd·ky·3.5, rnd·sz·3.5);          /* 0x4abd90; rnd order x, y, z */
+        dir = normalize(dir);                                /* if > 0 */
+    }
+    pos += dt·dir·100;                                       /* 0x4a9010 */
+    if (!0x4300c0(inst, pos)) {                              /* outside every volume node of the owner */
+        if (state == 0) dir = normalize(inst.pos - pos);
+        else if (state == 1) {
+            if (pos.y > inst+0x10c) dir = normalize(inst.pos - pos);
+            else { state = 2; dir = normalize(inst.x - pos.x, 0, inst.z - pos.z); }   /* 0x47d74f: landed */
+        }                                                    /* any other state: nothing, it flies on */
+    }
+}
+if (inst+0x104 != frame) { inst+0x108--; life = -1; return; }   /* 0x47dc77: the owner did not think */
+draw(F);                                                     /* 0x47d78b, TITLE.md §3.1; F sets the flap rate 2F/512 Hz */
+```
+
+Consequences: a butterfly lands only **outside** the box while coming down at or below the floor, and it stays where it
+is (no clamp to the floor); the course timer runs on while it sits, so after a long rest it re-steers once per frame until
+the timer is below 0.3 again. The butterflies are ordinary counted particles like the motes: each think tops `+0x108` up to
+`+0x100`, and they all die the first frame the volume is not in the frame's instance list (TITLE.md §3.1 called it a
+"latch": that is only the steady state while the volume stays listed). The think respects the off flag `+0x120` for mode 0
+too (no level sends 1511 to a mode-0 instance).
+
+### 3.5 The butterfly's stale state
+
+`0x47e050` never writes `+0x2c`. In a pool slot last used by a rain drop (`+0x2c` = 4000.0f, bit pattern `0x457a0000`)
+the butterfly starts in a state that is none of 0/1/2: it never lands or takes off (both tests are `== 0` / `== 2`), steers
+with the "flying" random up/down push, and when it leaves the box nothing turns it back (`0x47d6ad` / `0x47d6cd` only act
+in states 0 and 1): it flies away in a straight-ish line for as long as the volume stays listed. Other previous occupants
+leave floats or pointers there too (a footstep, a splash drop …). On the title screen the pool is nearly empty when the
+butterflies are made, so they get fresh or zero memory; in the hubs and W2D, which also have rain (§6), a butterfly
+respawned after the camera came back may inherit a drop's slot. Not observed in the original; the port always starts at
+state 0.
 
 ## 4. Mode 2 — rain ("la force du vent")
 
@@ -179,17 +242,38 @@ leaves a small expanding ring. It does not collide with anything: the "ground" i
 designers sit the boxes on the floor. The rain keeps falling (drops already spawned finish their fall) when the camera
 leaves; only new drops need the think.
 
-## 5. Drawing
+## 5. The pool and drawing
 
-All three particles live in the shared effect pool (`[0x5e823c]+0xdb8`, 2000 × 0x50 B, PARTICLES.md §0) and draw from
-their own callbacks through the sprite primitive `0x470f10` / the line primitive `0x471a10`. There is no distance or
-frustum test: the only gating is the think (the instance list, §1) for creation and, for motes, the frame stamp.
+All four particles (butterfly, mote, drop, ripple) are records of **the one effect pool** of the game, `[0x5e823c]+0xdb8`:
+2000 records of 0x50 B, count at `+0x27100` (= `[0x5e823c]+0x27eb8`), shared with every other effect (pickups, splash,
+footsteps, explosions, torches, the special attack …, PARTICLES.md §0). Class 90 has no pool, no counter and no limit of
+its own.
+
+* **Allocation** (`0x47e050` / `0x47e160` / `0x47e230` / `0x47e310`, all the same prologue): `n = count; if (n >= 2000)
+  return; rec = pool + 0x50·n; count = n + 1;` — a bump allocator at the end of the live records; the record memory is
+  **not cleared**, each creator writes only its own fields. A full pool drops the new particle silently. The think still
+  counts it (`+0x108++` at `0x472af6` whatever the creator did), so a mote or butterfly lost to a full pool is a phantom:
+  the instance believes it alive and never replaces it until the stream is reset (1502/1504) or `+0x108` is brought back
+  by the deaths of the real ones. Rain has no count: a lost drop or ripple is simply missing.
+* **Driver** `0x470c70` (thiscall on the pool, once a frame, during the 3D draw): `for (i = 0; i < count; i++)`: if
+  `rec[i].life > 0` (`0x470c8f`) call `rec[i]+0x4c(rec)`; else copy the last record over it (`0x470cc5..0x470d18`: 0x50 B),
+  `count--`, and look at slot i again. The bound is re-read every step, so a record created during the pass (a ripple from
+  a landing drop) runs in the same pass. A record that frees itself (`life = −1`) keeps its slot until the driver reaches
+  it again, the next frame: dead records count against the 2000 for one frame. The draw order is the pool order, i.e.
+  creation order scrambled by the swaps.
+* **Ageing**: the driver adds nothing; every callback does `age += dt` itself (the butterfly ages its phase and its
+  course timer, §3.4). The butterfly's life `1e6` s (11.6 days) is never reached; it dies only through the frame stamp.
+* The pool is emptied by `0x470d50` (`count = 0`) with the level.
+
+The callbacks draw through the sprite primitive `0x470f10` / the line primitive `0x471a10`. There is no distance or
+frustum test: the only gating is the think (the instance list, §1) for creation and, for motes and butterflies, the frame
+stamp.
 
 ## 6. Where it is used (level scripts, init code of the instance's own object)
 
 | level | slots | mode | parameters |
 |---|---|---|---|
-| House | 60, 61, 62 | 0 | 1504 3 / 2 / 3 (title-screen butterflies) |
+| House | 60, 61, 62 | 0 | 1504 3 / 2 / 3 (title-screen butterflies; node scale 1.76 / 2.58 / 2.53, box bottoms y 2312..2321) |
 | KWS, SWS | 49, 121, 206 | 0 | 1504 12 / 7 / 4 |
 | WWS | 50, 122, 210 | 0 | 1504 12 / 7 / 4 |
 | W2D | 290, 354 | 0 | 1504 12 / 18 |
@@ -209,11 +293,17 @@ frustum test: the only gating is the think (the instance list, §1) for creation
 
 ## 7. Port notes (`src/ambient.c`)
 
-* `ambient_msg` takes 1501..1504/1511 for any instance (the handler does not type-check); the existing mode-0 code in
-  main_engine.c keeps its own record. `ambient_update(dt)` runs the think of every type-90 instance that is visible and in the
-  frame's instance list (`game_enemy_thinks` = `Instance.listed`, `rnd_instance_list`), then the particles; `ambient_draw(eye)` draws them between
-  `hud_world_sprites_begin/end`. `ambient_reset()` in `level_free`.
-* The port keeps its own 2000-record pool for these particles instead of sharing the original's global one.
+* `ambient_msg` takes 1501..1504/1511 for any instance (the handler does not type-check). `ambient_update(dt)` runs the
+  think of every type-90 instance that is visible and in the frame's instance list (`game_enemy_thinks` =
+  `Instance.listed`, `rnd_instance_list`) for all three modes. `ambient_reset()` in `level_free`.
+* The particles are records of main_engine.c's effect pool (`g_fx[2000]`, `FxRec` kind `FX_AMB`, payload `AmbFx`), made
+  through `game_fx_amb_new` (the same full test as every other effect) and run by its driver `fx_update` (during the draw,
+  between `hud_world_sprites_begin/end`) through `ambient_fx_run`, which moves, ages and draws a record and returns 0 when
+  it frees itself. Port differences: the driver frees a dead record at once instead of on its next visit (§5), a new
+  record is zeroed (so a butterfly starts in state 0, §3.5), and the butterfly's per-frame rolls are normalised to 60 Hz
+  (threshold × 60·dt, none while paused).
+* Mode 0 (formerly `env_update` / `env_draw` in main_engine.c, which sampled the world aabb, spawned once and never let a
+  butterfly die) now follows §3.1 / §3.4 exactly; `WOODY_FLYLOG=1` prints every butterfly once a second.
 * Box, polygon planes (`0x4280c2`, as `render_gl.c poly_plane`) and matrices are taken node-local exactly as in §1.1;
   N is not normalised (the node scale scales the mote speed), D is.
 * Ripple image 3 is drawn with hud slot 0x3a (image 58, byte-identical, as the water splash ripple does); image 29 was added to
@@ -252,3 +342,4 @@ volumes were never listed and the sparkles never appeared. Test (W3D): `WOODY_SE
   before the first think, so this never matters. 1502 resets `+0x108` to 0 even while motes are alive; their later deaths
   then push it below 0 and the stream over-fills — never triggered by the scripts (1502 is only sent at init).
 * The `+0x128` angle array (90..135) is dead data — maybe a planned per-drop slant.
+

@@ -90,9 +90,10 @@ Tables in the subsystem `[0x5e823c]` (filled at `0x40248f`/`0x402520`): `+0` = `
 ### 4.1 Wake (`0x472ec0` → `0x472f50` → `0x473050`, particle list `[0x5e823c]+0xdb8`, max 2000)
 
 Emitter: lives 1.0 s, moves 300 units/s (`0x4a986c`) along `dir` and leaves a mark every 0.1 s.
-Mark: lives 0.5 s, `p = age/0.5`; sprite `0x470f10` with flags 0x12 (own color, no billboard → flat on normal
-(0, 1, 0), additive), image `0x1003a` = bank 0 image 58, color 0.8, alpha `(1−p)·0.7`, half-diagonal `10 + 70·p`,
-rotation `+0x224` random but unused without flag 4.
+Mark: lives 0.5 s, `p = age/0.5`; sprite `0x470f10` with **flags 6** (`0x473088`: own color + rotation, no billboard →
+flat on normal (0, 1, 0), additive) and mode `S+0x260 = 0x12` (`0x4730e5`, the square), image `0x1003a` = bank 0 image 58,
+color 0.8, alpha `(1−p)·0.7`, half-diagonal `10 + 70·p`, rotation `+0x224` = the record's random `+0x14` (`0x473108`) —
+applied, but invisible because image 58 is round (the port leaves it out).
 
 ## 5. Port (`src/water.c`)
 
@@ -100,7 +101,10 @@ rotation `+0x224` random but unused without flag 4.
   `water_update` every non-paused frame (phases, wake, Kill(7) via `player_kill`), `water_draw` via the new hook
   `Renderer.post_models` (after the model passes, before the fade list), `water_fx_draw` for the effect sprites (`hud_world_fx_plane`,
   fx slot 11 = image 58). `draw_instance` skips type 60.
-* Deviations: the phase runs on as a float (no ftol per frame, so independent of framerate) and also off-screen;
+* The wake and the drowning test run only while the water instance is in this frame's instance list (`game_enemy_thinks`):
+  the Update vtbl[3] `0x4747f0` is called from `0x42b400` for the listed instances only (INSTANCE.md §4.1).
+* Deviations: the phase runs on as a float (no ftol per frame, so independent of framerate) and also off-screen (the
+  original advances it in the Draw `0x4741d6`, i.e. only in drawn frames);
   the inside test uses the Init matrix instead of the current one (no water box is animated); MODULATE2X via
   `GL_COMBINE` + `RGB_SCALE 2` (without that extension: color ×2, clamped).
 * Test: `extract/Data W2A` (start on the jetty, water all around); drowning `--pos -700 200 500` (Kill 7 around 0.6 s,
@@ -110,6 +114,8 @@ rotation `+0x224` random but unused without flag 4.
 ## 6. Open
 
 * The water splash `0x478660` (from Kill(7) and from message 1505 `[inst, f]` = `0x478660(&inst.pos, 1000, f·0.01)`; 45× in 7 levels,
-  W2A 17×) is fully worked out in **SPLASH.md**, with a port recipe; not yet ported.
-* What `+0x14d` and `+0x150` (3.0) do after drowning: no reader found in the class itself.
+  W2A 17×) is worked out in **SPLASH.md** and ported (`game_splash`, fx kinds 3..6 in `fx_update`, `case 1505`, both Kill(7)
+  branches of `player_kill`).
+* `+0x14d` and `+0x150` (3.0) after drowning are write-only: the only accesses in `0x472e00..0x474b00` are the writes at
+  `0x474a0c` and `0x474a23`.
 * Not compared against the running original.

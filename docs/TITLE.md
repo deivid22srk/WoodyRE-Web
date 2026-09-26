@@ -139,26 +139,30 @@ drawn). Their script (`out/house_code.txt`, init only) sends:
 ```
 
 `1501` (`0x46cd07`) = mode, `1504` (`0x46cdcc`) = count. The think function `0x472560`, mode 0 (`0x4727d3`),
-calls `0x47e050` once for each of the 3 + 2 + 3 and then latches. `0x47e050` builds a 0x50-byte record in
-the effects pool `[0x5e823c]+0xdb8` (max 2000):
+calls `0x47e050` until the instance's live count `+0x108` reaches `+0x100` (3 + 2 + 3); while the volume stays in the
+frame's instance list nothing dies, so that is the steady state. A butterfly dies the first frame its volume did not think
+(`0x47dc77`, frame stamp `+0x104`) and the next think makes a new one (AMBIENT.md §3.4). `0x47e050` builds a 0x50-byte
+record in the effects pool `[0x5e823c]+0xdb8` (max 2000, shared with every effect; AMBIENT.md §5):
 
 | field | value |
 |---|---|
 | `+0x00` | `rand()·10` — wing-flap phase in seconds, incremented by dt every frame (`0x47d457`) |
 | `+0x04` | `1e6` — lives practically forever |
-| `+0x0c..0x14` | random point within the volume node's world AABB |
-| `+0x18..0x20` | random unit direction |
+| `+0x0c..0x14` | random point of the volume node's own box (node-local aabb of its points, local y/z extents swapped, mirrored through polygon 0) mapped by the node's world matrix (`0x472811..0x472a2a`, AMBIENT.md §3.1) — not the world aabb |
+| `+0x18..0x20` | `(rnd·2−1, rnd·2−1, rnd·2−1)`, normalised if not zero |
 | `+0x28` | `0x10035 − (int)(rand()·−3.99)` = bank 0, **image 53..56** of `Common/<character>.rck` = four butterflies (64×64, colour-key). Chosen once |
-| `+0x2c` | state 0 |
+| `+0x2c` | the state: **not written** by `0x47e050` (whatever the slot's last record left there; 0 in fresh memory, AMBIENT.md §3.5) |
 | `+0x4c` | `0x47d440`, the updater |
 
 **Updater `0x47d440`** (clock = the global frame dt, not the instance clock):
 every **0.3 s** (`0x4aab98`) a new direction — `dir.x += rand()·sign(dir.x)·3.5`, likewise `dir.z`,
 `dir.y += rand()·k·3.5` with `k = −0.8` in state 1 and otherwise a random `+0.7` or `−0.5` (`0x4abd90` = 3.5) —
 then normalize; `pos += dt·dir·100` (`0x4a9010`). `0x4300c0` tests the point against the owner's volume nodes:
-outside ⇒ `dir = normalize(instance position − pos)`. State machine `+0x2c`: 0 → 1 with probability ≈ 0.001 per
-frame (`0x4a94c4`, start descending), 1 → 2 as soon as the bottom of the volume is reached (`inst+0x10c`,
-`0x472911`; landed, `dir.y = 0`), 2 → 0 with probability ≈ 0.008 per frame (`0x4abd94`).
+outside ⇒ `dir = normalize(instance position − pos)`. State machine `+0x2c`: 0 → 1 with probability 0.001 per
+frame (`0x4a94c4`, start descending), 1 → 2 when it is **outside** the volume at or below `inst+0x10c` (`0x472911`;
+landed, `dir = (dx, 0, dz)` to the instance origin, no clamp), 2 → 0 with probability 0.008 per frame (`0x4abd94`, turning
+to the instance origin). Landed it does not move and flaps at F = 166.667 instead of 1000 (`0x47d767`). Full pseudo-C:
+AMBIENT.md §3.4.
 
 **Drawing — not a sprite but two hinged wings** (`0x47d78b..0x47dc6b`, quad build `0x470f10`). The draw
 state is still that of a sprite though: mode `0x28`, **alpha blend with colour-key, exactly the same state as the
