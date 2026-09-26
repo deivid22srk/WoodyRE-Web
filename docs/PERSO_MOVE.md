@@ -89,6 +89,8 @@ Vtable `0x4aabc0` (relevant slots):
 
 ### 3.1 Cfg keys → action table (`0x44fbd0`, ctor of the app object `[0x5e5814]`)
 
+Full detail (Woody.cfg layout, joystick object, dead zone, the port): **INPUT.md**.
+
 The app object (paths, cd drive, `+0x104` = input mode, `+0x108` = action table) is created by `0x44fa10` (caller `0x401f00`).
 `+0x104`: `cfg+0x114 == 1` → 0 (keyboard only); else `cfg+0x110 == 0` → 2, else 1 (joystick modes).
 Action table `+0x108`: 12 actions x {key from config 1, key from config 2} (8 B per action). Every key code goes through `0x44fe80`: codes < 0x200 are translated by the DirectInput keyboard object `[0x5e6194]->vt[2](code)`; if that yields 0x90 or there is no keyboard → 0x90 (= invalid). Codes ≥ 0x200 are joystick buttons (button = code − 0x200, `0x44fed0`).

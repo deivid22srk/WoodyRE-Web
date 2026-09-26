@@ -2,10 +2,11 @@
  * EKO CODE script VM every frame and renders world + instances with OpenGL.
  *
  * usage: woody.exe <Data dir> <LVL>            e.g. woody.exe extract/Data W1A
- * keys: arrows/WASD = walk Woody (camera-relative), Space = jump, F5 = toggle free-fly camera
- *       (in fly mode WASD + right mouse = fly, Shift = fast), F1 world, F2 instances, F3 wireframe,
- *       [ ] = previous/next animation of the selected instance (default: Woody), Tab = next instance,
- *       P = pause VM, Esc = quit. Script messages are printed to the console.
+ * keys: the bindings of Woody.cfg when there is one (docs/INPUT.md), else arrows/WASD = walk Woody (camera-relative),
+ *       Space = jump, X = duck, LCtrl/Shift = attack, RCtrl/E = special, C = camera behind, Esc = pause menu; a joystick
+ *       works too. F5 = toggle free-fly camera (in fly mode WASD + right mouse = fly, Shift = fast), F1 world, F2 instances,
+ *       F3 wireframe, [ ] = previous/next animation of the selected instance (default: Woody), Tab = next instance,
+ *       P = pause VM. Script messages are printed to the console.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -317,6 +318,125 @@ static void opt_read(void)
     int *o[3] = { &g_opt.sfx, &g_opt.music, &g_opt.vib }; for (int i = 0; i < 3; i++) { if (*o[i] < 0) *o[i] = 0; if (*o[i] > 100) *o[i] = 100; }
 }
 static void opt_write(void) { FILE *f = fopen("woodyre.cfg", "w"); if (f) { fprintf(f, "sfx=%d\nmusic=%d\nvibration=%d\n", g_opt.sfx, g_opt.music, g_opt.vib); fclose(f); } }
+
+/* ---- input (docs/INPUT.md): the key bindings of Woody.cfg, the joystick and the action layer of 0x402940. Everything
+ * the game reads goes through 14 actions (the controller [0x5e6188], PERSO_MOVE 3.2): 0/1 left/right, 2/3 forward/back
+ * (values -1/+1, the stick gives its deflection), 4 jump (+12 = menu confirm), 5 duck (menu back), 6 attack, 7 look
+ * around, 8 duck while riding, 9 pause, 10 camera behind, 11 special. Bindings: app+0x108, two per action (config 1 / 2
+ * of Detect.exe); a code < 0x200 is a DirectInput key, 0x200 + n joystick button n. The port keeps VK codes. */
+#include <mmsystem.h>
+#define IN_JOY 0x200
+static struct {
+    int bind[12][4];                  /* per action: up to 4 VK codes or IN_JOY + button, 0 ends the list (Woody.cfg fills 2, the port defaults more) */
+    int mode;                         /* app+0x104 (0x44fc05): 0 keyboard only (cfg+0x114 == 1), 1 / 2 joystick (cfg+0x110 != 0 / == 0): the
+                                       * keyboard gives no directions then (0x40301e); 3 = port, no Woody.cfg: keyboard and joystick both */
+    int have_cfg;
+    int joy; UINT jxmin, jxmax, jymin, jymax; double joy_scan;   /* the WinMM device (the original: the first attached DirectInput joystick, 0x4678d0) */
+    float jx, jy; uint32_t jbtn; int jok;                        /* this frame: axes after the dead zone (-1..1), buttons */
+    int down[14], prev[14]; float val[14];                       /* the controller: held this frame / last frame, value (0x467460) */
+} g_in = { .joy = -1, .mode = 3 };
+static int in_dik_vk(int d)                                      /* DIK scan code (Woody.cfg) -> VK: the extended keys by table, the rest by the layout */
+{
+    static const unsigned char T[][2] = { {0x1c,VK_RETURN}, {0x9c,VK_RETURN}, {0x1d,VK_LCONTROL}, {0x9d,VK_RCONTROL}, {0x2a,VK_LSHIFT}, {0x36,VK_RSHIFT},
+        {0x38,VK_LMENU}, {0xb8,VK_RMENU}, {0xc8,VK_UP}, {0xd0,VK_DOWN}, {0xcb,VK_LEFT}, {0xcd,VK_RIGHT}, {0xc7,VK_HOME}, {0xcf,VK_END}, {0xc9,VK_PRIOR},
+        {0xd1,VK_NEXT}, {0xd2,VK_INSERT}, {0xd3,VK_DELETE}, {0x47,VK_NUMPAD7}, {0x48,VK_NUMPAD8}, {0x49,VK_NUMPAD9}, {0x4b,VK_NUMPAD4}, {0x4c,VK_NUMPAD5},
+        {0x4d,VK_NUMPAD6}, {0x4f,VK_NUMPAD1}, {0x50,VK_NUMPAD2}, {0x51,VK_NUMPAD3}, {0x52,VK_NUMPAD0}, {0x53,VK_DECIMAL}, {0x37,VK_MULTIPLY},
+        {0x4a,VK_SUBTRACT}, {0x4e,VK_ADD}, {0xb5,VK_DIVIDE}, {0x45,VK_NUMLOCK}, {0xdb,VK_LWIN}, {0xdc,VK_RWIN}, {0xdd,VK_APPS}, {0xc5,VK_PAUSE}, {0xb7,VK_SNAPSHOT} };
+    for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) if (T[i][0] == d) return T[i][1];
+    return d > 0 && d < 0x80 ? (int)MapVirtualKeyA((UINT)d, 1 /* MAPVK_VSC_TO_VK */) : 0;
+}
+/* Woody.cfg (0x401000 at boot, 0x405e0f): u32 0x19072001, then 0x11c bytes into cfg 0x4c2bd0 (docs/INPUT.md 2). The keys are cfg+0xac (config 1)
+ * and +0xdc (config 2), 12 each in the order up, down, left, right, 5, 6, 4, 8, 7, 9, 10, 11 (0x44fbd0); the mode flags cfg+0x110 / +0x114.
+ * Not there: the port defaults below. WOODY_CFG=path points elsewhere; else Woody.cfg in the working directory (like the original), else next
+ * to the Data folder (the install layout). */
+static void in_defaults(void)
+{
+    static const int D[12][4] = { {VK_LEFT,'A'}, {VK_RIGHT,'D'}, {VK_UP,'W'}, {VK_DOWN,'S'},           /* the port's keys; the joystick buttons of Detect's */
+        {VK_SPACE, IN_JOY + 2}, {'X', IN_JOY + 0}, {VK_LCONTROL, VK_SHIFT, IN_JOY + 1}, {VK_RETURN, IN_JOY + 4},   /* DefaultControlSettings (Setup.dll 0x10002650, */
+        {'X', IN_JOY + 3}, {VK_ESCAPE, IN_JOY + 5}, {'C', VK_NUMPAD0, IN_JOY + 6}, {VK_RCONTROL, 'E', IN_JOY + 7} };   /* table 0x1000c060: 0x200..0x207) */
+    memcpy(g_in.bind, D, sizeof D); g_in.mode = 3; g_in.have_cfg = 0;
+}
+static void in_read_cfg(const char *data_dir)
+{
+    in_defaults();
+    char alt[600]; const char *try_[3] = { getenv("WOODY_CFG"), "Woody.cfg", alt }; snprintf(alt, sizeof alt, "%s/../Woody.cfg", data_dir);
+    unsigned char b[0x120]; FILE *f = NULL; int k;
+    for (k = 0; k < 3 && !f; k++) if (try_[k]) f = fopen(try_[k], "rb");
+    if (!f) { puts("input: no Woody.cfg, port keys"); return; }
+    size_t n = fread(b, 1, sizeof b, f); fclose(f);
+    #define CFG32(o) ((int)((uint32_t)b[(o) + 4] | (uint32_t)b[(o) + 5] << 8 | (uint32_t)b[(o) + 6] << 16 | (uint32_t)b[(o) + 7] << 24))   /* cfg offset o (the file has the magic first) */
+    if (n < sizeof b || CFG32(-4) != 0x19072001) { puts("input: Configuration file is Obsolete... (Woody.cfg), port keys"); return; }   /* 0x401092 */
+    static const int act_of[12] = { 2, 3, 0, 1, 5, 6, 4, 8, 7, 9, 10, 11 };   /* cfg key index -> action (0x44fc5a..0x44fe28) */
+    memset(g_in.bind, 0, sizeof g_in.bind);
+    for (int c = 0; c < 2; c++) for (int i = 0; i < 12; i++) {
+        int code = CFG32(0xac + c * 0x30 + i * 4), vk = code >= IN_JOY ? (code < IN_JOY + 32 ? code : 0) : in_dik_vk(code);   /* 0x44fe80: an unknown key = 0x90, never pressed */
+        g_in.bind[act_of[i]][c] = vk;
+    }
+    g_in.mode = CFG32(0x114) == 1 ? 0 : CFG32(0x110) == 0 ? 2 : 1;   /* 0x44fc05 */
+    g_in.have_cfg = 1;
+    printf("input: %s, mode %d (%s)\n", try_[k - 1], g_in.mode, g_in.mode ? "joystick" : "keyboard only");
+    #undef CFG32
+}
+static void in_joy_poll(double now, double tl)                   /* 0x467a40 poll + 0x467a80 axes + 0x467af0 buttons; tl = the level clock */
+{
+    g_in.jx = g_in.jy = 0; g_in.jbtn = 0; g_in.jok = 0;
+    if (g_in.mode == 0) return;                                  /* keyboard only: the joystick object exists but 0x402d39 never polls it */
+    if (g_in.joy < 0 && now >= g_in.joy_scan) {                  /* no device yet: look again every 3 s (the original enumerates once, at boot) */
+        g_in.joy_scan = now + 3.0;
+        for (UINT id = 0; id < 16 && g_in.joy < 0; id++) { JOYINFOEX ji = { sizeof ji, JOY_RETURNALL }; JOYCAPSA jc;
+            if (joyGetPosEx(id, &ji) == JOYERR_NOERROR && joyGetDevCapsA(id, &jc, sizeof jc) == JOYERR_NOERROR) {
+                g_in.joy = (int)id; g_in.jxmin = jc.wXmin; g_in.jxmax = jc.wXmax; g_in.jymin = jc.wYmin; g_in.jymax = jc.wYmax; printf("input: joystick %u \"%s\"\n", id, jc.szPname); } }
+    }
+    const char *e = getenv("WOODY_JOY");                         /* testing: WOODY_JOY="T:X:Y:BUTTONS[:D] ...": stick at X,Y (-1..1, before the dead
+                                                                  * zone) and the button mask for D s (default 0.08) from T s on the clock of --shot */
+    if (e) { float x = 0, y = 0; unsigned m = 0; const char *s = e; int used;
+        for (double t, d; sscanf(s, " %lf:%f:%f:%i%n", &t, &x, &y, (int *)&m, &used) == 4; ) { float xx = x, yy = y; unsigned mm = m; s += used; d = 0.08;
+            if (*s == ':' && sscanf(s, ":%lf%n", &d, &used) == 1) s += used;
+            if (tl >= t && tl < t + d) { g_in.jok = 1; g_in.jx = xx; g_in.jy = yy; g_in.jbtn = mm; } }
+        if (g_in.jok) goto deadzone;
+    }
+    if (g_in.joy < 0) return;
+    { JOYINFOEX ji = { sizeof ji, JOY_RETURNX | JOY_RETURNY | JOY_RETURNBUTTONS };
+      if (joyGetPosEx((UINT)g_in.joy, &ji) != JOYERR_NOERROR) { printf("input: joystick %d lost\n", g_in.joy); g_in.joy = -1; return; }   /* unplugged: scan again */
+      float rx = g_in.jxmax > g_in.jxmin ? (float)g_in.jxmax - g_in.jxmin : 65535.0f, ry = g_in.jymax > g_in.jymin ? (float)g_in.jymax - g_in.jymin : 65535.0f;
+      g_in.jx = ((float)ji.dwXpos - g_in.jxmin) / rx * 2.0f - 1.0f; g_in.jy = ((float)ji.dwYpos - g_in.jymin) / ry * 2.0f - 1.0f;   /* DIPROP_RANGE -4096..4096 (0x4677db) */
+      g_in.jbtn = (uint32_t)ji.dwButtons; g_in.jok = 1; }
+deadzone:
+    for (int a = 0; a < 2; a++) {                                /* 0x467a80: dead zone 30 % (0x4aab98) of the range 4096 (0x4b6f84), the rest scaled to 0..1 */
+        float *v = a ? &g_in.jy : &g_in.jx; int iv = (int)(*v * 4096.0f), dz = (int)(4096.0f * 0.3f);
+        if (iv > 0) { iv -= dz; if (iv < 0) iv = 0; } else { iv += dz; if (iv > 0) iv = 0; }
+        *v = (float)iv / (4096.0f - dz);
+    }
+}
+static int in_key(const Window *w, int vk, int fly)              /* a VK held (keyboard vt[4] 0x4675f0) */
+{
+    if (fly && (vk == 'W' || vk == 'A' || vk == 'S' || vk == 'D' || vk == 'Q' || vk == 'E' || vk == 'X' || vk == VK_SPACE || vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)) return 0;   /* the free camera's keys */
+    if (vk == VK_LCONTROL) return w->keys[VK_LCONTROL] || (w->keys[VK_CONTROL] && !w->keys[VK_RCONTROL]);   /* WOODY_KEYS CTRL / SHIFT hold only VK_CONTROL / VK_SHIFT: the left one */
+    if (vk == VK_LSHIFT) return w->keys[VK_LSHIFT] || (w->keys[VK_SHIFT] && !w->keys[VK_RSHIFT]);
+    return vk > 0 && vk < 256 && w->keys[vk];
+}
+static void in_set(int a, float v) { g_in.down[a] = 1; g_in.val[a] = v; }   /* 0x4673b0 */
+static void in_frame(const Window *w, int fly, double now, double tl)   /* 0x402940: joystick first, then the keyboard; the value is the last one set */
+{
+    memcpy(g_in.prev, g_in.down, sizeof g_in.down); memset(g_in.down, 0, sizeof g_in.down); memset(g_in.val, 0, sizeof g_in.val);
+    in_joy_poll(now, tl);
+    static const int btn_acts[8] = { 6, 11, 5, 4, 7, 10, 8, 9 }; /* 0x402df5..0x403002 */
+    if (g_in.jok) {
+        if (g_in.jx > 0) in_set(1, g_in.jx); else if (g_in.jx < 0) in_set(0, g_in.jx);   /* 0x402d58: joystick vt[3] X, vt[4] Y (down = +) */
+        if (g_in.jy > 0) in_set(3, g_in.jy); else if (g_in.jy < 0) in_set(2, g_in.jy);
+        for (int i = 0; i < 8; i++) { int a = btn_acts[i];
+            for (int s = 0; s < 4 && g_in.bind[a][s]; s++) { int c = g_in.bind[a][s]; if (c >= IN_JOY && (g_in.jbtn >> (c - IN_JOY) & 1)) { in_set(a, 1.0f); if (a == 4) in_set(12, 1.0f); break; } } }
+    }
+    int dirs = g_in.mode == 0 || g_in.mode == 3 || g_in.joy < 0; /* 0x40301e: directions from the keys only in mode 0 (port: also without a joystick) */
+    static const float dv[4] = { -1.0f, 1.0f, -1.0f, 1.0f };
+    for (int a = 0; a < 12; a++) {
+        if (a < 4 && !dirs) continue;
+        for (int s = 0; s < 4 && g_in.bind[a][s]; s++) { int c = g_in.bind[a][s]; if (c < IN_JOY && in_key(w, c, fly)) { in_set(a, a < 4 ? dv[a] : 1.0f); if (a == 4) in_set(12, 1.0f); break; } }
+    }
+}
+static int in_held(int a) { return g_in.down[a]; }                                /* 0x467400 */
+static int in_pressed(int a) { return g_in.down[a] && !g_in.prev[a]; }            /* 0x467420 */
+static int in_released(int a) { return !g_in.down[a] && g_in.prev[a]; }           /* 0x467440 */
 /* LevelIsEnable 0x450470 (table 0x450694): the done flag of the predecessor. The original reads it in the block of the
  * current character; here in the block of the predecessor's own character (otherwise K1A could never open from KWS). */
 static int level_is_enable(int level)
@@ -463,7 +583,7 @@ static void results_close(void) { fade_start(0.5f, 1); g_res.state = 5; g_res.t 
 /* ---- menu pages (docs/TITLE.md 5, MENU_NEWGAME.md, MENU_OPTIONS.md, MENU_LOAD.md): the page object app+0x3c with
  * its per-page handlers (0x404e90 -> table 0x405b1c). Pages used here: 0 title, 1 main menu, 2 load slot, 3 world
  * select, 5 save slot, 6 "Do you want to save?", 7 no save, 8 saved, 9 save failed, 0xa load failed, 0x17 overwrite,
- * 0x18 pause, 0x1b options, 0x1c "Are you sure?", 0x1f intro running. -1 = no page (a level is being played). */
+ * 0x18 pause, 0x19 pause while riding, 0x1b options, 0x1c "Are you sure?", 0x1f intro running. -1 = no page (a level is being played). */
 typedef struct { int ok, back, up, dn, left, right, esc_rel, esc_prs, atk_rel, syn; } MenuKeys;
 typedef struct {                               /* the panel page base 0x45b830 (pages 1, 2, 3, 5) */
     float t, ti;                               /* +0x1c since opening / closing, +0x28 since enter / validate */
@@ -496,6 +616,7 @@ static const MenuItem k_page9[] = { {59,2}, {4,1} };
 static const MenuItem k_pagea[] = { {60,2}, {1,2}, {4,1} };
 static const MenuItem k_page17[] = { {61,2}, {5,1}, {6,1} };
 static const MenuItem k_page18[] = { {4,1}, {36,1}, {2,1} };
+static const MenuItem k_page19[] = { {4,1}, {19,1}, {36,1}, {2,1} };   /* 0x4b5d18: Continue (5), Start again (18), Options (6), Quit (7) */
 static const MenuItem k_page1c[] = { {3,2}, {5,1}, {6,1} };
 static MenuItem k_page1b[] = { {36,2}, {38,0x10}, {39,0x10}, {132,0x10}, {4,1} };
 static const MenuItem *menu_items(int page, int *n, float *yfrac)
@@ -504,7 +625,7 @@ static const MenuItem *menu_items(int page, int *n, float *yfrac)
     switch (page) {
     case 0: PG(k_page0, 0.7f)  case 1: PG(k_page1, 0.55f)  case 6: PG(k_page6, 0.4f)  case 7: PG(k_page7, 0.4f)
     case 8: PG(k_page8, 0.4f)  case 9: PG(k_page9, 0.4f)   case 0xa: PG(k_pagea, 0.4f) case 0x17: PG(k_page17, 0.4f)
-    case 0x18: PG(k_page18, 0.05f) case 0x1b: PG(k_page1b, 0.4f) case 0x1c: PG(k_page1c, 0.55f)
+    case 0x18: PG(k_page18, 0.05f) case 0x19: PG(k_page19, 0.05f) case 0x1b: PG(k_page1b, 0.4f) case 0x1c: PG(k_page1c, 0.55f)
     }
     #undef PG
     *n = 0; *yfrac = 0; return NULL;
@@ -724,12 +845,19 @@ static void menu_enter(int page)
         M.opt_bak[0] = g_opt.sfx; M.opt_bak[1] = g_opt.music; M.opt_bak[2] = g_opt.vib;
         k_page1b[1].value = g_opt.sfx; k_page1b[2].value = g_opt.music; k_page1b[3].value = g_opt.vib; M.sel = 1; break;
     case 0x1c: M.sel = 2; break;                                       /* 0x45bd40: on "No" */
-    case 0x18: case 0x1f: M.sel = 0; hud_logo_off(); break;            /* 0x45b390 */
+    case 0x18: case 0x19: case 0x1f: M.sel = 0; hud_logo_off(); break; /* 0x45b390 */
     default: M.sel = menu_first(); break;
     }
 }
 static void menu_off(void) { M.page = -1; M.results = 0; }
-static void menu_back_to_level_menu(void) { if (g_level == 0) menu_enter(1); else menu_enter(0x18); }   /* 0x4057b9 / 0x404d80 */
+/* 0x404d80 Pause_Open: page 0x19 when the Perso rides (state 1) and this is no BlackBox, with the follow distance at 200
+ * (0x41fa80(200.0)); otherwise 0x18. The app goes to state 0 (0x401400), so the world stands still (table 0x405af8). */
+static void pause_open(void)
+{
+    if (g_player && g_player->race_char && g_level != 25) { g_player->cam_dist = 200.0f; menu_enter(0x19); }
+    else menu_enter(0x18);
+}
+static void menu_back_to_level_menu(void) { if (g_level == 0) menu_enter(1); else pause_open(); }   /* 0x4057b9 / 0x404d80 */
 static void menu_title_page0(void) { title_music_next(); menu_enter(0); }   /* 0x404e30 */
 
 /* page 1 "New game" (and the attract, the same script start): the House script object 115 plays the intro */
@@ -864,17 +992,20 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
     case 0x17: if (k->ok && M.sel == 1) menu_save_slot(M.save_s); else if ((k->ok && M.sel == 2) || k->back) menu_enter(6); break;   /* 0x405586 */
     case 8: if (k->ok) menu_off(); break;                              /* 0x4056c0: "Game Saved" leaves the menu */
     case 9: if (k->ok) menu_enter(6); break;
-    case 0x18:                                                         /* 0x4057f5; "back" does nothing */
-        if (k->ok && M.sel == 0) menu_off();
-        else if (k->ok && M.sel == 1) menu_enter(0x1b);
-        else if (k->ok && M.sel == 2) menu_enter(0x1c);
-        break;
+    case 0x18: case 0x19: {                                            /* 0x4057f5, table 0x405cfc on result - 5; "back" does nothing */
+        static const int res18[3] = { 5, 6, 7 }, res19[4] = { 5, 18, 6, 7 };
+        int r = !k->ok ? 0 : M.page == 0x19 ? res19[M.sel & 3] : res18[M.sel % 3];
+        if (r == 5) { if (M.page == 0x19 && g_player) g_player->cam_dist = 4.0f; menu_off(); }   /* 0x40580c: Continue, back to state 1 (3 in BlackBox) */
+        else if (r == 18) { if (g_player) { g_player->cam_dist = 4.0f; player_restart(g_player); } menu_off(); }   /* 0x40584d: "Start again" */
+        else if (r == 6) menu_enter(0x1b);                             /* 0x40587a */
+        else if (r == 7) menu_enter(0x1c);                             /* 0x405888 */
+        break; }
     }
 }
 
 /* table 0x405af8: the half-black backdrop and whether the world stands still */
-static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && (page == 0x18 || page == 0x1b || page == 0x1c)); }
-static int menu_pauses_world(void) { return g_level != 0 && (M.page == 0x18 || M.page == 0x1b || M.page == 0x1c); }
+static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && page >= 0x18 && page <= 0x1c); }
+static int menu_pauses_world(void) { return g_level != 0 && M.page >= 0x18 && M.page <= 0x1c; }
 
 /* the page layer of a frame: items, then the iris, then the logo (docs/TITLE.md 5.4) */
 static void menu_draw(float dt)
@@ -2635,6 +2766,7 @@ int main(int argc, char **argv)
     }
     if (!getenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
     opt_read(); opt_apply();                                                           /* 0x4691e2: the volumes from the cfg at sound start */
+    in_read_cfg(dir);                                                                  /* 0x405e0f: Woody.cfg (key bindings, controller mode) */
     static Level L; g_level = level_index(lvl); if (level_load(&L, dir, lvl)) return 1;
 
     /* camera: start behind Woody (model 0, instance 0) if present */
@@ -2650,16 +2782,16 @@ int main(int argc, char **argv)
     double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, l_prev = 0; static int key_prev[256]; int paused = 0, dbg_paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[4] = {0, 0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
-        {   /* WOODY_KEYS="T:KEY T:KEY:D ...": each entry holds KEY (RET ESC UP DOWN LEFT RIGHT SPACE CTRL BACK or a VK
-             * number) for 0.08 s (or D seconds), once, as soon as the level that is running has been up for T seconds - the
+        {   /* WOODY_KEYS="T:KEY T:KEY:D ...": each entry holds KEY (RET ESC UP DOWN LEFT RIGHT SPACE CTRL RCTRL SHIFT BACK NUM0, a
+             * letter, or a VK number) for 0.08 s (or D seconds), once, as soon as the level that is running has been up for T seconds - the
              * clock of --shot, so a sequence that spans a level change stays in step (testing: drives the menu pages and walks) */
             static const char *keys; static double held_until[256]; static unsigned char fired[64]; if (!keys) keys = getenv("WOODY_KEYS") ? getenv("WOODY_KEYS") : "";
-            static const struct { const char *n; int vk; } kn[] = { {"RET",VK_RETURN}, {"ESC",VK_ESCAPE}, {"UP",VK_UP}, {"DOWN",VK_DOWN}, {"LEFT",VK_LEFT}, {"RIGHT",VK_RIGHT}, {"SPACE",VK_SPACE}, {"CTRL",VK_CONTROL}, {"BACK",VK_BACK} };
+            static const struct { const char *n; int vk; } kn[] = { {"RET",VK_RETURN}, {"ESC",VK_ESCAPE}, {"UP",VK_UP}, {"DOWN",VK_DOWN}, {"LEFT",VK_LEFT}, {"RIGHT",VK_RIGHT}, {"SPACE",VK_SPACE}, {"CTRL",VK_CONTROL}, {"BACK",VK_BACK}, {"RCTRL",VK_RCONTROL}, {"SHIFT",VK_SHIFT}, {"NUM0",VK_NUMPAD0} };
             double wt = win_time(), tn = wt - t0; int e = 0;
             for (const char *s = keys; *s && e < 64; e++) {
                 char name[16] = ""; double t = 0; int used = 0;
                 if (sscanf(s, " %lf:%15[A-Z0-9]%n", &t, name, &used) < 2 || !used) break;
-                s += used; int vk = atoi(name); double hold = 0.08;
+                s += used; int vk = name[0] >= 'A' && name[0] <= 'Z' && !name[1] ? name[0] : atoi(name); double hold = 0.08;
                 if (*s == ':' && sscanf(s, ":%lf%n", &hold, &used) == 1) s += used;
                 for (unsigned i = 0; i < sizeof kn / sizeof kn[0]; i++) if (!strcmp(name, kn[i].n)) vk = kn[i].vk;
                 if (!fired[e] && vk > 0 && vk < 256 && tn >= t) { fired[e] = 1; win.keys[vk] = 1; held_until[vk] = wt + hold; }
@@ -2695,17 +2827,18 @@ int main(int argc, char **argv)
         }
         if (win.keys['P'] && !p_prev) dbg_paused ^= 1; p_prev = win.keys['P'];
         paused = dbg_paused || menu_pauses_world();                                   /* the pause menu and its pages stop the world (table 0x405af8) */
-        /* menu keys (docs/MENU_NEWGAME.md 1.3): confirm = Enter RELEASED or the jump key pressed; back = Esc released
-         * (or Backspace); Esc released also leaves page 0 and skips the intro, like the attack key released */
+        in_frame(&win, fly, now, now - t0);                                          /* the 14 actions of this frame (0x402940, docs/INPUT.md) */
+        /* menu keys (docs/MENU_NEWGAME.md 1.3): confirm = Enter RELEASED or the jump key (action 4 + 0xc) pressed; back = Esc released
+         * or the duck key (action 5) pressed (or Backspace); Esc (action 9) released also leaves page 0 and skips the intro, like the attack key released */
         MenuKeys mk; memset(&mk, 0, sizeof mk);
         {
             #define PRS(k) (win.keys[k] && !key_prev[k])
             #define REL(k) (!win.keys[k] && key_prev[k])
             int synth = enter_at >= 0 && ((now - t0 >= enter_at && now - t0 < enter_at + 0.1) || (getenv("WOODY_ENTER2") && now - t0 >= enter_at + 2 && now - t0 < enter_at + 2.1));
             mk.syn = synth && !l_prev; l_prev = synth;                              /* --enter T: New game at once (testing) */
-            mk.ok = REL(VK_RETURN) || PRS(VK_SPACE); mk.back = REL(VK_ESCAPE) || PRS(VK_BACK);
-            mk.up = PRS(VK_UP) || PRS('W'); mk.dn = PRS(VK_DOWN) || PRS('S'); mk.left = PRS(VK_LEFT) || PRS('A'); mk.right = PRS(VK_RIGHT) || PRS('D');
-            mk.esc_rel = REL(VK_ESCAPE); mk.esc_prs = PRS(VK_ESCAPE); mk.atk_rel = REL(VK_CONTROL) || REL(VK_SHIFT);
+            mk.ok = REL(VK_RETURN) || in_pressed(12); mk.back = REL(VK_ESCAPE) || in_pressed(5) || PRS(VK_BACK);   /* 0x4033fb / 0x4464f0: Enter and Esc are fixed (DIK codes) */
+            mk.up = in_pressed(2); mk.dn = in_pressed(3); mk.left = in_pressed(0); mk.right = in_pressed(1);
+            mk.esc_rel = in_released(9); mk.esc_prs = in_pressed(9); mk.atk_rel = in_released(6);
             #undef PRS
             #undef REL
             for (int k = 0; k < 256; k++) key_prev[k] = win.keys[k];
@@ -2731,7 +2864,7 @@ int main(int argc, char **argv)
         /* player (provisional controller) + follow camera */
         if (L.have_player && !paused) {
             PlayerInput pin = { 0 };
-            pin.forward = win.keys[VK_UP] || (!fly && win.keys['W']) || (now - t0 >= walk_at && now - t0 < walk_at + walk_for);
+            pin.forward = in_held(2) || (now - t0 >= walk_at && now - t0 < walk_at + walk_for);
             if (getenv("WOODY_INSTLOG") && (getenv("WOODY_INSTLOG2") || (int)(now - t0) != (int)(now - t0 - dt))) { Instance *qi = slot_instance((uint32_t)atoi(getenv("WOODY_INSTLOG"))); if (qi) printf("instlog %u: visible %d fade %.2f type %d scripted %d anim %d pos %.0f %.0f %.0f model %d", qi->index, qi->visible, qi->fade, qi->type, qi->scripted, qi->anim, qi->position.x, qi->position.y, qi->position.z, (int)(qi->model - g_ins.models)), printf(" nw0 %.0f %.0f %.0f cull_r %.0f anim_time %.2f speed %.2f alpha? setflags %x", qi->node_world[0].m[12], qi->node_world[0].m[13], qi->node_world[0].m[14], qi->model->cull_r, qi->anim_time, qi->anim_speed, qi->setflags), puts(""); }
             /* WOODY_UVLOG=<slot> or =stand (the instance the player is standing on, Perso+0x298): one UV report per
              * instance, to tell a wrong texture from a wrong projection on a surface that looks untextured */
@@ -2746,11 +2879,11 @@ int main(int argc, char **argv)
                 printf("pos t %.2f: %.0f %.0f %.0f yaw %.0f ground %d | cam %.0f %.0f %.0f yaw %.0f dev %.0f mode %d", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.yaw * 57.3f, L.player.on_ground,
                        cam.pos.x, cam.pos.y, cam.pos.z, cam.yaw * 57.3f, atan2f(fx * az - fz * ax, fx * ax + fz * az) * 57.3f, g_cam.mode), puts("");
             }
-            pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
-            pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
-            pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_LCONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
-            pin.special = win.keys[VK_RCONTROL] || (!fly && win.keys['E']) || (special_at >= 0 && now - t0 >= special_at - 0.1 && now - t0 < special_at);   /* action 11 (RCtrl in the original); it fires on the release */
-            pin.duck = (!fly && win.keys['X']) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);   /* action 5 (Space in the original, which is jump here) */
+            pin.back = in_held(3); pin.left = in_held(0); pin.right = in_held(1);
+            pin.ax = in_held(0) ? g_in.val[0] : g_in.val[1]; pin.az = -(in_held(2) ? g_in.val[2] : g_in.val[3]);   /* 0x45a4b0: x = action 0 if held, else 1; y = 2, else 3 */
+            pin.jump = in_held(4) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = in_held(6) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
+            pin.special = in_held(11) || (special_at >= 0 && now - t0 >= special_at - 0.1 && now - t0 < special_at);   /* action 11 (RCtrl in the original); it fires on the release */
+            pin.duck = in_held(L.player.race_char ? 8 : 5) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);   /* action 5, while riding action 8 (0x465b10; Space / LShift in the original's Woody.cfg, X in the port) */
             {   /* WOODY_PECKS="T1 T2 ...": more attack taps of 0.1 s (testing: dispenser, pick up, throw) */
                 static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = getenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
                 for (int k = 0; k < npk; k++) if (now - t0 >= pk[k] && now - t0 < pk[k] + 0.1) pin.action = 1;
@@ -2806,7 +2939,7 @@ int main(int argc, char **argv)
                 Vec3 n = { -g_cam.plane_d.z, 0, g_cam.plane_d.x }; float off = (L.player.pos.x - g_cam.plane_a.x) * n.x + (L.player.pos.z - g_cam.plane_a.z) * n.z;
                 L.player.pos.x -= n.x * off; L.player.pos.z -= n.z * off;
             }
-            if (!fly) cam_update(&L.player, &cam, dt, g_cam.mode == 0x20 ? (pin.forward ? 2 : (pin.back || pin.duck) ? 3 : 0) : win.keys['C']); else cam.letterbox = 0;
+            if (!fly) cam_update(&L.player, &cam, dt, g_cam.mode == 0x20 ? (pin.forward ? 2 : (pin.back || pin.duck) ? 3 : 0) : in_held(10)); else cam.letterbox = 0;
             if (g_level == 0 && !fly && g_cin.state < 2) {                           /* title orbit: camera mode 0x80 on the Perso's animation 73 (docs/TITLE.md 2): no letterbox, vfov 83.97, no smoothing */
                 Vec3 eye, tgt; float ph = fmodf(g_title_t / 10.0f, 1.0f);
                 if (ins_camera_eval(L.player.inst, 73, ph, &eye, &tgt)) {
@@ -2837,7 +2970,7 @@ int main(int argc, char **argv)
         if (!paused) launchers_update((float)g_now, dt, &L.player, &L.gel, L.have_player && !fly && !L.player.dead_kind && !cin_running());
         if (!paused && !cin_running()) bombs_fly(dt, &L.gel);                       /* the carrying projectiles, 0x4490f0 after the VM */
         double pt2 = win_time();
-        if (g_level != 0 && M.page < 0 && mk.esc_prs && L.have_player && !fly && !g_res.on && !cin_running() && g_next_level < 0) { menu_enter(0x18); paused = 1; }
+        if (g_level != 0 && M.page < 0 && mk.esc_prs && L.have_player && !fly && !g_res.on && !cin_running() && g_next_level < 0 && (L.player.game_state == 2 || g_level == 25)) { pause_open(); paused = 1; }   /* 0x403331: action 9, in state 1 only while 0x445980 (Game state 2) */
         if (L.have_player && !fly) { menu_update(&L.vm, &mk, dt); carousel_frame(&cam, dt); }   /* the carousel sits in front of the final title camera */
         if (M.quitting && (M.quit_t -= dt) <= 0) win.quit = 1;                       /* 0x404cb0 -> app+4 */
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
@@ -2917,7 +3050,7 @@ int main(int argc, char **argv)
             g_npick = 0;
             hud_begin(win.width, win.height);
             storm_overlay_draw(paused, dt);                              /* 0x46e0d0: after the effects (0x46d040), before the HUD */
-            if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && !g_res.on && (M.page < 0 || M.page == 0x18) && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
+            if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && !g_res.on && (M.page < 0 || M.page == 0x18 || M.page == 0x19) && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
                 const Player *pl = &L.player; int race = pl->inst->type == 18 || pl->inst->type == 19;
                 HudState hs = { g_char, race, pl->lives, race ? pl->race_bonus : pl->bonus_count, race ? pl->race_bonus : pl->bonus_got, pl->bonus_total,
                                 g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, paused || g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };

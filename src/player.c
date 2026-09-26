@@ -507,7 +507,7 @@ void player_bind(Player *p, Instance *inst)
     ins_pose(inst, 0, 0);
     Vec3 fwd = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); fwd = vsub(fwd, inst->position);
     p->yaw = atan2f(fwd.x, fwd.z);
-    p->spawn_pos = p->pos; p->spawn_yaw = p->yaw;
+    p->spawn_pos = p->start_pos = p->pos; p->spawn_yaw = p->yaw;        /* +0x318 = +0x30c (0x44a44a) */
     p->race_char = inst->type == 18 || inst->type == 19;                  /* subtypes 5/4: Reset 0x44ab20 enters state 1 through SurfEnter */
     g_jH = p->race_char ? 400.0f : J_HEIGHT; g_jP68 = p->race_char ? 1250.0f : J_P68; g_jV = p->race_char ? 1250.0f : J_V;
     if (p->race_char) race_enter(p);
@@ -946,6 +946,16 @@ void player_game_tick(Player *p, EkoVM *vm, float dt)
                 p->game_state = 0; p->game_t = 0.25f; } break;
     }
     if (p->mask10_frames > 0 && --p->mask10_frames == 0 && vm) eko_msgmask_clear(vm, p->inst->id, 0x10);
+}
+/* Pause menu "Start again" (page 0x19 = the pause menu while riding, result 18, 0x40584d): 0x445930 = the respawn step of the Game
+ * sequence (state 0 with 0.1 s to go, the iris shut, Perso respawn 0x44a810(0) at the checkpoint), then the race restart 0x4560f0:
+ * no checkpoint any more (+0x330 = 0, +0x4e0 = 0), respawn position = the start (+0x318 = +0x30c), respawn again. State 0 then
+ * respawns once more after 0.1 s and opens the iris 0 -> 1 in 1 s (docs/PERSO_FRAME.md 4.1), as after a death but no life is lost. */
+void player_restart(Player *p)
+{
+    iris_set(p, 0, 0, 0.1f); p->iris = 0; p->iris_t = 0; p->game_state = 0; p->game_t = 0.1f;   /* 0x445930: Fader(Game+4, 0, 0, 0.1), state 0, timer 0.1 */
+    player_reset(p);                                                                          /* 0x44a810(0) */
+    p->has_ckpt = 0; p->spawn_pos = p->start_pos; player_reset(p);                           /* 0x4560f0 (the board's anim 0 request: the port's board mirrors the rider) */
 }
 
 /* ---- peck climbing: Perso state 4 (0x4651d0). A press node (kind 1) with typecode 4 is a peckable wall. ---- */
@@ -1431,7 +1441,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking */
     int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind);
     /* input direction relative to the camera */
-    float ix = allow ? (float)(in->right - in->left) : 0, iz = allow ? (float)(in->forward - in->back) : 0;
+    float ix = allow ? (float)(in->right - in->left) : 0, iz = allow ? (float)(in->forward - in->back) : 0, stick = 1.0f;
+    if (allow && (in->ax != 0 || in->az != 0)) { ix = in->ax; iz = in->az; stick = sqrtf(ix * ix + iz * iz); if (stick > 1.0f) stick = 1.0f; }   /* 0x45a4b0: the deflection scales speed and turn */
     float len = sqrtf(ix * ix + iz * iz);
     if (len > 0) {
         ix /= len; iz /= len;
@@ -1441,8 +1452,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         float want = atan2f(wx, wz);
         float d = want - p->yaw; while (d > 3.14159265f) d -= 6.2831853f; while (d < -3.14159265f) d += 6.2831853f;
         /* 0x45a4b0: turning slows down, target = (dot(new, old) + 1) / 2 * max; facing blends toward the wanted direction */
-        p->ramp_target = (cosf(d) + 1.0f) * 0.5f * P_WALK_SPEED;
-        p->yaw += d * (1.0f - powf(1.0f - P_TURN_BLEND, dt * P_REF_FPS));
+        p->ramp_target = (cosf(d) + 1.0f) * 0.5f * P_WALK_SPEED * stick;   /* * min(|stick|, 1) */
+        p->yaw += d * (1.0f - powf(1.0f - P_TURN_BLEND * stick, dt * P_REF_FPS));
         if (p->ramp_phase == 0 || p->ramp_phase == 3) { p->ramp_phase = 1; p->ramp_t = sqrtf(p->speed / P_WALK_SPEED) * P_ACC_TIME; }   /* 0x45ad30: 0/3 -> 1 */
     } else if (!allow) { p->ramp_phase = 0; p->speed = 0; }
     else if (p->ramp_phase == 1 || p->ramp_phase == 2) { p->ramp_phase = 3; p->ramp_t = 0; p->ramp_v0 = p->speed; }                  /* 2 -> 3 */
