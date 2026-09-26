@@ -30,7 +30,7 @@ thus comes back through a script variable (watchers get woken).
 | 5 | inst | 9 | check ResetAnim (`0x42e290(0)`) |
 | 6 | inst, on | 285 | check on≠0: if `[+0x1c] < 0` → `0x407790` (activate/show); on=0 → `0x407850` (deactivate/hide) |
 | 7 | inst | 0 | check cancel pending 12/13 for this instance (`0x4012f0`) |
-| 10 | inst | 0 | tilde class 30-38 (volumes/triggers): own handling `0x44f362` |
+| 10 | inst, v | 3079 | check **Collect** on the bonus classes 30-38 (`0x44f362`, BONUS.md): the script saw the player enter the bonus volume; ported |
 | 11 | inst, a, b | 1004 | ? enemy classes 4-13 (`0x41a78b`, "follow / random path"): set patrol or follow path |
 | 12 / 13 | as 3 / 4 | 0 | check deferred 3 / 4: only executed once `[+0x9c] != 0`, otherwise retried |
 | 14 | inst, b0,b1,b2,f,d | 0 | check for each sub-part (16-byte records at `[+0x74]`, count `[+0xf8]->0x28`) set color/value; 0xffff = unchanged |
@@ -39,8 +39,8 @@ thus comes back through a script variable (watchers get woken).
 | 19 | inst | 0 | check both overrides off (`+0xd8 &= 0xc0`, `0x42db86`); ported |
 | 26 / 30 | perso | 0 | check Perso class only: 26 `[_, inst, mode]` = teleport (1 = position, 2 = + direction of the marker), 30 `[_, cs]` = LockMove (no level script sends it; ported, PERSO_LOOK.md §6); see PERSO_DEATH.md §1 |
 | 29 | inst | 0 | check class 20: Reset `0x452ae0` (ROCKET.md §4.4); tilde classes 21, 40/120/121 |
-| 33 | inst, a, b | 50 | ? |
-| 34 | inst, other | 340 | check link instance to `other` (pair in table `[0x50944c]->0x50`, counter +0x4c) – "attach/link" |
+| 33 | inst, n, v | 50 | check **dead**: only sent to class 60 (water; K3A/S3A/W3A n 4/13/14/15 v 200/0/133/0, W2B `[., 4, 300]`), whose handler `0x474a40` drops 29, 33, 35 without calling the base, and the base `0x42d5e0` drops 33 as well: no effect (WATER.md §1.1); no-op in the port |
+| 34 | inst, other | 340 | check **camera-volume hiding**: pair `{other, next}` on `inst+0xd4` (table `[0x50944c]+0x50`, counter +0x4c, `0x42dc21`); read only by the visibility pass `0x42aa0b`: while the camera is inside a volume node of inst (`0x4300c0`), `other` gets the frame stamp and is neither drawn nor updated (occlusion hint; K1R 346, K2R 499/500, S2R 482/483, W2D 709); ported for drawing (INSTANCE.md §10.1) |
 | 40 / 55 | inst | 0 | check class 20 (ROCKET.md §2.1): 40 = mount, 55 `(1, v)` flight time v·0.01 s, `(2, v)` max speed; class 21 not ported |
 | 42 | inst, a, f | 5 | check on path follower `[+0x78]`: `0x437d10(a≠1, f·0.01)`, then copy position from the path and `0x4077f0` (reposition) |
 | 43 | inst, a, f, c | 129 | check like 42 with extra flag `c==1` (`0x437d50`) |
@@ -53,7 +53,7 @@ thus comes back through a script variable (watchers get woken).
 | 54 | inst, mode, v | 98 | check class 80 (lightning rod, STORM.md §2): mode 1 → float +0x108 = v (radius of the shelter sphere, raw); mode 2 → float +0x10c = v (rod height, raw); then the fade handler `0x44e8f0` |
 | 55 | inst, a, b | 34 | check rocket/cannon parameters class 20/21 (ROCKET.md §2.1) |
 | 56 | inst, v | 606 | check base: float +0x6c = v·0.01; in `0x44e8f0` (most classes) first `0x44e91b` |
-| 57 | inst, v | 643 | tilde `0x44e907` (class-common) |
+| 57 | inst, v | 643 | check fade speed `+0x100 = v·0.01` per s (`0x44e907`, the derived-class fader `0x44e8f0`; INSTANCE.md §10); ported |
 | 58 | inst, n | 10 | check class 110 (House world-select carousel, slots 105..114): registration `0x451960` → `0x45e6f0` as figure/pedestal n (MENU_LOAD.md §4); the port takes the fixed slots instead (no-op) |
 | 63 | inst, v | 2 | check class 17 (the machine coupled to a boss, `0x40c5e0`): `+0x114 = v`, then Reset `vtbl[17]` `0x40c460`; `+0x114 == 0` would give a one-time smoke emitter over its typecode-9 markers, but the ctor already sets 1 (`0x40c3f8`) and W2D 746 / W3D 776 send `[., 1]`: no-op |
 | 59..62 | inst, … | few | class 14 (boss Buzz, `0x410070`): **59** `[boss, inst]` links **one** instance (`+0x234`, flag 0x20, own AnimCtrl), **60** `[boss, var]` = mailbox variable (BOSS14.md §7); class 15 (`0x40e781`): 8 instances at +0x1c8..+0x1e4, flag 0x40; 63 in class 17 |
@@ -115,9 +115,9 @@ thus comes back through a script variable (watchers get woken).
 | 1504 | inst, count | 14 | check class 90 (`0x46cdcc`): `+0x100 = count` (butterflies), `+0x108 = 0`; ported |
 | 1505 | inst, f | 0 | check `0x478660(&pos, 1000.0, f·0.01)` |
 | 1506 | inst, a, b, c, d | 63 | check SetWaterVolumeParameter (class 60): `0x474690(inst, a·0.01, b, c·0.01, d·0.01)` = cell, tiles (unscaled), amplitude, alpha; WATER.md §1 |
-| 1507 | inst | 0 | check `0x4750e0(&pos)` |
-| 1508 | inst | 17 | check register 20-byte node in list `0x5e8638`, `0x47cdf0` |
-| 1509 | a, inst, mode, x | 5 | check **boss-outro effects** (`0x46cf6f`, arg 0 not read): mode 5 = explosion kind 1 at typecode-0 marker x of inst; mode 4 `x == 1` = the three smoke plumes `0x475f30(inst, 0..2)`, other x = plumes off (bytes `0x5e857c..e`); only W1B (saucer 399 in cinematic 73); PARTICLES.md §8; ported |
+| 1507 | inst | 8 | check **hit star** `0x4750e0(&inst+0xc)`: a 0.1 s flash (image 9) + 8 spinning stars (images 7/8), as for a hit enemy; cinematics of K3R (420), S2R (429), WWS (372/373); ported `game_hit_star` (PARTICLES.md §9.1) |
+| 1508 | inst | 17 | check **torch**: node `{inst, n, timers, type-0 marker points}` on list `0x5e8638` (`0x47cdf0`); per frame in which the instance is drawn 15 flames/s per marker (`0x47cf10` → `0x47cd00`: image 12 additive, rises 40/s, 2.5..3 s, white → red); W2D and W3D torches; ported (PARTICLES.md §9.2) |
+| 1509 | a, inst, mode, x | 5 | check **boss-outro effects** (`0x46cf6f`, arg 0 not read): mode 5 = explosion kind 1 at typecode-0 marker x of inst; mode 4 `x == 1` = the three smoke plumes `0x475f30(inst, 0..2)`, other x = plumes off (bytes `0x5e857c..e`); only W1B (saucer 399 in cinematic 73); PARTICLES.md §10; ported |
 | 1510 | obj | 0 | check add world instance to array `0x5e8428` |
 | 1511 | inst, b | 21 | check class 90 (`0x46cf44`): `byte +0x120 = (b != 0)` = **no new particles** (modes 0 and 1; rain ignores it); W3D Boss16 arena 823..829 (`1 1` at init, `0` when the fight starts); ported |
 
@@ -143,3 +143,13 @@ thus comes back through a script variable (watchers get woken).
 Callback table `0x5cc360`: 100 SetVar(var, v) · 101 VolumeEnter(vol, actor) · 102 VolumeLeave · 103 VolumeIn,
 plus collision Press/In/UnPress and Perso variants (see `src/ekovm.h`). Answers to game messages go through
 `eko_set_var`; per-object message flags through `eko_msgmask_set` (MSGTEST/MSGCLEAR opcode).
+
+## Coverage of the port (2026-09-26)
+
+A static scan of all 28 `code` files (every `SEND`, with the target's class from its `1200`) gives these ids:
+1..6, 10, 11, 13, 16, 18, 19, 26, 33, 34, 40, 42..46, 50..63, 500, 501, 510, 520, 540, 560, 570, 580, 650..680, 710, 800,
+1000..1004, 1010, 1020, 1030, 1040, 1042, 1050, 1080..1085, 1088, 1090, 1100, 1101, 1110, 1120, 1121, 1130..1132,
+1140..1142, 1150..1152, 1160, 1170..1173, 1180, 1200, 1500..1509, 1511 and the sound ids of SOUND.md. Every one of them
+is now handled by `on_msg` / `cam_msg` in `src/main_engine.c` (33, 51, 58, 63 and 1010 as deliberate no-ops, see their
+rows). `WOODY_MSGUNK=1` prints each id that falls through to the default case, once, with its arguments; a run of all 28
+levels to 1.5 s prints nothing.

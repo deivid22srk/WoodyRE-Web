@@ -304,7 +304,7 @@ inner edge (black) to the outer edge (white-hot). Inner radius 0 → 4000, outer
 
 ### 3.4 Hit star `0x4750e0(&pt)` (certain; per hit ordinary enemy, at `pt` = Woody's feet)
 
-This is the general hit effect (also used by the peck and by message 1507); the port doesn't have it anywhere yet.
+This is the general hit effect (also used by the peck and by message 1507, PARTICLES.md §9.1); ported as `game_hit_star`.
 
 * **Flash** (1 record, lifetime **0.1 s**, callback `0x475040`, pos = pt): billboard, image `0x10009` = **bank 0 image 9** (64×64 white
   flash), half diagonal `u · 250` (`[0x4ab144]`), rgb (1,1,1), alpha **0.4**, sprite mode 0x12, draw flags **3** (billboard, own colour,
