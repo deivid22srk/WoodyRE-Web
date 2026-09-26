@@ -70,6 +70,8 @@ static struct {
     Instance *anim_inst; int anim_letterbox; Vec3 anim_eye, anim_tgt;   /* CamMgr+0x5d4, +0x618 & 2, +0x1d0, +0x5d8 */
     float shake;                                                 /* +0x67c: remaining shake time (0x41fbb0), docs/CAMERA.md 6.3 */
     int look_prev;                                               /* 0x459090 ctl+8, as far as state 3 goes: was the Perso looking around last frame */
+    int saved; float saved_dist, saved_height;                   /* CamMgr+0/+4/+8: follow-camera distance and height remembered by message 650 */
+    int autozoom;                                                /* CamMgr+0x66c bit 2 (message 710): zoom from the camera-target distance (0x41f690) */
 } g_cam = { 1 };
 static const float k_sv_defaults[8] = { 1000, 300, 340, 500, 0, 400, 700, 200 };
 static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
@@ -82,6 +84,13 @@ static void cam_set_mode(int mode)                               /* SetMode 0x41
     } else g_cam.active = 0;
     g_cam.mode = mode; if (mode != 0x80) g_cam.anim_inst = NULL;
     if (mode == 1 && g_player) g_player->cam_init = 0;
+}
+/* 0x458f90 (teleport, respawn) starts with the CamMgr reset 0x41df70: zoom 1.2 (0x41f680), letterbox off, no shake, auto-zoom
+ * bit cleared - then the hard cut to the follow camera. The follow camera's distance/height and the 650 memory are kept. */
+static void cam_hard_reset(void)
+{
+    if (g_player) g_player->cam_zoom = 1.2f;
+    g_cam.autozoom = 0; g_cam.shake = 0; g_cam.cut = 1; cam_set_mode(1);
 }
 static float ramp_to(float v, float target, float step) { return v < target ? (v + step > target ? target : v + step) : (v - step < target ? target : v - step); }
 /* 0x44de44: a Perso state change (scripted action, teleport, cinematic, death) ends the side view's plane lock */
@@ -113,29 +122,74 @@ static void cam_msg(const EkoMsg *m, const Camera *c)
     case 560: g_cam.speed = (float)a1; g_cam.dur_from_speed = 1; break;
     case 570: g_cam.dur = a1 * 0.01f; g_cam.dur_from_speed = 0; break;
     case 580: g_cam.cut = a1 == 2; break;
+    /* the follow camera's parameters (CAMERA.md 4). 650 (0x41fab0) remembers distance and height only the FIRST time (CamMgr+0
+     * is never cleared again) and re-seats the follow camera behind the player (0x422350 + 0x4247f0(0)); 660 (0x41fb00) puts
+     * the remembered values back. The levels use them in pairs around a volume: W1A object 0 sends 650 at the start, volume 52
+     * gives 670 150 + 680 300 on entry and 660 on leaving; W3B volume 67 gives a steep 680 200 + 670 600. */
+    case 650: if (g_player && !g_cam.saved) { g_cam.saved = 1; g_cam.saved_dist = g_player->cam_dist; g_cam.saved_height = g_player->cam_height; g_player->cam_init = 0; } break;
+    case 660: if (g_player && g_cam.saved) { g_player->cam_dist = g_cam.saved_dist; g_player->cam_height = g_cam.saved_height; } break;
+    case 670: if (g_player) g_player->cam_height = (float)a1; break;                 /* 0x41fa60: C+0x7d8 */
+    case 680: if (g_player) g_player->cam_dist = (float)a1; break;                   /* 0x41fa80: C+0x7e0 = C+0x7e4 = C+0x280 */
+    case 690: if (g_player && a1 > 0) g_player->cam_zoom = a1 * 0.01f; break;        /* 0x41f660: CamMgr+0x678, only a positive value (no level sends it) */
+    case 700: if (g_player) g_player->cam_zoom = 1.2f; break;                        /* 0x41f680 (the bit of 710 stays set) */
+    case 710: g_cam.autozoom = 1; break;                                             /* 0x41f650: the boss rail cameras (W1B 403, W2B 534, W2D 747/766, W3D 830, WWS 365) */
     default: break;
     }
 }
-/* rail camera 0x421570 (CAMERA.md 6.2): the point of the polyline at distance d from the player that is nearest to the
- * previous camera; without one, the point of the polyline nearest to the player. The rail point moves at most 1000 u/s. */
-static Vec3 rail_target(const Trajectory *tr, Vec3 c, float d, Vec3 prev)
+/* ---- rail camera, mode 8 (message 540 [cam, d]; docs/CAMERA.md 6.2): update 0x421570, fallback 0x420e40 ----------------- */
+static float v3d2(Vec3 a, Vec3 b) { float x = a.x - b.x, y = a.y - b.y, z = a.z - b.z; return x * x + y * y + z * z; }
+/* 0x421c00 (xz = 0) / 0x421e80 (xz = 1, the y of both vectors zeroed: a vertical cylinder): where segment A-B meets the sphere of
+ * radius r around c. s1 <= s2 are the roots; one outside [0,1] is replaced by the other, none inside = no hit. The points are
+ * A + (B - A) s in 3D either way. */
+static int rail_seg_sphere(Vec3 c, float r, Vec3 A, Vec3 B, int xz, Vec3 *o1, Vec3 *o2)
 {
-    Vec3 best = tr->points[0], nearest = tr->points[0]; float best_d = 1e30f, near_d = 1e30f;
-    uint32_t nseg = tr->closed ? tr->npoints : tr->npoints - 1;
-    for (uint32_t i = 0; i < nseg; i++) {
-        Vec3 a = tr->points[i], b = tr->points[(i + 1) % tr->npoints], ab = { b.x - a.x, b.y - a.y, b.z - a.z }, ca = { a.x - c.x, a.y - c.y, a.z - c.z };
-        float A = ab.x * ab.x + ab.y * ab.y + ab.z * ab.z; if (A < 1e-6f) continue;
-        float B = 2 * (ab.x * ca.x + ab.y * ca.y + ab.z * ca.z), C = ca.x * ca.x + ca.y * ca.y + ca.z * ca.z - d * d, disc = B * B - 4 * A * C;
-        for (int k = 0; k < 2 && disc >= 0; k++) {
-            float s = (-B + (k ? 1.0f : -1.0f) * sqrtf(disc)) / (2 * A); if (s < 0 || s > 1) continue;
-            Vec3 q = { a.x + ab.x * s, a.y + ab.y * s, a.z + ab.z * s }; float e = (q.x - prev.x) * (q.x - prev.x) + (q.y - prev.y) * (q.y - prev.y) + (q.z - prev.z) * (q.z - prev.z);
-            if (e < best_d) { best_d = e; best = q; }
-        }
-        float s = -(ab.x * ca.x + ab.y * ca.y + ab.z * ca.z) / A; if (s < 0) s = 0; if (s > 1) s = 1;
-        Vec3 q = { a.x + ab.x * s, a.y + ab.y * s, a.z + ab.z * s }; float e = (q.x - c.x) * (q.x - c.x) + (q.y - c.y) * (q.y - c.y) + (q.z - c.z) * (q.z - c.z);
-        if (e < near_d) { near_d = e; nearest = q; }
+    Vec3 v = { B.x - A.x, xz ? 0 : B.y - A.y, B.z - A.z }, w = { A.x - c.x, xz ? 0 : A.y - c.y, A.z - c.z };
+    float a = v.x * v.x + v.y * v.y + v.z * v.z, b = 2 * (w.x * v.x + w.y * v.y + w.z * v.z), C = w.x * w.x + w.y * w.y + w.z * w.z - r * r, D = b * b - 4 * a * C;
+    if (a < 1e-9f || D < 0) return 0;                                  /* a == 0 (a doubled rail point) divides by zero in the original */
+    float sq = sqrtf(D), s1 = (-b - sq) / (2 * a), s2 = (sq - b) / (2 * a);
+    if (s1 < 0) { if (s2 < 0) return 0; s1 = s2; }
+    if (s2 < 0 && s1 >= 0) s2 = s1;
+    if (s1 > 1) { if (s2 > 1) return 0; s1 = s2; }
+    if (s2 > 1 && s1 <= 1) s2 = s1;
+    *o1 = (Vec3){ A.x + (B.x - A.x) * s1, A.y + (B.y - A.y) * s1, A.z + (B.z - A.z) * s1 };
+    *o2 = (Vec3){ A.x + (B.x - A.x) * s2, A.y + (B.y - A.y) * s2, A.z + (B.z - A.z) * s2 };
+    return 1;
+}
+/* The point the rail camera wants this frame. Only the count - 1 segments of the polyline are walked (the closed flag of the
+ * TRAJ is not read). A segment that meets the sphere of radius d around the player c gives its entry point o1 as long as no
+ * earlier segment did (and always on the first frame, so there the LAST such segment wins); after that both o1 and o2 compete
+ * by their distance to Q, the camera of the previous frame. No segment meets it (d is often smaller than the rail's distance
+ * to the player: 540 [cam, 50] is "the point of the rail abeam of him") -> 0x420e40. */
+static int rail_pick(const Trajectory *tr, Vec3 c, float d, Vec3 Q, int first, Vec3 *out)
+{
+    int found = 0; float best = 0;
+    for (uint32_t i = 0; i + 1 < tr->npoints; i++) {
+        Vec3 o1, o2; if (!rail_seg_sphere(c, d, tr->points[i], tr->points[i + 1], 0, &o1, &o2)) continue;
+        if (!first && found) { float e1 = v3d2(o1, Q), e2; if (e1 < best) { *out = o1; best = e1; } e2 = v3d2(o2, Q); if (e2 < best) { *out = o2; best = e2; } }
+        else { *out = o1; best = v3d2(o1, Q); }
+        found = 1;
     }
-    return best_d < 1e30f ? best : nearest;
+    return found;
+}
+/* 0x420e40: per segment the point nearest to the player; a segment nearer than the best so far is taken, and when it passes
+ * within 100 of him in xz (0x421e80) the camera goes to where it crosses that cylinder, on the side of the current rail point R,
+ * so it never sits on his head. The running "best" then holds that point's distance to R - the original compares the next
+ * segment's distance to the player against it. */
+static Vec3 rail_nearest(const Trajectory *tr, Vec3 c, Vec3 R)
+{
+    Vec3 cand = tr->points[0]; float best = 0; int have = 0;
+    for (uint32_t i = 0; i + 1 < tr->npoints; i++) {
+        Vec3 A = tr->points[i], B = tr->points[i + 1], v = { B.x - A.x, B.y - A.y, B.z - A.z }, q;
+        float tb = v.x * (c.x - B.x) + v.y * (c.y - B.y) + v.z * (c.z - B.z), ta = v.x * (c.x - A.x) + v.y * (c.y - A.y) + v.z * (c.z - A.z);
+        if (tb > 0) q = B; else if (ta < 0) q = A;
+        else { float s = ta / (ta - tb); q = (Vec3){ A.x + v.x * s, A.y + v.y * s, A.z + v.z * s }; }
+        float e = v3d2(q, c); if (have && !(e < best)) continue;
+        Vec3 o1, o2;
+        if (rail_seg_sphere(c, 100.0f, A, B, 1, &o1, &o2)) { cand = v3d2(R, o2) <= v3d2(R, o1) ? o2 : o1; best = v3d2(R, cand); }
+        else { cand = q; best = e; }
+        have = 1;
+    }
+    return cand;
 }
 static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 {
@@ -153,7 +207,7 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
          * leaves the previous eye and target standing: the camera holds that frame instead of snapping elsewhere */
         {   Vec3 e = g_cam.anim_eye, t = g_cam.anim_tgt, to = { t.x - e.x, t.y - e.y, t.z - e.z };
             cam->pos = e; cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z));
-            cam->letterbox = g_cam.anim_letterbox; cam->fov_deg = g_cam.anim_letterbox ? 68.04f : 83.97f;
+            cam->letterbox = g_cam.anim_letterbox; cam->fov_deg = 2.0f * atanf(p->cam_zoom * (g_cam.anim_letterbox ? 0.5625f : 0.75f)) * 57.29578f;
             g_cam.pos = e; g_cam.active = 0; return; }
     }
     if (g_cam.mode == 0x20 && g_cam.plane_on) {                  /* 0x424bf0 */
@@ -166,13 +220,21 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
         float lat = g_cam.side == 0 ? -g_cam.sv_lat : g_cam.sv_lat;
         P = (Vec3){ C.x + sidev.x * lat, C.y, C.z + sidev.z * lat }; T = p->pos; g_cam.look_off = (Vec3){ C.x - T.x, C.y - T.y, C.z - T.z };
     } else if (g_cam.mode == 8 && g_cam.rail) {
+        /* 0x421570. c = p+0x20 = the player's position (vt[34], his feet) that 0x459090 writes every frame, its y filtered
+         * y = (1-k) y + k y_prev with k = 0.95^(30 dt) and frozen while he rises or falls (p+0x50 bits 2/3) */
         int js = p->jumper.state, air = js == 0 || js == 1 || js == 7 || js == 3 || js == 4;
         if (g_cam.rail_first) g_cam.rail_y = p->pos.y; else if (!air) { float k = powf(0.95f, 30.0f * dt); g_cam.rail_y = (1 - k) * p->pos.y + k * g_cam.rail_y; }
-        Vec3 c = { p->pos.x, g_cam.rail_y, p->pos.z }, want = rail_target(g_cam.rail, c, g_cam.rail_d, g_cam.rail_first ? g_cam.pos : g_cam.rail_pt);
+        Vec3 c = { p->pos.x, g_cam.rail_y, p->pos.z }, want;
+        if (!rail_pick(g_cam.rail, c, g_cam.rail_d, g_cam.rail_first ? g_cam.pos : g_cam.rail_pt, g_cam.rail_first, &want)) {
+            c.y = p->pos.y;                                              /* 0x42181e: the fallback looks at the unfiltered height (the filter state goes on) */
+            want = rail_nearest(g_cam.rail, c, g_cam.rail_pt);
+        }
         Vec3 d = { want.x - g_cam.rail_pt.x, want.y - g_cam.rail_pt.y, want.z - g_cam.rail_pt.z }; float len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z), step = 1000.0f * dt;
         if (g_cam.rail_first || len <= step) g_cam.rail_pt = want; else { g_cam.rail_pt.x += d.x / len * step; g_cam.rail_pt.y += d.y / len * step; g_cam.rail_pt.z += d.z / len * step; }
         g_cam.rail_first = 0;
-        P = g_cam.rail_pt; T = c; g_cam.look_off = (Vec3){ 0, 140.0f, 0 };   /* look height: params+0x1c, writer not found; the follow camera's value */
+        /* the camera looks straight at c: the look-at of 0x421985 aims at p+0x20, and the offset the transition blends,
+         * CamMgr+0xc4 = (0, p+0x1c, 0), is 0 - both exits of 0x421570 write p+0x1c = 0 (0x42182f, 0x421bd6) */
+        P = g_cam.rail_pt; T = c; g_cam.look_off = (Vec3){ 0, 0, 0 };
     } else
     if (g_cam.mode == 1 || !g_cam.fix_target) {
         player_camera(p, cam, dt, behind_key); P = cam->pos; T = p->pos; g_cam.look_off = (Vec3){ 0, 140.0f - p->cam_drop, 0 };
@@ -198,8 +260,12 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
     }
     Vec3 to = { look.x - P.x, look.y - P.y, look.z - P.z };
     cam->pos = P; cam->yaw = atan2f(to.x, to.z); cam->pitch = atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z));
-    cam->letterbox = g_cam.mode == 4; cam->fov_deg = g_cam.mode == 4 ? 68.04f : 83.97f;   /* tan(vfov/2) = 1.2 * 0.5625 resp. 1.2 * 0.75 */
-    if (g_cam.mode == 1 && p->cam_zoom != 1.2f) cam->fov_deg = 2.0f * atanf(p->cam_zoom * 0.75f) * 57.29578f;   /* the race sets zoom 1.5 (0x41f660, docs/RACE.md 5) */
+    if (g_cam.autozoom) {                                        /* 0x41f690: zoom from |CamMgr+0x278 - camera|, 1.1 up to 300, 0.2 from 3000 on */
+        float dx = T.x - P.x, dy = T.y - P.y, dz = T.z - P.z, d = sqrtf(dx * dx + dy * dy + dz * dz), t = d < 300.0f ? 0 : d > 3000.0f ? 1 : (d - 300.0f) * (1.0f / 2700.0f);
+        p->cam_zoom = (1 - t) * 1.1f + t * 0.2f;
+    }
+    /* tan(vfov/2) = zoom * sy: zoom CamMgr+0x678 (1.2; the race 1.5, messages 690/700/710), sy 0.5625 with the letterbox of mode 4, else 0.75 */
+    cam->letterbox = g_cam.mode == 4; cam->fov_deg = 2.0f * atanf(p->cam_zoom * (g_cam.mode == 4 ? 0.5625f : 0.75f)) * 57.29578f;
     g_cam.pos = P; p->cam_yaw = cam->yaw;                         /* movement stays relative to the camera on screen */
 }
 
@@ -2730,7 +2796,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
                  * docs/CAMERA_SCRIPT.md 1.3, object 258 in WWS) and a door sends 1040 / action 18 (the camera track of the animation).
                  * Only the mode switch happens now: the follow camera seats itself (cam_init = 0) in the next camera update, which runs
                  * after this tick, so it still uses the position and facing the door action gives him. */
-                g_cam.cut = 1; cam_set_mode(1);
+                cam_hard_reset();
                 printf("  TELEPORT to inst %u (%.0f %.0f %.0f)%s", to->index, to->position.x, to->position.y, to->position.z, g_player->script_act ? " (refused: scripted action running, only the camera cuts)" : ""), puts("");
             }
         }
@@ -3142,7 +3208,7 @@ int main(int argc, char **argv)
                  * (issue #39). Then 0x458f90: 0x41f9f0(2) + SetMode(0, 0) = hard cut to the follow camera, whatever mode was running
                  * (the side view, the death camera of 0x459030 / 0x41fb50, a script camera). The script turns the side view on again
                  * only through the section's own door (1088), exactly as the first time. This runs before the plane projection below. */
-                plane_release(); g_cam.death_cam = 0; g_cam.cut = 1; cam_set_mode(1); bombs_discard_all(); }   /* 0x44ab20 -> 0x44db10: every bomb out goes, unexploded */
+                plane_release(); g_cam.death_cam = 0; cam_hard_reset(); bombs_discard_all(); }   /* 0x44ab20 -> 0x44db10: every bomb out goes, unexploded */
             if (g_res.on) results_update(&L.vm, dt, mk.ok);      /* 0x454090: after the action tick, so a finished action starts the next one in the same frame */
             if (g_cam.mode != 0x20 && (L.player.dead_cam_req || (L.player.dead_kind == 7 && !g_cam.death_cam))) {     /* 0x41fb50: kind 1 is watched from where he hung (+100), kind 7 from where the camera is */
                 g_cam.fix_pos = L.player.dead_kind == 7 ? g_cam.pos : (Vec3){ L.player.pos.x, L.player.pos.y + 100.0f, L.player.pos.z };
@@ -3296,6 +3362,28 @@ int main(int argc, char **argv)
         /* level change: PgUp / PgDn cycle through the levels (debug); a request fades out, swaps the level, fades in */
         for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
         { static int side_done; if (getenv("WOODY_SIDE") && now - t0 >= 1.0 && !side_done && L.have_player) { side_done = 1; Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(getenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); } }   /* testing: force the side view on a marker instance */
+        {   /* WOODY_SIDECHECK="slot:v slot:v ..." (testing, the 1088 pairs of the level script): for five points along the marker A-B, is the
+             * line from the side camera (A..B + 340 up, 1000 to the side, the sign of 0x424bf0) to the body (+100) blocked by the world - and
+             * for the opposite sign? The side the level design means is the one the walls leave open. */
+            static int sc_done; const char *e = getenv("WOODY_SIDECHECK");
+            if (e && !sc_done && now - t0 >= 0.5 && L.have_player) { sc_done = 1;
+                for (const char *s = e; *s; ) { char *q; long slot = strtol(s, &q, 0); if (q == s) break; long v = *q == ':' ? strtol(q + 1, &q, 0) : 2; s = q; while (*s == ' ') s++;
+                    Instance *in = slot_instance(0x1000000 | (uint32_t)slot); if (!in) continue; const Model *mo = in->model; int node = -1;
+                    for (uint32_t i = 0; i < mo->nnodes && node < 0; i++) if (mo->nodes[i].kind == 0x20 && mo->nodes[i].type_code == 0 && mo->nodes[i].npoints >= 2) node = (int)i;
+                    if (node < 0) { printf("SIDECHECK %ld: no marker\n", slot); continue; }
+                    ins_pose(in, in->anim, in->anim_time);
+                    Vec3 A = ins_point_world(in, mo->nodes[node].point_base), B = ins_point_world(in, mo->nodes[node].point_base + 1), d = { B.x - A.x, 0, B.z - A.z };
+                    float l = sqrtf(d.x * d.x + d.z * d.z); if (l < 0.01f) d = (Vec3){ 1, 0, 0 }; else { d.x /= l; d.z /= l; }
+                    int blk[2] = { 0, 0 };
+                    for (int k = 0; k < 5; k++) for (int f = 0; f < 2; f++) {
+                        float u = k / 4.0f, sg = (v == 1 ? -1.0f : 1.0f) * (f ? -1.0f : 1.0f);
+                        Vec3 M = { A.x + (B.x - A.x) * u, A.y + (B.y - A.y) * u, A.z + (B.z - A.z) * u }, body = { M.x, M.y + 100.0f, M.z }, P = { M.x - d.z * 1000.0f * sg, M.y + 340.0f, M.z + d.x * 1000.0f * sg };
+                        if (gel_ray_frac(L.player.gel, P, body) <= 1.0f) blk[f]++;
+                    }
+                    printf("SIDECHECK %ld v %ld: A %.0f %.0f %.0f B %.0f %.0f %.0f | engine side blocked %d/5, opposite side blocked %d/5\n", slot, v, A.x, A.y, A.z, B.x, B.y, B.z, blk[0], blk[1]);
+                }
+            }
+        }
         { static int posat_done; float pa[4]; const char *e = getenv("WOODY_POSAT"); int k = 0, used;   /* testing: WOODY_POSAT="T x y z [T x y z ...]" = --pos, but T s into the level (moving platforms, carrying a bomb somewhere) */
             while (e && L.have_player && sscanf(e, "%f %f %f %f%n", &pa[0], &pa[1], &pa[2], &pa[3], &used) == 4) { if (!(posat_done >> k & 1) && now - t0 >= pa[0]) { posat_done |= 1 << k; L.player.pos = (Vec3){ pa[1], pa[2], pa[3] }; L.player.floor_y = pa[2] - 1000.0f; L.player.on_ground = 0; } e += used; k++; } }
         { static int setvar_done; float sv[3]; const char *e = getenv("WOODY_SETVAR"); int k = 0, used;   /* testing: WOODY_SETVAR="T var val [...]" = SetVar T s into the level (W2B boss fight: "1 1 1") */
