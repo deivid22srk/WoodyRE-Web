@@ -1776,7 +1776,8 @@ enum FxKind {                                                                 /*
     FX_PECK_EMIT, FX_PECK_CHIP, FX_PECK_FLASH, FX_PECK_HOLE,                 /* 0x4798f0, 0x479670, 0x479760, 0x479800: the beak impact 0x479c80 (4) */
     FX_DEBRIS_EMIT, FX_DEBRIS,                                               /* 0x476cd0, 0x4764f0: the dust burst of an explosion (5.1) */
     FX_BURN_EMIT, FX_BURN, FX_TRAIL_SMOKE, FX_TRAIL_SPARK,                   /* 0x476b50, 0x4767f0, 0x476f00, 0x476fb0: the burning debris of explosion kind 1 (5.2) */
-    FX_SKELETON                                                              /* 0x477980: the skeleton flash of Kill 2/9 (6, docs/PERSO_DEATH.md 4.2) */
+    FX_SKELETON,                                                             /* 0x477980: the skeleton flash of Kill 2/9 (6, docs/PERSO_DEATH.md 4.2) */
+    FX_BOARD_PUFF                                                            /* 0x475380: a puff of the race board's spray (docs/RACE.md 2.2) */
 };
 static void fx_particle(FxRec *e, float u, float dt);
 static FxRec *fx_new(float life, Vec3 pos, int kind)
@@ -2008,6 +2009,76 @@ void game_peck_fx(int kind, Vec3 pos, const Vec3 *n)
 /* 0x477e40, Kill 2 and 9 (the laser and the lightning, docs/PERSO_DEATH.md 4.2; also the race kill 2 at 0x44c59d): the
  * position argument is never read. The record keeps the Perso's fade (+0x10 = old +0x6c) to give it back at the end, and
  * he turns to face the camera (0x459ff0(M, -view row 2)). */
+void game_race_bonus_reset(void)                                             /* 0x44f8a0: every type-37 instance is re-celled (visible again) */
+{
+    int n = 0;
+    for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
+        Instance *ii = &g_ins.models[mi].instances[k]; if (ii->type != 37) continue;
+        if (!ii->visible) n++; ii->visible = 1;
+    }
+    if (n) printf("  RACE %d race bonuses back\n", n);
+}
+/* the board spray emitter 0x475440 (docs/RACE.md 2.2), ticked by the effect driver 0x46d040 only in the frames the ride marked it
+ * (+0xc, cleared after). Per type-9 marker (P0 -> P1) of the board: a trail direction d (P1 - P0 the first time, then the
+ * previous position - P0), a camera-facing glow (image 32, 40, alpha 1 - 0.2 sin(pi ph0), turning with ph0), a glow in the plane
+ * across d (image 32, 35, ph1), three flame quads round d (image 31, mode 0x13 = 2:1 along d, 45 +- 5, alpha 0.8, 120 degrees
+ * apart, spinning at ph2) and 200 puffs a second (0x475380: image 14, 0.2 s, size 15..30, alpha 0.3 (1 - u)) spread over the
+ * way back to the previous position. Sizes from the tables 0x4abcc8/cc/d0 at index 3 (45/40/35); boost (mode 3) doubles
+ * the glows and makes the flames 1.3x. All additive. */
+static void board_frame(Vec3 d, Vec3 *X, Vec3 *Y)                          /* 0x46d320: X = normalize(d.z, 0, -d.x), Y = d x X */
+{
+    if (fabsf(d.x) < 0.001f && fabsf(d.z) < 0.001f) {
+        float l = sqrtf(d.z * d.z + d.y * d.y); *Y = l > 0 ? (Vec3){ 0, d.z / l, -d.y / l } : (Vec3){ 0, 0, 1 };
+        *X = (Vec3){ Y->y * d.z - Y->z * d.y, Y->z * d.x - Y->x * d.z, Y->x * d.y - Y->y * d.x };
+    } else {
+        float l = sqrtf(d.x * d.x + d.z * d.z); *X = (Vec3){ d.z / l, 0, -d.x / l };
+        *Y = (Vec3){ d.y * X->z - d.z * X->y, d.z * X->x - d.x * X->z, d.x * X->y - d.y * X->x };
+    }
+}
+static void board_fx_draw(float dt)
+{
+    if (!g_player || !g_player->bfx.inst) return;
+    BoardFx *e = &g_player->bfx;
+    if (!e->active) return;
+    e->active = 0;                                                           /* 0x46d0b0 */
+    static const float tA[10] = { 50, 70, 35, 45, 40, 35, 100, 70, 60, 100 }, one[3] = { 1, 1, 1 };   /* 0x4abcc8 + 4 i: A = [i], B = [i + 1], C = [i + 2] */
+    float A = tA[e->size_idx], B = tA[e->size_idx + 1], C = tA[e->size_idx + 2];
+    const float rates[3] = { 0.05f, 0.15f, 3.0f };                          /* 0x4aab4c, 0x4aa1c8, 0x4a988c */
+    for (int k = 0; k < 3; k++) { e->ph[k] += dt * rates[k]; if (e->ph[k] >= 1.0f) e->ph[k] -= 1.0f; }
+    if (e->mode) e->acc += dt;
+    int n = (int)(e->acc * 200.0f); e->acc -= n * 0.005f;                   /* 0x4aa164 */
+    if (e->mode == 1) { e->t1c += dt; if (e->t1c >= 1.0f) { e->mode = 2; e->t1c = 0; } }
+    if (e->mode == 0) return;
+    float s = 0;                                                             /* mode 1 (not used by the race): three 0.15 s ramps at 0, 0.3, 0.85 */
+    if (e->mode == 1) { float t = e->t1c; s = t > 0 && t < 0.15f ? t * 6.6666665f : t > 0.3f && t < 0.45f ? (t - 0.3f) * 6.6666665f : t > 0.85f && t < 1.0f ? (t - 0.85f) * 6.6666665f : 0; }
+    for (int i = 0; i < e->n; i++) {
+        Vec3 P0, D; if (!inst_vector_at(e->inst, 9, (uint32_t)i, &P0, &D)) continue;
+        Vec3 d = e->has_prev[i] ? (Vec3){ e->prev[i].x - P0.x, e->prev[i].y - P0.y, e->prev[i].z - P0.z } : D;
+        e->has_prev[i] = 1;
+        float len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (len > 0) { d.x /= len; d.y /= len; d.z /= len; }
+        Vec3 X, Y; board_frame(d, &X, &Y);
+        float p[3] = { P0.x, P0.y, P0.z }, nrm[3] = { d.x, d.y, d.z };
+        float sz = e->mode == 1 ? s * B : e->mode == 3 ? 2 * B : B;
+        hud_world_spr(32, p, sz, 512 - (int)(e->ph[0] * 512.0f), one, 1.0f - 0.2f * sin512((int)(e->ph[0] * 256.0f)), 7, NULL, 0);   /* camera facing */
+        sz = e->mode == 1 ? s * C : e->mode == 3 ? 2 * C : C;
+        hud_world_spr(32, p, sz, (int)(e->ph[1] * 512.0f), one, 1.0f - 0.2f * sin512((int)(e->ph[1] * 255.0f)), 6, nrm, 0);    /* across the trail */
+        float r = fx_rnd() * 10.0f - 5.0f; int mode = e->mode == 3 ? 0x12 : 0x13;
+        sz = (e->mode == 1 ? s * A : e->mode == 3 ? 1.3f * A : A) + r;
+        float half = sz * cos512(mode == 0x12 ? 64 : 37) - sz * 0.015625f;  /* [0x5e823c]+0x800[mode]: the flame starts at P0 and trails back along d */
+        float q[3] = { P0.x + d.x * half, P0.y + d.y * half, P0.z + d.z * half };
+        for (int j = 0; j < 0xff; j += 0x55) {
+            int a1 = (j + (int)(e->ph[2] * 512.0f)) & 511;
+            float basis[6] = { d.x, d.y, d.z, X.x * cos512(a1) + Y.x * sin512(a1), X.y * cos512(a1) + Y.y * sin512(a1), X.z * cos512(a1) + Y.z * sin512(a1) };   /* R = d, F round d */
+            hud_world_spr_mode(mode, 31, q, sz, 0, one, 0.8f, 0x62, basis, 2);
+        }
+        for (int k = n - 1; k >= 0; k--) {                                   /* the puffs, spread from P0 + 45 d back towards the previous position */
+            float f = (float)k / (float)n, dist = f * len + A;
+            FxRec *pf = fx_new(0.2f, (Vec3){ P0.x + d.x * dist, P0.y + d.y * dist, P0.z + d.z * dist }, FX_BOARD_PUFF); if (!pf) continue;
+            pf->age = k * dt / n; pf->rot = (int)(fx_rnd() * 512.0f);
+            e->prev[i] = e->size_idx == 9 || e->size_idx == 6 ? (Vec3){ P0.x + D.x, P0.y + D.y, P0.z + D.z } : pf->pos;   /* 0x475c2c */
+        }
+    }
+}
 void game_skeleton(void)
 {
     Player *p = g_player; if (!p || !p->inst) return;
@@ -2075,6 +2146,9 @@ static void fx_particle(FxRec *e, float u, float dt)
         break; }
     case FX_PECK_FLASH:                                                      /* 0x479760 */
         hud_world_spr(18, &e->pos.x, 80.0f, 0, one, 0.8f, 3, NULL, 0);
+        break;
+    case FX_BOARD_PUFF:                                                      /* 0x475380: the race board's spray, image 14, flags 7 (additive) */
+        hud_world_spr(14, &e->pos.x, (u + 1.0f) * 15.0f, e->rot, one, 0.3f - 0.3f * u, 7, NULL, 0);
         break;
     case FX_PECK_HOLE: {                                                     /* 0x479800: 5 to 5.3 s in the wall, then 4 s to fade */
         float a = e->age < e->D ? 1.0f : 1.0f - (e->age - e->D) * 0.25f;
@@ -2610,6 +2684,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1030:                                                                                              /* SaveAuto: checkpoint 0x445129 -> 0x44aa10 */
         if (in && g_player) {                                                                               /* +0x318 = inst.pos; +0x324 = xz of marker typecode 0 (P1 - P0, 0x42f6b0), else the current facing */
             Vec3 p0, dir; g_player->spawn_pos = in->position; g_player->has_ckpt = 1;   /* +0x330 */
+            g_player->race_bonus_ckpt = g_player->race_bonus;                                               /* +0x4e0 = +0x264 (0x44aaef) */
             g_player->spawn_yaw = inst_vector(in, 0, &p0, &dir) && dir.x * dir.x + dir.z * dir.z > 1e-6f ? atan2f(dir.x, dir.z) : g_player->yaw;
         }
         break;
@@ -2623,7 +2698,10 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             Camera *pc = slot_camera(m->args[1]);
             if (!pc || !pc->traj.npoints) { puts("  Message SetRaceInfo : on doit envoyer une camera avec une polyline en 2eme argument"); break; }   /* 0x444b67 */
             g_player->board = in; g_player->race_path = &pc->traj; in->scripted = 0; in->anim_speed = 0;
-            printf("  RACE board = instance %u, path = camera %u (%u points)\n", in->index, pc->index, pc->traj.npoints);
+            g_player->board_lanim = -1;                                                                     /* B = new AnimCtl(board): not reset, nothing requested */
+            memset(&g_player->bfx, 0, sizeof g_player->bfx); g_player->bfx.inst = in; g_player->bfx.mode = 2; g_player->bfx.size_idx = 3;   /* the spray emitter (0x34 B) */
+            { Vec3 p0, d; while (g_player->bfx.n < 4 && inst_vector_at(in, 9, (uint32_t)g_player->bfx.n, &p0, &d)) g_player->bfx.n++; }   /* its type-9 markers (0x455e58) */
+            printf("  RACE board = instance %u, path = camera %u (%u points), %d spray markers\n", in->index, pc->index, pc->traj.npoints, g_player->bfx.n);
         }
         break;
     case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */
@@ -2798,6 +2876,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     eko_msg_reset(&L->vm);
     if (L->have_player) { SaveChar *sc = &g_save.chr[g_char]; L->player.lives = sc->lives; L->player.health = sc->health > 0 ? sc->health : 1.0f;
                           L->player.unique_items = sc->unique; L->player.special_charges = sc->charges;
+                          player_race_start(&L->player);     /* 0x44ab20 -> 0x456150 SurfEnter with the board of 1120 (docs/RACE.md 3.1) */
                           player_ground_snap(&L->player); }   /* 0x44a6a0 / 0x44a759; 0x44a7ee: he starts standing on the floor, not falling onto it */
     L->t0 = win_time();
     return 0;
@@ -3067,7 +3146,9 @@ int main(int argc, char **argv)
             if (g_res.on) results_update(&L.vm, dt, mk.ok);      /* 0x454090: after the action tick, so a finished action starts the next one in the same frame */
             if (g_cam.mode != 0x20 && (L.player.dead_cam_req || (L.player.dead_kind == 7 && !g_cam.death_cam))) {     /* 0x41fb50: kind 1 is watched from where he hung (+100), kind 7 from where the camera is */
                 g_cam.fix_pos = L.player.dead_kind == 7 ? g_cam.pos : (Vec3){ L.player.pos.x, L.player.pos.y + 100.0f, L.player.pos.z };
-                g_cam.fix_target = L.player.inst; g_cam.fix_f = g_cam.look_off.y; cam_set_mode(2); g_cam.death_cam = 1;
+                g_cam.fix_target = L.player.inst; g_cam.fix_f = g_cam.look_off.y;
+                g_cam.speed = 100.0f; g_cam.dur_from_speed = 1; g_cam.cut = 0;  /* 0x41f9b0(100) + 0x41f9f0(1): a smooth travel at 100 u/s (the race kind 1 asks every frame of the hang) */
+                cam_set_mode(2); g_cam.death_cam = 1;
             }
             L.player.dead_cam_req = 0;
             if (!cin_running()) enemies_update(&g_enemies, &L.player, cam.pos, dt);
@@ -3161,7 +3242,7 @@ int main(int argc, char **argv)
                         laser_fx_draw(&z->fx[mk], a, b, kind, g, &cam.pos.x, paused ? 0 : dt);   /* pulse, lightning arc, impact */
                     }
                 }
-                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); bubbles_draw(&cam, paused ? 0 : dt); rockets_draw(paused ? 0 : dt); bombs_draw(&cam.pos.x, paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); g_fx_fwd = cam_forward(&cam); fx_update(paused ? 0 : dt, &cam.pos.x);
+                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); bubbles_draw(&cam, paused ? 0 : dt); rockets_draw(paused ? 0 : dt); bombs_draw(&cam.pos.x, paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); board_fx_draw(paused ? 0 : dt); g_fx_fwd = cam_forward(&cam); fx_update(paused ? 0 : dt, &cam.pos.x);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */

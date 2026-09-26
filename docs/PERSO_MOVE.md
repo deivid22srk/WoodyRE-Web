@@ -289,6 +289,17 @@ cycle fraction passes 0.38 (`0x4ab278`) resp. 0.9 (`0x4a94b8`). Phase 3..6 → a
 timer `+0x230 += dt`; < 10 s (`0x4a9750`) → **anim 0**; at 10 s randomly (`0x43ff20(0,7)` = `rand() % 7`, so **1 in 7**) **0x5a** (.ins 89, until `T ≥ 2·L(0x5a) + 10`, then reset), else **anim 0x59** (.ins 0 → 88 → 87 = sleeping); once `.ins` anim 87 (`P+0xb0 == 0x57`) is playing and `T > 10.5` (`0x4ab7c8`) and `P+0x52c == 0`: `P+0x52c = 1` and zzz balloon `0x478980(P, 4, 2.5, 130, 50, &P+0x52c)` (lives until the reset); reset
 (`0x464620`) as soon as an action key is pressed (`0x44cc30`).
 
+**The frame of `0x464630`** (state 0, read in full in round 29): nothing at all while `+0x5b4` (attack sub-state) or `+0x694`
+(ducking) is non-zero - no animation request, no idle tick and no reset, so the idle count is **frozen** through a peck or a
+duck. Otherwise `0x463f40(0)` on the ground resp. `0x4642f0(0)` in the air; `0x463f40` answers "idle" (`bl = 1`) only for
+Mover phase 0 (phases 1/2 walk, 3..6 jump table `0x4642d4` → `0x463f99` clear it) and `0x4642f0` always answers 0. Idle ⇒
+`0x464500` if `+0x21c == 0` (state 9 skips it without a reset); not idle ⇒ reset `0x464620`. Then, idle or not, a held action
+0/3/2/1/6/4/10/5 (`0x44cc30`, `0x467400` = held) **or `+0x550`** (the root-position flag of `0x44e290`, i.e. a scripted action
+or the climb-over carrying the model) resets it. A hit (`+0x5b4 = 0`, Mover phase 0 under the knockback) and the special attack
+leave the count running: their animations simply outrank the idle requests. Ported (`player.c`, the anim block of
+`player_update`): the idle tick moved out of the priority chain so it runs under a hit or the special attack too; the reset on
+`use_root` and the freeze on `atk` / `duck` are in; state 6 still resets every frame (it has no idle variations).
+
 **Air (`0x4642f0`)**, on J phase (table `0x4644dc`): 0/1 rising → **anim 4**; 7 peak → **anim 5**; 3 start falling → anim **7** if fallen off an edge
 without jumping (`J+0x4d`), **6** if the jump was cut short (`J+0x4f`), else stays at 5; 4 falling → **anim 8** as soon as onGround (landing, unless Mover phase 2),
 else stays at phase 3; 5 long fall → **anim 9**, on the ground **anim 10 (hard landing)**: movement locked for the animation duration

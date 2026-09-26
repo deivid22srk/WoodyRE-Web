@@ -18,7 +18,9 @@ of sub-anim k of logical anim n (PERSO_JUMP.md §4). Tick picks the pending requ
 * Script message **1120 SetRaceInfo `[board, camera]`** (`0x444b27` → `0x455dc0`) links the board instance, the polyline
   (TRAJ of the camera object) and creates the board anim controller and the board FX emitter. Until 1120 arrives the rider
   stands still in state 1 (sub-state 0 returns immediately when there is no polyline). Note: at level start SurfEnter
-  runs **before** 1120 (Reset precedes the first script tick), so at that moment `B` and the FX emitter are still NULL.
+  runs **before** 1120, so at that moment `B` and the FX emitter are still NULL. (The Game ctor `0x445850` comes after the
+  init tick that delivers the init messages, GAMEFLOW.md §4, but all six race scripts send 1120 from the trigger volume
+  at the start position, i.e. from the volume events of the first game frame - checked in the port for K1R..S3R.)
 * Riding (`0x456210`): **constant speed `P+0x1c` = 1250 units/s**, no acceleration, no braking. Actions 0/1 (left/right)
   rotate the direction around world-up at **1.8 rad/s** (1.2 while crouched), with a veto that stops you from steering
   to face backwards along the nearest polyline segment. Action 4 = jump (the normal Jumper, H = 400). Gravity and ground
@@ -109,6 +111,17 @@ groups from the `.vis` lists but only: the group under the camera (`0x40a0c0(cam
 (Original bug: the search for the camera's group in the list has no bound check – `0x42aaef..0x42aafb` runs past the −1
 if the camera's group is not in the list.) A port that draws all geometry can ignore this.
 
+Read in full (round 29): `0x408210(pos)` = the `.vis` list of the camera: sector `s = 0x4081c0(pos)` (kd leaf), group
+`g = 0x40a0c0(pos, −1)` (the GEL group of the floor under the point), then the entry of sector `s` whose `id` equals `g`
+(else the first entry) - so the `.vis` entry id (0/1, FORMAT_TEX_COL_VIS_LIT.md §3) is a floor group. `0x42a980(pos, list)`
+then walks that entry's pairs `(sector, group)`: without a race list every pair's **group** (second word, record
+`world+0x38 + g·0x18`, frame stamp at `+0`) goes into the draw-group list `this+0x58/+0x54`; with a race list only the
+camera's own group and the list entry after it (stamped the same way); in both cases every pair's **sector** (first word,
+`world+0x24[s]`, stamp `+4`) goes into the instance list `this+0x4c/+0x48` and through `0x42a840` (the instances that are
+processed/drawn). So in the races the world geometry of all but two track regions is simply not drawn, while the
+instances still follow the `.vis`. The port draws world faces per sector (`world_visibility`, render_gl.c) and ignores both
+the group word and this list; the six race levels would need the group records `world+0x38` in `gel_load` first.
+
 ### 2.2 Board FX emitter (0x34 B; visual only – skippable)
 
 | off | meaning |
@@ -124,10 +137,39 @@ if the camera's group is not in the list.) A port that draws all geometry can ig
 | 0x2c | u8[n] "has previous position" (cleared by SetRaceInfo and SurfEnter) |
 | 0x30 | next emitter in `[0x5e8564]` |
 
-`0x475440` (631 instr, only partially read): for each type-9 marker (2 points, `0x42f6b0(board, 9, &seg, i)`),
-direction = (point1 − point0) the first time, afterwards (prev − point0), normalized; draws sprites with `0x470f10`
-(flags 7 and 6) at point0 oriented along that direction, spawns particles into the effect pool (max 2000), and stores
-point0 in `prev[i]`. In mode 3 the sprite size is doubled. This is the water/snow spray trail behind the board.
+`0x475440` (631 instructions, read in full in round 29; `S` = the shared sprite `[0x5e823c]+0xb00`, PARTICLES.md §1,
+`costab`/`rnd`/`ftol` as there; the K boards have 2 type-9 markers, the S boards 1). It runs from the effect driver
+`0x46d040` (after the lasers, before `0x47cea0` and the pool `0x470c70`) for every emitter of `[0x5e8564]` whose `+0xc`
+was set this frame, and clears `+0xc` afterwards - so it only draws in frames where `Race_Ride` ran to its end.
+```c
+ph0 += dt·0.05; ph1 += dt·0.15; ph2 += dt·3.0;  each: if (≥ 1) −= 1            /* 0x4aab4c, 0x4aa1c8, 0x4a988c */
+if (mode) acc += dt;  n = ftol(acc·200); acc −= n·0.005;                        /* 0x4aa164, 0x4abd08: 200 puffs/s per marker */
+if (mode == 1) { t1c += dt; if (t1c ≥ 1) { mode = 2; t1c = 0; } }
+if (mode == 0) return;
+s = mode 1 ? (t1c in (0,0.15): t1c·6.667 | (0.3,0.45): (t1c−0.3)·6.667 | (0.85,1): (t1c−0.85)·6.667 | else 0) : –
+A = [0x4abcc8 + 4k], B = [0x4abccc + 4k], C = [0x4abcd0 + 4k]  with k = +0x28 = 3  ⇒  45, 40, 35
+for (i < n) seg[i] = 0x42f6b0(board, 9, i)                                      /* P0, P1 */
+for (i < n) {
+    d = hasPrev[i] ? prev[i] − P0 : P1 − P0;  hasPrev[i] = 1;  len = |d|;  if (len > 0) d /= len;
+    X, Y = 0x46d320(d)                                                          /* rows X, Y, Z = d (PARTICLES.md §1) */
+    /* 1: glow, camera facing */   S = { pos P0, rgb 1, alpha 1 − 0.2·sin512(ftol(256·ph0)), image 0x10020 (bank 0 image 32),
+                                         mode 0x12, size B (mode 1: s·B, mode 3: 2B), rot 512 − ftol(512·ph0) };  0x470f10(S, 7)
+    /* 2: glow in the plane ⟂ d */  S.normal = d; size C (s·C / 2C); alpha 1 − 0.2·sin512(ftol(255·ph1)); rot ftol(512·ph1);  0x470f10(S, 6)
+    /* 3: three flames round d */   r = rnd·10 − 5;  size = A + r (mode 1: s·A + r, mode 3: 1.3·A + r, 0x4abcfc); mode 0x13 (mode 3: 0x12);
+                                    pos = P0 + d·(size·cos512(base[mode]) − size/64)    /* base 37 for 0x13: a 2:1 quad from P0 back along d */
+                                    alpha 0.8, image 0x1001f (bank 0 image 31), UV set 2
+        for (j = 0; j < 255; j += 85) { a = ftol(j + 512·ph2) mod 512;
+            S.R = d;  S.F = X·cos512(a) + Y·sin512(a);  S.N = X·cos512(a+128) + Y·sin512(a+128);  0x470f10(S, 0x62) }
+    /* 4: puffs */ for (k = n−1 .. 0) { rec = pool record (0.2 s, callback 0x475380); if the pool is full: skip;
+        rec.age = k·dt/n;  rec.pos = P0 + d·((k/n)·len + A);  rec.rot = ftol(rnd·512);
+        prev[i] = (+0x28 == 6 || +0x28 == 9) ? P1 : rec.pos }                     /* not updated when n == 0 */
+}
+0x475380 (a puff): u = age/0.2; u > 1 ⇒ free; S = { pos, rgb 1, alpha 0.3 − 0.3u, image 0x1000e (bank 0 image 14),
+                    mode 0x12, rot, size (u + 1)·15 };  0x470f10(S, 7)
+```
+All draw flags lack 8, so everything is additive. The table at `0x4abcc8` continues 50/70/35, 45/40/35, 100/70/60, 100/100/70
+for the other size indices; only 3 is used by the race. On K1R this is the pair of jet flames with a smoke trail behind the
+rocket board (the "water/snow spray" guess above was wrong: the board is a jet board).
 
 ## 3. Enter, restart, boost
 
@@ -155,6 +197,9 @@ p->respawnPos(+0x318) = p->startPos(+0x30c);
 Perso_Respawn(p, 0);                                         /* 0x44a810: pos = +0x318, Reset (→ SurfEnter, state 1), ground snap */
 if (B) { B->Reset(); B->Request(0); }                        /* board: logical anim 0 instead of the 0x5d start anim */
 ```
+The request is short-lived: the menu left the Game in state 0 with 0.1 s to go (`0x445930`), and when that runs out
+state 0 calls `0x445930` again (PERSO_FRAME.md §4.1) - `0x44a810` → Reset → SurfEnter gives `B` Reset + Request(0x5d)
+once more. The board shows anim 0 only for those 0.1 s, behind the closed iris.
 
 ### 3.3 StartBoostSurf `0x456000(p, seg, speed, dur)` – message 1121 `[inst, a, f]`
 Handler `0x444a37`: `seg` = marker typecode 0, index 0 of `inst` (`0x42f6b0(inst, 0, &seg, 0)`; if missing only a log
@@ -514,8 +559,8 @@ Surprises / pitfalls:
 ## 9. Open questions
 
 * Numeric anim durations (0x5d, 0x70, lean anims) from K1R models 16/17 – need the model files.
-* Number and placement of the type-9 markers on the board model (FX only).
-* Exact sprite/particle parameters of `0x475440` (not fully read).
+* ~~Number and placement of the type-9 markers~~: 2 on the K boards, 1 on the S boards (port log of 1120).
+* ~~Exact sprite/particle parameters of `0x475440`~~: §2.2.
 * Whether App+0x28 is the same object as `[0x509adc]` (region list read/write) – very likely, not verified.
 * Rotation direction of action 0/1 on screen – derived from the math and CAMERA.md's handedness, verify in-game.
 * Who ticks the board's own skeleton/animation (`vtbl[2]`); presumably the normal instance update, since the board is
@@ -524,18 +569,34 @@ Surprises / pitfalls:
 ## 10. Port (`src/player.c`, issue #30)
 
 * 1120 (`main_engine.c`) stores `Player.board` + `race_path`; the board becomes a non-scripted instance whose placement
-  and animation are copied from the rider every frame (`player_sync_board`, after `player_update`). Copying the rider's
-  `.ins` animation index and clock stands in for the second controller `B`: the 43 animations of rider and board have
-  the same lengths up to 29, and B receives the same requests. The player's own collision ignores its board
+  (the rider's position and tilted rotation) is copied every frame (`player_sync_board`, after `player_update`). Its
+  animation is its own controller `B` (`board_request` / `board_tick` in player.c, the same chain walker `ctl_request` as
+  the rider's): created by 1120 with nothing requested, Reset + 0x5d by SurfEnter (so not at the level start, §0), the
+  rider's requests in the jump set, the lean and crouch anims and the crash, 0x76 instead of 0x75 in the kind-1 death,
+  Reset + 0 after the pause-menu restart (§3.2), Reset by the teleport. The player's own collision ignores its board
   (`skip_inst`): standing on the board's hull lifted the board, which lifted him, every frame.
 * State 1 = `race_char && !dead_kind`: `race_crouch` (0x465b10), `race_ride` (0x456210 incl. crash 0x456ba0),
   the normal collision sweep with body height 160 / 81 and radius 69 / 34.5, then `race_check_crash` (0x4567f0),
   `race_anims` (0x464c20). The logical-animation chain is ticked every frame (as the controller Tick does), otherwise the
   start anim 0x5d (= .ins 42, the rider running up to the board) never hands over to anim 0 and he keeps running behind it.
 * Jumper parameters come from the column: 400 / 1250 / 1250 for the race, Woody's 380 / 650 / 600 otherwise.
-* Race kill (0x44c4c0) in `player_kill`; Reset calls `race_enter` (SurfEnter). Camera: sub-state 0 sets zoom 1.5, height
-  100, distance 4 and asks the app for a hard cut to the follow camera; state 1 forces behind mode.
+* Race kill (0x44c4c0) in `player_kill`; Reset calls `race_enter` (SurfEnter, also once more at the level start after the
+  init messages, `player_race_start`, as the Game ctor does). SurfEnter puts every type-37 bonus back
+  (`game_race_bonus_reset` = 0x44f8a0) and the race bonus count back to the checkpoint's (`race_bonus_ckpt` = +0x4e0,
+  written by 1030, cleared by the restart). Camera: sub-state 0 sets zoom 1.5, height 100, distance 4 and asks the app for
+  a hard cut to the follow camera; state 1 forces behind mode. The race kind-1 death asks for the fixed camera above him
+  (0x41fb50, now a smooth 100 u/s travel for every kind-1 / kind-7 death camera) from its first frame.
+* Round 29: the up filter (§4.7, `race_upf` from the floor normal under him also in the air, 0.9/0.1 per frame normalised
+  to 60 fps, turned into the instance quaternion in `player_apply_transform`); the ride loop SoundFx 60 through the sound
+  source +0x4a4 (`race_snd_update` / `race_snd_stop`: starts on the second ride frame, stops on crash, race kill and
+  SurfEnter); the hit star 0x4750e0 at `pos + (0,150,0)` on both crash kinds; the hard landing in the air set (§4.6, Jumper 6
+  with a hard fall: 0x6f + the curse bubble) and the dust of ground type 2; the spray emitter of §2.2 (`Player.bfx`, drawn by
+  `board_fx_draw` in main_engine.c before the effect pool, puffs = `FX_BOARD_PUFF`; the sprite primitive got mode 0x13).
 * Deviations: a frame with zero displacement does not count as stuck (the NaN compare of §4.5); the crash rays test world
-  polygons only; the up filter tilt is not applied; see TODO.md for what is left out.
-* Test: `woody.exe <Data> K1R --shot out/x.ppm 5`, steering with `WOODY_KEYS="1.50:LEFT 1.55:LEFT ..."`, `WOODY_BOARDLOG=1`.
-  K2R/S2R open with a hurdle (instance 395, cones + plank) that has to be jumped (~1.0 s); without a jump he crashes.
+  polygons and press nodes; rumble is left out (the port has no force feedback); the region list of §2.1 is not used
+  (the port draws world faces per sector); see TODO.md for what is left out.
+* Test: `woody.exe <Data> K1R --shot out/x.ppm 4` (jets + smoke trail, the rider leans with the ramp), steering with
+  `WOODY_KEYS="2.5:LEFT:1.0"` + `WOODY_ANIMLOG=1` (rider `lanim` and `board lanim` lines), `WOODY_BOARDLOG=1`. Crash, star,
+  Kill(8), respawn with "RACE n race bonuses back": `K2R --shot x.ppm 11` (crash ~5.5 s; since the press-node collision the
+  start hurdle no longer stops him). Kind-1 death: `WOODY_KILLAT="2 1" K1R`. Hard landing: `WOODY_POSAT="2.5 -78440 3500 3120"
+  WOODY_BUBLOG=1 K1R`. Pause restart: `WOODY_KEYS="3.5:ESC 4.2:DOWN 4.8:RET" K1R` (board lanim -> 0, 0.1 s later -> 93).

@@ -1214,7 +1214,7 @@ void hud_world_spr_mode(int mode, int image, const float *pos, float size, int r
     else if (flags & 0x20) { if (!basis) return; memcpy(X, basis, sizeof X); memcpy(Y, basis + 3, sizeof Y); }
     else { if (!basis) return; plane_axes(basis, X, Y); }
     int m = (flags & 0x40) && mirror >= 0 && mirror <= 6 ? mirror : 0, r = (flags & 4) ? rot : 0;
-    int base = mode == 0x1a ? 90 : 64;                                                 /* [0x5e823c]+0x800[mode] (0x4024bb): atan(2^(mode/8 - mode%8)) in 1/512 turn */
+    int base = mode == 0x1a ? 90 : mode == 0x13 ? 37 : 64;                             /* [0x5e823c]+0x800[mode] (0x4024bb): atan(2^(mode/8 - mode%8)) in 1/512 turn; 0x13 = 2:1 wide (the race board's flames) */
     glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[k]);
     if (!(flags & 1)) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -4.0f); }   /* a print on the floor or a hole in a wall is coplanar with it */
     if (flags & 8) {
