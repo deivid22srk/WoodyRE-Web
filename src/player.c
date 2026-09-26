@@ -12,6 +12,9 @@
 #define P_WALK_SPEED   600.0f     /* P+0x1c: RampA max speed, units/s */
 #define P_ACC_TIME     0.25f      /* P+0x2c: RampA acceleration time, v = (t/T)^2 * target */
 #define P_DEC_TIME     0.1f       /* P+0x30: RampA deceleration time, v = v0 * (1 - (t/T)^2) */
+#define P_ICE_ACC_TIME 0.75f      /* P+0x34: RampA acceleration time on slippery ground (0x45a850) */
+#define P_ICE_DEC_TIME 1.0f       /* P+0x38: ... and its deceleration time */
+#define P_ICE_TURN     1.0f       /* P+0x3c: factor on the kept share of the old walking direction */
 #define P_TURN_BLEND   0.25f      /* 0x4a9ca0: facing = slerp(old, wanted, |stick| * 0.25) per frame (0x45a320) */
 #define P_REF_FPS      60.0f      /* the blend is per frame in the original; normalised to this rate here */
 /* Jumper J = Perso+0x334 (docs/PERSO_JUMP.md 1): rise and fall are time parabolas, there is no gravity constant */
@@ -157,10 +160,7 @@ static float ins_floor_below(const InsFile *ins, Vec3 p, float step_up, float ma
     return best;
 }
 
-/* Push-out contribution of one convex polygon (world-space vertices v[0..n), unit normal nrm on the outward side)
- * for a body of radius r centred at q: closest point of the polygon to q (plane point if the projection is inside,
- * else the nearest edge point), penetration r - distance, pushed along the horizontal direction away from it.
- * Accumulated like 0x408600: positive maximum and negative minimum per axis (acc = px, nx, pz, nz). */
+/* is q (on the plane of the convex polygon v[0..n), normal nrm) inside it? */
 static int point_in_poly3(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q)
 {
     int sign = 0;
@@ -172,104 +172,138 @@ static int point_in_poly3(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q)
     }
     return 1;
 }
-static void poly_push_accum(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q, float r, float acc[4])
+/* ---- the player's body against one polygon: 0x408600 (world) / 0x435b90 (instance press nodes, the same code) -------------
+ * docs/PERSO_MOVE.md 6.5. The body is a vertical cylinder of radius r around the centre c whose lower part is a cone: the
+ * band runs from c.y - down to c.y + up, above c.y the radius is r, below it r(y) = r (down + y) / down (y relative to c),
+ * 0 at the bottom of the band. v[] are world-space vertices, pl the polygon plane (unit normal, d).
+ *  1. dist = n.c + d < 0 (c behind the polygon) -> no hit; the plane interval [dist - down n.y, dist + up n.y] must reach
+ *     into (-r, r).
+ *  2. Sutherland-Hodgman clip of the polygon (relative to c) to the band -down <= y <= up (jump table 0x409a94 on
+ *     code(prev) + 4 code(cur) - 1, code = (y < up) + (y < 0) + (y < -down)): an edge emits its start point when that is
+ *     in the band, then its crossings of up / 0 / -down in the order it meets them. The crossings of y = 0 also go to a
+ *     second list M: the chord where the polygon cuts the centre plane.
+ *  3. Every edge of the clipped polygon (closing edge first), then the open polyline M: solve |P + t (Q - P)|_xz =
+ *     r0 + t dr (the cone radius varies along an edge below the centre; 0x4096c7) as a quadratic; a < 0.01, no real root,
+ *     roots outside [0, 1] -> no contact. Contact: the midpoint of the two roots clamped to [0, 1] is the contact point;
+ *     below the centre pen = r(y) - |xz|, above it pen = r - sqrt(f(t) + r^2) (0x409907); push = pen (n.x, n.z) goes to
+ *     a positive maximum / negative minimum per axis (0x409945).
+ *  4. No edge contact but the centre inside the xz outline of the clipped polygon (all edge cross products on one side,
+ *     0x409a1e) -> a hit with push 0.
+ * Returns 1 on a hit (0x407000 then reports the wall contact 3). acc = { +x max, -x min, +z max, -z min }. */
+static int cyl_code(float y, float up, float down) { return (y < up) + (y < 0) + (y < -down); }
+static int cyl_poly(const Vec3 *vw, uint32_t nv, const float pl[4], Vec3 c, float r, float up, float down, float acc[4])
 {
-    float d = vdot(nrm, vsub(q, v[0])); if (d < 0 || d >= r) return;        /* front side only */
-    Vec3 cp = { q.x - nrm.x * d, q.y - nrm.y * d, q.z - nrm.z * d };
-    if (!point_in_poly3(v, n, nrm, cp)) {
-        float best = 1e30f; Vec3 bc = cp;
-        for (uint32_t i = 0; i < n; i++) {
-            Vec3 a = v[i], e = vsub(v[(i + 1) % n], a); float el = vdot(e, e), t = el > 1e-9f ? vdot(vsub(q, a), e) / el : 0;
-            if (t < 0) t = 0; if (t > 1) t = 1;
-            Vec3 c = { a.x + e.x * t, a.y + e.y * t, a.z + e.z * t }, w = vsub(q, c); float dd = vdot(w, w);
-            if (dd < best) { best = dd; bc = c; }
+    float dist = pl[0] * c.x + pl[1] * c.y + pl[2] * c.z + pl[3];
+    if (dist < 0 || nv < 3 || nv > 32 || down == 0) return 0;
+    float lo = dist - down * pl[1], hi = dist + up * pl[1];
+    if (!(lo > -r) && !(hi > -r)) return 0;                           /* 0x40867a: the whole band behind -r */
+    if (!(lo < r) && !(hi < r)) return 0;                             /* 0x4086a5: ... or beyond r */
+    Vec3 L[3 * 32 + 3], M[32 + 2]; int nl = 0, nm = 0;
+    Vec3 pv = { vw[nv - 1].x - c.x, vw[nv - 1].y - c.y, vw[nv - 1].z - c.z }; int pc = cyl_code(pv.y, up, down);
+    for (uint32_t i = 0; i < nv; i++) {
+        Vec3 cv = { vw[i].x - c.x, vw[i].y - c.y, vw[i].z - c.z }; int cc = cyl_code(cv.y, up, down);
+        if (pc == 1 || pc == 2) L[nl++] = pv;                            /* the start point, when it lies in the band */
+        float lvl[3] = { up, 0, -down }; int b0, b1, st;                  /* boundary k lies between code k and k + 1 */
+        if (pc < cc) { b0 = pc; b1 = cc - 1; st = 1; } else { b0 = pc - 1; b1 = cc; st = -1; }
+        if (pc != cc) for (int k = b0; st > 0 ? k <= b1 : k >= b1; k += st) {
+            float t = (pv.y - lvl[k]) / (pv.y - cv.y);
+            Vec3 q = { pv.x + (cv.x - pv.x) * t, pv.y + (cv.y - pv.y) * t, pv.z + (cv.z - pv.z) * t };
+            L[nl++] = q; if (k == 1 && nm < 32 + 2) M[nm++] = q;
         }
-        cp = bc;
+        pv = cv; pc = cc;
     }
-    Vec3 w = vsub(q, cp); float dist = sqrtf(vdot(w, w)); if (dist >= r) return;
-    float hx = w.x, hz = w.z, hl = sqrtf(hx * hx + hz * hz);
-    if (hl < 1e-4f) { hx = nrm.x; hz = nrm.z; hl = sqrtf(hx * hx + hz * hz); if (hl < 1e-4f) return; }
-    float pen = r - dist, vx = hx / hl * pen, vz = hz / hl * pen;
-    if (vx > acc[0]) acc[0] = vx; if (vx < acc[1]) acc[1] = vx; if (vz > acc[2]) acc[2] = vz; if (vz < acc[3]) acc[3] = vz;
+    if (!nl) return 0;                                                  /* 0x409653: nothing inside the band */
+    int hit = 0;
+    for (int e = 0; e < nl + (nm > 1 ? nm - 1 : 0); e++) {
+        Vec3 P = e < nl ? L[e ? e - 1 : nl - 1] : M[e - nl], Q = e < nl ? L[e] : M[e - nl + 1];
+        float r0 = r, dr = 0;
+        if (Q.y < -0.01f || P.y < -0.01f) { r0 = r * (down + P.y) / down; dr = r * (down + Q.y) / down - r0; }   /* 0x4096c7: the cone */
+        float dx = Q.x - P.x, dz = Q.z - P.z, a = dx * dx + dz * dz - dr * dr;
+        if (!(a > 0.01f)) continue;
+        float b = 2.0f * (P.z * dz + P.x * dx - dr * r0), cq = P.x * P.x + P.z * P.z - r0 * r0, disc = b * b - 4.0f * a * cq;
+        if (disc < 0) continue;
+        float s = sqrtf(disc), t1 = (-b - s) / (2.0f * a), t2 = (s - b) / (2.0f * a);
+        if (t1 > t2) { float w = t1; t1 = t2; t2 = w; }
+        if (t1 > 1.0f || t2 < 0) continue;
+        hit = 1;
+        float tm = (t1 + t2) * 0.5f; if (tm < 0) tm = 0; if (tm > 1.0f) tm = 1.0f;
+        float y = P.y + (Q.y - P.y) * tm, pen;
+        if (y < 0) { float x = P.x + dx * tm, z = P.z + dz * tm, q2 = x * x + z * z; pen = (y + down) * r / down - (q2 >= 0 ? sqrtf(q2) : 0); }
+        else { float q2 = (a * tm + b) * tm + r * r + cq; pen = r - (q2 >= 0 ? sqrtf(q2) : 0); }
+        float vx = pen * pl[0], vz = pen * pl[2];
+        if (vx < 0) { if (vx < acc[1]) acc[1] = vx; } else if (vx > acc[0]) acc[0] = vx;
+        if (vz < 0) { if (vz < acc[3]) acc[3] = vz; } else if (vz > acc[2]) acc[2] = vz;
+    }
+    if (hit) return 1;
+    int le = 0, ge = 0;                                                 /* 0x409a1e: the centre inside the clipped outline */
+    for (int e = 0; e < nl; e++) { Vec3 A = L[e ? e - 1 : nl - 1], B = L[e]; float cr = B.z * A.x - A.z * B.x; le += cr <= 0; ge += cr >= 0; }
+    return le == nl || ge == nl;
 }
-
-/* One push-out vector for the body cylinder (radius r, vertical band [lo, hi]) against the world, after 0x407000 /
- * 0x408600: front side only, penetration r - dist along the polygon normal in xz, accumulated per axis as a positive
- * maximum plus a negative minimum. Simplifications: no band clipping / edge-circle intersection and no conical bottom
- * (the contact point is the centre projected onto the plane), walkable polygons (n.y > 0.71) are left to the floor code,
- * instances are ins_push(). */
-static Vec3 gel_push(const GelFile *g, Vec3 c, float r, float lo, float hi)
+/* 0x407000 for the player's sweep: world polygons of the cells the band touches, then the press nodes of the instances
+ * (vt[8] 0x433140: skipped when non-collidable (+8 & 0x40); it takes the polygons into world space with the node matrix
+ * and uses the loader's plane of each polygon, 0x4280c2: n = (R - Q) x (R - P) of the longest consecutive triple, which
+ * on every press node of the shipped levels points away from the node, so the same front-face rule applies). *hit = any
+ * polygon touched (the wall contact P+0x2e0); returns (pos max + neg min) in x and z. */
+static Vec3 body_push(const Player *p, Vec3 c, float r, float up, float down, int *hit)
 {
-    float acc[4] = { 0, 0, 0, 0 }, box[6]; Vec3 v[32];
-    query_box(g, c, r, lo, hi, box);
+    float acc[4] = { 0, 0, 0, 0 }, box[6]; Vec3 v[32]; int any = 0;
+    const GelFile *g = p->gel;
+    query_box(g, c, r, c.y - down, c.y + up, box);
     GelPolySet ps = gel_polys_in_box(g, box);
     for (uint32_t k = 0; k < ps.n; k++) {
-        uint32_t i = ps.polys[k];
-        const GelPoly *pl = &g->polys[i];
-        if (pl->nverts < 3 || pl->nverts > 32 || pl->plane[1] > 0.71f) continue;
-        float d0 = pl->plane[0] * c.x + pl->plane[1] * c.y + pl->plane[2] * c.z + pl->plane[3];
-        if (d0 < -r - (hi - lo) || d0 > r + (hi - lo)) continue;               /* cheap reject */
-        float ymin = 1e30f, ymax = -1e30f;
-        for (uint32_t t = 0; t < pl->nverts; t++) { const GelVert *gv = &g->verts[pl->indices[t]]; v[t] = (Vec3){ gv->x, gv->y, gv->z }; if (gv->y < ymin) ymin = gv->y; if (gv->y > ymax) ymax = gv->y; }
-        if (ymax < lo || ymin > hi) continue;
-        Vec3 q = c; float a = lo > ymin ? lo : ymin, b = hi < ymax ? hi : ymax; if (q.y < a) q.y = a; if (q.y > b) q.y = b;
-        poly_push_accum(v, pl->nverts, (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }, q, r, acc);
+        const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3 || pl->nverts > 32) continue;
+        for (uint32_t t = 0; t < pl->nverts; t++) { const GelVert *gv = &g->verts[pl->indices[t]]; v[t] = (Vec3){ gv->x, gv->y, gv->z }; }
+        any |= cyl_poly(v, pl->nverts, pl->plane, c, r, up, down, acc);
     }
-    Vec3 out = { acc[0] + acc[1], 0, acc[2] + acc[3] }; return out;
-}
-
-/* Same push-out against the press nodes (kind 1) of visible instances, after inst->vt[8] = 0x433140, which walks the
- * press node list S+0x58/0x5c and not the hull nodes (flags 0x04, the visible meshes: with those Woody walked under the
- * W1A saucer, whose press node hangs only 97 above the floor, and every enemy body was a wall). Polygons are taken in world space;
- * their outward side is the one facing away from the node's centroid. */
-static Vec3 ins_push(const InsFile *ins, const Instance *skip, Vec3 c, float r, float lo, float hi)
-{
-    float acc[4] = { 0, 0, 0, 0 }; Vec3 v[16];
-    for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
+    const InsFile *ins = p->ins;
+    for (uint32_t mi = 0; ins && mi < ins->nmodels; mi++) {
         const Model *m = &ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, skip) || !in->node_world) continue;
+            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, p->inst) || !in->node_world) continue;
             if (inst_dist2_xz(in, c) > 3000.0f * 3000.0f) continue;
             uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
-                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->npoints) continue;
-                float nb[6];                                              /* the node's own box against the body cylinder */
-                if (ins_node_world_box(in, ni, nb) && (nb[0] > c.x + r || nb[1] < c.x - r || nb[4] > c.z + r || nb[5] < c.z - r || nb[3] < lo || nb[2] > hi)) continue;
-                Vec3 cen = { 0, 0, 0 };
-                for (uint32_t t = 0; t < nd->npoints; t++) { Vec3 w = ins_point_world(in, nd->point_base + t); cen.x += w.x; cen.y += w.y; cen.z += w.z; }
-                cen.x /= nd->npoints; cen.y /= nd->npoints; cen.z /= nd->npoints;
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1) continue;
+                float nb[6];                                              /* the node's own box against the body */
+                if (ins_node_world_box(in, ni, nb) && (nb[0] > c.x + r || nb[1] < c.x - r || nb[4] > c.z + r || nb[5] < c.z - r || nb[3] < c.y - down || nb[2] > c.y + up)) continue;
                 for (uint32_t f = 0; f < nd->npolys; f++) {
-                    const InsPoly *pl = &nd->polys[f]; if (pl->nverts < 3 || pl->nverts > 16) continue;
-                    float ymin = 1e30f, ymax = -1e30f;
-                    for (uint32_t t = 0; t < pl->nverts; t++) { v[t] = ins_point_world(in, pl->indices[t]); if (v[t].y < ymin) ymin = v[t].y; if (v[t].y > ymax) ymax = v[t].y; }
-                    if (ymax < lo || ymin > hi) continue;
-                    Vec3 nrm = vcross(vsub(v[1], v[0]), vsub(v[2], v[0])); float nl = sqrtf(vdot(nrm, nrm)); if (nl < 1e-6f) continue;
-                    nrm.x /= nl; nrm.y /= nl; nrm.z /= nl;
-                    if (vdot(nrm, vsub(cen, v[0])) > 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }
-                    if (nrm.y > 0.71f) continue;                               /* walkable: floor code */
-                    Vec3 q = c; float a = lo > ymin ? lo : ymin, b = hi < ymax ? hi : ymax; if (q.y < a) q.y = a; if (q.y > b) q.y = b;
-                    float before[4] = { acc[0], acc[1], acc[2], acc[3] }; poly_push_accum(v, pl->nverts, nrm, q, r, acc);
+                    const InsPoly *ip = &nd->polys[f]; if (ip->nverts < 3 || ip->nverts > 32) continue;
+                    for (uint32_t t = 0; t < ip->nverts; t++) v[t] = ins_point_world(in, ip->indices[t]);
+                    float best = 0, pl[4] = { 1, 0, 0, 0 }; int ok = 0;       /* the loader's plane, 0x4280c2 */
+                    for (uint32_t t = 0; t < ip->nverts; t++) {
+                        Vec3 P = v[t], Q = v[(t + 1) % ip->nverts], R = v[(t + 2) % ip->nverts], n = vcross(vsub(R, Q), vsub(R, P)); float l = sqrtf(vdot(n, n));
+                        if (l > 0.01f && (!ok || l > best)) { best = l; ok = 1; pl[0] = n.x / l; pl[1] = n.y / l; pl[2] = n.z / l; pl[3] = -(pl[0] * R.x + pl[1] * R.y + pl[2] * R.z); }
+                    }
+                    if (!ok) continue;
+                    float before[4] = { acc[0], acc[1], acc[2], acc[3] };
+                    any |= cyl_poly(v, ip->nverts, pl, c, r, up, down, acc);
                     if (getenv("WOODY_PUSHLOG") && (before[0] != acc[0] || before[1] != acc[1] || before[2] != acc[2] || before[3] != acc[3])) printf("push: inst %u model %d node %u type %d fade %.2f at %.0f %.0f %.0f", in->index, (int)mi, ni, in->type, in->fade, c.x, c.y, c.z), puts("");
                 }
             }
         }
     }
-    Vec3 out = { acc[0] + acc[1], 0, acc[2] + acc[3] }; return out;
+    *hit = any;
+    return (Vec3){ acc[0] + acc[1], 0, acc[2] + acc[3] };
 }
 
 /* Actor pushing 0x4627d0: for every other actor of the previous frame's list 0x4c5258 (RegisterActor2: the living
  * enemies) 0x433d40(other pos, other vt[32] - 5, other vt[33], own pos, own radius, own height): when the circles overlap in
  * xz (dist < R = r_other - 5 + r_own) and the height ranges [feet, feet + h] overlap, disp.xz += (own - other).xz *
- * (1 - dist / R). Once per frame and not scaled by dt: a soft push (R/4 at half the distance), per frame as in the original. */
-static void actor_push(const Player *p, float r, float h, Vec3 *disp)
+ * (1 - dist / R): the separation s grows to s (2 - s / R) per frame, not scaled by dt. The original's dt is the raw
+ * QueryPerformanceCounter time (0x42a3f0, clamped to 0.1 at 0x40185b, no frame cap), so this push is frame-rate dependent
+ * there; the port runs the same recurrence 60 dt times per frame (as if at 60 fps, like its other per-frame formulas):
+ * identical at 60 fps and without overshoot at low rates. */
+static void actor_push(const Player *p, float r, float h, float dt, Vec3 *disp)
 {
     if (!p->enemies) return;
     for (int i = 0; i < p->enemies->n; i++) {
         const Enemy *e = &p->enemies->e[i]; if (e->removed || !e->inst->visible || e->hp <= 0) continue;
         float R = enemy_radius(e) - 5.0f + r, dx = p->pos.x - e->pos.x, dz = p->pos.z - e->pos.z, d2 = dx * dx + dz * dz;
         if (!(d2 < R * R) || e->pos.y + enemy_height(e) <= p->pos.y || p->pos.y + h <= e->pos.y) continue;
-        float k = 1.0f - sqrtf(d2) / R; disp->x += dx * k; disp->z += dz * k;
-        if (getenv("WOODY_ACTORLOG")) printf("  ACTOR push from inst %u (type %d): dist %.1f of %.1f -> %.1f %.1f\n", e->inst->index, e->type, sqrtf(d2), R, dx * k, dz * k);
+        float s = sqrtf(d2), t = s, n = dt * P_REF_FPS; if (s < 1e-6f) continue;   /* 0x433d40 returns (0, 0) for coincident centres */
+        for (int it = 0; n > 0 && it < 64; it++, n -= 1.0f) t += t * (1.0f - t / R) * (n < 1.0f ? n : 1.0f);
+        float k = (t - s) / s; disp->x += dx * k; disp->z += dz * k;
+        if (getenv("WOODY_ACTORLOG")) printf("  ACTOR push from inst %u (type %d): dist %.1f of %.1f -> %.1f %.1f\n", e->inst->index, e->type, s, R, dx * k, dz * k);
     }
 }
 
@@ -391,6 +425,7 @@ int player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal)
  * polygons have one: a floor made by an instance node, a polygon without a material (bit 15) or a missing .tex is 0. */
 static int ground_type(const Player *p, int32_t mat)
 {
+    if (getenv("WOODY_ICE")) return 1;                                  /* testing: every floor slippery (no shipped level has one) */
     if (mat < 0 || (mat & 0x8000) || !p->tex) return 0;
     uint32_t mi = (uint32_t)mat; if (mi >= p->tex->nmaterials) return 0;
     uint32_t g = p->tex->materials[mi].group; if (g >= p->tex->ngroups) return 0;
@@ -1142,8 +1177,13 @@ static int climb_try(Player *p)
     printf("  CLIMB grab on instance %u\n", wi->index);
     return 1;
 }
-static void climb_update(Player *p, const PlayerInput *in, float dt)
+/* Perso state 4, 0x4651d0 (docs/OBJECTS.md 1.3). Returns this frame's displacement +0x204: the Perso frame clears it
+ * (0x44b662) and only sub 2 writes it; the caller then runs Perso_MoveCollide 0x4624f0 with it, as the original does for
+ * state 4 (0x44b834 -> 0x44b857), so the climber collides with the world and the instances like a walker: the wall he
+ * climbs stops the 200 u/s press at the body radius, a side wall stops the sideways climb. */
+static Vec3 climb_update(Player *p, const PlayerInput *in, float dt)
 {
+    Vec3 disp = { 0, 0, 0 };
     int tap = in->action && !p->climb_act_prev; p->climb_act_prev = in->action;
     if (getenv("WOODY_TAP")) { static float tt; tt += dt; if (tt > 0.3f) { tt = 0; tap = 1; } }   /* testing: tap the attack key automatically */
     if (p->grip > 0) p->grip -= dt;
@@ -1154,14 +1194,14 @@ static void climb_update(Player *p, const PlayerInput *in, float dt)
     case 2: {
         anim_request(p, 0x15, 1.0f);
         Vec3 side = { p->wall_n.z, 0, -p->wall_n.x };                   /* cross((0,1,0), n) */
-        float s = 300.0f * dt, a = in->left ? -s : in->right ? s : 0;
-        p->pos.y += 250.0f * dt;                                        /* always upwards, no input needed (P+0x74) */
-        p->pos.x += side.x * a; p->pos.z += side.z * a;
+        float s = 300.0f * dt, a = in->left ? -s : in->right ? s : 0;   /* P+0x78 */
+        disp.y = 250.0f * dt;                                           /* always upwards, no input needed (P+0x74) */
+        disp.x = side.x * a - p->wall_n.x * dt * 200.0f;                /* 0x4aa164: pressed against the wall */
+        disp.z = side.z * a - p->wall_n.z * dt * 200.0f;
+        /* the ray starts at the position of this frame, before the collision moves him (0x46545e) */
         Vec3 from = { p->pos.x, p->pos.y + 40.0f, p->pos.z }, to = climb_probe_to(p, from), n; const Instance *wi; int peck = 0;
         if (climb_ray(p, from, to, &n, &wi, &peck)) {
-            if (!peck) { p->climb_sub = 4; break; }
-            /* 0x4aa164: pressed against the wall at 200 u/s; the cylinder stops at its radius (the root motion of the climb-over counts on it) */
-            { float gap = g_climb_frac * (P_RADIUS + 100.0f) - P_RADIUS, st = 200.0f * dt; if (st > gap) st = gap; if (st > 0) { p->pos.x -= p->wall_n.x * st; p->pos.z -= p->wall_n.z * st; } }
+            if (!peck) { p->climb_sub = 4; break; }                     /* 0x465549: this frame still moves; the let-go runs next frame */
             if ((p->peck_t -= dt) <= 0) {                               /* a peck every 0.3 s: 0x479c80(0, hit point, wall normal) */
                 float f = g_climb_frac * 0.95f;                         /* 0x4a9c9c: just short of the wall, so the mark sits on it */
                 p->peck_t += 0.3f;
@@ -1174,19 +1214,19 @@ static void climb_update(Player *p, const PlayerInput *in, float dt)
             if (top && fabsf(p->pos.y - ty) < 50.0f) {
                 p->climb_sub = 3; p->over_len = p->over_t = anim_len(p, 0x17, 0) > 0.05f ? anim_len(p, 0x17, 0) : 0.5f; anim_request(p, 0x17, 1.0f);
                 p->use_root = 1; p->root_pos = p->pos;
-            } else p->climb_sub = 4;
+            } else p->climb_sub = 4;                                    /* 0x465510 / 0x465602: also on a world hit */
         }
         break; }
     case 3: {
         anim_request(p, 0x17, 1.0f);
         /* Perso_RootMotion 0x44e290 (docs/OBJECTS.md 1.5): pos stays frozen while the root track of .ins anim 15 carries the model over
-         * the edge; the position getter returns (1-f) pos + f q(f); on the last frame pos = the root's end relative to idle (anim 1) */
+         * the edge; the position getter returns (1-f) pos + f q(f); on the last frame pos = the root's end relative to idle (anim 1),
+         * facing -E.row2, then SnapToGround 0x462990 (floor under feet + 43) */
         p->over_t -= dt; float f = 1.0f - (p->over_t > 0 ? p->over_t / p->over_len : 0); Vec3 q, fw;
         if (ins_root_at(p->inst, 15, f, 1, &q, &fw)) p->root_pos = (Vec3){ p->pos.x + (q.x - p->pos.x) * f, p->pos.y + (q.y - p->pos.y) * f, p->pos.z + (q.z - p->pos.z) * f };
         if (p->over_t <= 0) {
             if (ins_root_at(p->inst, 15, 1.0f, 1, &q, &fw)) { p->pos = q; if (fw.x * fw.x + fw.z * fw.z > 1e-6f) p->yaw = atan2f(fw.x, fw.z); }
-            { int fnd; const Instance *gi; const InsNode *gn; Vec3 pr = { p->pos.x, p->pos.y + P_PROBE_Y + 60.0f, p->pos.z }; float gy = world_ground(p, pr, &fnd, &gi, &gn); if (fnd && fabsf(gy - p->pos.y) < 150.0f) p->pos.y = gy; }   /* SnapToGround 0x462990 */
-            p->use_root = 0; p->climb_sub = 0; jumper_reset(&p->jumper); p->on_ground = 1; p->lanim = -1; anim_request(p, 0, 1.0f); printf("  CLIMB over the top at %.0f %.0f %.0f\n", p->pos.x, p->pos.y, p->pos.z);
+            p->use_root = 0; p->climb_sub = 0; player_ground_snap(p); p->lanim = -1; anim_request(p, 0, 1.0f); printf("  CLIMB over the top at %.0f %.0f %.0f\n", p->pos.x, p->pos.y, p->pos.z);
         }
         break; }
     default:                                                            /* 4: let go; no new grab for twice the fall animation */
@@ -1194,6 +1234,7 @@ static void climb_update(Player *p, const PlayerInput *in, float dt)
         p->climb_sub = 0; jumper_force_fall(&p->jumper, 1); printf("  CLIMB let go\n");
         break;
     }
+    return disp;
 }
 
 /* ---- bonuses (docs/BONUS.md): the script sends message 10 to the bonus instance; vtable[+0x70] per class ------ */
@@ -1607,6 +1648,63 @@ static void bonus_blink(Player *p, float dt)
     p->inst->tint_mode = white ? 2 : 0; p->inst->tint_rgb[0] = p->inst->tint_rgb[1] = p->inst->tint_rgb[2] = 1.0f;
 }
 
+/* Perso_MoveCollide 0x4624f0 -> SweepCylinder 0x437180 (docs/PERSO_MOVE.md 6.1/6.2): actor push, then move in substeps of
+ * at most 10 units; per substep one xz push-out vector of the body (body_push, 0x407000 / 0x408600) x0.9, landing clamp
+ * when falling, ground clinging when walking; then the floor under feet + 43. Runs in states 0, 2, 3, 6, 7 after Perso_Move
+ * and in state 4 (climbing) after 0x4651d0 (0x44b857). The GetHeight of the sweep (0x4372a2, 0x4373d5) probes from the
+ * body centre, so while falling a ledge up to half the body height above the feet catches him (0x4373ec). */
+static void move_collide(Player *p, Vec3 *dispp, float dt, int racing, const Instance **hit_inst_out, const InsNode **hit_node_out)
+{
+    const Instance *hit_inst = NULL; const InsNode *hit_node = NULL; int found;
+    Vec3 np, disp;
+    /* P+0x08 = 160 standing / 81 crouched for the race columns (0x462490), wall radius halved while crouched in state 1 (0x462517) */
+    const float body_h = player_body_height(p), radius = racing && p->race_crouch ? P_RADIUS * 0.5f : P_RADIUS;
+    actor_push(p, radius, body_h, dt, dispp); disp = *dispp;
+    {
+        const float half = body_h * 0.5f;
+        Vec3 cur = { p->pos.x, p->pos.y + half, p->pos.z };
+        Vec3 carry = attach_delta(p);                                 /* 0x436d20: the platform moved under the player */
+        Vec3 d = { disp.x + carry.x, disp.y + carry.y, disp.z + carry.z };
+        int mode = d.y > 0.1f ? 3 : (d.y < -0.1f ? 2 : 0), wall = 0;
+        int n = (int)(floorf(sqrtf(vdot(d, d)) / P_SUBSTEP) + 1.5f);
+        d.x /= n; d.y /= n; d.z /= n;
+        float margin = 5.0f;
+        float gy = world_ground(p, cur, &found, &hit_inst, &hit_node);
+        if (found && cur.y - half - 1.0f < gy) { margin = P_STEP + 1.0f; if (mode == 0) mode = 1; }
+        for (; n > 0; n--) {
+            cur.x += d.x; cur.y += d.y; cur.z += d.z;
+            float feet = cur.y - half; int hit = 0;
+            /* band [feet + margin, feet + H]: up = feet + H - centre, down = centre - (feet + margin) ([0x53a350], [0x53a54c]) */
+            Vec3 push = body_push(p, cur, radius, feet + body_h - cur.y, cur.y - (feet + margin), &hit);
+            if (hit) { wall = 1; cur.x += push.x * 0.9f; cur.z += push.z * 0.9f; }
+            if (hit && getenv("WOODY_PUSHLOG")) printf("sweep: contact at %.0f %.0f %.0f band %.0f..%.0f push %.1f %.1f", cur.x, feet, cur.z, margin, body_h, push.x, push.z), puts("");
+            gy = world_ground(p, cur, &found, &hit_inst, &hit_node);
+            if (!found) continue;
+            if (mode == 2) { if (cur.y - half < gy) cur.y = gy + half; }
+            else if (mode == 1) { float f = cur.y - half; if (f - gy < P_STEP && f > gy) cur.y = gy + half; }
+        }
+        p->wall_contact = wall;                                       /* P+0x2e0 ([0x53a554] = 3 after any hit) */
+        np.x = cur.x; np.y = cur.y - half; np.z = cur.z;
+    }
+    /* ground probe from feet + 43 (0x436f00 -> GetHeight 0x435650): on the ground iff feet - ground < 1.0, which also
+     * steps up onto floors up to 43 higher. Without any floor the original treats the probe point as ground; here the
+     * player simply keeps falling and is held at the bottom of the world. */
+    {
+        Vec3 probe = { np.x, np.y + P_PROBE_Y, np.z };
+        float gy = world_ground(p, probe, &found, &hit_inst, &hit_node);
+        p->floor_is_hull = found && hit_node != NULL;
+        if (found) p->floor_y = gy;
+        if (found && np.y - gy < 1.0f) { p->on_ground = 1; np.y = gy; } else p->on_ground = 0;
+        p->ground_n = p->on_ground ? g_ground_n : (Vec3){ 0, 1, 0 };            /* 0x45a110 -> Mover+0xd0 */
+        p->race_floor_n = found && g_ground_n.y >= 0 ? g_ground_n : (Vec3){ 0, 1, 0 };   /* 0x4628e0: the floor query's normal, (0,1,0) if it points down */
+        p->ground_kind = found ? ground_type(p, g_ground_mat) : 0;              /* 0x4628e0 -> Perso+0x308 */
+        attach_store(p, p->on_ground ? hit_inst : NULL, hit_node, np);  /* 0x436d80 / 0x436d10 */
+    }
+    if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; player_kill(p, 7); }     /* below the world: "disappear" death (the original leaves this to script volumes) */
+    p->pos = np;
+    *hit_inst_out = hit_inst; *hit_node_out = hit_node;
+}
+
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw)
 {
     if (dt <= 0) return;
@@ -1680,7 +1778,12 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200);
         player_volumes_y(p, vm, 20.0f); return;                            /* 0x462760(p, 20.0) */
     }
-    if (!p->dead_kind && p->climb_sub) { climb_update(p, in, dt); if (p->climb_sub) p->on_ground = 0; player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return; }
+    if (!p->dead_kind && p->climb_sub) {                                   /* state 4: 0x4651d0, then Perso_MoveCollide 0x4624f0 (0x44b834) */
+        Vec3 d = climb_update(p, in, dt); const Instance *hi; const InsNode *hn;
+        p->vel = (Vec3){ d.x / dt, d.y / dt, d.z / dt };
+        move_collide(p, &d, dt, 0, &hi, &hn);
+        player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return;
+    }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     int racing = p->race_char && !p->dead_kind;                           /* Perso state 1: no attacks, no Mover (0x44b530) */
     if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } duck_update(p, in, dt); }
@@ -1689,6 +1792,9 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     else {
     /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking; states 2 and 3 call it with arg 0 (0x44b8a3) */
     int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind || p->look);
+    /* 0x45a850 loads RampA's times every frame: P+0x2c / P+0x30 (0.25 / 0.1 s), on slippery ground (Perso+0x308 == 1) P+0x34 / P+0x38 */
+    const int ice = p->ground_kind == 1;
+    const float acc_T = ice ? P_ICE_ACC_TIME : P_ACC_TIME, dec_T = ice ? P_ICE_DEC_TIME : P_DEC_TIME;
     /* input direction relative to the camera */
     float ix = allow ? (float)(in->right - in->left) : 0, iz = allow ? (float)(in->forward - in->back) : 0, stick = 1.0f;
     if (allow && (in->ax != 0 || in->az != 0)) { ix = in->ax; iz = in->az; stick = sqrtf(ix * ix + iz * iz); if (stick > 1.0f) stick = 1.0f; }   /* 0x45a4b0: the deflection scales speed and turn */
@@ -1703,13 +1809,30 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         /* 0x45a4b0: turning slows down, target = (dot(new, old) + 1) / 2 * max; facing blends toward the wanted direction */
         p->ramp_target = (cosf(d) + 1.0f) * 0.5f * P_WALK_SPEED * stick;   /* * min(|stick|, 1) */
         p->yaw += d * (1.0f - powf(1.0f - P_TURN_BLEND * stick, dt * P_REF_FPS));
-        if (p->ramp_phase == 0 || p->ramp_phase == 3) { p->ramp_phase = 1; p->ramp_t = sqrtf(p->speed / P_WALK_SPEED) * P_ACC_TIME; }   /* 0x45ad30: 0/3 -> 1 */
+        if (p->ramp_phase == 0 || p->ramp_phase == 3) { p->ramp_phase = 1; p->ramp_t = sqrtf(p->speed / P_WALK_SPEED) * acc_T; }   /* 0x45ad30: 0/3 -> 1 */
     } else if (!allow && !p->look) { p->ramp_phase = 0; p->speed = 0; }   /* state 3 has no lock: the Mover runs out (0.1 s) as when the keys are let go */
     else if (p->ramp_phase == 1 || p->ramp_phase == 2) { p->ramp_phase = 3; p->ramp_t = 0; p->ramp_v0 = p->speed; }                  /* 2 -> 3 */
-    /* Ramp tick (0x4671d0) */
-    if (p->ramp_phase == 1) { p->ramp_t += dt; float k = p->ramp_t / P_ACC_TIME; if (k >= 1.0f) { k = 1.0f; p->ramp_phase = 2; } p->speed = k * k * p->ramp_target; }
+    /* RampA's direction 0x45a850 (docs/PERSO_MOVE.md 6.4): normally the facing M+0x10; on slippery ground (and a target >= 0,
+     * always here) it keeps k of the old walking direction per frame, k = clamp(|v| / P+0x1c, 0, 0.95) * P+0x3c with |v| =
+     * the Mover's speed of the previous frame (M+0xe0): dir = k normalize(dir) + (1 - k) facing, not normalised again
+     * (0x45a9ad), so a reversal on ice first slows him down. Per frame in the original; k^(60 dt) here. No shipped level has
+     * a slippery floor (no texture group with ground type 1 in any .tex): WOODY_ICE=1 makes every floor slippery (testing). */
+    {
+        Vec3 f = { sinf(p->yaw), 0, cosf(p->yaw) };
+        if (ice) {
+            float v = sqrtf(p->vel.x * p->vel.x + p->vel.z * p->vel.z) / P_WALK_SPEED, l = sqrtf(p->move_dir.x * p->move_dir.x + p->move_dir.z * p->move_dir.z);
+            if (v < 0) v = 0; if (v > 0.95f) v = 0.95f;                  /* 0x4a9c9c */
+            float k = powf(v * P_ICE_TURN, dt * P_REF_FPS);
+            Vec3 a = l > 1e-6f ? (Vec3){ p->move_dir.x / l, 0, p->move_dir.z / l } : f;
+            p->move_dir = (Vec3){ a.x * k + f.x * (1.0f - k), 0, a.z * k + f.z * (1.0f - k) };
+        } else p->move_dir = f;
+    }
+    /* Ramp tick (0x4671d0); before it 0x45ae50: after a wall contact in the last sweep (Perso+0x2e0) 0x4672d0(RampA, 0.25) moves the
+     * braking timer a quarter of the way to its end (per frame; normalised to 60 fps) */
+    if (p->ramp_phase == 3 && p->wall_contact) p->ramp_t += (dec_T - p->ramp_t) * (1.0f - powf(0.75f, dt * P_REF_FPS));
+    if (p->ramp_phase == 1) { p->ramp_t += dt; float k = p->ramp_t / acc_T; if (k >= 1.0f) { k = 1.0f; p->ramp_phase = 2; } p->speed = k * k * p->ramp_target; }
     else if (p->ramp_phase == 2) p->speed = p->ramp_target;
-    else if (p->ramp_phase == 3) { p->ramp_t += dt; float k = p->ramp_t / P_DEC_TIME; if (k >= 1.0f) { k = 1.0f; p->ramp_phase = 0; } p->speed = p->ramp_v0 * (1.0f - k * k); }
+    else if (p->ramp_phase == 3) { p->ramp_t += dt; float k = p->ramp_t / dec_T; if (k >= 1.0f) { k = 1.0f; p->ramp_phase = 0; } p->speed = p->ramp_v0 * (1.0f - k * k); }
     else p->speed = 0;
     /* sliding, Mover RampB 0x45aa60: on ground steeper than n.y < 0.71 the player accelerates downhill to 600 u/s;
      * on flatter ground the slide decelerates. (The original keeps separate ramp phases; this is one linear ramp.) */
@@ -1730,7 +1853,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     else if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, allow && in->jump, p->on_ground, p->pos.y - p->floor_y, dt);
     if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
-    disp = p->use_atk_disp ? p->atk_disp : (Vec3){ sinf(p->yaw) * p->speed * dt, p->jumper.dy, cosf(p->yaw) * p->speed * dt };
+    disp = p->use_atk_disp ? p->atk_disp : (Vec3){ p->move_dir.x * p->speed * dt, p->jumper.dy, p->move_dir.z * p->speed * dt };
     int hlock = p->duck != 0;                                              /* 0x44bc16: +0x238 > 0 zeroes the horizontal vector (walk, slide, knockback); the port only applies that while ducked */
     if (hlock && !p->use_atk_disp) disp.x = disp.z = 0;
     if (p->push_t > 0 || p->push_speed > 0) {                              /* RampC 0x45acb0: 500 u/s, 0.1 s up, 0.5 s out */
@@ -1744,56 +1867,10 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     p->vel = (Vec3){ disp.x / dt, disp.y / dt, disp.z / dt };
     if (disp.y < 0) p->jumper.fallen -= disp.y;                                      /* 0x44b914: fallen height accumulates */
 
-    /* Perso_MoveCollide 0x4624f0 -> SweepCylinder 0x437180 (docs/PERSO_MOVE.md 6.1/6.2): move in substeps of at
-     * most 10 units; per substep one xz push-out vector (x0.9), landing clamp when falling, ground clinging when walking. */
-    const Instance *hit_inst = NULL; const InsNode *hit_node = NULL; int found;
-    Vec3 np, old_pos = p->pos;
-    /* P+0x08 = 160 standing / 81 crouched for the race columns (0x462490), wall radius halved while crouched in state 1 (0x462517) */
-    const float body_h = player_body_height(p), radius = racing && p->race_crouch ? P_RADIUS * 0.5f : P_RADIUS;
-    actor_push(p, radius, body_h, &disp);
-    {
-        const float half = body_h * 0.5f;
-        Vec3 cur = { p->pos.x, p->pos.y + half, p->pos.z };
-        Vec3 carry = attach_delta(p);                                 /* 0x436d20: the platform moved under the player */
-        Vec3 d = { disp.x + carry.x, disp.y + carry.y, disp.z + carry.z };
-        int mode = d.y > 0.1f ? 3 : (d.y < -0.1f ? 2 : 0);
-        int n = (int)(floorf(sqrtf(vdot(d, d)) / P_SUBSTEP) + 1.5f);
-        d.x /= n; d.y /= n; d.z /= n;
-        float margin = 5.0f;
-        /* the original probes from the body centre here; feet + 43 (as in the final ground test) keeps objects of up to
-         * half the body height from counting as floor while the instance push-out is still approximate */
-        #define SWEEP_PROBE(c) ((Vec3){ (c).x, (c).y - half + P_PROBE_Y, (c).z })
-        float gy = world_ground(p, SWEEP_PROBE(cur), &found, &hit_inst, &hit_node);
-        if (found && cur.y - half - 1.0f < gy) { margin = P_STEP + 1.0f; if (mode == 0) mode = 1; }
-        for (; n > 0; n--) {
-            cur.x += d.x; cur.y += d.y; cur.z += d.z;
-            float feet = cur.y - half;
-            Vec3 push = gel_push(p->gel, cur, radius, feet + margin, feet + body_h);
-            { Vec3 ip = ins_push(p->ins, p->inst, cur, radius, feet + margin, feet + body_h); push.x += ip.x; push.z += ip.z; }
-            cur.x += push.x * 0.9f; cur.z += push.z * 0.9f;
-            gy = world_ground(p, SWEEP_PROBE(cur), &found, &hit_inst, &hit_node);
-            if (!found) continue;
-            if (mode == 2) { if (cur.y - half < gy) cur.y = gy + half; }
-            else if (mode == 1) { float f = cur.y - half; if (f - gy < P_STEP && f > gy) cur.y = gy + half; }
-        }
-        np.x = cur.x; np.y = cur.y - half; np.z = cur.z;
-    }
-    /* ground probe from feet + 43 (0x436f00 -> GetHeight 0x435650): on the ground iff feet - ground < 1.0, which also
-     * steps up onto floors up to 43 higher. Without any floor the original treats the probe point as ground; here the
-     * player simply keeps falling and is held at the bottom of the world. */
-    {
-        Vec3 probe = { np.x, np.y + P_PROBE_Y, np.z };
-        float gy = world_ground(p, probe, &found, &hit_inst, &hit_node);
-        p->floor_is_hull = found && hit_node != NULL;
-        if (found) p->floor_y = gy;
-        if (found && np.y - gy < 1.0f) { p->on_ground = 1; np.y = gy; } else p->on_ground = 0;
-        p->ground_n = p->on_ground ? g_ground_n : (Vec3){ 0, 1, 0 };            /* 0x45a110 -> Mover+0xd0 */
-        p->race_floor_n = found && g_ground_n.y >= 0 ? g_ground_n : (Vec3){ 0, 1, 0 };   /* 0x4628e0: the floor query's normal, (0,1,0) if it points down */
-        p->ground_kind = found ? ground_type(p, g_ground_mat) : 0;              /* 0x4628e0 -> Perso+0x308 */
-        attach_store(p, p->on_ground ? hit_inst : NULL, hit_node, np);  /* 0x436d80 / 0x436d10 */
-    }
-    if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; player_kill(p, 7); }     /* below the world: "disappear" death (the original leaves this to script volumes) */
-    p->pos = np;
+    const Instance *hit_inst = NULL; const InsNode *hit_node = NULL;
+    Vec3 old_pos = p->pos;
+    const float body_h = player_body_height(p);
+    move_collide(p, &disp, dt, racing, &hit_inst, &hit_node);
     if (racing) race_check_crash(p, old_pos, disp, body_h);
     check_steep(p);                                                       /* 0x44b2e0, after the collision and before Orient */
     if (racing) {                                                         /* 0x44bd30: +0x210 = +0x210 * 0.9 + M+0xd0 * 0.1 per frame (normalised to 60 fps), not renormalised */
