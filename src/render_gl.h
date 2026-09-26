@@ -61,6 +61,8 @@ void rnd_fade(float brightness);             /* darken the finished frame: 1 = n
 void rnd_free(Renderer *r);
 void rnd_set_sky(Renderer *r, const uint32_t tex[5]);   /* level bank images 3,0,1,2,4 replace the group's own frames when the bank has >= 5 images (0x5e8670) */
 int  rnd_screenshot(const Window *w, const char *path);   /* binary PPM of the current back buffer */
+/* an HNM film frame (RGB565, docs/HNM.md) over the whole window, 4:3 kept with black bars; px NULL frees the texture */
+void rnd_film_frame(const Window *w, const uint16_t *px, int width, int height);
 void rnd_uv_report(const Renderer *r, const Instance *inst);   /* WOODY_UVLOG: texture group + generated UV range per mesh node and material */
 Vec3 cam_forward(const FreeCamera *c);
 Vec3 cam_right(const FreeCamera *c);

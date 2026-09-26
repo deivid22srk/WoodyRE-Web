@@ -101,7 +101,7 @@ Lang, Blackbox and Credits have a one-object script that only does `SetTypeInsta
      dialog** (`0x4066c0`, DialogBoxParam resource 0x66) and loads the chosen path with index 0x1b.
      No logos.
    - normal: `app+0x98 = 35.0`, state = 2, logo 0 starts (`0x445d00(0)`).
-3. State 2 = `0x401500`: logo table `0x4b3960` = `\Logo\Cryo.hnm`, `\Logo\Eko.hnm`, `\Logo\Universal.hnm`.
+3. State 2 = `0x401500`: logo table `0x4b3960` = `\Logo\Cryo.hnm`, `\Logo\Eko.hnm`, `\Logo\Universal.hnm` (player and format: docs/HNM.md).
    Key 9 (`0x467400(9)`) aborts the currently running logo. When the logo is finished
    (`0x445de0`): index 0 → logo 1, 1 → logo 2, 2 → done:
    - `[app+0x4c]->vt[1]() == 2` → `LoadLevel(0x1c)` (Lang) + menu page 0x16 + state 0. On the PC

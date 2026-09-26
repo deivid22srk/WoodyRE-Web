@@ -57,6 +57,7 @@ static struct {
     FILE *dump;
     char bf_path[260]; BfFile *bf; int nbf; uint32_t bf_data;
     Stream s[2];                            /* 0 = music, 1 = rtc */
+    struct { int16_t *buf; int cap, head, count, rate, channels, on; double pos; } pcm;   /* film sound: ring of stereo frames */
 } A;
 
 /* ---------------------------------------------------------------- streams */
@@ -169,6 +170,16 @@ static void mix_block(int16_t *out) {
     EnterCriticalSection(&A.cs);
     stream_mix(&A.s[0], acc, A.m_mus);
     stream_mix(&A.s[1], acc, A.m_mus);
+    if (A.pcm.on) {                                                                 /* film sound (audio_pcm_push) */
+        double step = (double)A.pcm.rate / MIX_RATE;
+        for (int i = 0; i < BLOCK && A.pcm.count > 0; i++) {
+            const int16_t *p = A.pcm.buf + 2 * A.pcm.head;
+            acc[i * 2] += p[0]; acc[i * 2 + 1] += p[1];
+            A.pcm.pos += step; int adv = (int)A.pcm.pos; A.pcm.pos -= adv;
+            if (adv > A.pcm.count) adv = A.pcm.count;
+            A.pcm.head = (A.pcm.head + adv) % A.pcm.cap; A.pcm.count -= adv;
+        }
+    }
     if (!A.paused) for (int n = 0; n < NVOICES; n++) {
         Voice *v = &A.v[n]; if (!v->snd || v->wait) continue;                     /* a parked voice neither sounds nor ages */
         if (v->fg != v->ftarget) {
@@ -490,4 +501,29 @@ void audio_rtc(int track) {
     EnterCriticalSection(&A.cs);
     if (track < 0) stream_close(&A.s[1]); else stream_open(&A.s[1], track, 0);
     LeaveCriticalSection(&A.cs);
+}
+
+/* ---------------------------------------------------------------- film sound (docs/HNM.md) */
+int audio_pcm_open(int rate, int channels) {
+    if (!A.ok || rate <= 0 || channels < 1 || channels > 2) return -1;
+    EnterCriticalSection(&A.cs);
+    if (!A.pcm.buf) { A.pcm.cap = MIX_RATE * 4; A.pcm.buf = malloc((size_t)A.pcm.cap * 2 * sizeof *A.pcm.buf); }
+    A.pcm.head = A.pcm.count = 0; A.pcm.pos = 0; A.pcm.rate = rate; A.pcm.channels = channels; A.pcm.on = A.pcm.buf != NULL;
+    LeaveCriticalSection(&A.cs);
+    return A.pcm.on ? 0 : -1;
+}
+int audio_pcm_push(const int16_t *pcm, int frames) {
+    if (!A.ok || !A.pcm.on) return 0;
+    EnterCriticalSection(&A.cs);
+    if (frames > A.pcm.cap - A.pcm.count) frames = A.pcm.cap - A.pcm.count;
+    for (int i = 0, t = (A.pcm.head + A.pcm.count) % A.pcm.cap; i < frames; i++, t = (t + 1) % A.pcm.cap) {
+        A.pcm.buf[2 * t] = pcm[i * A.pcm.channels]; A.pcm.buf[2 * t + 1] = pcm[i * A.pcm.channels + A.pcm.channels - 1];
+    }
+    A.pcm.count += frames;
+    LeaveCriticalSection(&A.cs);
+    return frames;
+}
+void audio_pcm_close(void) {
+    if (!A.ok) return;
+    EnterCriticalSection(&A.cs); A.pcm.on = 0; A.pcm.count = 0; LeaveCriticalSection(&A.cs);
 }

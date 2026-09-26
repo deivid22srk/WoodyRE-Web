@@ -468,6 +468,39 @@ int rnd_screenshot(const Window *w, const char *path)
     fclose(f); free(px); return 0;
 }
 
+/* The original's player converts the 565 frame for a 32-bit back buffer through the table 0x4c93d0 (built in 0x425fa0: each channel
+ * shifted up with its low bits set, r5 << 3 | 7 ...) and Blts it stretched to the screen rect (0x4263d0, message 0x8000 / 2). */
+void rnd_film_frame(const Window *w, const uint16_t *px, int width, int height)
+{
+    static GLuint tex; static int tw, th; static uint8_t *rgb; static size_t rgb_n;
+    if (!px) { if (tex) glDeleteTextures(1, &tex); tex = 0; free(rgb); rgb = NULL; rgb_n = 0; return; }
+    if (!tex || width > tw || height > th) {
+        if (tex) glDeleteTextures(1, &tex);
+        for (tw = 64; tw < width; tw <<= 1) {} for (th = 64; th < height; th <<= 1) {}   /* OpenGL 1.1: power-of-two sizes */
+        glGenTextures(1, &tex); glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tw, th, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    }
+    size_t n = (size_t)width * height;
+    if (n > rgb_n) { free(rgb); rgb = (uint8_t *)malloc(n * 3); rgb_n = rgb ? n : 0; if (!rgb) return; }
+    for (size_t i = 0; i < n; i++) { unsigned p = px[i]; rgb[i * 3] = (uint8_t)((p >> 11) << 3 | 7); rgb[i * 3 + 1] = (uint8_t)((p >> 5 & 63) << 2 | 3); rgb[i * 3 + 2] = (uint8_t)((p & 31) << 3 | 7); }
+    glBindTexture(GL_TEXTURE_2D, tex); glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, rgb);
+    int W = w->width > 0 ? w->width : 1, H = w->height > 0 ? w->height : 1;
+    float s = (float)W / width < (float)H / height ? (float)W / width : (float)H / height, dw = width * s, dh = height * s, x0 = (W - dw) / 2, y0 = (H - dh) / 2;
+    glViewport(0, 0, W, H); glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glMatrixMode(GL_PROJECTION); glLoadIdentity(); glOrtho(0, W, H, 0, -1, 1); glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+    glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_LIGHTING); glDisable(GL_BLEND); glDisable(GL_ALPHA_TEST); glDisable(GL_FOG);
+    glEnable(GL_TEXTURE_2D); glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); glColor4f(1, 1, 1, 1);
+    float u = (float)width / tw, v = (float)height / th;
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex2f(x0, y0); glTexCoord2f(u, 0); glVertex2f(x0 + dw, y0);
+    glTexCoord2f(u, v); glVertex2f(x0 + dw, y0 + dh); glTexCoord2f(0, v); glVertex2f(x0, y0 + dh);
+    glEnd();
+    glDisable(GL_TEXTURE_2D); glEnable(GL_DEPTH_TEST);
+}
+
 void rnd_free(Renderer *r)
 {
     for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->batches[i].idx); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); free(r->litb[i].idx); }

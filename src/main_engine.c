@@ -24,6 +24,7 @@
 #include "hud.h"
 #include "water.h"
 #include "storm.h"
+#include "hnm.h"
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
@@ -2802,6 +2803,46 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     return 0;
 }
 
+/* ---------------------------------------------------------------- the logo films (docs/HNM.md) */
+/* App state 2 = 0x401500: the films of table 0x4b3960 one after the other, 0x445d00(i) starts one (path = game dir + "\Logo\..."),
+ * 0x445de0 asks the player whether it still runs; action 9 held (0x467400(9): Esc in the shipped Woody.cfg) stops the running one
+ * (0x445da0) and the next one starts in the same frame, so holding Esc skips them all. After the third: House + title (0x404e30).
+ * Test hooks: WOODY_LOGOSHOT="file.ppm T" = screenshot T s after the first film started; WOODY_LOGOESC="T ..." = Esc at those times. */
+static void logos_play(Window *w, const char *dir)
+{
+    static const char *k_logo[3] = { "Cryo", "Eko", "Universal" };                 /* \Logo\Cryo.hnm, \Logo\Eko.hnm, \Logo\Universal.hnm */
+    char shot[260] = ""; double shot_at = -1, esc[8]; int nesc = 0, esc_i = 0;
+    { const char *e = getenv("WOODY_LOGOSHOT"); if (e && sscanf(e, "%259s %lf", shot, &shot_at) != 2) shot_at = -1; }
+    { const char *e = getenv("WOODY_LOGOESC"); while (e && *e && nesc < 8) { char *q; double v = strtod(e, &q); if (q == e) break; esc[nesc++] = v; e = q; } }
+    double T0 = win_time();
+    for (int k = 0; k < 3 && !w->quit; k++) {
+        char path[600]; snprintf(path, sizeof path, "%s/../Logo/%s.hnm", dir, k_logo[k]);
+        HnmFile h; if (hnm_open(&h, path)) { printf("logo: %s missing\n", path); continue; }
+        int snd = 0, stop = 0, r = 0; double t0 = win_time();
+        while (!stop && !w->quit && (r = hnm_next(&h)) > 0) {
+            if (h.npcm) { if (!snd && h.has_sound) snd = !audio_pcm_open(h.rate, h.channels); if (snd) audio_pcm_push(h.pcm, h.npcm); }   /* the first block holds 32 frames of sound */
+            if (h.frame == 1) t0 = win_time();
+            double due = t0 + (h.frame - 1) * h.frame_time;                                                   /* the clock of the sound: one superchunk = one frame of it */
+            for (;;) {
+                win_poll(w); double now = win_time(); in_frame(w, 0, now, now);
+                if (esc_i < nesc && now - T0 >= esc[esc_i]) { esc_i++; stop = 1; }
+                if (in_held(9)) stop = 1;
+                if (stop || w->quit || now >= due) break;
+                Sleep(1);
+            }
+            if (stop || w->quit) break;
+            rnd_film_frame(w, h.cur, h.width, h.height);
+            if (shot_at >= 0 && win_time() - T0 >= shot_at) { rnd_screenshot(w, shot); printf("logo shot %s at %.2f s: film %d frame %d\n", shot, win_time() - T0, k, h.frame - 1); shot_at = -1; }
+            win_swap(w);
+        }
+        for (double end = t0 + h.frame * h.frame_time; !stop && !w->quit && win_time() < end; Sleep(1)) { win_poll(w); double now = win_time(); in_frame(w, 0, now, now); if (in_held(9)) stop = 1; }   /* the last frame's time */
+        if (snd) audio_pcm_close();
+        printf("logo %d (%s): %d of %d frames%s%s\n", k, k_logo[k], h.frame, h.frames, stop ? ", skipped" : "", r < 0 ? ", bad data" : "");
+        hnm_close(&h);
+    }
+    rnd_film_frame(w, NULL, 0, 0);
+}
+
 static void *read_all(const char *path, size_t *sz) { FILE *f = fopen(path, "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); void *b = malloc((size_t)n); if (fread(b, 1, (size_t)n, f) != (size_t)n) { fclose(f); free(b); return NULL; } fclose(f); *sz = (size_t)n; return b; }
 
 int main(int argc, char **argv)
@@ -2818,7 +2859,7 @@ int main(int argc, char **argv)
     double enter_at = -1;                                                         /* --enter T: press Enter on the title after T s (testing) */
     int pick_type = 0, pre_bonus = -1; float pre_health = -1; double pick_at = 0;   /* --pickup TYPE T, --bonus N, --health N (testing) */
     int door_inst = -1, door_act = 17; double door_at = -1;                        /* --door INST ACT T (testing) */
-    int new_game = 0; const char *next_name = NULL; double next_at = 0;                              /* --next LVL T: change to level LVL after T s (testing) */
+    int new_game = 0, logo = -1; const char *next_name = NULL; double next_at = 0;   /* --nologo / --logo: the logo films off / on even for a scripted run */                              /* --next LVL T: change to level LVL after T s (testing) */
     double walk_for = 0, walk_at = getenv("WOODY_WALKAT") ? atof(getenv("WOODY_WALKAT")) : 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     for (int i = (argc > 2 && argv[2][0] != '-') ? 3 : 2; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
@@ -2839,6 +2880,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--yaw") && i + 1 < argc) { have_yaw = 1; yaw_arg = (float)atof(argv[i + 1]) * 3.14159265f / 180; i += 1; }   /* with --pos: facing in degrees */
         else if (!strcmp(argv[i], "--unlock")) g_unlock_all = 1;                       /* every level door open */
         else if (!strcmp(argv[i], "--newgame")) new_game = 1;                          /* ignore woodyre.sav */
+        else if (!strcmp(argv[i], "--nologo")) logo = 0;
+        else if (!strcmp(argv[i], "--logo")) logo = 1;
         else if (!strcmp(argv[i], "--prev") && i + 1 < argc) { g_prev_level = level_index(argv[i + 1]); i += 1; }   /* --prev LVL: pretend we came from LVL (hub spawn point) */
         else if (!strcmp(argv[i], "--stats") && i + 5 < argc) {                        /* --stats TOTAL_A GOT_A TOTAL_B GOT_B SECONDS: the five level statistics the results screen shows (testing) */
             g_stats.have = 1; g_stats.stats[0] = atoi(argv[i + 1]); g_stats.stats[2] = atoi(argv[i + 2]);
@@ -2856,6 +2899,8 @@ int main(int argc, char **argv)
     if (!getenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
     opt_read(); opt_apply();                                                           /* 0x4691e2: the volumes from the cfg at sound start */
     in_read_cfg(dir);                                                                  /* 0x405e0f: Woody.cfg (key bindings, controller mode) */
+    if (logo < 0) logo = !(argc > 2 && argv[2][0] != '-') && !getenv("WOODY_NOLOGO") && !shot_path && enter_at < 0 && !getenv("WOODY_KEYS") && !getenv("WOODY_SHOTSEQ");
+    if (logo) logos_play(&win, dir);                                                   /* boot state 2 (0x402649): only when booting to the title; a level on the command line or a scripted run skips them */
     static Level L; g_level = level_index(lvl); if (level_load(&L, dir, lvl)) return 1;
 
     /* camera: start behind Woody (model 0, instance 0) if present */
