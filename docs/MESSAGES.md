@@ -105,21 +105,21 @@ thus comes back through a script variable (watchers get woken).
 | 1173 | var | 0 | check if `perso+0x260 > 0` (coins, unique items): var = 1 else var = 0; WWS object 425 uses it to turn the Jackpot on |
 | 1180 | – | 0 | check `0x404b60(0, 0x1a, 0, 0x20)` |
 
-## Subsystem `[0x5e823c]` (`0x46cca0`) – movement/effects on instances
+## Subsystem `[0x5e823c]` (`0x46cca0`) – effects on instances (1501..1504 and 1511 all address class 90, the environment instance: docs/AMBIENT.md)
 | id | args | usage | meaning |
 |---|---|---|---|
 | 1500 | inst, a, f, b, c | 0 | check `0x478980(inst, a, f·0.01, b, c, 0)` |
-| 1501 | inst, v | 59 | check `inst+0xfc = v` |
-| 1502 | inst, x, y, z, w, flag | 27 | check target/vector: `+0x110..0x118 = x,y,z · k`, `+0x11c = w·0.01`, `+0x100 = flag`, `+0x108 = 0`, `vtable[0x1c]()` |
-| 1503 | inst, v | 18 | check `inst+0x14c = v`, `vtable[0x1d]()` |
-| 1504 | inst, v | 14 | check `inst+0x100 = v`, `+0x108 = 0` |
+| 1501 | inst, mode | 59 | check class 90 `+0xfc = mode` (`0x46cd07`): 0 = butterflies (House, hubs, W2D), 1 = rising sparkles (W1A, K1A, S1A, K1R, S1R, W3D), 2 = rain (hubs, K3A, S3A, W2D, W3A, W3B, W3D); ported |
+| 1502 | inst, r, g, b, life, count | 27 | check class 90 mode 1 (`0x46cd2e`): colour `+0x110..0x118 = rgb/255`, base lifetime `+0x11c = life·0.01` s, `+0x100 = count`, live counter `+0x108 = 0`, then `vtable[0x70/4]` `0x472b30` = effect on (clears `+0x120`/`+0x121`); ported |
+| 1503 | inst, force | 18 | check class 90 mode 2 (`0x46cda0`): wind force 1..4 `+0x14c`, then `vtable[0x74/4]` `0x472b40` builds the 5×5 rain grid, drop interval 0.2/0.15/0.1/0.05 s; ported |
+| 1504 | inst, count | 14 | check class 90 (`0x46cdcc`): `+0x100 = count` (butterflies), `+0x108 = 0`; ported |
 | 1505 | inst, f | 0 | check `0x478660(&pos, 1000.0, f·0.01)` |
 | 1506 | inst, a, b, c, d | 63 | check SetWaterVolumeParameter (class 60): `0x474690(inst, a·0.01, b, c·0.01, d·0.01)` = cell, tiles (unscaled), amplitude, alpha; WATER.md §1 |
 | 1507 | inst | 0 | check `0x4750e0(&pos)` |
 | 1508 | inst | 17 | check register 20-byte node in list `0x5e8638`, `0x47cdf0` |
 | 1509 | a, inst, mode, x | 5 | check **boss-outro effects** (`0x46cf6f`, arg 0 not read): mode 5 = explosion kind 1 at typecode-0 marker x of inst; mode 4 `x == 1` = the three smoke plumes `0x475f30(inst, 0..2)`, other x = plumes off (bytes `0x5e857c..e`); only W1B (saucer 399 in cinematic 73); PARTICLES.md §8; ported |
 | 1510 | obj | 0 | check add world instance to array `0x5e8428` |
-| 1511 | inst, b | 7 | check `byte inst+0x120 = (b != 0)` |
+| 1511 | inst, b | 21 | check class 90 (`0x46cf44`): `byte +0x120 = (b != 0)` = **no new particles** (modes 0 and 1; rain ignores it); W3D Boss16 arena 823..829 (`1 1` at init, `0` when the fight starts); ported |
 
 ## Sound (`0x467fa0`, vtable of the Cryo sound manager)
 > **Note:** the table below is outdated. [SOUND.md](SOUND.md) §1 is authoritative: 1655 = PlayMusic(track), 1628 = stop of the
