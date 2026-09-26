@@ -294,7 +294,7 @@ mode 1. The three area gates work with a **pair** of instances (green arrow 77/7
 | 0x1d | `0x405796` | **game over** (opened by `0x404e10` from respawn `0x44a8f5` when lives == 0): OK → `0x44ffa0(save)` (wipe the whole active save) + to title |
 | 0x1e | `0x4058cd` | **results** after a level (§5.1) |
 | 6, 5, 0x17, 0xc, 8, 9 | `0x405358`, `0x4054ac`, `0x405586`, `0x405662` | "save?" → slot choice (occupied slot, `0x4501f0 != 0` → 0x17 confirm) → `0x456dc0` copy to slot → `vt[4]` writes `Woody.sav` → 8 succeeded / 9 failed → back to 6. "no"/done: `0x454050(perso)` (fade-out 0.5 s, `perso+0x724 = 5`; the Perso update `0x454192` then does the fade-in, `SetVar(var of 1140, 1)`) + state 1 |
-| 0x20 | `0x40577b` | credits: 5 → to title |
+| 0x20 | `0x40577b` | credits: 5 (confirm after 5 s) → to title; the page itself: CREDITS.md |
 | 0x16, 0x21 | `0x404f90`, `0x405a49` | language/memory-card pages (console leftover, unreachable on PC) |
 
 House script, object 115: var1 = 0 idle, 1 = start request from the engine, 2/3 = intro playing

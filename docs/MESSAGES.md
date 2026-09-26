@@ -103,7 +103,7 @@ thus comes back through a script variable (watchers get woken).
 | 1170 / 1171 | – | 0 | check `0x44c7a0(-1)` / `0x44c840(-1)`: **life −1** (min 1) / **coin −1** (unique items, min 0); only the Jackpot in WWS (object 349) sends them |
 | 1172 | – | 0 | check `byte game+0x70 = 1` |
 | 1173 | var | 0 | check if `perso+0x260 > 0` (coins, unique items): var = 1 else var = 0; WWS object 425 uses it to turn the Jackpot on |
-| 1180 | – | 0 | check `0x404b60(0, 0x1a, 0, 0x20)` |
+| 1180 | – | 0 | check `0x404b60(0, 0x1a, 0, 0x20)`: the credits, CREDITS.md |
 
 ## Subsystem `[0x5e823c]` (`0x46cca0`) – effects on instances (1501..1504 and 1511 all address class 90, the environment instance: docs/AMBIENT.md)
 | id | args | usage | meaning |

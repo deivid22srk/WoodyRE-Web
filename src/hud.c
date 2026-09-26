@@ -30,6 +30,8 @@ static struct {
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
     GLuint sheet; int sheet_w, sheet_h;                   /* level bank image 0 (House and the three hubs carry the same one): the save-slot panel, ring and cross */
     GLuint sheet2; int sheet2_w, sheet2_h;                /* level bank image 2: in House the clock / enemy-face sheet (= image 1 of the hubs), the column heads of page 4 */
+    GLuint limg[16]; int limg_w[16], limg_h[16];          /* level bank images 0..15 as the 2D blit sees them (surfaces [0x5e8674]): the credits (page 0x20) draw 2..12 */
+    uint16_t **lstr; int nlstr;                           /* level bank strings (refs 0x0102xxxx): the 252 names of Credits.rck */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
     float iris_kx, iris_ky;                               /* hud_iris: virtual units per round pixel on this window (1, 1 at 4:3) */
     float vx0, vx1;                                       /* the virtual x range the viewport shows: 0..640 at 4:3, wider on a wide view (docs/DISPLAY.md 3) */
@@ -102,6 +104,11 @@ static void common_item(int type, int index, const uint8_t *d, uint32_t size);
 static void level_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     if (type == 1) { H.nlevel_img = index + 1; }
+    if (type == 1 && index < 16) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.limg[index] = H.img[0]; H.limg_w[index] = H.img_w[0]; H.limg_h[index] = H.img_h[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; }
+    if (type == 2) {                                                 /* level strings (0x43f440), the same pool format as bank 0 */
+        H.lstr = realloc(H.lstr, (size_t)(index + 1) * sizeof *H.lstr); H.nlstr = index + 1;
+        uint32_t n = size / 2; uint16_t *s = calloc(n + 1, 2); memcpy(s, d, (size_t)n * 2); H.lstr[index] = s; return;
+    }
     if (type == 1 && index < 5 && size >= 8) {                       /* raw row order: file row 0 = v 0 = bottom of the cube face (docs/SKY.md) */
         int w = (int16_t)(d[0] | d[1] << 8), h = (int16_t)(d[2] | d[3] << 8);
         if (w > 0 && h > 0 && size >= 8 + (uint32_t)w * h * 4) {
@@ -127,7 +134,7 @@ int hud_load(const char *common_rck, const char *level_rck)
 {
     hud_free();
     if (rck_walk(common_rck, 6, common_item)) return -1;
-    if (rck_walk(level_rck, 8 | 2, level_item) || !H.nglyphs) return -1;
+    if (rck_walk(level_rck, 8 | 4 | 2, level_item) || !H.nglyphs) return -1;   /* images, strings, font */
     H.ok = 1; H.k = 17.0f / (H.H - H.B);
     return 0;
 }
@@ -143,8 +150,10 @@ void hud_free(void)
     for (int i = 0; i < 9; i++) if (H.bub[i]) glDeleteTextures(1, &H.bub[i]);
     if (H.beam) glDeleteTextures(1, &H.beam);
     for (int i = 0; i < 40; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
+    for (int i = 0; i < 16; i++) if (H.limg[i]) glDeleteTextures(1, &H.limg[i]);
+    for (int i = 0; i < H.nlstr; i++) free(H.lstr[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
-    free(H.str); free(H.gl); memset(&H, 0, sizeof H);
+    free(H.lstr); free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }
 
 /* ---------------------------------------------------------------- drawing primitives */
@@ -214,6 +223,7 @@ static const uint16_t *hud_string(uint32_t ref)
 {
     uint32_t i = ref & 0xffff;
     if ((ref >> 24) == 0x7f) return (int)i < g_npstr ? g_pstr[i].u : NULL;
+    if ((ref >> 24) == 1) return (int)i < H.nlstr && H.lstr[i] ? H.lstr[i] : NULL;   /* level bank (the credits) */
     return (ref >> 24) == 0 && (int)i < H.nstr && H.str[i] ? H.str[i] : NULL;
 }
 
@@ -855,6 +865,78 @@ void hud_logo(int grow, float dt)
         quad(216, 16, 209, 247, H.logo, 0, 0, 209.0f / H.logo_w, 247.0f / H.logo_h, c, c, c, c);
     }
     H.logo_v -= 5 * dt; if (H.logo_v < 0) H.logo_v = 0;
+}
+
+/* ---------------------------------------------------------------- the credits, menu page 0x20 (docs/CREDITS.md)
+ * Page class vtable 0x4aa474 (0x20 B), enter 0x45bd60, draw 0x45bd90 + the roll 0x453930. The roll is the table 0x4b3d28
+ * (253 records of 24 B {ref, float scale, colour 0xfeffffff, w, h, flags}, list object 0x5e59f4 vtable 0x4ab228): T = text,
+ * level string `idx` at size 26 * s/10 (0x4ab23c); I = image, level image `idx` drawn w x h * s/10. Flags 0x40 = centred on
+ * x 480 (text 464, 0x453ab1 takes 16 off), 8 = right-aligned to 624; the other placements (0x10, 4, 0x20) are unused. */
+#define T(i, s, f) { i, s, 1 | f, 0, 0 }
+#define I(i, s, w, h, f) { i, s, 2 | f, w, h }
+static const struct { uint16_t idx; uint8_t s10, fl; uint16_t w, h; } k_cred[253] = {
+    T(0,10,0x40), T(1,10,0x40), T(2,10,0x40), T(3,10,0x40), I(3,10,256,256,0x40), T(5,10,0x40), T(6,6,0x40), T(7,6,0x40), T(8,10,0x40), I(2,10,128,128,0x40), T(9,10,0x40), T(10,8,0x40),
+    T(11,8,0x40), T(12,10,0x40), T(13,10,0x40), T(14,10,0x40), T(15,12,0x8), T(16,10,0x8), T(17,8,0x8), T(18,6,0x8), T(19,10,0x8), T(20,8,0x8), T(21,6,0x8), T(22,10,0x8),
+    T(23,8,0x8), T(24,6,0x8), T(25,6,0x8), T(26,6,0x8), T(27,10,0x8), T(28,8,0x8), T(29,6,0x8), T(30,6,0x8), T(31,6,0x8), T(32,6,0x8), T(33,6,0x8), T(34,6,0x8),
+    T(35,6,0x8), T(36,6,0x8), T(37,6,0x8), T(38,10,0x8), T(39,12,0x8), T(40,10,0x8), T(41,8,0x8), T(42,6,0x8), T(43,10,0x8), T(44,8,0x8), T(45,6,0x8), T(46,10,0x8),
+    T(47,10,0x8), T(48,10,0x8), T(49,8,0x8), T(50,6,0x8), T(51,6,0x8), T(52,10,0x8), T(53,8,0x8), T(54,6,0x8), T(55,10,0x8), T(56,8,0x8), T(57,6,0x8), T(58,6,0x8),
+    T(59,6,0x8), T(60,10,0x8), T(61,8,0x8), T(62,6,0x8), T(63,6,0x8), T(64,6,0x8), T(65,10,0x8), T(66,8,0x8), T(67,6,0x8), T(68,6,0x8), T(69,6,0x8), T(70,6,0x8),
+    T(71,6,0x8), T(72,6,0x8), T(73,6,0x8), T(74,6,0x8), T(75,10,0x8), T(76,8,0x8), T(77,6,0x8), T(78,10,0x8), T(79,8,0x8), T(80,6,0x8), T(81,10,0x8), T(82,10,0x8),
+    T(83,10,0x8), T(84,8,0x8), T(85,6,0x8), T(86,10,0x8), T(87,6,0x8), T(88,6,0x8), T(89,10,0x8), T(90,8,0x8), T(91,6,0x8), T(92,10,0x8), T(93,10,0x8), T(94,10,0x8),
+    T(95,8,0x8), T(96,6,0x8), T(97,6,0x8), T(98,6,0x8), T(99,6,0x8), T(100,10,0x8), T(101,10,0x8), T(102,6,0x8), T(103,6,0x8), T(104,10,0x8), T(105,10,0x8), T(106,8,0x8),
+    T(107,6,0x8), T(108,10,0x8), T(109,8,0x8), T(110,6,0x8), T(111,6,0x8), T(112,10,0x8), T(113,8,0x8), T(114,6,0x8), T(115,6,0x8), T(116,10,0x8), T(117,8,0x8), T(118,10,0x8),
+    T(119,8,0x8), T(120,6,0x8), T(121,8,0x8), T(122,6,0x8), T(123,8,0x8), T(124,6,0x8), T(125,10,0x8), T(126,8,0x8), T(127,6,0x8), T(128,6,0x8), T(129,10,0x8), T(130,10,0x8),
+    T(131,6,0x8), T(132,6,0x8), T(133,10,0x8), T(134,10,0x8), T(135,10,0x8), T(136,8,0x8), T(137,6,0x8), T(138,6,0x8), T(139,10,0x8), T(140,8,0x8), T(141,6,0x8), T(142,8,0x8),
+    T(143,6,0x8), T(144,10,0x8), T(145,8,0x8), T(146,6,0x8), T(147,10,0x8), T(148,6,0x8), T(149,6,0x8), T(150,6,0x8), T(151,10,0x8), T(152,10,0x8), T(153,6,0x8), T(154,6,0x8),
+    T(155,6,0x8), T(156,6,0x8), T(157,10,0x8), T(158,10,0x8), T(159,10,0x8), T(160,8,0x8), T(161,6,0x8), T(162,10,0x8), T(163,8,0x8), T(164,6,0x8), T(165,10,0x8), T(166,8,0x8),
+    T(167,6,0x8), T(168,6,0x8), T(169,10,0x8), T(170,8,0x8), T(171,6,0x8), T(172,6,0x8), T(173,6,0x8), T(174,6,0x8), T(175,10,0x8), T(176,8,0x8), T(177,6,0x8), T(178,10,0x8),
+    T(179,12,0x8), T(180,10,0x8), T(181,10,0x8), T(182,10,0x8), T(183,10,0x8), T(184,6,0x8), T(185,8,0x8), T(186,6,0x8), T(187,8,0x8), T(188,6,0x8), T(189,10,0x8), T(190,8,0x8),
+    T(191,6,0x8), T(192,6,0x8), T(193,6,0x8), T(194,6,0x8), T(195,10,0x8), T(196,8,0x8), T(197,6,0x8), T(198,6,0x8), T(199,10,0x8), T(200,10,0x8), T(201,10,0x8), T(202,8,0x8),
+    T(203,6,0x8), T(204,8,0x8), T(205,6,0x8), T(206,8,0x8), T(207,6,0x8), T(208,6,0x8), T(209,6,0x8), T(210,6,0x8), T(211,6,0x8), T(212,10,0x8), T(213,6,0x8), T(214,6,0x8),
+    T(215,6,0x8), T(216,6,0x8), T(217,6,0x8), T(218,6,0x8), T(219,6,0x8), T(220,6,0x8), T(221,6,0x8), T(222,6,0x8), T(223,6,0x8), T(224,6,0x8), T(225,6,0x8), T(226,6,0x8),
+    T(227,6,0x8), T(228,6,0x8), T(229,6,0x8), T(230,6,0x8), T(231,6,0x8), T(232,6,0x8), T(233,6,0x8), T(234,6,0x8), T(235,6,0x8), T(236,6,0x8), T(237,6,0x8), T(238,6,0x8),
+    T(239,8,0x8), T(240,10,0x8), T(241,12,0x8), T(242,10,0x8), T(243,8,0x8), T(244,6,0x8), T(245,10,0x8), T(246,8,0x8), T(247,6,0x8), T(248,10,0x8), T(249,6,0x8), T(250,10,0x8),
+    T(251,8,0x8),
+};
+#undef T
+#undef I
+static struct { int img; float t_img, off; } g_cr;             /* page +0x14 (image 0..2), +0x1c (its clock); the roll's offset [0x5e59fc] */
+void hud_credits_enter(void) { memset(&g_cr, 0, sizeof g_cr); }  /* 0x45bd60: 0x4538f0(0) = this roll from its start, +0x14 = +0x1c = 0 */
+void hud_credits(int prev_level, float dt)                     /* 0x45bd90, dt = the menu's [0x4b39a0] (the roll reads [[0x509adc]+0x38], the same frame time) */
+{
+    static const uint8_t img[9] = { 4, 5, 6, 7, 8, 9, 10, 11, 12 };   /* 0x4b5df8: three pictures per character */
+    if (!H.ok) return;
+    hud_rect(0xfe000000);                                        /* 0x45bdda: black panel, 640 x 480, blank surface */
+    g_cr.t_img += dt; if (g_cr.t_img > 10.0f) { g_cr.t_img = 0; if (++g_cr.img == 3) g_cr.img = 0; }   /* 0x45bdeb: a new picture every 10 s */
+    float v = g_cr.t_img; if (v > 9.0f) v = 1.0f - (v - 9.0f);   /* 1 s in, 8 s on, 1 s out */
+    if (v > 1.0f) v = 1.0f; else if (v < 0.0f) v = 0.0f;
+    int a = (int)(v * 254.0f), set = prev_level >= 11 && prev_level <= 17 ? 3 : prev_level >= 18 && prev_level <= 24 ? 6 : 0;   /* 0x45be7c: app+0x6c - 0xb, byte table 0x45bf94 */
+    int k = img[set + g_cr.img]; uint32_t c = (uint32_t)a << 24 | 0x808080;
+    if (a >= 2 && H.limg[k]) quad(32, 112, 256, 256, H.limg[k], 0, 0, 256.0f / H.limg_w[k], 256.0f / H.limg_h[k], c, c, c, c);   /* 0x45bee3, flag 8; RectVirtual skips alpha < 2 */
+    const uint16_t *s = hud_string(131);                         /* 0x45bee8: Common 131 "THE END", size 35, at (160 - w/2, 360 - h/2), h = 0 on one line */
+    font_size(35.0f); if (s) font_draw(160.0f - font_measure(s) * 0.5f, 360.0f, s, 0xfeffffff);
+    g_cr.off += dt * 50.0f;                                      /* 0x453930: the roll climbs 50 units/s from y = 480 */
+    float y = 480.0f - g_cr.off; int any = 0;
+    for (int i = 0; i < 253; i++) {
+        int draw = !(y < -480.0f); if (draw) any = 1;             /* 0x4539b5: drawn from y -480 on (off screen), ... */
+        if (y > 496.0f) break;                                   /* ... and the loop stops at the first record below 496 */
+        float sc = k_cred[i].s10 / 10.0f; int fl = k_cred[i].fl;
+        if (fl & 1) {
+            font_size(sc * 26.0f);
+            const uint16_t *t = hud_string(0x01020000u | k_cred[i].idx); float w = t ? font_measure(t) : 0;
+            float x = (fl & 0x10) ? 320.0f - w * 0.5f : (fl & 4) ? 16.0f : (fl & 8) ? 624.0f - w : (fl & 0x20) ? 176.0f - w * 0.5f : 464.0f - w * 0.5f;   /* 0x453a2f */
+            if (draw && t) font_draw(x, y, t, 0xfeffffff);
+            y += font_cell();                                    /* 0x441980 + 0x441a50 (extra spacing 0) */
+        }
+        if (fl & 2) {
+            int w = (int)(k_cred[i].w * sc), h = (int)(k_cred[i].h * sc), n = k_cred[i].idx < 16 ? k_cred[i].idx : 0;
+            int x = (fl & 0x10) ? 320 - w / 2 : (fl & 4) ? 16 : (fl & 8) ? 624 - w : (fl & 0x20) ? (int)(160.0f - w * 0.5f) : (int)(480.0f - w * 0.5f);   /* 0x453b2b: no -16 here */
+            if (draw && H.limg[n]) quad((float)x, (float)(int)y, (float)w, (float)h, H.limg[n], 0, 0, (k_cred[i].w - 1.0f) / H.limg_w[n], (k_cred[i].h - 1.0f) / H.limg_h[n], 0xff808080, 0xff808080, 0xff808080, 0xff808080);   /* source 0,0,w-1,h-1 */
+            y += (float)h;                                       /* + 2 * 0x441a50 = 0 */
+        }
+    }
+    if (!any) g_cr.off = 0;                                      /* 0x453c43: everything above -480: the roll starts again from the bottom */
+    font_size(17.0f);
 }
 
 /* the iris 0x4776d0 (docs/MENU_NEWGAME.md 2.7): an opaque black ring of 50 segments around (320, 240), inner radius

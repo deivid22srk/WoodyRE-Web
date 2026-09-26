@@ -831,6 +831,7 @@ static struct {
     int hs_char;                               /* page 4 +0x3c: whose high scores (set by page 3's SEE HIGH SCORES) */
     int wait, wait_r;                          /* app+0x5c: the frames a wait page 0xb / 0xc / 0xe still stands; the read result it hands on */
     Display disp;                              /* port page 0x40: the display settings being edited (applied on Continue) */
+    float cred_t;                              /* page 0x20 +0x18: time on the credits page (0x45bd9e) */
 } M ={ -1, 0, 0, { 0 }, 0, 1, 1, { 0 }, 0, 35.0f };
 static float g_title_t;                        /* seconds since the title pose (action 0x49) started: the orbit phase (docs/TITLE.md 1.4) */
 static int g_intro_obj;                        /* message 1160 arg 2 & 0xffffff: script object 115 */
@@ -1132,6 +1133,7 @@ static void menu_enter(int page)
     case 0x40: M.disp = g_dnow; disp_items(); M.sel = 1; break;        /* port page: the cursor on the first choice */
     case 0x1c: M.sel = 2; break;                                       /* 0x45bd40: on "No" */
     case 0x18: case 0x19: case 0x1f: M.sel = 0; hud_logo_off(); break; /* 0x45b390 */
+    case 0x20: M.sel = 0; M.cred_t = 0; hud_credits_enter(); break;   /* 0x45bd60: base enter, the roll 0x4538f0(0), +0x14 = +0x18 = +0x1c = 0 */
     default: M.sel = menu_first(); break;
     }
 }
@@ -1300,6 +1302,10 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
         break;
     case 0x17: if (k->ok && M.sel == 1) menu_save_slot(M.save_s); else if ((k->ok && M.sel == 2) || k->back) menu_enter(6); break;   /* 0x405586 */
     case 8: if (k->ok) menu_off(); break;                              /* 0x4056c0: "Game Saved" leaves the menu */
+    case 0x20:                                                         /* the credits (docs/CREDITS.md): the draw counts +0x18, validate 0x446e90 = 5 once it is past 5 s; */
+        M.cred_t += dt;                                                /* back / Esc give 24, which the handler ignores: no way out in the first 5 s */
+        if (k->ok && M.cred_t > 5.0f) request_level(0, 0.5f);         /* 0x40577b -> 0x405780: 0x404b60(0.5, 0, 0, 0), the page stays up during the fade */
+        break;
     case 9: if (k->ok) menu_enter(6); break;
     case 0x18: case 0x19: {                                            /* 0x4057f5, table 0x405cfc on result - 5; "back" does nothing */
         static const int res18[3] = { 5, 6, 7 }, res19[4] = { 5, 18, 6, 7 };
@@ -1314,7 +1320,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
 
 /* table 0x405af8: the half-black backdrop and whether the world stands still */
 static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 0xb || page == 0xc || page == 0xe || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && ((page >= 0x18 && page <= 0x1c) || page == 0x40)); }   /* 0x40: port page, as 0x1b */
-static int menu_pauses_world(void) { return g_level != 0 && ((M.page >= 0x18 && M.page <= 0x1c) || M.page == 0x40); }
+static int menu_pauses_world(void) { return g_level != 0 && ((M.page >= 0x18 && M.page <= 0x1c) || M.page == 0x40 || M.page == 0x20); }   /* 0x20: the credits level stands still */
 
 /* the page layer of a frame: items, then the iris, then the logo (docs/TITLE.md 5.4) */
 static void menu_draw(float dt)
@@ -1332,6 +1338,7 @@ static void menu_draw(float dt)
         break; }
     case 3: if (M.p.opening && M.p.t == 0) hud_iris(0); hud_iris(panel_iris_v()); carousel_draw(dt); break;
     case 4: hud_rect(0xfe000000); if (!(M.p.lock && M.p.ti >= 0.5f)) scores_draw(); break;   /* 0x45ba29: iris target 0 = a black rect, then vt[17] */
+    case 0x20: hud_credits(g_prev_level, dt); break;                  /* 0x45bd90: the page draws no item list */
     case 0x1f: case -1: break;
     default: if (it) hud_menu_items(it, n, yf, M.sel, M.delay <= 0); break;
     }
@@ -3246,7 +3253,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1141: g_pose = in; break;
     case 1160: if (m->nargs) { g_intro_var = m->args[0]; g_have_intro = 1; g_intro_obj = m->nargs > 1 ? (int)(m->args[1] & 0xffffff) : 0; } break;
     case 1084: if (m->nargs) eko_set_var(vm, m->args[0], g_prev_level); break;                              /* GetPrevLevel: the hub script picks the spawn point with it */
-    case 1180: request_level(26, 0.5f); break;
+    case 1180: request_level(26, 0.0f); break;                               /* 0x4448b9: 0x404b60(0, 0x1a, 0, 0x20), arg ignored; a cut, no fade-out (docs/CREDITS.md) */
     case 1150: case 1151: if (m->nargs) { fade_start((int)m->args[0] * 0.01f, m->id == 1151); g_sfade.script = 1; } break;   /* a script fade-out does not stay black when it ends: the House intro cuts to its second scene behind 1152 */
     case 1131: if (in && m->nargs > 1) { g_cin.main_inst = in; g_cin.anim = (int)m->args[1]; } break;
     case 1132: if (in && m->nargs > 1 && g_cin.nactors < 32) { g_cin.actor[g_cin.nactors].inst = in; g_cin.actor[g_cin.nactors++].anim = (int)m->args[1]; } break;
@@ -3354,7 +3361,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
       snprintf(path, sizeof path, "%s/%s/%s.rck", dir, lvl, lvl); printf("sound bank 1: %d sounds\n", audio_bank_load(1, path));
       { char common[512]; snprintf(common, sizeof common, "%s/../Common/%s.rck", dir, chr[g_char]); if (hud_load(common, path)) printf("hud: no font / images\n"); }
       { uint32_t sky[5]; if (hud_sky_images(sky)) rnd_set_sky(&L->rnd, sky); }
-      M.title_music = 0; if (g_level == 0) menu_title_page0(); else menu_off(); }   /* 0x4041b0 app+0x54 = 0; 0x4017c9 -> 0x404e30: page 0 + track 0 "Menu" */
+      M.title_music = 0; if (g_level == 0) menu_title_page0(); else if (g_level == 26) menu_enter(0x20); else menu_off(); }   /* 0x4041b0 app+0x54 = 0; 0x4017c9 -> 0x404e30: page 0 + track 0 "Menu"; level 0x1a: both 0x404b60 callers (1180, the BlackBox end 0x401d35) ask for state 0 + page 0x20, the credits (docs/CREDITS.md) */
     printf("VM init...\n"); eko_init(&L->vm);
     printf("init done: %d messages\n", L->vm.nmsgs);
     for (int i = 0; i < L->vm.nmsgs; i++) on_msg(&L->vm, &L->vm.msgs[i], NULL);   /* docs/VM.md 2: the exe queues the messages and the game loop only takes the queue after the tick,
