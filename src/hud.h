@@ -79,19 +79,12 @@ void hud_world_fx(int image, const float *pos, float size, float turns, const fl
 /* the same sprite, but lying in the plane with normal `n` instead of facing the camera (sprite flag bit 0 off,
  * 0x4717d7): what the nine quads of an explosion flash are made of (docs/PROJECTILES.md 5.3) */
 void hud_world_fx_plane(int image, const float *pos, const float *n, float size, const float *rgb, float alpha);
-/* a sprite that lies in a plane instead of facing the camera (0x4717d7: without flag bit 0 the quad is built on the
- * normal S+0x230..0x238), turned so that +v runs along `dir`, optionally mirrored (flag 0x40, docs/PERSO_DEATH.md).
- * `size` is the half diagonal, as for every sprite. It darkens what is under it by `rgb * strength`, see hud.c. */
-void hud_world_decal(int image, const float *pos, const float *normal, const float *dir, float size, int mirror, const float *rgb, float strength);
-int  hud_step_image(void);                                      /* bank 0 image used for the footstep mark (WOODY_STEPIMG) */
-/* the hole a peck leaves in the wood (docs/OBJECTS.md 1.6): a ragged cup lying in the pecked face (normal n, its
- * +v along `dir`) that darkens what is under it like the footstep mark, with a faint rim of split wood around it.
- * `size` is the outer radius. `seed` fixes the outline of this one hole, so it does not shimmer from frame to
- * frame and a column of them is not stamped out of the same shape. */
-void hud_world_gouge(const float *pos, const float *n, const float *dir, float size, unsigned seed, const float *rgb, float strength, float rim);
-/* one chip of wood the beak knocks loose: a solid, untextured sliver, not a sprite. `u` and `v` are its two half
- * axes and carry both its size and its tumble; there is no GL light in this pass, so it shades itself. */
-void hud_world_chip(const float *c, const float *u, const float *v, const float *rgb, float alpha);
+/* the sprite primitive 0x470f10 with the original's own flags (docs/PARTICLES.md 1): 1 camera facing, else a plane
+ * (0x20: spanned by basis R = [0..2] and F = [3..5]; neither: normal = basis[0..2]); 2 own colour/alpha, else 0.5 grey;
+ * 4 rotation `rot` in 1/512 turn; 8 alpha blended at texture x 2c, else additive texture x c x a; 0x40 UV set `mirror`
+ * (0x470d80: 1 = v flipped, 2 = u flipped, 3 both). `size` is the half diagonal. Between hud_world_sprites_begin/end. */
+void hud_world_spr(int image, const float *pos, float size, int rot, const float *rgb, float alpha, int flags, const float *basis, int mirror);
+void hud_world_spr_mode(int mode, int image, const float *pos, float size, int rot, const float *rgb, float alpha, int flags, const float *basis, int mirror);   /* sprite mode 0x12 (square) or 0x1a (1:2 upright) */
 /* additive ribbon segment with a colour per end (bank 0 image 0) */
 void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw, const float *rgb_a, const float *rgb_b);
 /* additive camera-facing line quad (line primitive 0x471a10, bank 0 image 1): half width hw, colour*alpha at both ends */

@@ -147,6 +147,7 @@ Reset then calls `SetState(1)` (`0x44c980`: prev state, clears `+0x50c +0x5f0 +0
 normal Reset (`+0x694 = 0`, up filter `+0x210 = (0,1,0)`, `0x459ff0(M, +0x324)`, Jumper reset, `health = 3` if ≤ 0, …).
 
 ### 3.2 Race restart `0x4560f0` (pause menu item 18, `0x40584d`)
+Page 0x19 and the whole sequence: INPUT.md §5 (ported: `player_restart`).
 The menu first does `cam 0x41fa80(4.0)`, `0x445930(Game)` (normal respawn), then:
 ```c
 p->hasCheckpoint(+0x330) = 0;  p->bonusAtCheckpoint(+0x4e0) = 0;

@@ -287,7 +287,7 @@ void Boss14_Update(Boss14 *e) {
         if (e->flags & 1) {                                          /* landed (base ground follower, §5) */
             CameraShake(cam, 1.5f);                                  /* 0x41fbb0 */
             e->high = 0;  e->t1d8 = P->+0x9c /*0.3*/;  e->state = 8;
-            if (e->mode == 2) Dust(&(vec3){pos.x, pos.y - 50, pos.z}, &(vec3){0,1,0}, 0, 1.5f, 6.0f);   /* 0x476140 */
+            if (e->mode == 2) Dust(&(vec3){pos.x, pos.y - 50, pos.z}, &(vec3){0,1,0}, 0, 1.5f, 6.0f);   /* 0x476140: smoke ring kind 0, PARTICLES.md 3 */
             SoundFx(e->mode == 1 ? 40 : 45, 0);                      /* 0x40f9e5 */
         }                                                            /* no break: falls through */
         H_TurnTo(H, e->pos, t->pos, 0);  H_Tick(H, dt);
@@ -446,7 +446,7 @@ void Boss14_Height(Boss14 *e) {
     if (e->mode == 2 && !e->high && e->state != 9) {                /* BOBBING (mode 2 only, low phase) */
         float s = dt * P->+0x0c;                                    /* 400 */
         if (e->bobDown) { e->bob += s;  if (e->bob >= e->bobMax) {
-                              Dust(&(vec3){pos.x, pos.y - 50, pos.z}, &(vec3){0,1,0}, 0, 1.5f, 6.0f);   /* 0x476140 */
+                              Dust(&(vec3){pos.x, pos.y - 50, pos.z}, &(vec3){0,1,0}, 0, 1.5f, 6.0f);   /* 0x476140: smoke ring kind 0, PARTICLES.md 3 */
                               SoundFx(49, 0);  e->bob = e->bobMax;  e->bobDown = 0; } }                  /* 0x410a77 */
         else            { e->bob -= s;  if (e->bob <= 0) { e->bob = 0; e->bobDown = 1; } }
     } else e->bob = 0;

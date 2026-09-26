@@ -67,7 +67,8 @@ rail state: `+0x108..0x10a = 0`, `+0x690 = 0`, `+0x138 = −1`, `+0x134 = 0`, `+
 
 ### 1.2 Message 30 `[_, cs]` (`0x44cde9`) — not a teleport
 `0x44cce0(P, arg1 · 0.01 (0x4aa0ac), 0)` = LockMove: `P+0x238 = max(P+0x238, t)` (no input/movement, PERSO_JUMP §0)
-and `animctl->vtbl[2](1)` (request idle, logical record 1, prio 6500). "Stand still for t seconds."
+and `animctl->vtbl[2](1)` (request idle, logical record 1, prio 6500). "Stand still for t seconds." No state test; no level script
+sends it (scan of all 28 scripts). Ported as `player_lock()` (PERSO_LOOK.md §6).
 
 ### 1.3 `0x42f6b0(inst, typecode, vec3 *out, n)` — marker vector of an instance
 Walks the model's **marker list** (`S+0x50` count, `S+0x54` node indices, 1-based; node kind 0x20, FORMAT_INS),
@@ -308,6 +309,9 @@ Per frame, `u = age/1.5`, eighth-phases:
   (row 0: 0,1,2,0,0,2; row 12: 2,0,3,0,0,2), **flags 0x4d** (non-additive). Right after that the same sprite with
   `size += jit`, image `T[6+i]` = {0x29, 0x26, 0x26, 0x27, 0x28, 0x28} (others: head 0x2b), **flags 0x45** (additive glow).
 * every frame (also in model phases) dynamic light `0x498790([0x4c4cac], 0, &S.pos (last sprite drawn), white (255,255,255), radius 200 + rnd·100)`.
+* **Ported** (`game_skeleton` / `FX_SKELETON` in `src/main_engine.c`, called from `player_kill` kinds 2/9 and the race kind 2). Mode 0x1a is a 1:2
+  upright quad (the ribcage), both sprites use the default colour (flag bit 1 off): details and the sprite-mode table in PARTICLES.md §1 and §6.
+  Test: `WOODY_KILLAT="1.5 2"` (Kill(2) 1.5 s into the level).
 
 ### 4.3 Water splash `0x478660(&C, v, r)` (emitter callback `0x478360`) — kind 7 (also `0x46ce27`)
 Emitter: lifetime **1.0 s**, `C` = center, `h = v · 0.001` (`0x4aa0f4`), `R = r + rnd·50` (death: 50..100),

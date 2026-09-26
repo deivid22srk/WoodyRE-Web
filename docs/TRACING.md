@@ -27,16 +27,16 @@ Layout of the 284 bytes (offsets relative to the start of the struct, i.e. file 
 |---|---|
 | 0x00, 0x04 | flags "driver chosen", "device chosen" (1) |
 | 0x08 | selected D3D device index |
-| 0x0c | GUID DirectDraw driver (16 B) |
-| 0x1c | GUID D3D device (16 B; all 0 → NULL); `84e63de0-46aa-11cf-816f-0000c020156e` = IID_IDirect3DHALDevice |
+| 0x0c | GUID D3D device (16 B); `84e63de0-46aa-11cf-816f-0000c020156e` = IID_IDirect3DHALDevice (`0x4027f5`) |
+| 0x1c | GUID DirectDraw driver (16 B; all 0 → NULL = primary, `0x4027bd`) |
 | 0x2c..0x3c | mode info (0x1ff, 1, 1, 3); 0x3c = effects quality (2 = max, `cmp [0x4c2c0c],2` in `0x43b43a`) |
 | 0x40, 0x44, 0x48 | width, height, bpp (640, 480, 32 from Detect; the exe forces 16 bpp at `0x4027eb`) |
 | 0x50 | VSync flag (`0x47ee16` inverts it when toggling) |
 | 0x58..0x98 | audio settings (device, frequency, volumes ×0.01, speaker config) → `0x5e81bc..` in `0x4691e0` |
-| 0x9c..0xa8 | joystick/control options |
+| 0x9c..0xa8 | GUID of the joystick Setup found (the game does not read it) |
 | 0xac | 12 × u32 keys "config 1" (DirectInput scancodes: ↑ ↓ ← → Space LShift LCtrl LShift Enter Esc Num0 RCtrl) |
 | 0xdc | 12 × u32 keys "config 2" (R F D G + joystick buttons 0x200..0x207) |
-| 0x10c..0x118 | joystick mode, invert L/R, VSync option |
+| 0x10c..0x118 | joystick detected, joystick mode, keyboard only, ? (INPUT.md §2) |
 
 ## 3. Tracer
 

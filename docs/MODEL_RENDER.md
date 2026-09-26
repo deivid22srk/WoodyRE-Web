@@ -64,6 +64,12 @@ the file / `insparse.py`); in the C port (0-based array) that is always one lowe
    with the opaque neighbours and every alpha edge gets a pink fringe.
 11. **Black outline** (`0x43ea30`, fed by the two backface lists that `0x43b3f0` builds up): this is the
    ink line around the figures in the original. See §7.
+12. **Draw the additive (blended-group) model faces after the fade list, in its depth buckets**, with the sort depth
+   the original really uses: the global `[0x5ac8d4]` that only fading instances write (0 until the first fade). In
+   practice: glow faces after all fading instances, and a fading instance's own glow after its own body. See §9.
+13. **Keep every texture level as the 16-bit surface** (RGB565 as is; colour key → ARGB1555 with green truncated to
+   5 bits) and build the mip levels with the original's truncating average; a colour-key mip texel is opaque only when
+   all four sources are. Flat colours (bit 15) are `c5 · 8/255`. See §9 and §5.
 
 ## 1. Which nodes get drawn; type codes
 
@@ -177,8 +183,10 @@ Across all levels: 96 helpers mode 1, 1× mode 2.
 ## 5. Material 0xFFFF / bit 15 (`0x43db83`-`0x43df09`, triangles `0x43e4c5` ff.)
 `test byte [poly+1], 0x80` → texture = default texture `[0x5e8684]`, no UV calculation, and per vertex
 `colour = (int)(c5 · 0.0313725 (0x4aa3e8 = 8/255) · vertex-light)` with c5 = bits 10-14 (R), 5-9 (G), 0-4 (B)
-(`0x43dc65`-`0x43dd3f`). That is ARGB1555 with bit 15 as flag, not RGB565 (FORMAT_INS.md §2.4 is wrong on this point);
-the port (`argb1555_to_rgb`) already does it right. 0xFFFF is thus visible white; there is no "don't draw" value.
+(`0x43dc65`-`0x43dd3f`; the triangle drawer the same at `0x43e5c7`). That is ARGB1555 with bit 15 as flag, not RGB565
+(FORMAT_INS.md §2.4 is wrong on this point). The factor is 8/255, not 1/31: the low bits stay 0, so `0xFFFF` is
+248/255 = 0.973, not 1.0 (the port's `argb1555_to_rgb` used /31 until the round of §9). 0xFFFF is thus visible
+(near) white; there is no "don't draw" value.
 
 ## 7. The black outline (`0x43ea30`)
 
@@ -258,9 +266,62 @@ until `fade > 0.98` and then vanished in a single frame.
   3. ALPHATESTENABLE per texture = colour-key bit `tex+0x44 & 1` (`0x428f6b`): a colour-keyed texture
      thus already vanishes below alpha 127, the rest fades to 0.98.
 - The mode-3 batches (`+0x1cc`) go through the same buckets, but with the depth the last fading instance left behind
-  in `[0x5ac8d4]`; their order relative to the fade list is thus arbitrary. The port draws them in pass 1 as
-  before, and the fade list afterward (`render_gl.c`, `g_fading`).
+  in `[0x5ac8d4]` (§9).
 - Not ported: the shadow of a fading caster (`0x42e69a`/`0x42eb7a`, path `0x4388e0`).
+
+## 9. The additive list `+0x1cc` in `0x428d00`, and the 16-bit texture surfaces
+
+**Sorting.** Every model polygon of a blended group (polygon flags `0x60`) goes to mode 3 (`0x43d7c8`), i.e. list
+`+0x1cc`, whatever the instance's own mode is. A batch is the current run of polygons with the same (texture, mode,
+`[[0x53a0f8]+4]` = the instance being drawn) (`0x43dbac..0x43dbbb`); a change of key links the old batch at the front
+of its list and bump-allocates the next one (`0x43dbc4..0x43dc56`), so batch addresses grow in creation order.
+At the end of each append (`0x43e0d3`, triangles `0x43eec7`, outline `0x43ea1d`) the batch copies its sort depth
+from the global `[0x5ac8d4]` into `batch+0x10`. That global has exactly one writer, `0x43b56a` (a byte search for
+`d4 c8 5a 00` over the image finds only these four uses), reached only for a fading instance (alpha < 252). It lives
+in `.bss` (`.data` has 0x12000 raw bytes from `0x4b1000`), so it starts at 0 and is never reset, not even on a
+level change.
+
+Consequences:
+- The sort is **per instance** (per batch of one instance), never per face.
+- A fading instance's own glow faces get its own depth and thus land in the same bucket as its fade batches, and are
+  drawn **after** them (per bucket: fade depth-only, fade blend, ZWRITE off, `+0x1c8` SRCALPHA, `+0x1cc` ONE/ONE,
+  `0x428efc..0x42922c`).
+- A glow face of an instance that is not fading gets the depth of the last fading instance drawn before it (in this
+  frame or an earlier one): until the first fade of the session that is 0, so every glow face sits in **bucket 0**, the
+  last one drawn: after the whole fade list. Bucket 0 merges `+0x1c8` and `+0x1cc` by batch address (`0x429240..0x4293e0`:
+  `cmp ebx, edi; jae` → the lower address first).
+- `deepest` is scanned over all three lists, so a stale glow depth can stretch the buckets of the fade list.
+- Among themselves the ONE/ONE batches commute (no z-write, the framebuffer clamp `min(1, a+b)` is associative for
+  non-negative terms); only their place against the fade list (z-write on) and `+0x1c8` is visible.
+- ALPHATESTENABLE follows the colour key bit of the texture here too (`0x4291c4`); no blended group of the 28 levels
+  has bit 0, so it is off. (With it on, the diffuse alpha 0 that `0x43d91d` writes would discard every pixel.)
+
+**Port** (`rnd_frame`, the block after `post_models`): pass 1 no longer draws model faces; one loop over the drawn
+instances in the port's draw order keeps a static `sort_depth` = `[0x5ac8d4]` (updated by every fading instance), puts
+fading instances on the fade list and every instance of a model with a blended mesh polygon (`Renderer.model_blend`)
+on the additive list, both with the current `sort_depth`; then buckets `round(d · 254 / max(1, all d))` from the
+highest down: fade depth-only, fade blend, additive faces (ONE/ONE, alpha test off). Measured (W1A, WWS, `WOODY_PROF=1`):
+no change in the instance time (~1 ms) beyond noise. Visible difference: only where a glow face meets a fading
+instance. W1A with the fans (model 2, haze group 66) set to 50 % (message 56 to slots 11/13/14/15): before, the haze was
+added first and the half-transparent blades were blended over it; now the haze is added after the blades and washes
+them out, as in the original. A frame without a fading instance is bit-identical to before (K1A, S1A, WWS start
+frames with a fixed time step); W1A's start frame has one (slot 486, model 49, an all-glow pickup fading in) and only
+its pixels change (the glow behind its fading body is now depth-rejected).
+
+**Texture surfaces** (`0x47fa60`). The file's RGB565 goes through `0x47f090(v, 0)` to ARGB8888 with **the low bits 0**
+(`r5 << 3`, `g6 << 2`, `b5 << 3`), the colour key test (`0x47fc0e`), and back through `0x47f170` to the surface format:
+`[0x5e8690]` (`0x40283b..0x40287b`: 0 = RGB565 if the device offers it, else 1 = X1R5G5B5, 2 = A4R4G4B4) or, for a
+colour-key texture, 3 = ARGB1555 (`0x47fae9`). The low-bits-0 value is only an intermediate: an RGB565 texture reaches
+the device **bit for bit** as in the file, a colour-key texture loses the lowest green bit and keeps one alpha bit.
+The widening that the screen finally sees is the sampler's; the port uses bit replication (D3D7-era hardware and all
+current hardware). The mip levels (`0x47fd83..0x47fe17`) are where the low bits matter: the four source texels are
+decoded the same way (alpha bit of format 3 → `0x80`, `0x47f127`), averaged per channel **with truncation**
+(`Σ (p & 0xfcfcfc) >> 2`, alpha `(Σ (p >> 2) & 0x3fc00000) & 0xff000000`) and packed with truncation again. So every
+level loses up to 3/4 of a 5-bit step (distant surfaces a little darker, mean −0.2 of 255 on a W1A frame, at most 22
+on single pixels), and a colour-key mip texel is opaque **only when all four sources are** (4 × `0x80` / 4 = `0x80`
+keeps the alpha bit, 3 × `0x80` / 4 = `0x60` does not; SKY.md §8 had "3 of 4"). Port: `tex16_texel`,
+`tex16_halve`, `tex16_widen` in `render_gl.c` keep each level as the 16-bit surface and widen only for GL. Visible:
+colour-key foliage at a distance thins out slightly (W2A palms).
 ## Uncertain
 - Draw order of the two eye layers: `0x43d790` doesn't draw directly but fills batches per (texture, mode)
   (`renderer+0x1b8`, lists `+0x1c0`); a closed batch is linked at the front, so the later-closed

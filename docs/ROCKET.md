@@ -316,8 +316,10 @@ Only type 20, state 6, not paused: `k = (int)(t · 20.0) & 1` (`0x4a9994`, `0x49
 Four effect records (pool `[0x5e823c]+0xdb8`, 0x50 B, max 2000): `0x476b50` (0.2 s: 60 particles/s ≈ 12 units, each record `0x4767f0`, lifetime 2.0 s, random direction
 `normalize(2r−1, 2r−0.5, 2r−1)`, start point `pos + direction·300`), `0x476cd0` (0.2 s: 400/s ≈ 80 units, record `0x4764f0`), `0x4762e0` with **R = 1400** (0.3 s) and — falling
 through into kind 2 — `0x4762e0` with **R = 400** (0.3 s). `0x4762e0` = nine flat quads image 12, `size = R·(0.3 + 0.7·sin(u·π/2))`, `alpha = 0.3·cos(u·π/2)` (PROJECTILES.md §5.3).
-The particle callbacks `0x4767f0` / `0x4764f0` are not read (uncertain 3); the port currently only draws the two flashes (1400 and 400) — same as the missile port, now also
-as the nine flat quads of `0x4762e0` itself (`hud_world_fx_plane`), no longer as a single billboard at ×3 brightness. The same effect is used by chests (`0x4517d0`)
+The particle callbacks `0x4767f0` / `0x4764f0` are decompiled in PARTICLES.md §5: ~12 **burning pieces** that fly 2 s at 1200 u/s on arcs that bend 0.2 down
+every 0.1 s, each leaving white smoke (image 15) and fire (image 13) every 0.025 s behind an additive head (image 12), plus ~80 **white dust clouds**
+(images 16/17, alpha 0.2, 0.7 s) flying up to ~420 units into the upper half. The port draws them (`fx_explode`, `game_explosion`) together with the two
+flashes, as the nine flat quads of `0x4762e0` itself (`hud_world_fx_plane`), no longer as a single billboard at ×3 brightness. The same effect is used by chests (`0x4517d0`)
 and bombs, so it belongs in a shared effect function: in `src/main_engine.c` that is `blast_add` / `fx_smoke_draw`, which the rocket and the missiles now share.
 
 ### 5.4 Sounds (SoundFx table SOUND.md §5; all 3D on the rocket instance)
@@ -476,8 +478,7 @@ still > 600 from the explosion point for 323 (725), but **not** automatically fo
    turns more than 150° in state 3; with the conjugated reading it points toward (0, −0.38, −0.92). Which is correct follows from the port's existing instance convention
    (`inst->quat`); not visually verified. The target matrix of §3.2 is unambiguous either way (rows = model axes).
 2. The channel of the flash color: `[0x5ac854]` is the first component of the vertex color `+0x24`; assumed to be red (vertex colors are R,G,B).
-3. Explosion kind 1: the particle records `0x4767f0` (12 units, 2 s) and `0x4764f0` (80 units) are not decompiled (image numbers, sizes, gravity unknown);
-   only the emitters and the two flashes (R 1400 / 400, image 12) are certain.
+3. ~~Explosion kind 1: the particle records `0x4767f0` and `0x4764f0` are not decompiled~~ — resolved, PARTICLES.md §5.
 4. Camera: state 8 only sets the behind flag (`0x4591ec`); the stored direction is row 1 of the rocket matrix and has a **y component** here. How `0x424760` handles
    that (ignores y or tilts the camera along) has not been checked. There are no separate distances/heights for the ride.
 5. Speed after jumping off: Mover ramp A is never cleared or set anywhere; assumed ≈ 0 because the player was standing still/attacking when mounting. A charge run (attack

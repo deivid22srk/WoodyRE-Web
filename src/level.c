@@ -544,9 +544,9 @@ void rgb565_to_rgba(const uint16_t *src, uint8_t *dst, uint32_t n, int colour_ke
         dst[4 * i + 3] = key ? 0 : 255;
     }
 }
-void argb1555_to_rgb(uint32_t v, float rgb[3])
+void argb1555_to_rgb(uint32_t v, float rgb[3])      /* 0x43dc65..0x43dca8: c5 * 0.0313725 (0x4aa3e8 = 8/255), the low bits 0: 0xFFFF is 248/255 */
 {
-    rgb[0] = ((v >> 10) & 31) / 31.0f; rgb[1] = ((v >> 5) & 31) / 31.0f; rgb[2] = (v & 31) / 31.0f;
+    rgb[0] = ((v >> 10) & 31) * 8 / 255.0f; rgb[1] = ((v >> 5) & 31) * 8 / 255.0f; rgb[2] = (v & 31) * 8 / 255.0f;
 }
 
 /* ---------------------------------------------------------------- .lit (loader 0x40ac30) */

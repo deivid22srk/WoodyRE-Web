@@ -6,7 +6,7 @@
  * events (trigger volumes, world_collision press nodes, msgmask 0x200).
  * Attacks (0x457a50): peck dash, rebounds, charge run and brake; logical animation chains (table 0x4b6180).
  * Ducking (action 5, 0x465b10, docs/PERSO_DUCK.md) is ported, and so is the follow camera's breadcrumb trail (0x423ab0).
- * Not ported yet: look-around, cfg key mapping. The ground type of the floor (Perso+0x308) is read, but only the
+ * Look-around (action 7, Perso state 3 + camera mode 0x200, docs/PERSO_LOOK.md) is ported. Not ported yet: cfg key mapping. The ground type of the floor (Perso+0x308) is read, but only the
  * footstep effect uses it: the slippery turn ramp of type 1 is not ported. */
 #ifndef WOODY_PLAYER_H
 #define WOODY_PLAYER_H
@@ -17,6 +17,8 @@
 typedef struct {
     int forward, back, left, right, jump, action, duck, special;   /* current key state; duck = action 5 (docs/PERSO_DUCK.md), special = action 11 (docs/PERSO_SPECIAL.md) */
     float cam_turn;                                  /* -1..1 manual camera orbit */
+    float ax, az;                                    /* the stick (actions 0/1 and 2/3 values, docs/INPUT.md 3): x right, z forward; 0, 0 = only the keys above */
+    int look, mouse_dx, mouse_dy;                    /* look = action 7 (docs/PERSO_LOOK.md); mouse = the relative mouse of the look camera (0x459346) */
 } PlayerInput;
 
 struct EnemySet;
@@ -40,6 +42,7 @@ typedef struct Player {
     float speed;                    /* horizontal speed along the facing direction (Mover RampA, 0x45b110) */
     int ramp_phase; float ramp_t, ramp_target, ramp_v0;   /* 0 idle, 1 accelerating, 2 at target, 3 decelerating */
     int on_ground;
+    int steep_edge;                 /* Perso+0x234, the ledge sensor 0x44b2e0: the floor drops away ahead (docs/OBSTACLE.md 2) */
     Jumper jumper;
     /* damage / death / respawn */
     float health; int lives;        /* Perso+0x24c (hearts, max 5), +0x250 */
@@ -47,7 +50,7 @@ typedef struct Player {
     Vec3 push_dir; float push_t, push_speed;                         /* knockback (Mover RampC) */
     int game_state; float game_t; int mask10_frames;                 /* Game sequence 0x4459c0 */
     float iris_from, iris_to, iris_dur, iris_t, iris; int iris_on;  /* its iris Game+4 (0x4776b0); iris_on = drawn this tick, iris = its value */
-    Vec3 spawn_pos; float spawn_yaw;
+    Vec3 spawn_pos; float spawn_yaw; Vec3 start_pos;                  /* respawn point +0x318 / facing +0x324 (checkpoint), start +0x30c */
     int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus, race_total;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264, [0x5e54f4] */
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
     int ground_kind;                /* Perso+0x308 (0x4628e0): 0 normal, 1 slippery, 2 dust/sand/snow (docs/PERSO_MOVE.md 6.4) */
@@ -92,6 +95,12 @@ typedef struct Player {
      * timer; carry_pressed = attack just pressed this frame (read by the sub-states), throw_hold = port: the throw animation
      * keeps playing after the release (the original does that with animation priorities) */
     struct Bomb *bomb; int carrying, bsub, carry_pressed; float bt, throw_hold;
+    int state6;                     /* Perso state 6 itself (+0x21c == 6): on with the pick-up, off with SetState; normally bomb != NULL, but
+                                     * the look-around bug (docs/PERSO_LOOK.md 5) gives it back without a bomb */
+    /* look-around = Perso state 3 (0x44b980, docs/PERSO_LOOK.md): look_prev6 = the state it goes back to (+0x220, 6 or 0), look_key =
+     * action 7 last frame, cam_mode = the camera manager's active mode (CamMgr+0x134, 0x100 = the free camera), written by the app
+     * before every update. Mode 0x200 block CamMgr+0x540: facing at the start (+0x54), yaw +0x78, pitch +0x7c, deltas +0x28/+0x2c */
+    int look, look_prev6, look_key, look_show, cam_mode, look_dx, look_dy; float look_yaw0, look_yaw, look_pitch;   /* look_show = +0x268 */
     Instance *ride; int ride_state; Vec3 ride_seat, ride_p0; Quat ride_q, ride_q0, ride_cur; float ride_t; int ride_jprev, ride_aprev;
     /* statistics */
     float play_time;                /* Perso+0x710 accumulator (0x453ca0): seconds played in this level, one of the five result stats */
@@ -102,8 +111,12 @@ int  player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex
 void player_bind(Player *p, Instance *inst);           /* SetTypeInstance 1/2/3/18/19: this instance is the player */
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
 void player_game_tick(Player *p, EkoVM *vm, float dt); /* 0x4459c0: level-start iris, death -> iris closes -> respawn -> iris opens */
+void player_restart(Player *p);                        /* pause menu "Start again" (0x40584d): 0x445930 + race restart 0x4560f0 */
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */
 void player_camera_reset(Player *p);                   /* SetMode(0, 0) / message 500: put the camera behind the player now */
+void player_look_start(Player *p);                     /* 0x459050: the camera enters mode 0x200 (Perso state 3 began) */
+void player_look_camera(Player *p, FreeCamera *cam, float dt);   /* 0x459346 + 0x425b80: mode 0x200, the view from his eyes */
+void player_lock(Player *p, float t);                  /* message 30 (0x44cde9): LockMove(t) + idle record 1 */
 int  volume_contains(const Instance *inst, uint32_t node, Vec3 p);   /* 0x4300c0: is the point inside this volume node of the instance? */
 void player_free(Player *p);
 void player_boost(Player *p, Vec3 p0, Vec3 dir, float speed, float dur);   /* message 1121 StartBoostSurf 0x456000 */
@@ -132,22 +145,28 @@ Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r);
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b);   /* first world polygon hit on a->b as a fraction 0..1, or 2 when nothing is hit */                 /* Perso vt[38] */
 int  player_ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b, float *frac, Vec3 *n_out, const Instance **inst_out);   /* ray 0x4359b0, instance part (hit kind 2): press-node polygons */
 float gel_ray_hit(const GelFile *g, Vec3 a, Vec3 b, Vec3 *n_out);   /* the same, and the normal of that polygon, turned towards a */
+int  player_ray_endless(const Player *p, Vec3 a, Vec3 dir, float *t);   /* 0x497a30: 1 nothing, 3 world polygon, 4 instance press node; *t in units of dir */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
 
-/* footstep effects, drawn by the app (main_engine.c) as the pickup effects are (docs/FOOTSTEPS.md)
- * 0x47cba0(pos, ground normal, direction, foot 0/1, kind 2 or 3) twice per walk cycle, and the landing
- * dust 0x476140(pos + (0,30,0), &ground normal, 3, 0.25, 1.5) on ground type 2. */
+/* footstep effects, drawn by the app (main_engine.c) in the effect pool (docs/FOOTSTEPS.md, docs/PARTICLES.md 2/3)
+ * 0x47cba0(pos, ground normal, direction, foot 0 = left / 1 = right, kind 2 or 3) twice per walk cycle, and the landing
+ * dust 0x476140(pos + (0,30,0), &ground normal, 3, 0.25, 1.5) on ground type 2. game_smoke_ring is 0x476140 itself:
+ * kind 0 = the big dark ring (bombs, launcher muzzles, the Buzz boss: 0, 1.5, 6.0), 3 = the white landing dust. */
 void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind);
 void game_land_dust(Vec3 pos, Vec3 normal);
+void game_smoke_ring(Vec3 pos, Vec3 normal, int kind, float t0, float life);
 void game_splash(Vec3 c, float speed, float radius);   /* 0x478660, docs/SPLASH.md */
 void game_special_fx(void);                            /* 0x47ab90: the streaks and fire rings of the special attack (docs/PERSO_SPECIAL.md 3) */
 int  game_enemy_thinks(const Instance *inst);           /* is the actor in a sector drawn last frame, i.e. did its Think run (list 0x4c5258)? */
 /* the comic speech bubble 0x478980(inst, kind, duration, offY, offX, live) (docs/PERSO_DEATH.md 4.1): kind 0 "?!" (Kill 1),
  * 1 curse (hard landing), 2 "$", 3 "...", 4 "zzz"; with `live` it lasts while *live != 0 instead of `duration` */
 void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, const int *live);
-/* and the beak impact 0x479c80(kind, point, normal), on the same primitives (docs/OBJECTS.md 1.6):
- * kind 1 = a hit of the attack probe (no normal), 0 = the wall he is climbing */
+/* and the beak impact 0x479c80(kind, point, normal) (docs/PARTICLES.md 4, docs/OBJECTS.md 1.6):
+ * kind 1 = a hit of the attack probe (a flash; no normal needed), 0 = the wall he is climbing (splinters and a hole) */
 void game_peck_fx(int kind, Vec3 pos, const Vec3 *n);
+/* the skeleton flash 0x477e40 of Kill 2 and 9 (docs/PERSO_DEATH.md 4.2, docs/PARTICLES.md 6): 1.5 s of the model and a
+ * sprite skeleton taking turns, on the current player */
+void game_skeleton(void);
 /* bombs (main_engine.c, docs/BOMB.md): pick one up (0x463430: in use, not ridden, within r of pos in 3D; it is held from now on),
  * hold it in the hand (0x463530 part A), and start its projectile again from where it is (0x44d3a0: the throw and the drop) */
 struct Bomb;

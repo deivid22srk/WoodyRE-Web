@@ -17,12 +17,16 @@ void audio_bank_free(int bank);                     /* stops the voices that use
  * pos = pointer to the emitter position in world units, read live by the mixer, or NULL for 2D; dmin in metres; maxdur = life of a loop in s (<= 0: forever).
  * The fade-in set by audio_next_fade_in applies to this voice and is cleared. Returns a voice handle (>0) or 0. */
 int  audio_play(uint32_t ref, const void *owner, int loop, float vol, float f, const float *pos, float dmin, float maxdur);
+/* queue = 1: the queued Play variants (2D vt[0x2c]/[0x30], 3D argument queue = 1): the voice waits silently behind the newest
+ * 2D voice (mgr+0x30) resp. behind the owner's newest 3D voice and its queued successors, and starts when that one ends or stops */
+int  audio_play_q(uint32_t ref, const void *owner, int queue, int loop, float vol, float f, const float *pos, float dmin, float maxdur);
 void audio_next_fade_in(float t);                                   /* message 1657 */
 void audio_stop3d(uint32_t ref, const void *owner, float fade);     /* key (owner, ref): message 1628 */
 void audio_stop2d(uint32_t ref, float fade, int mask);              /* key ref; mask 1 = loops, 2 = one-shots: message 1652 */
 void audio_stop_all(void);                                          /* every voice, not the streams */
 void audio_set_volume(uint32_t ref, const void *owner, float vol);
 void audio_listener(const float *pos, const float *right);          /* per frame: the camera */
+void audio_update(int (*active)(const void *owner));                /* per frame: 3D voices of owners that are not active fall silent */
 void audio_pause(int paused);                                       /* suspends the voices */
 void audio_master(float sfx, float music);                          /* 0..1 */
 float audio_duration(uint32_t ref);

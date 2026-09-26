@@ -90,10 +90,10 @@ XZ distance to the *start point*, the look direction against the *marker directi
 on the ground, and if true `player_brake_charge` = `0x458e40`. The latter is the visible part: **without that brake Woody keeps the
 700 units/s of the charge run and rams the switch instead of pecking it** (anim 0x12 IS the peck the player sees).
 `WOODY_SWLOG=1` logs, per 1042, the distance, the angle, the Perso state, the attack substate and the outcome.
-Still missing is the **obstacle sensor** `0x44b2e0` (`p+0x234`, PERSO_FRAME.md §3): in the original a charge run also brakes
-for a steep edge or wall (PERSO_JUMP.md §2.3 state 9/10); in the port it keeps running until the collision code stops it —
-against an instance without a hull node that means: until he's halfway inside it. `0x497a30` (the world query that sensor uses)
-and the meaning of result type 3/4 have not yet been decompiled, so that sensor is deliberately not yet ported.
+The charge run also brakes at a **ledge**: the sensor `0x44b2e0` (`p+0x234`) casts the endless ray `0x497a30` down to the
+floor 40 ahead and fires when the floor there lies more than 86 lower (result type 3 = world polygon or 4 = press node,
+`t > 3`); ported, see OBSTACLE.md §2. It does not react to walls: a charge run against a wall is stopped by the collision
+only, so how far he gets into an instance is up to the instance collision (PERSO_MOVE.md §6.5).
 
 **Sequence in the original**: releasing the button on the ground starts the charge run (atk = 9, PERSO_JUMP §2.2) in the
 Perso update in `0x457330`; in the VM tick of the same frame 1050 sets the variable, the watcher sends 1042, and 1042 brakes the charge run
@@ -347,35 +347,23 @@ The engine calls this effect at every spot where the beak comes down:
 | attack ray `0x4575b0`, on **every** hit (world or instance), before the peckable test | `(1, &hitpoint, 0)` — no normal | PERSO_JUMP.md §2.4 |
 | climb loop `0x4651d0` sub 2, every 0.3 s while the ray hits a type-code-4 node | `(0, from + (to−from)·frac·0.95, &wallnormal)` | `0x4a9c9c`, §1.3 |
 
-The **content** of `0x479c80` has never been disassembled (PERSO_JUMP.md §5 lists it among the open questions), only its calls.
-It's established that it receives a point and optionally a surface normal — the same shape as the footstep effect
-`0x47cba0(pos, normal, direction, left/right, groundkind)` (FOOTSTEPS.md, PERSO_MOVE.md §4.3) — so the effect orients itself
-to the surface it marks, and it belongs to the same effects module as the pickup particles (BONUS.md §2.4).
+The function itself is decompiled in **PARTICLES.md §4** and ported (`game_peck_fx` in `src/main_engine.c`):
 
-**What the port draws** (`game_peck_fx` / `peck_draw`, `src/main_engine.c`) is therefore a **reconstruction**, but of the
-right kind: a beak doesn't scorch wood, it bites it out. So a **peck hole** is left behind in the hit face and the
-knocked-loose wood flies off the wall as **chips**. (The first version of this port drew the laser hit effect `0x46efb9`
-(§2.1) here instead — an additive glow plus sparks 50/s. That's what an energy bolt does to a wall, not what a woodpecker
-does to a plank; issue #4 was in the end about that.)
+* **kind 1** (the attack ray, every hit): one yellow flash, bank 0 image 18, size 80, alpha 0.8, additive, **0.05 s**.
+  No hole, no splinters, no use of a normal.
+* **kind 0** (the climb, every 0.3 s): a 0.2 s emitter that throws **33 splinters a second** (image 25, size 10..15, on
+  an arc 80 outward and 100 high, level and outward whatever the wall, 0.3..0.6 s), keeps the flash lit (50 a second)
+  and leaves **one hole** per peck (8 a second for 0.2 s): image 26, half diagonal 15, lying in the wall (plane with the
+  wall normal), tinted (0.8, 0.8, 0) in the blended path, at a random offset of +-10 along the wall, solid for 5..5.3 s
+  and then fading in 4 s.
 
-| | port |
-|---|---|
-| peck hole | its own pool of 64 (`Peck`, the oldest is evicted), so walking doesn't push the holes out of the footprint pool (48) and a wall keeps the whole climbed trail. `hud_world_gouge` places a **ragged pit ON the face** (outer radius 26, 11 corners with a radius of 0.6..1.0× that from a hash of the seed, so every hole is different but the same each frame), drawn multiplicatively like the footprint (`dst · (1 − rgb·strength)`, strength 0.72) with a weak additive rim around it like splintered, lighter wood. The hole stays for **20 s** and only fades in its last 4 s |
-| wood chips | 10 × `hud_world_chip` per peck: a solid sliver (not a sprite), 32..56 long and 10..18 wide, in its own wood color with its own shading tone. Speed: 130..320 away from the face, 40..190 sideways around it, plus 70..220 upward; then the engine's own fall (`vel.y −= dt·g·200` with g = 5 and a floor of −800, `0x44945f`) and air drag `pow(0.97, dt·60)` (T+0x28), so it **flutters** rather than falling like a stone. They tumble around their own axis (6..18 rad/s), live 0.9..1.5 s and fade in their last 30% |
-| sawdust | one small dust puff (the same `Dust` pool as the footsteps, image 14, now with its own color) from the hole, 0.3 s |
-| without a normal | no face to bite into: only the chips. The attack ray `0x4575b0` itself doesn't supply a normal, but the port measures, in `gel_ray_hit`, the normal of the face that same ray hits and passes it along, so an attack against a wall also gouges a hole |
+While climbing this leaves a column of small holes, one every ~75 units (250 units/s upward, a peck every 0.3 s). The
+peck he uses to **grab on** (`climb_try`, via the attack ray) is kind 1: a flash only. `WOODY_FXLOG=1` logs every peck.
+The glowing "peck here" faces of the climb wall itself are something different: those are model faces with texture-group
+flag bit 1 (§1.3), which since LIGHTING.md recipe 5 (issue #5) are drawn unlit and additive.
 
-While climbing this leaves a trail of peck holes on the wall: peck every 0.3 s, 250 units/s upward, so about every 75 units a
-hole that stays put; the chips fall off from beneath it. The peck he uses to **grab on** (`climb_try`, via the
-attack ray) now also gouges a hole, using the wall normal that `climb_ray` just measured. `WOODY_FXLOG=1` logs every peck.
-The glowing "peck here" faces of the climb wall itself are something different: those are model faces with texture-group flag bit 1
-(§1.3), which since LIGHTING.md recipe 5 (issue #5) are drawn unlit and additive.
-
-**Uncertain / to verify with Frida on `0x479c80`**: number, color, size and lifetime of the chips; how long the hole stays in
-the original (here 20 s; if it really stays forever, a bigger pool belongs with it); how kind 0 and 1 differ from each other;
-and whether the original does something different for a non-wooden face than making wood fly (the port has no
-material kind for "wood" — the ground-kind byte of FOOTSTEPS.md §2 only knows normal/slippery/dust).
-`0x47cba0` (footsteps) and `0x476140` (dust on landing) belong to the same family and are equally unread (FOOTSTEPS.md).
+(Before the decompilation the port drew a reconstruction here: a ragged multiplied "gouge" that stayed 20 s, tumbling
+untextured chips on the projectile gravity and a sawdust puff; before that, the laser hit `0x46efb9` (§2.1). Both are gone.)
 
 ## 2. Classes
 

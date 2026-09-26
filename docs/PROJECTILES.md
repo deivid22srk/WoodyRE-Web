@@ -328,7 +328,7 @@ End (`0x46fbca`): **explosion `0x477060(2, &last_pos, &(0,1,0))`**, `smoke->stat
 Explosion kind 2 (`0x47717a`): one record `0x4762e0`, 0.3 s, `R = 400`: nine **plane-oriented** quads (sprite flag 2 = normal taken from `S+0x230`, not billboarded) with normals
 (1,0,0), (0,1,0), (0,0,1), (.7,0,.7), (−.7,0,.7), (.7,.7,0), (−.7,.7,0), (0,.7,.7), (0,−.7,.7); image 12, white, `size = R·(0.3 + 0.7·sin(u·π/2))` (120 → 400), `alpha = 0.3·cos(u·π/2)`
 (`0x4abd0c` = −128, `0x4abd10` = −0.7, `0x4abd14` = −0.3, `0x4aab98` = 0.3). Kind 1 = big explosion (`0x476b50`, `0x476cd0`, `0x4762e0` with R = 1400 and 400), kind 0 = with a normal (`0x4765f0`, `0x476710`,
-`0x476cd0`, shards `0x476140`): not read. The explosion does **no** damage (damage only comes from §2.5).
+`0x476cd0`, smoke ring `0x476140`): read in PARTICLES.md §3/§5, ported. The explosion does **no** damage (damage only comes from §2.5).
 
 ### 5.4 Type 41 (missile instance) and the pool (**ported**, §7.1)
 

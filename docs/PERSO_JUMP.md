@@ -273,7 +273,7 @@ Before the trigger, `0x44ba70` (state 0) also tests `0x463430`: action 6 *just p
 | 6 | `0x45841d` | low wall bounce (≤ 100 above ground) | jumper reset every frame (no gravity); if `T < 0.4` (`0x4aa394`): find ground `0x435650(pos+(0,1,0), −1, 1)` and `p+0x244 −= (pos.y − [0x53a568])·2.5` (spring toward the ground) | `T ≤ 0` ⇒ `0x462990` (snap to ground, `onGround = 1`, jumper reset), → **0** | 0xd |
 | 7 | `0x4584e1` | high wall bounce (> 100) | jumper reset (hangs still) | `T ≤ 0` ⇒ → **0**, `Jumper_ForceFall(0)` | 0xe |
 | 8 | `0x458524` | beak stuck in "peckable" surface | jumper reset | `T ≤ 0` ⇒ **SetState(4)**, anim 0x15, `p+0x50c = 2`, `p+0x520 = 0.8`, → **0** | 0xf → 0x15 |
-| 9 | `0x457abe` | **charge-run windup** | `disp.xz = M.dir·700·dt` (`0x4ab2c4`), `disp.y = 0`; auto-aim `0x4579a0` (not on the 1st frame); beak-hit test | steep edge (`p+0x234`): button 4 pressed ⇒ LockMove(0,1), anim reset, → 0; otherwise brake → **11**. `T ≤ 0` ⇒ → **10**, `+0x5f4 = 0.2`, `+0x5f8 = charge` | 0x10 (→ sub-anim 0x11) |
+| 9 | `0x457abe` | **charge-run windup** | `disp.xz = M.dir·700·dt` (`0x4ab2c4`), `disp.y = 0`; auto-aim `0x4579a0` (not on the 1st frame); beak-hit test | ledge ahead (`p+0x234`, OBSTACLE.md §2), tested first: button 4 held ⇒ LockMove(0,1), anim reset, → 0; otherwise brake → **11**. `T ≤ 0` ⇒ → **10**, `+0x5f4 = 0.2`, `+0x5f8 = charge` | 0x10 (→ sub-anim 0x11) |
 | 10 | `0x457c02` | **charge run** | auto-aim; as long as `charge > 0` and no steep edge and action 4 not pressed: `disp.xz = M.dir·700·dt`; every 0.2 s rumble `0x44d1b0(P+0xac, P+0xa8)` = (0.5, 0.15); beak-hit test | otherwise: action 4 ⇒ LockMove(0,1), anim reset, → **0** (jump follows); otherwise brake → **11** | 0x11 |
 | 11 | `0x457e78` | brake | `+0x5f0 = 0`; no `+0x5cd` (Mover stands still due to LockMove) | `T ≤ 0` ⇒ → **0** | 0x12 |
 
@@ -520,6 +520,5 @@ along, whether the original places it on the floor normal or horizontally, and w
   has not been decompiled.
 * `vtbl[37]` (+0x94) and `vtbl[39]` (+0x9c) of the enemy classes (what does a hit do per enemy type, which
   script events follow) have not been traced.
-* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (hard landing) and `0x479c80` (peck impact) have not been read. The port does draw an
-  impact at the call sites of `0x479c80` (a peck hole in the hit surface plus wood chips falling out of it), but that
-  shape is a reconstruction — see OBJECTS.md §1.6.
+* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (hard landing) is the speech bubble (PERSO_DEATH.md §4.1); `0x479c80` (peck impact) is
+  decompiled and ported: kind 1 (this attack ray) is a 0.05 s flash, kind 0 (climbing) splinters and a hole (PARTICLES.md §4).

@@ -309,7 +309,7 @@ within 1 s and it pulses cyan, draining back when he leaves.
   tested; the random numbers come from a local LCG, not the CRT `rand()` sequence; which uv corner each 0x470d80 mode
   mirrors is taken from the mode tables (`0x470de2`, `0x470e0c`, `0x470e3a`) without tracing the line quad's corner
   order; the glow sprite's `+0x260 = 0x12` is not decoded (drawn additive like the other fx sprites); the skeleton
-  flash of the Kill(9) death (`0x477e40`) is still missing (PERSO_DEATH.md).
+  flash of the Kill(9) death (`0x477e40`) is ported since (PARTICLES.md §6).
 * Log: `WOODY_STORMLOG=1` (rods and their parameters, start/stop, warning, every strike with "sheltered" or "HIT",
   glow per second).
 

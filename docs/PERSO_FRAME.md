@@ -169,12 +169,13 @@ void Perso_Update(Perso *p, bool arg /* always 1 */)
 * **`0x44b980` key 7** (`0x467440(7)` = release edge): in state 3 (and cam mode ≠ 9) or key:
   state 3 ⇒ `0x44c9f0` (back to the previous state `+0x220`), `+0x268 = 1`; state 0 with
   `+0x5b4 == 0` or state 6 with `+0x58c == 2` ⇒ if `onGround` and cam mode 0: `0x464620(p)`;
-  **state := 3** (`0x44c980(3)`); otherwise sound 9. State 3 is thus a key-7 mode
-  (presumably "look around"/first person; `0x44b4a0` sets `+0x100 = 100.0` and anim speed 1 there).
-* **`0x44b2e0` steep slope**: `+0x234 = 0`; if onGround: `d = normalize(M->dir(+0x10))`
-  `* P+0x80 (40.0)`; test `0x497a30(pos + P+0 (43) up, pos + d, -1)` (raycast/height test) and if
-  `[0x4c4bd0]` (result type) 3 or 4 and `[0x4c4bd4] >= 3.0` ⇒ `+0x234 = 1` ("standing at a
-  steep edge", used by the jump controller `0x457abe`).
+  **state := 3** (`0x44c980(3)`); otherwise sound 9. State 3 is the key-7 **look-around** (first person, camera mode 0x200;
+  `0x44b4a0` fades the Perso out there: `+0x100 = 100.0`, `0x44e7f0(1.0, 1)` = instance fade 1.0). Worked out in [PERSO_LOOK.md](PERSO_LOOK.md).
+* **`0x44b2e0` ledge sensor** (full analysis: OBSTACLE.md §2): `+0x234 = 0`; if onGround: `d = normalize(M->dir(+0x10))`
+  `* P+0x80 (40.0)`; endless ray `0x497a30(a = pos + (0, P+0 = 43, 0), dir = pos + d − a, -1)`, i.e. from the collision
+  centre down to the floor point 40 ahead; if the result type `[0x4c4bd0]` is 3 (world polygon) or 4 (press node) and
+  `t = [0x4c4bd4] > 3.0` ⇒ `+0x234 = 1`: the floor ahead lies more than 86 below the feet. Walls never set it (the
+  collision radius 69 keeps them beyond the 40 look-ahead). Read only by the charge run `0x457abe` / `0x457c20`.
 * **`0x44c980(p, s)` SetState**: if `+0x590` (ridden object) and state 6 → 0x463c90; `+0x220 =
   old state`, `+0x21c = s`, clears `+0x50c`, `+0x5f0`, `+0x5b4`, `+0x5cd`, `+0x6ac`.
 * **`0x44c030` (vtbl[34])** = position pointer: `+0x544` if `+0x550` (alternative position, e.g. on
@@ -323,7 +324,7 @@ Other sub-states set `+0x5b4` to 1..11 at `0x4573f2..0x458ead` (see the writers 
 | 0x74 | 0x184 | 250 | ? |
 | 0x78 | 0x188 | 300 | ? |
 | 0x7c | 0x18c | 1500 (default `0x4631b0`) | fall height above which fall damage applies (`0x44b254`) |
-| 0x80 | 0x190 | 40 | look-ahead distance for the steep-edge test (`0x44b378`) |
+| 0x80 | 0x190 | 40 | look-ahead distance of the ledge sensor (`0x44b378`, OBSTACLE.md §2) |
 | 0x84 | 0x194 | 100 | ? |
 | 0x88..0x90 | 0x198..0x1a0 | 1.0 | `0x19c` = damage per fall (`0x44b27c`) |
 | 0x94 | 0x1a4 | 3.0 | ? |
@@ -356,7 +357,7 @@ animation speed, `+0x1c` cell, `+0xf8` model.
 | 0x224 | f32 | ground height | `0x4624f0` |
 | 0x228 | f32 | height above ground | `0x4624f0` |
 | 0x22c | u8 | **onGround** | `0x4624f0`; getter `0x44bcf0` |
-| 0x234 | u8 | standing at a steep edge | `0x44b2e0` |
+| 0x234 | u8 | ledge ahead (charge run brakes), OBSTACLE.md §2 | `0x44b2e0` |
 | 0x238 | f32 | invulnerability timer (−dt) | `0x44b638`, `0x44ccfd` |
 | 0x23c | int | HUD frame counter | `0x44ae60` |
 | 0x240 | f32 | push timer (−dt) | `0x44bb20` |

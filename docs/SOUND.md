@@ -22,11 +22,18 @@ Helper scripts for this analysis lived in the scratch folder (not in the repo); 
   bare indices = bank 0 = `Common/<character>.rck` (6413 of the 6422 animation events; 9 with `0x0100xxxx`).
 * Volume is **0..100** (clamped in `0x469c6b`/`0x469ded`/`0x46a078`), linear: the lib sets `mB = −2000·log10(100/v)`
   (`0x48bf50`, `0x4abec0` = −2000) ⇒ amplitude = v/100; then × sfx master volume `[0x5e81ec]` = cfg/100.
-* 3D: in this build always **DirectSound3D hardware** (`mgr+0x34` stays 0, only writer `0x469a54`); the engine also contains a
-  full software path (`0x46ba44`) with exactly the model we can reuse: `gain = 1` for `d ≤ dmin`, otherwise
-  `dmin / min(d, dmax)`, pan = `100·dot(right, direction)`. Distances in **meters = world units × 0.01** (`0x4a94f8`).
-  `dmax = 50·dmin`, cutoff distance `= 10·dmin` (the voice fades out over 0.5 s and is released, and comes back with a 0.2 s fade-in).
-  Default `dmin = 2.0 m` ⇒ audible up to 20 m = 2000 units. No doppler (velocity never set).
+* 3D: in this build always **DirectSound3D** (`mgr+0x34` stays 0, only writer `0x469a54`): gain `dmin / min(max(d, dmin), dmax)`
+  (DS3D rolloff 1), pan from the direction to the source on the listener's right axis = **screen right** (§2.3, verified
+  statically). The engine also contains a dead software path (`0x46ba44`) with the same gain law and pan = `100·dot(right, dir)`,
+  but it takes `dir` from the *absolute* source position (bug, never executed). Distances in **meters = world units × 0.01** (`0x4a94f8`).
+  `dmax = 50·dmin`, cutoff distance `= 10·dmin` (a loop fades out over 0.5 s and is released, and comes back with a 0.2 s fade-in;
+  a one-shot is cut and resumed at once). Default `dmin = 2.0 m` ⇒ audible up to 20 m = 2000 units. No doppler (velocity never set).
+* **Listener = the camera** (`CamMgr+0x1dc`, set every frame by `0x4019b6`). **No occlusion**: the per-frame line-of-sight
+  test `0x428cf0` is a stub (`xor eax, eax; ret 0x10`), so the "muffled" fade states 3/4 never occur (§2.1). What does silence
+  sounds behind walls is the **instance list**: only 3D voices of instances in this frame's list `world+0x64` (visible sectors,
+  `0x42a840`) are processed; the others fall silent (§2.2 step 3).
+* **Queued plays** (1603..1605, 1611..1615, 1617..1619, 1624..1626, 1636..1638): a 2D voice waits behind the newest 2D voice,
+  a 3D voice behind the instance's newest 3D voice (§2.5).
 * Max **24 physical** voices (`0x46c160`: `mgr+0x3c < 0x18`), 512 logical (`0x46aa20`), no priorities: when full, a
   new 3D voice is not started (stays logical and retries every frame), a 2D voice stays in the wait list.
 * **Music**: message **1655 [track]** = `PlayMusic(track)` (`vt[0x48]` = `0x469870` → `0x46c850`); `track` = index in the
@@ -74,7 +81,7 @@ Usage = static count of `SEND` across all 28 `extract/Data/*/code`.
 | 1609 | id, vol, dur | 14 | `0x4680dd` | 2D loop stretched to dur/100 s (KWS/SWS: 40) |
 | 1611..1615 | as 1606..1610 | 0 | `vt[0x30]` | 2D loop queued |
 | 1616 | inst, id, vol | 0 | `vt[0x24](id, inst, 1.0, vol)` `0x4681c0` | 2D with owner (inst is only stored in `voice+0x64`) |
-| 1617 / 1618,1619 | inst, id, vol / +dur | 0 | `vt[0x2c]` | same, queued; 1618/19: f = −arg3 (note: no ·0.01 here, `0x46820a`) |
+| 1617 / 1618,1619 | inst, id, vol / +dur | 0 | `vt[0x2c]` | same, queued; 1618/19: f = −arg3 (note: no ·0.01 here, `0x46820a`, so arg3 = seconds) |
 | **1620** | inst, id, vol | 507 | `vt[0x40](id,inst,0,1.0,1e10,vol,2.0)` `0x468236` | **3D loop**, dmin 2 m |
 | 1621 | inst, id, vol, f | 37 | `0x468273` | 3D loop, pitch f·0.01 |
 | **1622** | inst, id, vol | 220 | `vt[0x34](id,inst,0,vol,1.0)` `0x4683f4` | **3D one-shot**, dmin 2 m |
@@ -134,52 +141,79 @@ used only by engine code).
 
 `+8` type: 0 = 2D, 1 = 3D, 2 = 2D loop, 3 = 3D loop · `+0xc` start time · `+0x10` maxdur (loop) · `+0x14` start offset in bytes
 (`0x46ab40`: a loop that becomes audible later starts at `(now − start) mod duration`) · `+0x18` frequency (0 = original) · `+0x1c`
-pitch factor · `+0x20` lib handle · `+0x24` sample · `+0x28/+0x34` LFOs · `+0x44` **volume 0..100** · `+0x48` current volume ·
+pitch factor · `+0x20` lib handle · `+0x24` sample · `+0x28/+0x34` LFOs · `+0x40` queued 2D successor (§2.5) · `+0x44` **volume 0..100** · `+0x48` current volume ·
 `+0x4c` target · `+0x50` fade state · `+0x54` fade duration · `+0x58` elapsed · `+0x5c` start volume · `+0x60` 3D node ·
 `+0x64` instance · `+0x68` dmin · `+0x6c` dmax · `+0x70` cutoff · `+0x74` pan · `+0x78` distance gain.
 
 Fade states (`0x46b530`, table `0x46b7c8`): 0 = none (`cur = vol`); 1 = fade-in `cur = lerp(start, vol, t/T)`;
 2 = "killing softly" to 0 (T = 0.5 `0x4abbac`); 3 = ducked to `0.5·vol` (T = 0.25 `0x4abbb0`);
 4 = back from ducked to vol (T = 0.25 `0x4abbb4`); 5 = fade out then stop (Stop messages).
-State 3/4 comes from **occlusion**: `0x46b920` does a per-frame line-of-sight test listener → source (`0x428cf0`, world
-`[0x50944c]`); blocked ⇒ volume halved. (Optional for the port.)
+State 3/4 would come from **occlusion**: `0x46b920` (per 3D voice per frame) calls `0x428cf0(world [0x50944c], &listenerPos,
+&srcPos, listenerCell mgr+0x24, −1)`; blocked ⇒ state 3 (to `0.5·vol` over 0.25 s), clear again ⇒ state 4. But **`0x428cf0` is
+`xor eax, eax; ret 0x10`** in this build: never blocked, so states 3/4 never happen and there is no occlusion to port.
+`mgr+0x24` = `0x428ce0(listenerPos)` = FindCell (`0x40ab60`) of the camera (`0x46a9a2`), only used by that stub.
 
 ### 2.2 Per frame (`0x46a8a0`)
 
 1. `0x46c510`: clean up voices ended by the lib (`0x48d8a0`).
-2. Listener = object `mgr+0x28`: position `+0x90..0x98` × 0.01, orientation from the matrix at `+0`: vectors
-   `(m[1],m[4],m[7])` and `(m[2],m[5],m[8])` (`0x46a909..0x46a943` → `0x48f8e0`), "right" = `(m[0],m[3],m[6])` (`0x46baf8`).
-   That layout (3×3 + position at +0x90) is the **camera Repere** (CAMERA.md: `Repere+0x90` = camera position) ⇒ the listener
-   is the **camera**, not the player. Where `mgr+0x28` is set was not found (uncertain; no direct writer via
-   `[0x5e61a4]`/`[0x4c2dd8]`).
-3. The instance list passed in marks 3D nodes as "processed this frame" (`node+8 = mgr+0x38`); a 3D loop of a
-   not-processed (not active/visible) instance fades out over 0.5 s ("Killing softly cause not processed",
-   `0x46b19c`). Which list the caller passes was not investigated (uncertain; presumably the active instances `0x4c2d08`).
+2. Listener = object `mgr+0x28` = **`CamMgr+0x1dc`** (the camera Repere, CAMERA.md §1.1), set every frame by the frame
+   function: `0x4019b6` = `0x4883a0(app+0x20, [0x4c737c]+0x1dc)` (a folded one-line setter `[ecx+0x28] = arg`). Position
+   `+0x90..0x98` × 0.01 (`0x48f9f0`), orientation `0x48f8e0(front, top)` with **front = column 2** `(m[2],m[5],m[8])` and
+   **top = column 1** `(m[1],m[4],m[7])` (`0x46a909..0x46a982`; the lib stores them at `DS3DLISTENER` `+0x78`/`+0x84` =
+   vOrientFront/vOrientTop, committed by `0x48fcf0` → `SetAllParameters`). Camera space is x = right, y = down, z = forward
+   (CAMERA.md §5.2), so top points *down*; that only flips elevation, the left/right axis is `top × front = column 0` (§2.3).
+3. Update is called by the frame at `0x401ee7`: `app+0x1c->vt[0x1c]` (`0x469080`) → `mgr->vt[4](list = [0x509adc]+0x64,
+   n = [0x509adc]+0x60, 0)` = the per-frame **instance list of the visible sectors** (`0x42a840`, rebuilt every frame; BONUS.md
+   §3.1). Both this call and the listener setter only run if `[0x5e5814]+0x384 & 2`, which `0x44fe2e..0x44fe5f` sets to
+   `(sfx on | music on | [0x4c2c40]) & 1` = "sound on". `0x42a840` also leaves out a stationary instance (sphere cached, `+0x88 == 1`)
+   whose bounding sphere is outside the view frustum (`0x437b00`) or more than 11000 units from the camera (`0x42a907`, `0x4aa2f4` = 1.21e8).
+   The list marks 3D nodes as "processed this frame" (`node+8 = mgr+0x38`, `0x46a9c0`); for the voice of a not-processed node:
+   a **loop** fades out over 0.5 s ("Killing softly cause not processed", `0x46b19c`), then stops as inaudible (node kept); a
+   **one-shot** is stopped at once and its node kept (log text "Killing cause locked", `0x46b4b4`) – unless its sample is the
+   locked one `mgr+0x2c`, then the node is removed (`0x46b513`; the two log texts look swapped). Only instances of the list get
+   their nodes (re)started (step 6), so a sound played on an instance outside the list never starts while it stays outside.
 4. `0x46bbb0`: 2D voices: update fade, done/inaudible (`cur < 5` with target 0) ⇒ stop.
 5. `0x46b080`: 3D voices: `d = |source − listener|`; `d > cutoff·100` ⇒ fade out/stop; inaudible ⇒ stop (node stays);
    maxdur elapsed or kill flag ⇒ stop + remove node (+ start the next one in the chain).
-6. `0x46bcf0`: per instance in the list: clean up finished one-shot nodes (`0x46a190`: `start + duration ≤ now`), and
-   (re)start not-playing nodes within `cutoff·100` (`0x46be50`; loops with 0.2 s fade-in `0x4abba8`), provided < 24 voices.
+6. `0x46bcf0`: per instance in the list: clean up finished one-shot nodes (`0x46a190`: not playing and `start + natural
+   duration ≤ now`), and (re)start not-playing nodes within `cutoff·100` (`0x46be50`: loops with 0.2 s fade-in `0x4abba8` at
+   offset `(now − start) mod duration`; one-shots at full volume at offset `now − start`), provided < 24 voices; a playing loop
+   that is still fading out (state 2) and back in range gets the 0.2 s fade-in (`0x46be05`).
 7. `0x46ace0`: start waiting 2D voices.
 
 Volume to the lib: `ftol(cur · [0x5e81ec])` (2D `0x46b791`; 3D in software mode `cur · gain(+0x78) · master` `0x46b69f`).
 
 ### 2.3 3D model
 
-Hardware path (active): per voice `SetPosition(pos·0.01)` (`0x490100`), `SetMinDistance(+0x68)` (`0x490020`),
-`SetMaxDistance(+0x6c)` (`0x48ffb0`), DS3D default rolloff ⇒ `gain = dmin/d` between dmin and dmax, constant beyond.
-Software path (`0x46ba44`, same model, use this in the port):
+Hardware path (the only one taken): per voice `SetPosition(pos·0.01)` (`0x490100`, buffer params at `voice+0x7c`, committed by
+`0x4901b0`), `SetMinDistance(+0x68)` (`0x490020`), `SetMaxDistance(+0x6c)` (`0x48ffb0`); listener rolloff/distance/doppler
+factors 1.0 (`0x48f830`) ⇒ `gain = dmin/d` between dmin and dmax, 1 below dmin, constant beyond dmax. The lib's coordinate hook
+`lib+0x30` is off (`0x48b82e` → `0x48f7c0(1)`; mode 2 would negate y via `0x48f810`), so world coordinates go to DS3D as they
+are. **Left/right**: DS3D's right axis is `top × front` (the product that gives +x for its defaults top (0,1,0), front (0,0,1));
+with top = column 1 and front = column 2 of a proper rotation that is column 0 `(m[0],m[3],m[6])` = camera-space +x = **screen
+right** – the same axis the software path uses. So a source to the right of the picture is louder on the right channel.
+
+Software path (`0x46ba44`, dead: `mgr+0x34` = 0):
 
 ```c
 d = len(src - lis) * 0.01f;                 /* 0x4aa0ac */
 if (dmin <= 0) dmin = 1;  if (dmax < dmin) dmax = 1e7f;   /* 0x46ba8a, 0x46baa1 (0x4b189680) */
 if (d > dmax) d = dmax;
-gain = (d > dmin) ? dmin / d : 1.0f;        /* 0x46bad8 */
-pan  = ftol(100 * dot(normalize(right), normalize(src - lis)));   /* -100..100, 0x46bb8d */
+gain = (d > dmin && d < dmax) ? dmin / d : 1.0f;   /* 0x46bad8: at d == dmax the test fails -> 1.0 (unreachable: cutoff 10 dmin < dmax) */
+pan  = ftol(100 * dot(normalize(right), normalize(src)));   /* 0x46bb36: reloads the raw source position, not src - lis (bug) */
 ```
-Pan → lib (`0x48f520`): the other channel is attenuated by `−2000·log10(100/(100−|pan|))` mB (linear `(100−|pan|)/100`).
-`0x46b7e0` shifts the source position when `[0x5e81c0]` (cfg `0x4c2c44`) ≠ 0 along the view axis (factor −2, `0x4a9504`); purpose
-uncertain (3D "focus" option), omit for the port.
+Pan → lib (`0x48f520`): the other channel is attenuated by `−2000·log10(100/(100−|pan|))` mB (linear `(100−|pan|)/100`);
+`lib+0x44` would swap the sign (0 in this build).
+
+**Port** (`audio.c voice_geom`): the hardware model with the software path's pan law, direction relative to the listener:
+`gain = dmin / clamp(d, dmin, dmax)`, `pan = dot(right, src − lis)/|src − lis|`, `L = (pan > 0 ? 1 − pan : 1)`, `R = (pan < 0 ? 1 + pan : 1)`,
+right = `cam_right()` = the GL view's x axis (`render_gl.c`), i.e. screen right. The exact DS3D panning curve of the sound
+card/driver is not in the exe; the linear law of `0x48f520` is the game's own choice for its software path.
+
+`0x46b7e0` (when `[0x5e81c0]` ≠ 0): mirrors the source through the listener's median plane – normal `n = normalize(column 1) ×
+normalize(column 2)` = the right axis, `src += −2·dot(n, src − lis)·n` (`0x4a9504` = −2) – i.e. **swaps left and right**
+("reverse stereo"). `[0x5e81c0]` = `[0x4c2c44]` = Woody.cfg struct `+0x74` (file `+0x78`), 0 unless the setup tool sets it;
+not ported.
 
 ### 2.4 Configuration (`0x4691e2..0x4692b9`, from Woody.cfg globals)
 
@@ -187,6 +221,25 @@ uncertain (3D "focus" option), omit for the port.
 `0x5e81e8` (lib init `0x469360`, otherwise silent) · `[0x4c2c50]` **sfx volume 0..100** → `0x5e81ec = v·0.01` · `[0x4c2c54]`
 **music volume** → `0x5e81f0` · `[0x4c2c58]` third volume → `0x5e81f4` (no reader found) · `[0x4c2c68]` speaker config
 1..8 (`0x4693b0`). Setters for the options menu: `vt[0x54/0x5c/0x64]` of the system (`0x469570`, `0x4695a0`, `0x4695d0`).
+
+### 2.5 Queued plays
+
+* **2D** (`0x469c10` with queue = 1, vt `0x2c`/`0x30`): every 2D Play stores its voice in `mgr+0x30` (`0x469d05`/`0x469d17`).
+  A queued Play with `mgr+0x30 ≠ 0` only hangs the new voice on `[mgr+0x30]+0x40` (no list); otherwise it starts like an
+  unqueued one. When a 2D voice ends (lib done `0x46c5af`, or faded/killed `0x46bc35`, both → `0x46af00`) its `+0x40` voice
+  gets `start = now` and goes on the wait list (`0x46af41`), and `mgr+0x30` is cleared if it was that voice (`0x46af35`).
+  Stop2D (`0x46c390`) only walks the wait and physical lists, so a parked voice survives it and starts when its predecessor stops.
+* **3D** (`0x469d60`/`0x46a010` with queue = 1): 3D nodes (alloc `0x46bc70`, free `0x46bca0`: `+5` playing, `+8` processed stamp, `+0xc` next in the instance's list, `+0x10` queued
+  successor, `+0x14` voice) of an instance form a list (head `mgr+0x1b910[inst]`;
+  queue = 0 pushes at the front, `0x469fb1`); a queued node is appended to the `+0x10` chain of the **head** node, walking
+  it to the end, with `start = start_last + duration_last / pitch_last` (`0x469eda..0x469fa2`). When a node is removed
+  (`0x46a5d0`: voice ended `0x46c585`, killed/maxdur `0x46b3ab`, or `0x46b523`) its `+0x10` successor takes its place in the
+  list, and `0x46bcf0` starts it the same frame. Stop3D (`0x46a2b0`) removes queued nodes of that sample from the chains
+  (`0x46a3e0`). Two original bugs, not reproduced: `0x46a190` (an expired, never-started one-shot at the head) drops its
+  successor (`0x46a22b`), and the kill path `0x46b3cf` pushes the successor at the head a second time after `0x46a5d0`
+  already did, which links it to itself.
+* Only one script uses it (1624, 1 SEND in all levels, §1). The port parks the voice silently (`audio_play_q`, `wait`/`next`)
+  and starts it at offset 0 when its predecessor ends or stops.
 
 ## 3. Animation events type 4 = sound (`.ins`)
 
@@ -341,9 +394,13 @@ stopped (`0x401cdf`).
    3D voices key on (inst, ref); 2D on ref. Get position per frame from the instance (`inst->vt[0x54]` = world position).
 3. **Messages** per §1; minimally 1600, 1602, 1606, 1609, 1620..1624, 1627..1635, 1652, 1655, 1657. Stop = fade to 0 over
    t s then release; `1657` = one-shot fade-in for the next play.
-4. **3D**: formula §2.3 with listener = camera (position + right vector), `dmax = 50·dmin`, let a voice lapse above
-   `10·dmin` (fade 0.5 s) and restart loops (fade-in 0.2 s, offset `(now − start) mod duration`) once they come back
-   into range. Constant-gain pan: `L = (pan>0 ? (100−pan)/100 : 1)`, `R` mirrored. Max 24 voices, no stealing.
+4. **3D**: formula §2.3 with listener = camera (position + right vector), `dmax = 50·dmin`, let a loop lapse above
+   `10·dmin` (fade 0.5 s) and restart it (fade-in 0.2 s, offset `(now − start) mod duration`) once it comes back
+   into range; a one-shot is cut and resumed at once. Constant-gain pan: `L = (pan>0 ? (100−pan)/100 : 1)`, `R` mirrored.
+   Max 24 voices, no stealing (the port mixes up to 96). **No occlusion** (§2.1); instead the 3D voices of owners outside the
+   frame's instance list fall silent the same way (§2.2 step 3): port `audio_update(snd_owner_active)` after the draw, with
+   `snd_owner_active` = `visible && game_enemy_thinks()` (in the world and in a drawn sector; the frustum/11000 test for
+   stationary instances is not ported). Queued plays per §2.5.
 5. **Animation events** type 4 fired from the animation tick (window `[tPrev, tNow)`, wrap), one random draw per tick,
    Perso = 2D, rest 3D, pitch × `enemy+0x170`.
 6. **SoundFx table** §5 as a constant array; `fx_play(id, inst)`, `fx_stop(id, inst)`, chain 25..28 with 0.3 s, source helper for
@@ -355,11 +412,11 @@ stopped (`0x401cdf`).
 
 ## 8. Open questions
 
-1. Who sets the listener `mgr+0x28` and who calls `vt[4]` (Update) with which instance list? (The layout points to the camera Repere;
-   caller not found.)
+1. ~~Who sets the listener and who calls Update~~: answered in §2.2 (`0x4019b6`, `0x401ee7`, list `world+0x64`).
 2. Exact meaning of stream flag 3 vs. 0 in `0x490f30` (assumed: 3 = loop) and whether rtc streams follow the music master.
 3. `this+0x1c` of SoundFx (global pitch) and `[0x5e81f4]` (third volume) have no found writer/reader.
 4. The event names of the menu/HUD ids 21..37 and of the bosses (39..54, 63..67) – addresses are correct, meaning not verified.
 5. 1649/1650 (`0x41fa40`/`0x41fa50` on `[0x4c737c]`): camera-related, not investigated; used by no script.
-6. Occlusion (§2.1, state 3/4) and the position shift `0x46b7e0`: needed for the port? Probably not audibly important.
+6. ~~Occlusion and `0x46b7e0`~~: occlusion is a stub in this build (§2.1); `0x46b7e0` = reverse stereo (§2.3). Open: which
+   setup-tool option writes Woody.cfg `+0x78` (`[0x4c2c44]`), and the exact DS3D panning curve (driver-side, not in the exe).
 7. MESSAGES.md §Sound is wrong on several points (1655 = music, 1628 = stop, 1622/1623 are 3D) and should refer to this document instead.

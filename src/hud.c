@@ -22,7 +22,7 @@ static struct {
     float k;                                              /* current glyph scale = size / (H - B) */
     float blink;
     GLuint sky[5]; int nlevel_img;                        /* level bank images 0..4 in file row order (sky cube) */
-    GLuint fx[21];                                        /* bank 0 images 0, 4, 6: ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11: glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32: explosion flash, smoke, flame, exhaust glow, shared by the rocket (docs/ROCKET.md 5) and the missiles (docs/PROJECTILES.md 5.3); slot 10 = the footstep mark (docs/FOOTSTEPS.md); slot 11 = image 58, the wake on the water (docs/WATER.md 4.1); 12 = image 18, the spark of a bomb's fuse, 13 = image 24, the smoke of the bomb blast (docs/BOMB.md 3.4, 4.3); 14 = image 57, the drop of the water splash (docs/SPLASH.md 4); 15..17 = images 7, 8, 9, the hit star (0x4750e0), 18 = image 33, the fire ring of the special attack (docs/PERSO_SPECIAL.md 3), 19 = image 30, a segment of the storm's lightning bolt (docs/STORM.md 5), 20 = image 13, the spark of the fireball's trail (docs/PROJECTILES.md 5.5) */
+    GLuint fx[40];                                        /* bank 0 effect images, slot = the index of the image in k_fx_img (fx_slot): 0, 4, 6 ribbon, flash, bolt (docs/PROJECTILES.md); 5, 10, 11 glow and the two death stars (docs/PERSO_DEATH.md 7); 12, 14, 31, 32 explosion flash, smoke, flame, exhaust glow (docs/ROCKET.md 5, PROJECTILES.md 5.3); 58 the wake on the water (docs/WATER.md 4.1); 18, 24 the fuse spark and the bomb smoke (docs/BOMB.md 3.4, 4.3); 57 the splash drop (docs/SPLASH.md 4); 7, 8, 9 the hit star; 33 the fire ring of the special attack (docs/PERSO_SPECIAL.md 3); 30 the storm bolt (docs/STORM.md 5); 13 the fireball spark (docs/PROJECTILES.md 5.5); 15, 16, 17 dust clouds, 25 wood splinter, 26 peck hole, 68, 69 snow print (docs/PARTICLES.md); 34..43 the skeleton of the lightning death (docs/PERSO_DEATH.md 4.2) */
     GLuint beam;                                          /* bank 0 image 1: the line texture */
     GLuint bonus[5]; float sr[3], su[3];                  /* bank 0 images 19, 21, 20, 46, 23 (jump table 0x479654) */
     GLuint env[4];                                        /* bank 0 images 53..56: the butterflies of the environment instances (0x47e050 picks one of the four) */
@@ -67,10 +67,11 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
     return t;
 }
 
-/* which bank 0 image the footstep mark uses. 0x47cba0 is not decompiled, so its image is unknown: the port takes
- * the soft cloud (image 14) and WOODY_STEPIMG=<n> tries another one (docs/FOOTSTEPS.md 4). */
-int hud_step_image(void) { static int v = -1; if (v < 0) { const char *e = getenv("WOODY_STEPIMG"); v = e ? atoi(e) : 14; if (v < 0) v = 14; } return v; }
-static int fx_slot(int image) { return image == 0 ? 0 : image == 4 ? 1 : image == 6 ? 2 : image == 5 ? 3 : image == 10 ? 4 : image == 11 ? 5 : image == 12 ? 6 : image == 14 ? 7 : image == 31 ? 8 : image == 32 ? 9 : image == hud_step_image() ? 10 : image == 0x3a ? 11 : image == 18 ? 12 : image == 24 ? 13 : image == 57 ? 14 : image == 7 ? 15 : image == 8 ? 16 : image == 9 ? 17 : image == 33 ? 18 : image == 30 ? 19 : image == 13 ? 20 : -1; }
+/* the bank 0 images the world effects use, loaded into H.fx in this order (the 16 of slot 10 used to be the footstep
+ * mark of the reconstruction; 0x47cba0 is decompiled now, docs/PARTICLES.md 2) */
+static const unsigned char k_fx_img[40] = { 0, 4, 6, 5, 10, 11, 12, 14, 31, 32, 16, 0x3a, 18, 24, 57, 7, 8, 9, 33, 30, 13,
+                                            15, 17, 25, 26, 68, 69, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 255, 255, 255 };
+static int fx_slot(int image) { for (int i = 0; i < 40; i++) if (k_fx_img[i] == image) return i; return -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
     static const int bonus_img[5] = { 19, 21, 20, 46, 23 };
@@ -138,7 +139,7 @@ void hud_free(void)
     for (int i = 0; i < 4; i++) if (H.env[i]) glDeleteTextures(1, &H.env[i]);
     for (int i = 0; i < 9; i++) if (H.bub[i]) glDeleteTextures(1, &H.bub[i]);
     if (H.beam) glDeleteTextures(1, &H.beam);
-    for (int i = 0; i < 21; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
+    for (int i = 0; i < 40; i++) if (H.fx[i]) glDeleteTextures(1, &H.fx[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
     free(H.str); free(H.gl); memset(&H, 0, sizeof H);
 }
@@ -1162,116 +1163,83 @@ void hud_world_fx_plane(int image, const float *pos, const float *n, float size,
     glEnd();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }
-/* the plane a mark lies in: N = the surface normal, +v = `dir` flattened into that plane, u = v x N, mirrored in u
- * for the other foot (sprite flag 0x40). 0 = the direction is along the normal and there is no plane to speak of. */
-static int decal_basis(const float *normal, const float *dir, int mirror, float *N, float *u, float *v)
+/* ---- the sprite primitive 0x470f10(S = [0x5e823c]+0xb00, flags) itself (docs/PARTICLES.md 1) -----------------------
+ * The effects decompiled in docs/PARTICLES.md fill S and call this with their own flags, so the port takes those as
+ * they are instead of choosing a look per image the way hud_world_fx does:
+ *   bit 0 (1)    camera facing (0x4714ea); otherwise the quad lies in a plane:
+ *   bit 5 (0x20) ... spanned by the caller's R = basis[0..2] and F = basis[3..5] (S+0x23c / S+0x248, 0x4715d5);
+ *                without it, the plane with normal basis[0..2] (S+0x230, 0x4717d7) on the axes of 0x471ee0
+ *   bit 1 (2)    own colour and alpha S+0x214..0x220 (0x4710bd); otherwise 0x4b7a84 = (0.5, 0.5, 0.5, 1)
+ *   bit 2 (4)    rotation S+0x224 in 1/512 turn (0x470f39); otherwise the corners sit at 45/135/225/315 degrees
+ *   bit 3 (8)    alpha blended, texture x 2c (MODULATE2X), alpha a; otherwise additive ONE/ONE, texture x c x a (0x4719b7)
+ *   bit 6 (0x40) UV set `mirror` of 0x470d80: 0 plain, 1 v flipped, 2 u flipped, 3 both, 4 and 6 turned a quarter
+ * `size` is the half DIAGONAL (0x470fee: corner k at size * (cos t, sin t), t = rot + 64 + 128k for the square mode 0x12;
+ * mode 0x1a is a 1:2 upright quad, t = rot +- 90); a negative size turns the quad half a turn, as the original's does. */
+#ifndef GL_COMBINE_ARB
+#define GL_COMBINE_ARB 0x8570
+#define GL_COMBINE_RGB_ARB 0x8571
+#define GL_COMBINE_ALPHA_ARB 0x8572
+#define GL_RGB_SCALE_ARB 0x8573
+#endif
+static int gl_combine(void)
 {
-    float l = (float)sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
-    if (l < 1e-6f) { N[0] = 0; N[1] = 1; N[2] = 0; } else { N[0] = normal[0] / l; N[1] = normal[1] / l; N[2] = normal[2] / l; }
-    float d = dir[0] * N[0] + dir[1] * N[1] + dir[2] * N[2];
-    v[0] = dir[0] - N[0] * d; v[1] = dir[1] - N[1] * d; v[2] = dir[2] - N[2] * d;
-    l = (float)sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); if (l < 1e-6f) return 0;
-    v[0] /= l; v[1] /= l; v[2] /= l;
-    u[0] = v[1] * N[2] - v[2] * N[1]; u[1] = v[2] * N[0] - v[0] * N[2]; u[2] = v[0] * N[1] - v[1] * N[0];
-    if (mirror) { u[0] = -u[0]; u[1] = -u[1]; u[2] = -u[2]; }
-    return 1;
+    static int c = -1;
+    if (c < 0) { const char *ext = (const char *)glGetString(GL_EXTENSIONS), *ver = (const char *)glGetString(GL_VERSION);
+                 c = (ext && strstr(ext, "GL_ARB_texture_env_combine")) || (ver && (ver[0] > '1' || (ver[0] == '1' && ver[2] >= '3'))); }
+    return c;
 }
-/* ---- ground mark of a footstep (docs/FOOTSTEPS.md): a sprite that lies in a plane instead of facing the camera
- * (0x4717d7 builds the quad on the normal S+0x230..0x238 when flag bit 0 is off), turned so that +v runs along the
- * walking direction (flag bit 2 = rotation) and mirrored in u for the other foot (flag bit 0x40, value 2 = mirrored).
- * `size` is the half diagonal, as everywhere (0x470fee). What 0x47cba0 draws is not decompiled, so the port prints
- * the mark as `dst * (1 - rgb*strength)`: the only ground-ish image it has is a white cloud on black whose alpha is a
- * constant 1, and an alpha blend of that is a dark square. Multiplying keeps the black of the texture out of it. */
-void hud_world_decal(int image, const float *pos, const float *normal, const float *dir, float size, int mirror, const float *rgb, float strength)
+static void plane_axes(const float *n, float *u, float *v)          /* 0x471ee0: column 0 = u, column 1 = v, column 2 = n */
 {
-    int n = fx_slot(image); if (!H.ok || n < 0 || !H.fx[n] || strength <= 0 || size <= 0) return;
-    float N[3], u[3], v[3]; if (!decal_basis(normal, dir, mirror, N, u, v)) return;
-    float h = size * 0.70710678f, c[3] = { pos[0] + N[0] * 3.0f, pos[1] + N[1] * 3.0f, pos[2] + N[2] * 3.0f };   /* lifted off the floor: coplanar it z-fights */
-    glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[n]);
-    glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR); glColor3f(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
+    if (fabs(n[0]) < 0.001f && 1.0f - fabs(n[1]) < 0.001f && fabs(n[2]) < 0.001f) {   /* (almost) straight up or down */
+        float l = (float)sqrt(n[1] * n[1] + n[2] * n[2]); if (l <= 0) l = 1;
+        v[0] = 0; v[1] = -n[2] / l; v[2] = n[1] / l;
+        u[0] = v[1] * n[2] - v[2] * n[1]; u[1] = v[2] * n[0]; u[2] = -v[1] * n[0];      /* v x n */
+    } else {
+        float l = (float)sqrt(n[0] * n[0] + n[2] * n[2]); if (l <= 0) l = 1;
+        u[0] = n[2] / l; u[1] = 0; u[2] = -n[0] / l;                                    /* level, across the normal */
+        v[0] = n[1] * u[2] - n[2] * u[1]; v[1] = n[2] * u[0] - n[0] * u[2]; v[2] = n[0] * u[1] - n[1] * u[0];   /* n x u */
+    }
+}
+void hud_world_spr_mode(int mode, int image, const float *pos, float size, int rot, const float *rgb, float alpha, int flags, const float *basis, int mirror)
+{
+    static const float def[4] = { 0.5f, 0.5f, 0.5f, 1.0f };                             /* 0x4b7a84 */
+    static const float uv[7][4][2] = {                                                  /* 0x470d80 cases 0..6 for the corners at 45, 135, 225, 315 deg */
+        { {1,0}, {0,0}, {0,1}, {1,1} }, { {1,1}, {0,1}, {0,0}, {1,0} }, { {0,0}, {1,0}, {1,1}, {0,1} }, { {0,1}, {1,1}, {1,0}, {0,0} },
+        { {1,1}, {1,0}, {0,0}, {0,1} }, { {1,0}, {0,0}, {0,1}, {1,1} }, { {0,0}, {0,1}, {1,1}, {1,0} } };
+    int k = fx_slot(image); if (!H.ok || k < 0 || !H.fx[k] || size == 0) return;
+    const float *c = (flags & 2) ? rgb : def; float a = (flags & 2) ? alpha : def[3];
+    if (a <= 0) return;
+    float X[3], Y[3];
+    if (flags & 1) { memcpy(X, H.sr, sizeof X); memcpy(Y, H.su, sizeof Y); }
+    else if (flags & 0x20) { if (!basis) return; memcpy(X, basis, sizeof X); memcpy(Y, basis + 3, sizeof Y); }
+    else { if (!basis) return; plane_axes(basis, X, Y); }
+    int m = (flags & 0x40) && mirror >= 0 && mirror <= 6 ? mirror : 0, r = (flags & 4) ? rot : 0;
+    int base = mode == 0x1a ? 90 : 64;                                                 /* [0x5e823c]+0x800[mode] (0x4024bb): atan(2^(mode/8 - mode%8)) in 1/512 turn */
+    glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[k]);
+    if (!(flags & 1)) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -4.0f); }   /* a print on the floor or a hole in a wall is coplanar with it */
+    if (flags & 8) {
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        if (gl_combine()) {
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE_ARB); glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB_ARB, GL_MODULATE);
+            glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA_ARB, GL_MODULATE); glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE_ARB, 2.0f);
+            glColor4f(c[0] > 1 ? 1 : c[0], c[1] > 1 ? 1 : c[1], c[2] > 1 ? 1 : c[2], a);
+        } else glColor4f(c[0] * 2 > 1 ? 1 : c[0] * 2, c[1] * 2 > 1 ? 1 : c[1] * 2, c[2] * 2 > 1 ? 1 : c[2] * 2, a);   /* 0x471224 doubles and clamps too */
+    } else { glBlendFunc(GL_ONE, GL_ONE); glColor3f(c[0] * a, c[1] * a, c[2] * a); }
     glBegin(GL_QUADS);
-    glTexCoord2f(0, 0); glVertex3f(c[0] - u[0] * h + v[0] * h, c[1] - u[1] * h + v[1] * h, c[2] - u[2] * h + v[2] * h);
-    glTexCoord2f(0, 1); glVertex3f(c[0] - u[0] * h - v[0] * h, c[1] - u[1] * h - v[1] * h, c[2] - u[2] * h - v[2] * h);
-    glTexCoord2f(1, 1); glVertex3f(c[0] + u[0] * h - v[0] * h, c[1] + u[1] * h - v[1] * h, c[2] + u[2] * h - v[2] * h);
-    glTexCoord2f(1, 0); glVertex3f(c[0] + u[0] * h + v[0] * h, c[1] + u[1] * h + v[1] * h, c[2] + u[2] * h + v[2] * h);
+    for (int i = 0; i < 4; i++) {                                                      /* corners at r + base, r - base + 256, r + base + 256, r - base + 512 */
+        int ang = (i & 1) ? r - base + 256 * (i == 1 ? 1 : 2) : r + base + 256 * (i >> 1);
+        float t = 6.2831853f * (float)(ang & 511) / 512.0f, cx = size * (float)cos(t), cy = size * (float)sin(t);
+        glTexCoord2f(uv[m][i][0], uv[m][i][1]);
+        glVertex3f(pos[0] + X[0] * cx + Y[0] * cy, pos[1] + X[1] * cx + Y[1] * cy, pos[2] + X[2] * cx + Y[2] * cy);
+    }
     glEnd();
+    if (flags & 8) { glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); if (gl_combine()) glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE_ARB, 1.0f); }
+    if (!(flags & 1)) glDisable(GL_POLYGON_OFFSET_FILL);
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }
-/* ---- what a peck leaves behind (docs/OBJECTS.md 1.6) ----------------------------------------------------------
- * A beak does not scorch wood, it takes a bite out of it, so neither of these two is an effect sprite: the hole is
- * a ragged cup drawn straight into the pecked face and the chips are solid slivers. Both are built here instead of
- * from a bank 0 image because no image in the bank is a hole or a splinter, and multiplying a soft white cloud over
- * the wall (what the footstep mark does with image 14) only ever gives a smudge, never a hole. */
-#define GOUGE_SEGS 11
-static float gouge_rnd(unsigned seed, int i)      /* stable per hole and per corner: a hole that re-rolls every frame boils */
+void hud_world_spr(int image, const float *pos, float size, int rot, const float *rgb, float alpha, int flags, const float *basis, int mirror)
 {
-    unsigned h = seed * 1664525u + (unsigned)i * 1013904223u + 0x9e3779b9u;
-    h ^= h >> 15; h *= 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
-    return (float)(h & 0xffffu) / 65535.0f;
-}
-void hud_world_gouge(const float *pos, const float *n, const float *dir, float size, unsigned seed, const float *rgb, float strength, float rim)
-{
-    if (!H.ok || size <= 0 || strength <= 0) return;
-    float N[3], u[3], v[3]; if (!decal_basis(n, dir, 0, N, u, v)) return;
-    float c[3] = { pos[0] + N[0] * 3.0f, pos[1] + N[1] * 3.0f, pos[2] + N[2] * 3.0f };   /* off the face, like the footstep mark: coplanar it z-fights */
-    float d[GOUGE_SEGS][3], r[GOUGE_SEGS];
-    for (int i = 0; i < GOUGE_SEGS; i++) {
-        float a = 6.2831853f * (float)i / (float)GOUGE_SEGS, ca = (float)cos(a), sa = (float)sin(a);
-        for (int k = 0; k < 3; k++) d[i][k] = u[k] * ca + v[k] * sa;
-        r[i] = size * (0.6f + 0.4f * gouge_rnd(seed, i));                                /* ragged: a peck is not a circle */
-    }
-    glDisable(GL_ALPHA_TEST); glDisable(GL_TEXTURE_2D);
-    glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR);                                        /* dst * (1 - rgb*strength), as the footstep mark darkens */
-    glBegin(GL_TRIANGLE_FAN);                                                            /* the cup: dark to the inner edge */
-    glColor3f(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength); glVertex3f(c[0], c[1], c[2]);
-    for (int i = 0; i <= GOUGE_SEGS; i++) { int j = i % GOUGE_SEGS; float k = r[j] * 0.55f;
-        glVertex3f(c[0] + d[j][0] * k, c[1] + d[j][1] * k, c[2] + d[j][2] * k); }
-    glEnd();
-    glBegin(GL_TRIANGLE_STRIP);                                                          /* and out to the rim, where it stops darkening */
-    for (int i = 0; i <= GOUGE_SEGS; i++) { int j = i % GOUGE_SEGS;
-        glColor3f(rgb[0] * strength, rgb[1] * strength, rgb[2] * strength);
-        glVertex3f(c[0] + d[j][0] * r[j] * 0.55f, c[1] + d[j][1] * r[j] * 0.55f, c[2] + d[j][2] * r[j] * 0.55f);
-        glColor3f(0, 0, 0);
-        glVertex3f(c[0] + d[j][0] * r[j], c[1] + d[j][1] * r[j], c[2] + d[j][2] * r[j]);
-    }
-    glEnd();
-    if (rim > 0) {                                                                       /* the lip: the wood that split away is paler than the face */
-        static const float pale[3] = { 1.0f, 0.88f, 0.66f };
-        glBlendFunc(GL_ONE, GL_ONE);
-        for (int band = 0; band < 2; band++) {                                           /* 0.7r -> r -> 1.25r, brightest on the rim itself */
-            glBegin(GL_TRIANGLE_STRIP);
-            for (int i = 0; i <= GOUGE_SEGS; i++) { int j = i % GOUGE_SEGS;
-                for (int e = 0; e < 2; e++) {
-                    float k = band == 0 ? (e ? 1.0f : 0.7f) : (e ? 1.25f : 1.0f), w = (e == 0) == (band != 0) ? rim : 0.0f;
-                    glColor3f(pale[0] * w, pale[1] * w, pale[2] * w);
-                    glVertex3f(c[0] + d[j][0] * r[j] * k, c[1] + d[j][1] * r[j] * k, c[2] + d[j][2] * r[j] * k);
-                }
-            }
-            glEnd();
-        }
-    }
-    glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
-}
-/* one chip: a dart, long along v and narrow along u, pointed at the leading end and broken off square at the other.
- * Lighting is off in this pass (hud_world_sprites_begin), so the chip shades itself on a fixed key direction -
- * without that a tumbling chip is a flat silhouette that blinks as it turns edge on. */
-void hud_world_chip(const float *c, const float *u, const float *v, const float *rgb, float alpha)
-{
-    if (!H.ok || alpha <= 0) return;
-    static const float key[3] = { 0.35f, 0.87f, 0.34f };
-    float nx = u[1] * v[2] - u[2] * v[1], ny = u[2] * v[0] - u[0] * v[2], nz = u[0] * v[1] - u[1] * v[0];
-    float l = (float)sqrt(nx * nx + ny * ny + nz * nz);
-    float dp = l > 1e-6f ? (nx * key[0] + ny * key[1] + nz * key[2]) / l : 0.0f;
-    float sh = 0.45f + 0.55f * (float)fabs(dp);
-    glDisable(GL_ALPHA_TEST); glDisable(GL_TEXTURE_2D); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glColor4f(rgb[0] * sh, rgb[1] * sh, rgb[2] * sh, alpha);
-    glBegin(GL_QUADS);
-    glVertex3f(c[0] + v[0], c[1] + v[1], c[2] + v[2]);
-    glVertex3f(c[0] + u[0] - v[0] * 0.35f, c[1] + u[1] - v[1] * 0.35f, c[2] + u[2] - v[2] * 0.35f);
-    glVertex3f(c[0] - v[0] * 0.9f, c[1] - v[1] * 0.9f, c[2] - v[2] * 0.9f);
-    glVertex3f(c[0] - u[0] - v[0] * 0.35f, c[1] - u[1] - v[1] * 0.35f, c[2] - u[2] - v[2] * 0.35f);
-    glEnd();
-    glColor4f(1, 1, 1, 1); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
+    hud_world_spr_mode(0x12, image, pos, size, rot, rgb, alpha, flags, basis, mirror);
 }
 void hud_world_ribbon(const float *a, const float *b, const float *eye, float hw, const float *rgb_a, const float *rgb_b)
 {

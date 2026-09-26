@@ -22,8 +22,10 @@ typedef struct {
     double pos, step; int loop, is3d, handle;
     float vol, pitch, dmin, life; const float *ppos;   /* ppos: live emitter position (instance memory; voices are stopped before the level is freed) */
     float fg, ftarget, frate; int kill;     /* fade gain 0..1 (fade-in 1657, stop fades state 5) */
-    float rg;                               /* range gain: 0 beyond 10*dmin ("killing softly" 0.5 s, back in 0.2 s) */
+    float rg;                               /* range gain: 0 beyond 10*dmin or while the owner is not processed (loops: out 0.5 s, back 0.2 s; one-shots cut) */
     float gl, gr; int fresh;                /* current channel gains, ramped per block */
+    int proc;                               /* 3D: owner in this frame's instance list (0x46a9c0 stamps node+8); set by audio_update */
+    int wait, next; unsigned seq;           /* queued plays: wait = parked behind another voice, next = index+1 of the voice parked behind this one */
 } Voice;
 
 typedef struct {
@@ -50,6 +52,7 @@ static struct {
     int ok; HWAVEOUT wo; HANDLE ev, th; volatile LONG quit; CRITICAL_SECTION cs;
     WAVEHDR hdr[NBLOCKS]; int16_t buf[NBLOCKS][BLOCK * 2];
     Bank bank[AUDIO_BANKS]; Voice v[NVOICES]; int next_handle, paused;
+    int last2d, log; unsigned seq;          /* last2d: index+1 of the newest 2D voice (mgr+0x30, tail of the 2D queue); log: WOODY_SNDLOG */
     float lpos[3], lright[3], m_sfx, m_mus, next_fade;
     FILE *dump;
     char bf_path[260]; BfFile *bf; int nbf; uint32_t bf_data;
@@ -112,18 +115,52 @@ static int stream_open(Stream *s, int track, int loop) {
 }
 
 /* ---------------------------------------------------------------- voices */
+/* 3D model of the shipped build = DirectSound3D (mgr+0x34 stays 0): the source goes to the buffer as world pos x 0.01
+ * (0x46b9ed -> 0x490100), min/max distance dmin / 50 dmin (0x469e17..0x469e2e), the listener is the camera Repere
+ * CamMgr+0x1dc (0x4019b6) with front = column 2 and top = column 1 (0x46a909..0x46a982 -> 0x48f8e0), so DS3D's right
+ * = top x front = column 0 = screen right, the same axis the dead software path 0x46baf8 uses; the lib passes world
+ * coordinates untransformed (0x48b82e: mode 1, no y flip). Gain dmin/d between dmin and dmax, constant beyond (DS3D
+ * rolloff 1, 0x48f830); pan = the direction to the source relative to the listener on that right axis. The software
+ * path 0x46ba44 has the same gain but takes its pan from the *absolute* source position (0x46bb36 reloads the raw pos,
+ * not pos - listener) - a bug nobody heard, the path is never taken; the port uses the relative direction like DS3D. */
+static float voice_geom(const Voice *v, float *dist, float *pan) {
+    float d[3] = { v->ppos[0] - A.lpos[0], v->ppos[1] - A.lpos[1], v->ppos[2] - A.lpos[2] };
+    float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), m = len * 0.01f;    /* metres, 0x4a94f8 */
+    float dmin = v->dmin > 0 ? v->dmin : 1.0f, dmax = 50.0f * dmin;                  /* 0x46ba8a: dmin <= 0 -> 1 */
+    *dist = m; *pan = len > 1.0f ? (d[0] * A.lright[0] + d[1] * A.lright[1] + d[2] * A.lright[2]) / len : 0.0f;   /* -1..1 = 0x46bb8d / 100 */
+    if (m > dmax) m = dmax;
+    return m > dmin ? dmin / m : 1.0f;
+}
+
 static void voice_targets(Voice *v, float *l, float *r) {
     float g = v->vol * 0.01f * v->fg * A.m_sfx;
     if (!v->is3d) { *l = *r = g; return; }
-    float d[3] = { v->ppos[0] - A.lpos[0], v->ppos[1] - A.lpos[1], v->ppos[2] - A.lpos[2] };
-    float len = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), dist = len * 0.01f;  /* metres, 0x46ba44 */
-    float dmin = v->dmin > 0 ? v->dmin : 1.0f, dmax = 50.0f * dmin;
-    int inrange = dist <= 10.0f * dmin;                                             /* cut-off mgr+0xc = 10 */
-    v->rg += (inrange ? 5.0f : -2.0f) * BLOCK_DT; v->rg = v->rg < 0 ? 0 : v->rg > 1 ? 1 : v->rg;
-    if (dist > dmax) dist = dmax;
-    g *= (dist > dmin ? dmin / dist : 1.0f) * v->rg;
-    float pan = len > 1.0f ? (d[0] * A.lright[0] + d[1] * A.lright[1] + d[2] * A.lright[2]) / len : 0.0f;
+    float dist, pan, gain = voice_geom(v, &dist, &pan), dmin = v->dmin > 0 ? v->dmin : 1.0f;
+    int on = v->proc && dist <= 10.0f * dmin;                                       /* cut-off mgr+0xc = 10; not processed (0x46b19c) */
+    if (v->loop) { v->rg += (on ? 5.0f : -2.0f) * BLOCK_DT; v->rg = v->rg < 0 ? 0 : v->rg > 1 ? 1 : v->rg; }   /* 0x46b270 out 0.5 s, 0x46be9a / 0x46be05 back 0.2 s */
+    else v->rg = on ? 1.0f : 0.0f;                                                  /* a one-shot is stopped at once (0x46b464, 0x46b4b4) and resumes at full volume (0x46bfec) */
+    g *= gain * v->rg;
     *l = g * (pan > 0 ? 1.0f - pan : 1.0f); *r = g * (pan < 0 ? 1.0f + pan : 1.0f);  /* 0x48f520: the far channel gets (100-|pan|)/100 */
+}
+
+/* the end of a voice, however it ends: the voice parked behind it starts (2D: 0x46af41 via 0x46af00; 3D: 0x46a5d0 moves the
+ * queued node into the instance list, 0x46bcf0 starts it the same frame), and the 2D queue tail mgr+0x30 is cleared (0x46af35) */
+static void voice_free(Voice *v) {
+    int n = (int)(v - A.v), k = v->next;
+    v->snd = NULL; v->next = 0;
+    if (A.last2d == n + 1) A.last2d = 0;
+    if (k) {
+        Voice *w = &A.v[k - 1];
+        if (w->snd && w->wait) { w->wait = 0; w->fresh = 1; if (A.log) printf("  SND start queued %d (after %d)\n", w->handle, v->handle); }
+    }
+}
+
+/* a parked voice that is dropped before it started (Stop3D removes the queued nodes of that sample, 0x46a3e0): close the chain over it */
+static void voice_unlink(Voice *v) {
+    int n = (int)(v - A.v);
+    for (int i = 0; i < NVOICES; i++) if (A.v[i].snd && A.v[i].next == n + 1) A.v[i].next = v->next;
+    if (A.last2d == n + 1) A.last2d = 0;
+    v->snd = NULL; v->next = 0;
 }
 
 static void mix_block(int16_t *out) {
@@ -133,25 +170,25 @@ static void mix_block(int16_t *out) {
     stream_mix(&A.s[0], acc, A.m_mus);
     stream_mix(&A.s[1], acc, A.m_mus);
     if (!A.paused) for (int n = 0; n < NVOICES; n++) {
-        Voice *v = &A.v[n]; if (!v->snd) continue;
+        Voice *v = &A.v[n]; if (!v->snd || v->wait) continue;                     /* a parked voice neither sounds nor ages */
         if (v->fg != v->ftarget) {
             float d = v->frate * BLOCK_DT;
             v->fg = v->fg < v->ftarget ? (v->fg + d > v->ftarget ? v->ftarget : v->fg + d) : (v->fg - d < v->ftarget ? v->ftarget : v->fg - d);
         }
-        if (v->kill && v->fg <= 0.0f) { v->snd = NULL; continue; }
-        if (v->life > 0 && (v->life -= BLOCK_DT) <= 0) { v->snd = NULL; continue; }
+        if (v->kill && v->fg <= 0.0f) { voice_free(v); continue; }
+        if (v->life > 0 && (v->life -= BLOCK_DT) <= 0) { voice_free(v); continue; }
         float tl, tr; voice_targets(v, &tl, &tr);
         if (v->fresh) { v->gl = tl; v->gr = tr; v->fresh = 0; }
         const Sound *s = v->snd; const int16_t *p = s->pcm; int ch = s->channels; double step = v->step * v->pitch;
         if (tl + tr + v->gl + v->gr < 1e-5f) {                                      /* inaudible: only advance */
             v->pos += step * BLOCK;
-            if (v->pos >= s->frames) { if (v->loop && s->frames) v->pos = fmod(v->pos, s->frames); else v->snd = NULL; }
+            if (v->pos >= s->frames) { if (v->loop && s->frames) v->pos = fmod(v->pos, s->frames); else voice_free(v); }
             continue;
         }
         float dl = (tl - v->gl) / BLOCK, dr = (tr - v->gr) / BLOCK;
         for (int i = 0; i < BLOCK; i++) {
             uint32_t i0 = (uint32_t)v->pos;
-            if (i0 >= s->frames) { if (v->loop && s->frames) { v->pos = fmod(v->pos, s->frames); i0 = (uint32_t)v->pos; } else { v->snd = NULL; break; } }
+            if (i0 >= s->frames) { if (v->loop && s->frames) { v->pos = fmod(v->pos, s->frames); i0 = (uint32_t)v->pos; } else { voice_free(v); break; } }
             uint32_t i1 = i0 + 1 < s->frames ? i0 + 1 : (v->loop ? 0 : i0);
             float f = (float)(v->pos - (double)i0), a, b;
             if (ch == 1) { a = p[i0] + (p[i1] - p[i0]) * f; b = a; }
@@ -184,7 +221,7 @@ int audio_init(void) {
     WAVEFORMATEX wf = { WAVE_FORMAT_PCM, 2, MIX_RATE, MIX_RATE * 4, 4, 16, 0 };
     InitializeCriticalSection(&A.cs);
     A.ev = CreateEvent(NULL, FALSE, FALSE, NULL);
-    A.m_sfx = 1.0f; A.m_mus = 0.7f; A.lright[0] = 1.0f; A.s[0].track = A.s[1].track = -1;
+    A.m_sfx = 1.0f; A.m_mus = 0.7f; A.lright[0] = 1.0f; A.s[0].track = A.s[1].track = -1; A.log = getenv("WOODY_SNDLOG") != NULL;
     if (waveOutOpen(&A.wo, WAVE_MAPPER, &wf, (DWORD_PTR)A.ev, 0, CALLBACK_EVENT) != MMSYSERR_NOERROR) { fprintf(stderr, "audio: waveOutOpen failed\n"); return -1; }
     for (int i = 0; i < NBLOCKS; i++) {
         A.hdr[i].lpData = (LPSTR)A.buf[i]; A.hdr[i].dwBufferLength = sizeof A.buf[i];
@@ -242,7 +279,7 @@ int audio_bank_load(int bank, const char *path) {
 void audio_bank_free(int bank) {
     if (!A.ok || bank < 0 || bank >= AUDIO_BANKS) return;
     EnterCriticalSection(&A.cs);
-    for (int n = 0; n < NVOICES; n++) if (A.v[n].snd && A.v[n].bank == bank) A.v[n].snd = NULL;
+    for (int n = 0; n < NVOICES; n++) if (A.v[n].snd && A.v[n].bank == bank) { if (A.v[n].wait) voice_unlink(&A.v[n]); else voice_free(&A.v[n]); }
     Sound *snd = A.bank[bank].snd; int count = A.bank[bank].count;
     A.bank[bank].snd = NULL; A.bank[bank].count = 0;
     LeaveCriticalSection(&A.cs);
@@ -261,9 +298,21 @@ float audio_duration(uint32_t ref) {
     const Sound *s = sound_of(ref); return s && s->rate ? (float)s->frames / (float)s->rate : 0.0f;
 }
 
-int audio_play(uint32_t ref, const void *owner, int loop, float vol, float f, const float *pos, float dmin, float maxdur) {
+/* the voice a queued play parks behind (NULL = start at once):
+ * 2D: the newest 2D voice mgr+0x30, whatever it is (0x469cfb: every 2D Play sets it, queued or not);
+ * 3D: the head of the owner's node list = its newest unqueued 3D voice (queue=0 pushes at the front, 0x469fb1), then
+ * down its chain of queued nodes (+0x10) to the end (0x469eda..0x469fa2). */
+static Voice *queue_tail(const void *owner, int is3d) {
+    Voice *t = NULL;
+    if (!is3d) t = A.last2d ? &A.v[A.last2d - 1] : NULL;
+    else if (owner) for (int n = 0; n < NVOICES; n++) { Voice *w = &A.v[n]; if (w->snd && w->is3d && !w->wait && w->owner == owner && (!t || w->seq > t->seq)) t = w; }
+    while (t && t->next && A.v[t->next - 1].snd) t = &A.v[t->next - 1];
+    return t && t->snd ? t : NULL;
+}
+
+int audio_play_q(uint32_t ref, const void *owner, int queue, int loop, float vol, float f, const float *pos, float dmin, float maxdur) {
     if (!A.ok) return 0;
-    int h = 0;
+    int h = 0, after = 0; float dist = 0, pan = 0, gain = 1;
     EnterCriticalSection(&A.cs);
     Sound *s = sound_of(ref);
     float fade = A.next_fade; A.next_fade = 0;                                      /* cleared by every Play (0x469c23) */
@@ -271,46 +320,81 @@ int audio_play(uint32_t ref, const void *owner, int loop, float vol, float f, co
         Voice *v = NULL;
         for (int n = 0; n < NVOICES && !v; n++) if (!A.v[n].snd) v = &A.v[n];
         if (v) {
+            Voice *tail = queue ? queue_tail(owner, pos != NULL) : NULL;
             memset(v, 0, sizeof *v);
             v->ref = ref; v->owner = owner; v->bank = (int)(ref >> 24); v->loop = loop; v->vol = vol; v->life = maxdur > 0 && maxdur < 1e6f ? maxdur : 0;
             v->pitch = f > 0 ? f : f < 0 ? ((float)s->frames / (float)s->rate) / -f : 1.0f;
             v->step = (double)s->rate / MIX_RATE;
             if (pos) { v->is3d = 1; v->ppos = pos; v->dmin = dmin; }
             v->fg = fade > 0.01f ? 0.0f : 1.0f; v->ftarget = 1.0f; v->frate = fade > 0.01f ? 1.0f / fade : 0;
-            v->rg = 1.0f; v->fresh = 1; v->handle = h = ++A.next_handle;
+            v->rg = 1.0f; v->fresh = 1; v->proc = 1; v->handle = h = ++A.next_handle; v->seq = ++A.seq;
             v->snd = s;
+            if (tail) { v->wait = 1; tail->next = (int)(v - A.v) + 1; after = tail->handle; }
+            if (!pos) A.last2d = (int)(v - A.v) + 1;                                /* 0x469d05 / 0x469d17 */
+            if (pos) gain = voice_geom(v, &dist, &pan);
         }
     }
     LeaveCriticalSection(&A.cs);
-    if (getenv("WOODY_SNDLOG")) printf("  SND play ref 0x%x owner %p loop %d vol %.0f f %.2f %s dmin %.1f -> %d\n", ref, owner, loop, vol, f, pos ? "3D" : "2D", dmin, h);
+    if (A.log) {
+        printf("  SND play ref 0x%x owner %p loop %d vol %.0f f %.2f %s dmin %.1f -> %d", ref, owner, loop, vol, f, pos ? "3D" : "2D", dmin, h);
+        if (pos && h) printf("  dist %.1f m gain %.3f pan %+.2f L %.2f R %.2f%s", dist, gain, pan, gain * (pan > 0 ? 1 - pan : 1), gain * (pan < 0 ? 1 + pan : 1), dist > 10.0f * (dmin > 0 ? dmin : 1) ? " (out of range)" : "");
+        if (after) printf("  queued behind %d", after); else if (queue) printf("  queue empty, starts now");
+        puts("");
+    }
     return h;
+}
+int audio_play(uint32_t ref, const void *owner, int loop, float vol, float f, const float *pos, float dmin, float maxdur) {
+    return audio_play_q(ref, owner, 0, loop, vol, f, pos, dmin, maxdur);
 }
 
 void audio_next_fade_in(float t) { A.next_fade = t; }
 
 static void voice_fade_out(Voice *v, float fade) {
-    if (fade < 0.01f) { v->snd = NULL; return; }
+    if (fade < 0.01f) { voice_free(v); return; }                                    /* t < 0.01: kill flag voice+5, gone next frame */
     v->ftarget = 0; v->frate = 1.0f / fade; v->kill = 1;
 }
 
+/* 0x46a2b0: playing nodes of (instance, sample) fade out over t (state 5); nodes that are not playing (out of range,
+ * owner not processed) and queued nodes of that sample are removed outright */
 void audio_stop3d(uint32_t ref, const void *owner, float fade) {
     if (!A.ok) return;
     EnterCriticalSection(&A.cs);
-    for (int n = 0; n < NVOICES; n++) { Voice *v = &A.v[n]; if (v->snd && v->ref == ref && v->owner == owner) voice_fade_out(v, fade); }
+    for (int n = 0; n < NVOICES; n++) {
+        Voice *v = &A.v[n]; if (!v->snd || v->ref != ref || v->owner != owner) continue;
+        if (v->wait) voice_unlink(v); else if (v->is3d && v->rg <= 0.0f) voice_free(v); else voice_fade_out(v, fade);
+    }
     LeaveCriticalSection(&A.cs);
 }
 
+/* 0x46c390 walks the logical and the physical 2D voices only: a 2D voice parked behind another one (+0x40) is not seen */
 void audio_stop2d(uint32_t ref, float fade, int mask) {
     if (!A.ok) return;
     EnterCriticalSection(&A.cs);
-    for (int n = 0; n < NVOICES; n++) { Voice *v = &A.v[n]; if (v->snd && v->ref == ref && !v->is3d && (mask & (v->loop ? 1 : 2))) voice_fade_out(v, fade); }
+    for (int n = 0; n < NVOICES; n++) { Voice *v = &A.v[n]; if (v->snd && !v->wait && v->ref == ref && !v->is3d && (mask & (v->loop ? 1 : 2))) voice_fade_out(v, fade); }
+    LeaveCriticalSection(&A.cs);
+}
+
+/* per frame after the world draw: which 3D owners the original would still process. Update gets the per-frame
+ * instance list world+0x64 (0x401ee7 -> 0x469080 -> 0x46a7e0; built by 0x42a840 from the visible sectors) and stamps the
+ * nodes of those instances (0x46a9c0); a loop of an unstamped instance fades out over 0.5 s ("Killing softly cause not
+ * processed", 0x46b19c), a one-shot stops (0x46b4b4) and only 0x46bcf0 - which walks that same list - restarts them. */
+void audio_update(int (*active)(const void *owner)) {
+    if (!A.ok) return;
+    EnterCriticalSection(&A.cs);
+    for (int n = 0; n < NVOICES; n++) {
+        Voice *v = &A.v[n]; if (!v->snd || !v->is3d) continue;
+        int p = !v->owner || !active || active(v->owner);
+        if (p != v->proc && A.log) printf("  SND %d ref 0x%x owner %p %s\n", v->handle, v->ref, v->owner, p ? "processed again" : "not processed: silenced");
+        v->proc = p;
+    }
     LeaveCriticalSection(&A.cs);
 }
 
 void audio_stop_all(void) {
     if (!A.ok) return;
     EnterCriticalSection(&A.cs);
-    for (int n = 0; n < NVOICES; n++) A.v[n].snd = NULL;
+    for (int n = 0; n < NVOICES; n++) { A.v[n].snd = NULL; A.v[n].next = A.v[n].wait = 0; }
+    A.last2d = 0;
     LeaveCriticalSection(&A.cs);
 }
 

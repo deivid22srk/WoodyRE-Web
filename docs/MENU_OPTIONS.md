@@ -296,7 +296,7 @@ per frame (only "just pressed", no repeat):
 back: g_level == 0 ? (title_page = 1, title_sel = 0, audio_fx(63)) : pause menu (0x18/0x19, sel 0)
 drawing: g_level == 0 ? no overlay : half-black plane 0x80000000 + hide HUD; hud_menu_page_ex(items, 5, 0.4f, opt_sel, dt)
 ```
-The port has no pause menu yet (only the P key); once 0x18/0x19 exist, their "Options" (result 6) leads here.
+The pause menus 0x18/0x19 are ported (INPUT.md §5); their "Options" (result 6) leads here.
 Note the keys: in the port, Space is now also "confirm"; in the original, action 5 (back) is Space by default and
 confirm is the jump key. Pick one fixed set for the whole port (proposal: Enter/Space = confirm, Esc/Backspace = back).
 

@@ -8,9 +8,10 @@
  * it exactly 1 of its 5 hp; after a hit, or after it touched the player, it goes up again. The coupled instance
  * (message 59, W1B 404 = its machine) gets its position, rotation and animation record every frame.
  *
- * Simplified: the behaviours have no obstacle sensor (no free-direction search, no actor avoidance); the hit star
+ * Simplified: no actor avoidance; the obstacle sensor runs (enemy.c, docs/OBSTACLE.md 3) but with P+0x2c/0x30 = 15000 it
+ * never reports a direction blocked, so it only quantises the wander directions to its 16 slots; the hit star
  * 0x40c2d0 is not drawn; mode 2 (W2D/W3D/WWS) is ported with the same
- * state machine but its dust is the landing dust of the player's footsteps and it is not verified in those levels. */
+ * state machine (its dust is the smoke ring 0x476140(pos - 50 up, up, 0, 1.5, 6.0), docs/PARTICLES.md 3) and it is not verified in those levels. */
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -107,12 +108,13 @@ static void wander_choose(Enemy *e)                                  /* 0x41c180
 {
     BossState *b = &e->b; int a = b->w_act > 5 ? rand() % 5 : 6 + (rand() & 1);
     b->w_act = a; int n = wander_rec(e, a); b->w_t = n < 0 ? 0 : anim_len(e, n);
-    if (a == 7) e->want_ang = (float)(rand() % 6283) * 0.001f;     /* 0x41ba10: no sensor, a random direction */
+    if (a == 7) { float r = enemy_sensor_random_free(e); e->want_ang = r >= 0 ? r : (float)(rand() % 6283) * 0.001f; }   /* 0x41c249: a free sensor direction, else 0x41ba10 */
 }
 static void wander_start(Enemy *e) { e->b.behav = 0; e->b.turn = B_TURN_W; e->b.w_act = -1; wander_choose(e); }   /* Init + 0x41c160 */
 static void chase_start(Enemy *e, const Player *pl)                  /* 0x41bc80: run speed at once, turn pi, first turn on the spot */
 {
     BossState *b = &e->b; b->behav = 1; b->turn = B_TURN_C; e->speed = e->want_speed = e->P.run;
+    e->want_ang = ang_to(e->pos, pl->pos);                           /* Steer: the first target */
     float a = fabsf(ang_diff(ang_to(e->pos, pl->pos), e->ang));
     if (a > 1e-4f) { b->c_turn_t = a / b->turn; b->c_run = 0; } else b->c_run = 1;
 }
@@ -170,6 +172,7 @@ static void behav_move(Enemy *e, Player *pl, float step, float dt)
 static void behav_tick(Enemy *e, Player *pl, float dt)
 {
     BossState *b = &e->b;
+    if (b->behav == 0 || b->behav == 1) enemy_sensor_tick(e, pl);  /* Enemy::Update 0x41a3e0: Wander (kind 0) / Chase (1) */
     switch (b->behav) {
     case 0: {                                                        /* Dwalen 0x41c640 */
         if ((b->w_t -= dt) <= 0) { if (b->w_act == 10) { b->w_act = 9; b->w_t = anim_len(e, wander_rec(e, 9)); } else wander_choose(e); }
@@ -183,7 +186,8 @@ static void behav_tick(Enemy *e, Player *pl, float dt)
         behav_move(e, pl, mv ? dt * e->speed : 0, dt);
         break; }
     case 1:                                                          /* Achtervolgen 0x41bee0 */
-        e->want_ang = ang_to(e->pos, pl->pos); h_turn(e, dt); h_speed(e, dt);
+        h_turn(e, dt); h_speed(e, dt);                               /* Steer 0x41bd00: H.Tick toward the last target, then the new one */
+        { float a = ang_to(e->pos, pl->pos); e->want_ang = enemy_sensor_free(e, a) ? a : enemy_sensor_nearest_free(e, a); }
         if (b->c_turn_t <= 0 && !b->c_run) b->c_run = 1; else b->c_turn_t -= dt;
         behav_move(e, pl, b->c_run ? dt * e->speed : 0, dt);
         break;
@@ -206,7 +210,7 @@ static void height_tick(Enemy *e, Player *pl, float dt)
     b->on_ground = 0;
     if (!m1(e) && !b->high && b->st != 9) {                          /* mode 2 hops in the low phase */
         float s = dt * e->P.run;
-        if (b->bob_down) { b->bob += s; if (b->bob >= b->bob_max) { game_land_dust((Vec3){ e->pos.x, e->pos.y - 50, e->pos.z }, (Vec3){ 0, 1, 0 }); audio_fx(49, NULL, NULL); b->bob = b->bob_max; b->bob_down = 0; } }
+        if (b->bob_down) { b->bob += s; if (b->bob >= b->bob_max) { game_smoke_ring((Vec3){ e->pos.x, e->pos.y - 50, e->pos.z }, (Vec3){ 0, 1, 0 }, 0, 1.5f, 6.0f); audio_fx(49, NULL, NULL); b->bob = b->bob_max; b->bob_down = 0; } }
         else { b->bob -= s; if (b->bob <= 0) { b->bob = 0; b->bob_down = 1; } }
     } else b->bob = 0;
     if (b->high) e->home.y = b->y_high;
@@ -273,7 +277,7 @@ void boss_init(Enemy *e)
 {
     BossState *b = &e->b; Instance *in = e->inst;
     e->P.radius = 240; e->P.height = 150; e->P.walk = 600; e->P.run = 900; e->P.fall_g = 200; e->P.leash = 1000; e->P.see = B_SEE; e->P.dy = B_DY;
-    e->P.hp = 5; e->P.active_d = 3000; e->attackable = 1;
+    e->P.hp = 5; e->P.active_d = 3000; e->attackable = 1; e->P.drop = e->P.rise = 15000.0f;   /* P+0x2c / P+0x30: no edge or step test */
     /* PostLoad 0x419ec1: the start angle from the placement (vtbl[44] builds the same quaternion as enemy_place) */
     { Quat q = in->quat; float l = sqrtf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w); if (l > 1e-6f) { q.x /= l; q.y /= l; } float yaw = 2.0f * atan2f(-q.y, q.x); e->ang = e->want_ang = PI_F * 0.5f - yaw; }
     b->y_high = in->position.y; b->mode = 0; b->mail_var = 0; b->link = NULL;
@@ -371,7 +375,7 @@ void boss_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         if (!t) { b->st = 0; break; }
         if (b->on_ground) {
             game_cam_shake(1.5f); b->high = 0; b->t1d8 = B_LAND_T; b->st = 8;
-            if (!m1(e)) game_land_dust((Vec3){ e->pos.x, e->pos.y - 50, e->pos.z }, (Vec3){ 0, 1, 0 });
+            if (!m1(e)) game_smoke_ring((Vec3){ e->pos.x, e->pos.y - 50, e->pos.z }, (Vec3){ 0, 1, 0 }, 0, 1.5f, 6.0f);
             audio_fx(k ? 45 : 40, NULL, NULL);
         }
         e->want_ang = ang_to(e->pos, pl->pos); b->turn = B_TURN_C; h_turn(e, dt);

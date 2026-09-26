@@ -9,7 +9,11 @@ struct Player;
 /* parameter block P (0x41d510); message 11 writes into it. shot_visual = P+0x74 (0/1 missile, 2 bolt, 3 fireball),
  * shot_fx = the SoundFx that 0x449130 plays for that visual */
 typedef struct { float radius, height, walk, run, dash, see, dy, turn, turn_fast, leash, hp, cool, bite, shot_dmg, reload, melee, dodge, steer, active_d; int shot_visual, shot_fx;
-                 float fall_g; } EnemyParams;                                  /* P+0: gravity of the ground follower (200; the boss sets 400/800) */
+                 float fall_g;                                                 /* P+0: gravity of the ground follower (200; the boss sets 400/800) */
+                 float drop, rise; } EnemyParams;                              /* P+0x2c / P+0x30: max step down / up (10; subtype 10: 10000, the bosses: 15000) */
+
+/* obstacle sensor Enemy+0x124 (ctor 0x41cfc0, tick 0x41d4a0(3), docs/OBSTACLE.md 3): 16 directions, one probed per frame */
+typedef struct { float r, dr, s, jit; int i; int kind[17]; float ang[16]; unsigned char free[17]; } EnemySensor;   /* +4 +8 +0xc +0x14 +0x10, +0x1c/+0x20 + 8i, +0xa4 + i */
 
 /* class 14, the Buzz boss (docs/BOSS14.md): fields beyond the Enemy base */
 typedef struct BossState {
@@ -69,6 +73,7 @@ typedef struct Enemy {
     int list1;                                   /* registered in actor list 1 (RegisterActor 0x40c080) by this frame's Update: types 12 and 15 only */
     int wander_walk; float wander_t, want_ang;   /* wander: alternating idle / walk actions */
     uint32_t path_to; int path_dir;              /* patrol along the instance TRAJ */
+    EnemySensor sens;                            /* +0x124 */
 } Enemy;
 
 #define MAX_ENEMIES 256
@@ -89,6 +94,12 @@ void enemy_player_killed(Enemy *e);                                           /*
 void game_enemy_shot(Enemy *owner, Vec3 pos, Vec3 dir, float speed, float damage, float steer, int visual, int sound_fx);
 float enemy_radius(const Enemy *e); float enemy_height(const Enemy *e);
 void enemy_place(Enemy *e);                                                   /* vtbl[44] 0x41a680: pos and the H angle into the instance placement */
+void  enemy_sensor_init(Enemy *e);                                            /* 0x41cfc0 */
+void  enemy_sensor_tick(Enemy *e, struct Player *pl);                         /* 0x41d4a0(3): Enemy::Update, only under Wander / Chase */
+int   enemy_sensor_free(const Enemy *e, float ang);                            /* 0x41d2a0: the direction nearest ang is free */
+float enemy_sensor_nearest_free(const Enemy *e, float ang);                    /* 0x41d310: nearest free direction, else ang */
+float enemy_sensor_random_free(const Enemy *e);                               /* 0x41d2c0: a random free direction, -1 = none */
+float enemy_sensor_widest_free(const Enemy *e);                               /* 0x41d390: the free direction with the widest free gap, -1 = none */
 
 /* type 12, the bomb thrower (W2B end boss, docs/ENEMY2.md 4) */
 Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, float r);   /* HitActors 0x44a0a0 for a bomb: the first thrower whose cylinder the swept sphere touches */

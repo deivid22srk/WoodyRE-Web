@@ -335,9 +335,10 @@ restores the camera: it stays on the last track frame until the level changes or
 
 `0x459050`: `0x44c080(Perso, p540, 1)` (eye position/direction in `p = CamMgr+0x540`), `p+0x28 = p+0x2c = 0`, cut,
 `SetMode(9)`. Per frame `0x459090` (idx 9) puts the mouse deltas or ±5 (arrow keys) into `p+0x28/+0x2c`; update `0x425b80`:
-delta clamped to ±64, `pitch (p+0x78) ∓= min(|dx|·dt·0.19635 (0x4aa1e4 = π/16), 0.31416 (0x4aa1e0 = π/10))`, likewise
-`yaw (p+0x7c)` with `p+0x2c`; clamping by `p+0x80..+0x8c` (if ≠ 0); rotation = base `p+0x54` · Rx(pitch) · Ry(yaw)
-(`0x437940`, `0x437970`, `0x440b40`). The look direction is written back to the Mover (CAMERA.md 3.1). Leaving:
+delta clamped to ±64, `yaw (p+0x78) ∓= min(|dx|·dt·0.19635 (0x4aa1e4 = π/16), 0.31416 (0x4aa1e0 = π/10))`, likewise
+`pitch (p+0x7c)` with `p+0x2c`; pitch clamped to ±72° by `p+0x80/+0x84`, the yaw pair `p+0x88/+0x8c` = (−1, 1) fails the clamp guards
+(free yaw); rotation = Rx(pitch) · base `p+0x54` · Ry(yaw) (`0x437940`, `0x437970`, `0x440b40`). Corrected and worked out in
+[PERSO_LOOK.md](PERSO_LOOK.md) §3. The look direction is written back to the Mover (CAMERA.md 3.1). Leaving:
 `0x45910e` → cut to the follow camera. Message 550 only does `SetMode(9,0)` and appears in no script.
 
 ### 4.5 Modes 0x10, 0x40, 0x100 (not used by the levels)
@@ -418,7 +419,8 @@ P = C + sideV * (side * Lat);   view = lookAt(P, C, up=(0,1,0));
    (c) the plane calculation in `0x459bbf..0x459c57` (`0x41af10`, `0x4239f0`) is not spelled out; (d) K1A sends a series of
    1110 messages right **before** 1088, while `0x459960` resets the defaults on a new start – whether those 1110 values
    are then lost, or whether `+0x4ec` is already set at that point, was not investigated.
-3. Mode 0x200: which of `p+0x78`/`p+0x7c` is pitch resp. yaw (`0x437940` vs `0x437970`) was not verified.
+3. Mode 0x200: settled in PERSO_LOOK.md §3.3 — `p+0x78` is the yaw (`0x437970` = RotY, multiplied on the right: world axis),
+   `p+0x7c` the pitch (`0x437940` = RotX, on the left: the Perso's own side axis).
 4. Mode 0x80: the track evaluation `0x42fa80` was only read at a high level (node kinds 0x80/0x180, `0x43a660`);
    the meaning of `Perso+0x558` and `CamMgr+0x618` bit 1 (letterbox on cinematics) is derived from context.
 5. Mode 0x10: writer of `p404+0x30` (TRAJ) not found; treated as dead since no script sends 530.

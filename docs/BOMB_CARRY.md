@@ -211,6 +211,8 @@ The air set is the ordinary `0x4642f0` with different numbers (`0x464333..0x4643
 * Looking around (action 7, `0x44b980`) is allowed in state 6 with `+0x58c == 2` (`0x44b9e0..0x44b9ee`): `SetState(3)` ⇒ **the bomb drops** (§1.6). After
   looking around, `0x44c9f0` restores the previous state (6), but without the bomb (`+0x590 = 0`, `+0x594 = 0`): Woody then walks in carrying
   animations without a bomb until he presses attack (sub 2 → 3 → 4 → state 0). Presumably a bug in the original; not replayed in the original.
+  Worked out (and ported, `Player.state6` without a bomb) in [PERSO_LOOK.md](PERSO_LOOK.md) §5: no hit animation in that state (`0x464b84`),
+  bomb duck set 0x4e..0x50, and the attack press plays an empty throw.
 * Camera: no special handling. The behind-mode of the follow camera applies to states 1, 4 and 8 (`0x4591ec..0x4591fd`), not 6.
   Other camera paths were not checked against state 6 (uncertain, but there's no `cmp …, 6` on `+0x21c` outside the five spots of §1.6).
 

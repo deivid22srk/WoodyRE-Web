@@ -1,10 +1,11 @@
 /* enemy.c - enemy types 4/5/6 after docs/ENEMY.md (state machine 0x418cf0, behaviours 0x41b2c0..0x41cf00).
- * Simplifications: no obstacle sensor (16 directions), no actor avoidance, wander picks a random direction and the
+ * The obstacle sensor (16 directions, docs/OBSTACLE.md 3) steers Chase and Wander. Simplifications: no actor avoidance, the
  * idle variations all use one animation; movement is a straight step that is refused at ledges / steps over 10 units
  * (as the original's sweep does) instead of the full swept cylinder; the death particles are not spawned. */
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include "enemy.h"
 #include "player.h"
 #include "audio.h"
@@ -25,6 +26,7 @@ static EnemyParams params_for(int type)
     if (type == 13) { p.walk = 100; p.run = 300; p.dash = 500; p.dy = 10000; p.hp = 3; p.bite = 2; p.cool = 0.5f; p.shot_dmg = 2; p.reload = 1.0f; p.leash = 1000; p.melee = 300; p.shot_visual = 3; p.shot_fx = 20; }   /* docs/ENEMY2.md 2 */
     if (type == 9) { p.leash = 1000; p.hp = 3; p.bite = 3; p.shot_dmg = 2; p.melee = 10; p.steer = 0; p.shot_visual = 3; p.shot_fx = 20; }
     if (type == 12) { p.radius = 60; p.see = 2400; p.dy = 1000; p.height = 280; p.hp = 5; p.bite = 3; p.shot_dmg = 4; p.reload = 3.5f; p.melee = 300; }   /* subtype 8, docs/ENEMY2.md 2 */
+    p.drop = p.rise = type == 13 ? 10000.0f : 10.0f;                        /* P+0x2c / P+0x30: the flyers (subtypes 9/10) have no edge test */
     return p;
 }
 
@@ -55,6 +57,7 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst) return;
     Enemy *e = &s->e[s->n++]; Enemy z = { 0 }; *e = z;
     e->inst = inst; e->type = type; e->pos = e->home = inst->position; e->P = params_for(type); e->hp = e->P.hp;
+    enemy_sensor_init(e);
     e->cool = -1; e->attackable = 1; e->speed = e->want_speed = e->P.walk; e->path_dir = 1; e->path_to = 1;
     e->st = inst->traj.npoints > 1 ? 0 : (type >= 7 && type <= 9 ? 3 : 8); e->hand = rand() & 1;
     if (e->st == 0) { Vec3 a = inst->traj.points[0], b = inst->traj.points[1]; e->ang = atan2f(b.z - a.z, b.x - a.x); }
@@ -110,6 +113,95 @@ void enemies_blast(EnemySet *s, Vec3 c, float r)
 static float ang_diff(float a, float b) { float d = a - b; while (d > 3.14159265f) d -= 6.2831853f; while (d < -3.14159265f) d += 6.2831853f; return d; }
 static void steer(Enemy *e, float want, float rate, float dt) { float d = ang_diff(want, e->ang), m = rate * dt; if (d > m) d = m; if (d < -m) d = -m; e->ang += d; }
 
+/* ---- obstacle sensor Enemy+0x124 (docs/OBSTACLE.md 3) ------------------------------------------------------------
+ * 16 directions i·pi/8 (+ a jitter that steps pi/40 per probe and wraps at pi/8); each frame ONE of them is probed
+ * (0x41d010): the endless ray 0x435810 from R above the feet to the floor point R ahead, i.e. 45 degrees down, R swinging
+ * 200 -> 100 -> 200 in steps of 10 per frame (0x41d4a0). On flat floor it hits at S = R·sqrt2; a hit more than P+0x2c·sqrt2
+ * further is a drop (kind 3), more than P+0x30·sqrt2 nearer a wall or a step up (kind 2), anything between free (1); a
+ * start point outside the world is kind 0. Mode 3 (vtbl[46] 0x45bd30, every class) blocks on 2 and 3 (0x41d400). */
+#define SENS_STEP  0.39269909f                                             /* 0x4aa15c: pi/8 */
+void enemy_sensor_init(Enemy *e)                                           /* 0x41cfc0 */
+{
+    EnemySensor *S = &e->sens; memset(S, 0, sizeof *S);
+    S->r = 200.0f; S->dr = 10.0f;
+    for (int i = 0; i < 16; i++) S->ang[i] = (float)i * SENS_STEP;
+    for (int i = 0; i < 17; i++) S->free[i] = 1;                           /* +0xb4 = the 17th slot, always free (0x41d002) */
+}
+static int sens_pass(int kind) { return !(kind == 2 || kind == 3); }      /* 0x41d400(3, kind) */
+static void sensor_probe(Enemy *e, struct Player *pl)                      /* 0x41d010 */
+{
+    EnemySensor *S = &e->sens; int kind;
+    S->jit += 0.07853982f; if (S->jit >= SENS_STEP) S->jit = 0;            /* 0x4aa160 */
+    float a = (float)S->i * SENS_STEP + S->jit; S->ang[S->i] = a;
+    Vec3 st = { e->pos.x, e->pos.y + S->r, e->pos.z }, d = { cosf(a) * S->r, -S->r, sinf(a) * S->r };
+    if (gel_cell(pl->gel, st) < 0) kind = 0;                                /* 0x428cc0: no cell */
+    else {
+        float t; int k = player_ray_endless(pl, st, d, &t);
+        if (k == 1) kind = 3;                                               /* nothing below: the original reads a stale [0x53a558] here */
+        else {
+            float dist = t * sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
+            if (S->s + sqrtf(2.0f * e->P.drop * e->P.drop) < dist) kind = 3;          /* 0x41d1c6: the floor drops away */
+            else if (dist < S->s - sqrtf(2.0f * e->P.rise * e->P.rise)) kind = 2;    /* 0x41d1e2: wall or step up */
+            else kind = 1;
+        }
+    }
+    S->kind[S->i] = kind; S->kind[16] = 1;                                  /* +0x9c */
+    if (++S->i >= 16) S->i = 0;
+}
+void enemy_sensor_tick(Enemy *e, struct Player *pl)                        /* 0x41d4a0(mode 3) */
+{
+    EnemySensor *S = &e->sens;
+    S->r += S->dr;
+    if (S->r > 200.0f) { S->r = 200.0f; S->dr = -S->dr; } else if (S->r < 100.0f) { S->r = 100.0f; S->dr = -S->dr; }
+    S->s = sqrtf(S->r * S->r * 2.0f);
+    sensor_probe(e, pl);
+    for (int i = 0; i < 17; i++) S->free[i] = (unsigned char)sens_pass(S->kind[i]);   /* 0x41d430 */
+    if (S->i == 0 && getenv("WOODY_SENSLOG")) {                            /* testing: the 16 kinds once per sweep, direction 0 = +x, counter-clockwise seen from above is +z */
+        char m[17]; for (int i = 0; i < 16; i++) m[i] = (char)('0' + S->kind[i]); m[16] = 0;
+        printf("  SENS %u (type %d, st %d) at %.0f %.0f %.0f ang %.0f: %s", e->inst->index, e->type, e->st, e->pos.x, e->pos.y, e->pos.z, e->ang * 57.2958f, m), puts("");
+    }
+}
+static float sens_arc(float a, float b) { return fabsf(ang_diff(a, b)); }  /* 0x4401c0 */
+int enemy_sensor_free(const Enemy *e, float ang)                            /* 0x41d2a0 -> 0x41d240: the nearest of the 16 */
+{
+    int bi = -1; float bd = 6.2831855f;
+    for (int i = 0; i < 16; i++) { float d = sens_arc(e->sens.ang[i], ang); if (d < bd) { bd = d; bi = i; } }
+    return bi < 0 || e->sens.free[bi];
+}
+float enemy_sensor_nearest_free(const Enemy *e, float ang)                  /* 0x41d310 */
+{
+    int bi = -1; float bd = 6.2831855f;
+    for (int i = 0; i < 16; i++) if (e->sens.free[i]) { float d = sens_arc(e->sens.ang[i], ang); if (d < bd) { bd = d; bi = i; } }
+    return bi < 0 ? ang : e->sens.ang[bi];
+}
+float enemy_sensor_random_free(const Enemy *e)                              /* 0x41d2c0 */
+{
+    int l[16], n = 0; for (int i = 0; i < 16; i++) if (e->sens.free[i]) l[n++] = i;
+    return n ? e->sens.ang[l[rand() % n]] : -1.0f;
+}
+float enemy_sensor_widest_free(const Enemy *e)                              /* 0x41d390: walk both ways from each free one until either side is blocked */
+{
+    int best = -1, bi = -1;
+    for (int i = 0; i < 16; i++) {
+        if (!e->sens.free[i]) continue;
+        int l = i, r = i, n = -1;
+        do { if (--l < 0) l = 16; if (++r >= 16) r = 0; n++; } while (e->sens.free[l] && e->sens.free[r] && r != i);   /* left wraps to the sentinel 16 first */
+        if (n > best) { best = n; bi = i; }
+    }
+    return bi < 0 ? -1.0f : e->sens.ang[bi];
+}
+/* Chase Steer 0x41bd00: the target angle is the player's direction, or the nearest free one when the sensor has that blocked */
+static float chase_target(const Enemy *e, float ang) { return enemy_sensor_free(e, ang) ? ang : enemy_sensor_nearest_free(e, ang); }
+/* OnBlocked, behaviour vtbl[3], when the common move 0x41b2c0 refuses the step: Wander 0x41c420 turns to the widest free
+ * direction (action 5, turning); Chase 0x41be90 to the free direction nearest its current angle, the turn timer to 0.
+ * With nothing free Wander keeps its target; the port then turns round, as it did before the sensor existed. */
+static void enemy_blocked(Enemy *e, int wander, int chase)
+{
+    if (wander) { float a = enemy_sensor_widest_free(e); e->want_ang = a >= 0 ? a : e->ang + 3.14159265f; }
+    else if (chase) { e->want_ang = enemy_sensor_nearest_free(e, e->ang); e->turn_t = 0; }
+    if (getenv("WOODY_SENSLOG") && (wander || chase)) printf("  SENS %u blocked at %.0f %.0f %.0f ang %.0f -> %.0f (%s)", e->inst->index, e->pos.x, e->pos.y, e->pos.z, e->ang * 57.2958f, e->want_ang * 57.2958f, wander ? "wander" : "chase"), puts("");
+}
+
 /* common move 0x41b2c0: a step is only taken when the ground there is within [-10, +10] of the feet */
 static int enemy_move(Enemy *e, struct Player *pl, Vec3 delta)
 {
@@ -153,6 +245,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     if (e->speed < e->want_speed) { e->speed += E_ACC * dt; if (e->speed > e->want_speed) e->speed = e->want_speed; }
     else if (e->speed > e->want_speed) e->speed = e->want_speed;
 
+    if (e->st == 1 || e->st == 4 || e->st == 8) enemy_sensor_tick(e, pl);   /* Enemy::Update 0x41a3e0: only under Chase / Wander (kind 1 / 0) */
     switch (e->st) {
     case 0: {                                                     /* patrol: slides exactly along the TRAJ segments, ping-pong on an open path */
         const Trajectory *T = &in->traj; Vec3 b = T->points[e->path_to];
@@ -170,7 +263,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         e->wander_t -= dt;
         if (e->wander_t <= 0) {
             e->wander_walk = !e->wander_walk;
-            if (e->wander_walk) { e->want_ang = (float)(rand() % 6283) * 0.001f; e->wander_t = 1.5f + (float)(rand() & 0x3ff) / 1024.0f; }
+            if (e->wander_walk) { float a = enemy_sensor_random_free(e); e->want_ang = a >= 0 ? a : (float)(rand() % 6283) * 0.001f; e->wander_t = 1.5f + (float)(rand() & 0x3ff) / 1024.0f; }   /* 0x41c249: a free direction, else 0x41ba10 */
             else e->wander_t = ea_len(e, EA_IDLE);
         }
         { float hx = e->home.x - e->pos.x, hz = e->home.z - e->pos.z;                     /* leash: walk back home */
@@ -185,11 +278,12 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         break;
     case 2:                                                       /* noticed: turn on the spot first, then run */
         if (!see) { e->st = 8; break; }
+        e->want_ang = chase_target(e, to_player);                     /* 0x41bc80 -> Steer 0x41bd00 */
         e->turn_t = fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; e->speed = e->want_speed = e->P.run; e->st = 1; if (e->type == 13) e->reload = e->P.reload;
         /* fallthrough */
     case 1:
         if (!see) { e->want_speed = e->P.walk; e->st = 8; break; }
-        steer(e, to_player, e->P.turn_fast, dt);
+        steer(e, e->want_ang, e->P.turn_fast, dt); e->want_ang = chase_target(e, to_player);   /* Steer 0x41bd00: H.Tick toward the last target, then the new one */
         if ((e->turn_t -= dt) <= 0) { step = (Vec3){ cosf(e->ang) * e->speed * dt, 0, sinf(e->ang) * e->speed * dt }; anim = EA_RUN; } else anim = EA_TURN;
         e->atk_t = ea_len(e, EA_DASH) + 0.5f * ea_len(e, EA_MISS);
         if (e->type == 13) {                                      /* ghost 0x413d0d: dives within 300 (xz) when it moves at the player (3D dot), else fires while chasing */
@@ -209,7 +303,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     case 4:                                                       /* dash: the only state that hurts the player */
         anim = EA_DASH;
         if (!see || e->atk_t <= 0) { e->t = ea_len(e, EA_BRAKE); e->st = 6; break; }
-        e->atk_t -= dt; steer(e, to_player, e->P.turn_fast, dt);
+        e->atk_t -= dt; steer(e, e->want_ang, e->P.turn_fast, dt); e->want_ang = chase_target(e, to_player);
         step = (Vec3){ cosf(e->ang) * e->speed * dt, 0, sinf(e->ang) * e->speed * dt };
         if (sqrtf(dx * dx + dy * dy + dz * dz) < e->P.radius + 69.0f) {
             Vec3 d = dxz > 1e-3f ? (Vec3){ dx / dxz, 0, dz / dxz } : (Vec3){ 1, 0, 0 };
@@ -233,7 +327,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     }
     /* knockback replaces the normal step: v = 600 * t_rest for 0.25 s */
     if (e->knock_t > 0) { e->knock_t -= dt; if (e->knock_t < 0) e->knock_t = 0; float v = dt * E_KNOCK * e->knock_t; step = (Vec3){ e->knock_dir.x * v, 0, e->knock_dir.z * v }; }
-    if (step.x != 0 || step.z != 0) { if (!enemy_move(e, pl, step) && e->st == 8) { e->want_ang = e->ang + 3.14159265f; } }
+    if ((step.x != 0 || step.z != 0) && !enemy_move(e, pl, step)) enemy_blocked(e, e->st == 8, e->st == 1 || e->st == 4);
     if (e->type == 13) {                                          /* height control 0x414f10: feet at the player's feet height (home without a target); frozen when hit / dead */
         if (e->st != 9 && e->st != 12) {
             int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
@@ -286,6 +380,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     if (e->speed < e->want_speed) { e->speed += E_ACC * dt; if (e->speed > e->want_speed) e->speed = e->want_speed; }
     else if (e->speed > e->want_speed) e->speed = e->want_speed;
 
+    if (e->st == S_WANDER || e->st == S_DASH) enemy_sensor_tick(e, pl);   /* Enemy::Update: Wander in 3, Chase in 6 */
     switch (e->st) {
     case S_PATH: {
         const Trajectory *T = &in->traj; Vec3 b = T->points[e->path_to];
@@ -305,7 +400,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         e->wander_t -= dt;
         if (e->wander_t <= 0) {
             e->wander_walk = !e->wander_walk;
-            if (e->wander_walk) { e->want_ang = (float)(rand() % 6283) * 0.001f; e->wander_t = 1.5f + (float)(rand() & 0x3ff) / 1024.0f; }
+            if (e->wander_walk) { float a = enemy_sensor_random_free(e); e->want_ang = a >= 0 ? a : (float)(rand() % 6283) * 0.001f; e->wander_t = 1.5f + (float)(rand() & 0x3ff) / 1024.0f; }   /* 0x41c249: a free direction, else 0x41ba10 */
             else e->wander_t = sa_len(e, SA_IDLE);
         }
         { float hx = e->home.x - e->pos.x, hz = e->home.z - e->pos.z;
@@ -344,12 +439,13 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     case S_DASH0:
         if (!see) { e->st = S_TOWANDER; break; }
         if (dxz > e->P.melee) break;
+        e->want_ang = chase_target(e, to_player);
         e->turn_t = fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; e->speed = e->want_speed = e->P.run; e->atk_t = dxz / e->P.run; e->st = S_DASH;
         break;
     case S_DASH:
         anim = SA_DASH;
         if (!see || e->atk_t < 0) { e->t = sa_len(e, SA_BRAKE); e->want_speed = e->P.walk; e->st = S_BRAKE; break; }
-        e->atk_t -= dt; steer(e, to_player, e->P.turn_fast, dt);
+        e->atk_t -= dt; steer(e, e->want_ang, e->P.turn_fast, dt); e->want_ang = chase_target(e, to_player);
         if ((e->turn_t -= dt) <= 0) step = (Vec3){ cosf(e->ang) * e->speed * dt, 0, sinf(e->ang) * e->speed * dt };
         if (sqrtf(dx * dx + dy * dy + dz * dz) < e->P.radius + 69.0f) {
             Vec3 d = dxz > 1e-3f ? (Vec3){ dx / dxz, 0, dz / dxz } : (Vec3){ 1, 0, 0 };
@@ -388,7 +484,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         break;
     }
     if (e->knock_t > 0) { e->knock_t -= dt; if (e->knock_t < 0) e->knock_t = 0; float v = dt * E_KNOCK * e->knock_t; step = (Vec3){ e->knock_dir.x * v, 0, e->knock_dir.z * v }; }
-    if (step.x != 0 || step.z != 0) { if (!enemy_move(e, pl, step) && e->st == S_WANDER) e->want_ang = e->ang + 3.14159265f; }
+    if ((step.x != 0 || step.z != 0) && !enemy_move(e, pl, step)) enemy_blocked(e, e->st == S_WANDER, e->st == S_DASH);
     { int found; float gy = player_ground_query(pl, in, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, &found);
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
       if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; } }

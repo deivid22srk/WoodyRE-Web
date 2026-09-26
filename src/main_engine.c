@@ -2,10 +2,11 @@
  * EKO CODE script VM every frame and renders world + instances with OpenGL.
  *
  * usage: woody.exe <Data dir> <LVL>            e.g. woody.exe extract/Data W1A
- * keys: arrows/WASD = walk Woody (camera-relative), Space = jump, F5 = toggle free-fly camera
- *       (in fly mode WASD + right mouse = fly, Shift = fast), F1 world, F2 instances, F3 wireframe,
- *       [ ] = previous/next animation of the selected instance (default: Woody), Tab = next instance,
- *       P = pause VM, Esc = quit. Script messages are printed to the console.
+ * keys: the bindings of Woody.cfg when there is one (docs/INPUT.md), else arrows/WASD = walk Woody (camera-relative),
+ *       Space = jump, X = duck, LCtrl/Shift = attack, RCtrl/E = special, C = camera behind, Esc = pause menu; a joystick
+ *       works too. F5 = toggle free-fly camera (in fly mode WASD + right mouse = fly, Shift = fast), F1 world, F2 instances,
+ *       F3 wireframe, [ ] = previous/next animation of the selected instance (default: Woody), Tab = next instance,
+ *       P = pause VM. Script messages are printed to the console.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -67,6 +68,7 @@ static struct {
     /* mode 0x80 (docs/CAMERA_SCRIPT.md 4.3): the camera comes from a camera track in the animation an instance plays */
     Instance *anim_inst; int anim_letterbox; Vec3 anim_eye, anim_tgt;   /* CamMgr+0x5d4, +0x618 & 2, +0x1d0, +0x5d8 */
     float shake;                                                 /* +0x67c: remaining shake time (0x41fbb0), docs/CAMERA.md 6.3 */
+    int look_prev;                                               /* 0x459090 ctl+8, as far as state 3 goes: was the Perso looking around last frame */
 } g_cam = { 1 };
 static const float k_sv_defaults[8] = { 1000, 300, 340, 500, 0, 400, 700, 200 };
 static Camera *slot_camera(uint32_t ref) { uint32_t i = ref & 0xffffff; return i < g_ins.nslots + 16 ? g_ins.cam_slots[i] : NULL; }
@@ -137,6 +139,9 @@ static Vec3 rail_target(const Trajectory *tr, Vec3 c, float d, Vec3 prev)
 static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
 {
     Vec3 P, T;
+    if (g_cam.mode == 0x200) {                                   /* look-around (docs/PERSO_LOOK.md 3): eye camera, entered with a cut, no transition, no shake */
+        player_look_camera(p, cam, dt); g_cam.pos = cam->pos; g_cam.active = 0; g_cam.look_off = (Vec3){ 0, 0, 0 }; p->cam_yaw = cam->yaw; return;
+    }
     if (g_cam.mode == 0x80 && g_cam.anim_inst) {                 /* 0x41f1ee: camera from the animation of CamMgr+0x5d4 (0x42fa80): cut, no smoothing.
                                                                   * That instance is the cinematic's main instance (0x44ed3f, letterboxed) or the Perso
                                                                   * himself during a scripted door action (0x44df7d, never letterboxed). */
@@ -317,6 +322,125 @@ static void opt_read(void)
     int *o[3] = { &g_opt.sfx, &g_opt.music, &g_opt.vib }; for (int i = 0; i < 3; i++) { if (*o[i] < 0) *o[i] = 0; if (*o[i] > 100) *o[i] = 100; }
 }
 static void opt_write(void) { FILE *f = fopen("woodyre.cfg", "w"); if (f) { fprintf(f, "sfx=%d\nmusic=%d\nvibration=%d\n", g_opt.sfx, g_opt.music, g_opt.vib); fclose(f); } }
+
+/* ---- input (docs/INPUT.md): the key bindings of Woody.cfg, the joystick and the action layer of 0x402940. Everything
+ * the game reads goes through 14 actions (the controller [0x5e6188], PERSO_MOVE 3.2): 0/1 left/right, 2/3 forward/back
+ * (values -1/+1, the stick gives its deflection), 4 jump (+12 = menu confirm), 5 duck (menu back), 6 attack, 7 look
+ * around, 8 duck while riding, 9 pause, 10 camera behind, 11 special. Bindings: app+0x108, two per action (config 1 / 2
+ * of Detect.exe); a code < 0x200 is a DirectInput key, 0x200 + n joystick button n. The port keeps VK codes. */
+#include <mmsystem.h>
+#define IN_JOY 0x200
+static struct {
+    int bind[12][4];                  /* per action: up to 4 VK codes or IN_JOY + button, 0 ends the list (Woody.cfg fills 2, the port defaults more) */
+    int mode;                         /* app+0x104 (0x44fc05): 0 keyboard only (cfg+0x114 == 1), 1 / 2 joystick (cfg+0x110 != 0 / == 0): the
+                                       * keyboard gives no directions then (0x40301e); 3 = port, no Woody.cfg: keyboard and joystick both */
+    int have_cfg;
+    int joy; UINT jxmin, jxmax, jymin, jymax; double joy_scan;   /* the WinMM device (the original: the first attached DirectInput joystick, 0x4678d0) */
+    float jx, jy; uint32_t jbtn; int jok;                        /* this frame: axes after the dead zone (-1..1), buttons */
+    int down[14], prev[14]; float val[14];                       /* the controller: held this frame / last frame, value (0x467460) */
+} g_in = { .joy = -1, .mode = 3 };
+static int in_dik_vk(int d)                                      /* DIK scan code (Woody.cfg) -> VK: the extended keys by table, the rest by the layout */
+{
+    static const unsigned char T[][2] = { {0x1c,VK_RETURN}, {0x9c,VK_RETURN}, {0x1d,VK_LCONTROL}, {0x9d,VK_RCONTROL}, {0x2a,VK_LSHIFT}, {0x36,VK_RSHIFT},
+        {0x38,VK_LMENU}, {0xb8,VK_RMENU}, {0xc8,VK_UP}, {0xd0,VK_DOWN}, {0xcb,VK_LEFT}, {0xcd,VK_RIGHT}, {0xc7,VK_HOME}, {0xcf,VK_END}, {0xc9,VK_PRIOR},
+        {0xd1,VK_NEXT}, {0xd2,VK_INSERT}, {0xd3,VK_DELETE}, {0x47,VK_NUMPAD7}, {0x48,VK_NUMPAD8}, {0x49,VK_NUMPAD9}, {0x4b,VK_NUMPAD4}, {0x4c,VK_NUMPAD5},
+        {0x4d,VK_NUMPAD6}, {0x4f,VK_NUMPAD1}, {0x50,VK_NUMPAD2}, {0x51,VK_NUMPAD3}, {0x52,VK_NUMPAD0}, {0x53,VK_DECIMAL}, {0x37,VK_MULTIPLY},
+        {0x4a,VK_SUBTRACT}, {0x4e,VK_ADD}, {0xb5,VK_DIVIDE}, {0x45,VK_NUMLOCK}, {0xdb,VK_LWIN}, {0xdc,VK_RWIN}, {0xdd,VK_APPS}, {0xc5,VK_PAUSE}, {0xb7,VK_SNAPSHOT} };
+    for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) if (T[i][0] == d) return T[i][1];
+    return d > 0 && d < 0x80 ? (int)MapVirtualKeyA((UINT)d, 1 /* MAPVK_VSC_TO_VK */) : 0;
+}
+/* Woody.cfg (0x401000 at boot, 0x405e0f): u32 0x19072001, then 0x11c bytes into cfg 0x4c2bd0 (docs/INPUT.md 2). The keys are cfg+0xac (config 1)
+ * and +0xdc (config 2), 12 each in the order up, down, left, right, 5, 6, 4, 8, 7, 9, 10, 11 (0x44fbd0); the mode flags cfg+0x110 / +0x114.
+ * Not there: the port defaults below. WOODY_CFG=path points elsewhere; else Woody.cfg in the working directory (like the original), else next
+ * to the Data folder (the install layout). */
+static void in_defaults(void)
+{
+    static const int D[12][4] = { {VK_LEFT,'A'}, {VK_RIGHT,'D'}, {VK_UP,'W'}, {VK_DOWN,'S'},           /* the port's keys; the joystick buttons of Detect's */
+        {VK_SPACE, IN_JOY + 2}, {'X', IN_JOY + 0}, {VK_LCONTROL, VK_SHIFT, IN_JOY + 1}, {VK_RETURN, 'V', IN_JOY + 4},   /* DefaultControlSettings (Setup.dll 0x10002650, */
+        {'X', IN_JOY + 3}, {VK_ESCAPE, IN_JOY + 5}, {'C', VK_NUMPAD0, IN_JOY + 6}, {VK_RCONTROL, 'E', IN_JOY + 7} };   /* table 0x1000c060: 0x200..0x207) */
+    memcpy(g_in.bind, D, sizeof D); g_in.mode = 3; g_in.have_cfg = 0;
+}
+static void in_read_cfg(const char *data_dir)
+{
+    in_defaults();
+    char alt[600]; const char *try_[3] = { getenv("WOODY_CFG"), "Woody.cfg", alt }; snprintf(alt, sizeof alt, "%s/../Woody.cfg", data_dir);
+    unsigned char b[0x120]; FILE *f = NULL; int k;
+    for (k = 0; k < 3 && !f; k++) if (try_[k]) f = fopen(try_[k], "rb");
+    if (!f) { puts("input: no Woody.cfg, port keys"); return; }
+    size_t n = fread(b, 1, sizeof b, f); fclose(f);
+    #define CFG32(o) ((int)((uint32_t)b[(o) + 4] | (uint32_t)b[(o) + 5] << 8 | (uint32_t)b[(o) + 6] << 16 | (uint32_t)b[(o) + 7] << 24))   /* cfg offset o (the file has the magic first) */
+    if (n < sizeof b || CFG32(-4) != 0x19072001) { puts("input: Configuration file is Obsolete... (Woody.cfg), port keys"); return; }   /* 0x401092 */
+    static const int act_of[12] = { 2, 3, 0, 1, 5, 6, 4, 8, 7, 9, 10, 11 };   /* cfg key index -> action (0x44fc5a..0x44fe28) */
+    memset(g_in.bind, 0, sizeof g_in.bind);
+    for (int c = 0; c < 2; c++) for (int i = 0; i < 12; i++) {
+        int code = CFG32(0xac + c * 0x30 + i * 4), vk = code >= IN_JOY ? (code < IN_JOY + 32 ? code : 0) : in_dik_vk(code);   /* 0x44fe80: an unknown key = 0x90, never pressed */
+        g_in.bind[act_of[i]][c] = vk;
+    }
+    g_in.mode = CFG32(0x114) == 1 ? 0 : CFG32(0x110) == 0 ? 2 : 1;   /* 0x44fc05 */
+    g_in.have_cfg = 1;
+    printf("input: %s, mode %d (%s)\n", try_[k - 1], g_in.mode, g_in.mode ? "joystick" : "keyboard only");
+    #undef CFG32
+}
+static void in_joy_poll(double now, double tl)                   /* 0x467a40 poll + 0x467a80 axes + 0x467af0 buttons; tl = the level clock */
+{
+    g_in.jx = g_in.jy = 0; g_in.jbtn = 0; g_in.jok = 0;
+    if (g_in.mode == 0) return;                                  /* keyboard only: the joystick object exists but 0x402d39 never polls it */
+    if (g_in.joy < 0 && now >= g_in.joy_scan) {                  /* no device yet: look again every 3 s (the original enumerates once, at boot) */
+        g_in.joy_scan = now + 3.0;
+        for (UINT id = 0; id < 16 && g_in.joy < 0; id++) { JOYINFOEX ji = { sizeof ji, JOY_RETURNALL }; JOYCAPSA jc;
+            if (joyGetPosEx(id, &ji) == JOYERR_NOERROR && joyGetDevCapsA(id, &jc, sizeof jc) == JOYERR_NOERROR) {
+                g_in.joy = (int)id; g_in.jxmin = jc.wXmin; g_in.jxmax = jc.wXmax; g_in.jymin = jc.wYmin; g_in.jymax = jc.wYmax; printf("input: joystick %u \"%s\"\n", id, jc.szPname); } }
+    }
+    const char *e = getenv("WOODY_JOY");                         /* testing: WOODY_JOY="T:X:Y:BUTTONS[:D] ...": stick at X,Y (-1..1, before the dead
+                                                                  * zone) and the button mask for D s (default 0.08) from T s on the clock of --shot */
+    if (e) { float x = 0, y = 0; unsigned m = 0; const char *s = e; int used;
+        for (double t, d; sscanf(s, " %lf:%f:%f:%i%n", &t, &x, &y, (int *)&m, &used) == 4; ) { float xx = x, yy = y; unsigned mm = m; s += used; d = 0.08;
+            if (*s == ':' && sscanf(s, ":%lf%n", &d, &used) == 1) s += used;
+            if (tl >= t && tl < t + d) { g_in.jok = 1; g_in.jx = xx; g_in.jy = yy; g_in.jbtn = mm; } }
+        if (g_in.jok) goto deadzone;
+    }
+    if (g_in.joy < 0) return;
+    { JOYINFOEX ji = { sizeof ji, JOY_RETURNX | JOY_RETURNY | JOY_RETURNBUTTONS };
+      if (joyGetPosEx((UINT)g_in.joy, &ji) != JOYERR_NOERROR) { printf("input: joystick %d lost\n", g_in.joy); g_in.joy = -1; return; }   /* unplugged: scan again */
+      float rx = g_in.jxmax > g_in.jxmin ? (float)g_in.jxmax - g_in.jxmin : 65535.0f, ry = g_in.jymax > g_in.jymin ? (float)g_in.jymax - g_in.jymin : 65535.0f;
+      g_in.jx = ((float)ji.dwXpos - g_in.jxmin) / rx * 2.0f - 1.0f; g_in.jy = ((float)ji.dwYpos - g_in.jymin) / ry * 2.0f - 1.0f;   /* DIPROP_RANGE -4096..4096 (0x4677db) */
+      g_in.jbtn = (uint32_t)ji.dwButtons; g_in.jok = 1; }
+deadzone:
+    for (int a = 0; a < 2; a++) {                                /* 0x467a80: dead zone 30 % (0x4aab98) of the range 4096 (0x4b6f84), the rest scaled to 0..1 */
+        float *v = a ? &g_in.jy : &g_in.jx; int iv = (int)(*v * 4096.0f), dz = (int)(4096.0f * 0.3f);
+        if (iv > 0) { iv -= dz; if (iv < 0) iv = 0; } else { iv += dz; if (iv > 0) iv = 0; }
+        *v = (float)iv / (4096.0f - dz);
+    }
+}
+static int in_key(const Window *w, int vk, int fly)              /* a VK held (keyboard vt[4] 0x4675f0) */
+{
+    if (fly && (vk == 'W' || vk == 'A' || vk == 'S' || vk == 'D' || vk == 'Q' || vk == 'E' || vk == 'X' || vk == VK_SPACE || vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT)) return 0;   /* the free camera's keys */
+    if (vk == VK_LCONTROL) return w->keys[VK_LCONTROL] || (w->keys[VK_CONTROL] && !w->keys[VK_RCONTROL]);   /* WOODY_KEYS CTRL / SHIFT hold only VK_CONTROL / VK_SHIFT: the left one */
+    if (vk == VK_LSHIFT) return w->keys[VK_LSHIFT] || (w->keys[VK_SHIFT] && !w->keys[VK_RSHIFT]);
+    return vk > 0 && vk < 256 && w->keys[vk];
+}
+static void in_set(int a, float v) { g_in.down[a] = 1; g_in.val[a] = v; }   /* 0x4673b0 */
+static void in_frame(const Window *w, int fly, double now, double tl)   /* 0x402940: joystick first, then the keyboard; the value is the last one set */
+{
+    memcpy(g_in.prev, g_in.down, sizeof g_in.down); memset(g_in.down, 0, sizeof g_in.down); memset(g_in.val, 0, sizeof g_in.val);
+    in_joy_poll(now, tl);
+    static const int btn_acts[8] = { 6, 11, 5, 4, 7, 10, 8, 9 }; /* 0x402df5..0x403002 */
+    if (g_in.jok) {
+        if (g_in.jx > 0) in_set(1, g_in.jx); else if (g_in.jx < 0) in_set(0, g_in.jx);   /* 0x402d58: joystick vt[3] X, vt[4] Y (down = +) */
+        if (g_in.jy > 0) in_set(3, g_in.jy); else if (g_in.jy < 0) in_set(2, g_in.jy);
+        for (int i = 0; i < 8; i++) { int a = btn_acts[i];
+            for (int s = 0; s < 4 && g_in.bind[a][s]; s++) { int c = g_in.bind[a][s]; if (c >= IN_JOY && (g_in.jbtn >> (c - IN_JOY) & 1)) { in_set(a, 1.0f); if (a == 4) in_set(12, 1.0f); break; } } }
+    }
+    int dirs = g_in.mode == 0 || g_in.mode == 3 || g_in.joy < 0; /* 0x40301e: directions from the keys only in mode 0 (port: also without a joystick) */
+    static const float dv[4] = { -1.0f, 1.0f, -1.0f, 1.0f };
+    for (int a = 0; a < 12; a++) {
+        if (a < 4 && !dirs) continue;
+        for (int s = 0; s < 4 && g_in.bind[a][s]; s++) { int c = g_in.bind[a][s]; if (c < IN_JOY && in_key(w, c, fly)) { in_set(a, a < 4 ? dv[a] : 1.0f); if (a == 4) in_set(12, 1.0f); break; } }
+    }
+}
+static int in_held(int a) { return g_in.down[a]; }                                /* 0x467400 */
+static int in_pressed(int a) { return g_in.down[a] && !g_in.prev[a]; }            /* 0x467420 */
+static int in_released(int a) { return !g_in.down[a] && g_in.prev[a]; }           /* 0x467440 */
 /* LevelIsEnable 0x450470 (table 0x450694): the done flag of the predecessor. The original reads it in the block of the
  * current character; here in the block of the predecessor's own character (otherwise K1A could never open from KWS). */
 static int level_is_enable(int level)
@@ -463,7 +587,7 @@ static void results_close(void) { fade_start(0.5f, 1); g_res.state = 5; g_res.t 
 /* ---- menu pages (docs/TITLE.md 5, MENU_NEWGAME.md, MENU_OPTIONS.md, MENU_LOAD.md): the page object app+0x3c with
  * its per-page handlers (0x404e90 -> table 0x405b1c). Pages used here: 0 title, 1 main menu, 2 load slot, 3 world
  * select, 5 save slot, 6 "Do you want to save?", 7 no save, 8 saved, 9 save failed, 0xa load failed, 0x17 overwrite,
- * 0x18 pause, 0x1b options, 0x1c "Are you sure?", 0x1f intro running. -1 = no page (a level is being played). */
+ * 0x18 pause, 0x19 pause while riding, 0x1b options, 0x1c "Are you sure?", 0x1f intro running. -1 = no page (a level is being played). */
 typedef struct { int ok, back, up, dn, left, right, esc_rel, esc_prs, atk_rel, syn; } MenuKeys;
 typedef struct {                               /* the panel page base 0x45b830 (pages 1, 2, 3, 5) */
     float t, ti;                               /* +0x1c since opening / closing, +0x28 since enter / validate */
@@ -496,6 +620,7 @@ static const MenuItem k_page9[] = { {59,2}, {4,1} };
 static const MenuItem k_pagea[] = { {60,2}, {1,2}, {4,1} };
 static const MenuItem k_page17[] = { {61,2}, {5,1}, {6,1} };
 static const MenuItem k_page18[] = { {4,1}, {36,1}, {2,1} };
+static const MenuItem k_page19[] = { {4,1}, {19,1}, {36,1}, {2,1} };   /* 0x4b5d18: Continue (5), Start again (18), Options (6), Quit (7) */
 static const MenuItem k_page1c[] = { {3,2}, {5,1}, {6,1} };
 static MenuItem k_page1b[] = { {36,2}, {38,0x10}, {39,0x10}, {132,0x10}, {4,1} };
 static const MenuItem *menu_items(int page, int *n, float *yfrac)
@@ -504,7 +629,7 @@ static const MenuItem *menu_items(int page, int *n, float *yfrac)
     switch (page) {
     case 0: PG(k_page0, 0.7f)  case 1: PG(k_page1, 0.55f)  case 6: PG(k_page6, 0.4f)  case 7: PG(k_page7, 0.4f)
     case 8: PG(k_page8, 0.4f)  case 9: PG(k_page9, 0.4f)   case 0xa: PG(k_pagea, 0.4f) case 0x17: PG(k_page17, 0.4f)
-    case 0x18: PG(k_page18, 0.05f) case 0x1b: PG(k_page1b, 0.4f) case 0x1c: PG(k_page1c, 0.55f)
+    case 0x18: PG(k_page18, 0.05f) case 0x19: PG(k_page19, 0.05f) case 0x1b: PG(k_page1b, 0.4f) case 0x1c: PG(k_page1c, 0.55f)
     }
     #undef PG
     *n = 0; *yfrac = 0; return NULL;
@@ -724,12 +849,19 @@ static void menu_enter(int page)
         M.opt_bak[0] = g_opt.sfx; M.opt_bak[1] = g_opt.music; M.opt_bak[2] = g_opt.vib;
         k_page1b[1].value = g_opt.sfx; k_page1b[2].value = g_opt.music; k_page1b[3].value = g_opt.vib; M.sel = 1; break;
     case 0x1c: M.sel = 2; break;                                       /* 0x45bd40: on "No" */
-    case 0x18: case 0x1f: M.sel = 0; hud_logo_off(); break;            /* 0x45b390 */
+    case 0x18: case 0x19: case 0x1f: M.sel = 0; hud_logo_off(); break; /* 0x45b390 */
     default: M.sel = menu_first(); break;
     }
 }
 static void menu_off(void) { M.page = -1; M.results = 0; }
-static void menu_back_to_level_menu(void) { if (g_level == 0) menu_enter(1); else menu_enter(0x18); }   /* 0x4057b9 / 0x404d80 */
+/* 0x404d80 Pause_Open: page 0x19 when the Perso rides (state 1) and this is no BlackBox, with the follow distance at 200
+ * (0x41fa80(200.0)); otherwise 0x18. The app goes to state 0 (0x401400), so the world stands still (table 0x405af8). */
+static void pause_open(void)
+{
+    if (g_player && g_player->race_char && g_level != 25) { g_player->cam_dist = 200.0f; menu_enter(0x19); }
+    else menu_enter(0x18);
+}
+static void menu_back_to_level_menu(void) { if (g_level == 0) menu_enter(1); else pause_open(); }   /* 0x4057b9 / 0x404d80 */
 static void menu_title_page0(void) { title_music_next(); menu_enter(0); }   /* 0x404e30 */
 
 /* page 1 "New game" (and the attract, the same script start): the House script object 115 plays the intro */
@@ -864,17 +996,20 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
     case 0x17: if (k->ok && M.sel == 1) menu_save_slot(M.save_s); else if ((k->ok && M.sel == 2) || k->back) menu_enter(6); break;   /* 0x405586 */
     case 8: if (k->ok) menu_off(); break;                              /* 0x4056c0: "Game Saved" leaves the menu */
     case 9: if (k->ok) menu_enter(6); break;
-    case 0x18:                                                         /* 0x4057f5; "back" does nothing */
-        if (k->ok && M.sel == 0) menu_off();
-        else if (k->ok && M.sel == 1) menu_enter(0x1b);
-        else if (k->ok && M.sel == 2) menu_enter(0x1c);
-        break;
+    case 0x18: case 0x19: {                                            /* 0x4057f5, table 0x405cfc on result - 5; "back" does nothing */
+        static const int res18[3] = { 5, 6, 7 }, res19[4] = { 5, 18, 6, 7 };
+        int r = !k->ok ? 0 : M.page == 0x19 ? res19[M.sel & 3] : res18[M.sel % 3];
+        if (r == 5) { if (M.page == 0x19 && g_player) g_player->cam_dist = 4.0f; menu_off(); }   /* 0x40580c: Continue, back to state 1 (3 in BlackBox) */
+        else if (r == 18) { if (g_player) { g_player->cam_dist = 4.0f; player_restart(g_player); } menu_off(); }   /* 0x40584d: "Start again" */
+        else if (r == 6) menu_enter(0x1b);                             /* 0x40587a */
+        else if (r == 7) menu_enter(0x1c);                             /* 0x405888 */
+        break; }
     }
 }
 
 /* table 0x405af8: the half-black backdrop and whether the world stands still */
-static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && (page == 0x18 || page == 0x1b || page == 0x1c)); }
-static int menu_pauses_world(void) { return g_level != 0 && (M.page == 0x18 || M.page == 0x1b || M.page == 0x1c); }
+static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && page >= 0x18 && page <= 0x1c); }
+static int menu_pauses_world(void) { return g_level != 0 && M.page >= 0x18 && M.page <= 0x1c; }
 
 /* the page layer of a frame: items, then the iris, then the logo (docs/TITLE.md 5.4) */
 static void menu_draw(float dt)
@@ -1064,6 +1199,10 @@ typedef struct { Vec3 pos; float t, rot; } Puff;              /* 0x475380: one s
 typedef struct { Vec3 pos; float t, R; } Blast;               /* 0x4762e0: the nine flat quads of one flash, 0.3 s, image 12 */
 static Puff g_puffs[96]; static int g_puff_next; static Blast g_blasts[16];
 static void puff_add(Vec3 p) { Puff *q = &g_puffs[g_puff_next++ % 96]; q->pos = p; q->t = 1e-4f; q->rot = (float)msvc_rand(NULL) / 32767.0f; }
+/* the particles of an explosion 0x477060 (docs/PARTICLES.md 5): kind 0 (bombs) = the dust burst 0x476cd0 and the smoke ring
+ * 0x476140(pos, n, 0, 0.25, 1.5) next to its flash and ring (bombfx); kind 1 = the burning debris 0x476b50 and the dust burst
+ * next to the two flashes 0x4762e0 (blast_add). Defined with the effect pool below. */
+static void fx_explode(int kind, Vec3 pos, Vec3 n);
 static void blast_add(Vec3 p, float R) { for (int i = 0; i < 16; i++) if (g_blasts[i].t <= 0) { g_blasts[i] = (Blast){ p, 1e-4f, R }; return; } }
 /* 200 clouds a second, spread over the way the nozzle covered since the previous frame */
 static void exhaust_smoke(Vec3 from, Vec3 to, float *acc, float dt)
@@ -1244,7 +1383,8 @@ static void bomb_explode(Bomb *b)
     chests_blast(c, 400.0f);
     audio_fx(6, b->inst, &b->inst->position.x);                                    /* the original only while +0x124 exists: the port keeps the projectile in the bomb */
     Vec3 e = { b->p.x, b->p.y + 20.0f, b->p.z };
-    if (b->kind == 1) game_explosion(e); else bombfx_add(e, b->bounced ? b->n : (Vec3){ 0, 1, 0 }, 0);   /* 0x477060(kind, pos, plane of the last bounce) */
+    if (b->kind == 1) game_explosion(e);
+    else { Vec3 bn = b->bounced ? b->n : (Vec3){ 0, 1, 0 }; bombfx_add(e, bn, 0); fx_explode(0, e, bn); }   /* 0x477060(kind, pos, plane of the last bounce) */
     b->p_active = 0; b->t = 0; b->inst->fade = b->inst->fade_target = 1.0f;       /* not drawn from now on (> 0.98) */
     if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u explodes at %.0f %.0f %.0f", b->inst->index, c.x, c.y, c.z), puts("");
 }
@@ -1344,7 +1484,8 @@ static void bombs_draw(const float *eye, float dt)
         bomb_colour(b, dt);
         if (b->state != 2 && b->state != 3) continue;
         if (!b->puffed && b->launcher) { b->puffed = 1; Vec3 m0, md; if (inst_vector(b->launcher, 0, &m0, &md)) { float l = sqrtf(md.x * md.x + md.y * md.y + md.z * md.z);
-            if (l > 1e-4f) bombfx_add((Vec3){ m0.x + md.x / l * 10.0f, m0.y + md.y / l * 10.0f, m0.z + md.z / l * 10.0f }, (Vec3){ 0, 1, 0 }, 1); } }
+            if (l > 1e-4f) { Vec3 mz = { m0.x + md.x / l * 10.0f, m0.y + md.y / l * 10.0f, m0.z + md.z / l * 10.0f };
+                             game_smoke_ring(mz, (Vec3){ md.x / l, md.y / l, md.z / l }, 0, 0.25f, 1.5f); bombfx_add(mz, (Vec3){ 0, 1, 0 }, 1); } } }   /* 0x478c0e: the smoke ring round the muzzle, then 0x478aa0 */
         Vec3 v0, dv; if (!inst_vector(b->inst, 0, &v0, &dv)) continue;
         float f = b->fuse > 0 ? b->t / b->fuse : 1; if (f > 1) f = 1;
         float tip[3] = { v0.x + dv.x * (1 - f), v0.y + dv.y * (1 - f), v0.z + dv.z * (1 - f) };
@@ -1510,7 +1651,7 @@ void game_cam_shake(float t) { g_cam.shake = t; }
 void game_msgmask(Instance *in, uint32_t bits, int on) { if (g_vm && in) { if (on) eko_msgmask_set(g_vm, in->id, bits); else eko_msgmask_clear(g_vm, in->id, bits); } }
 static struct { int on, cur, max; float t; } g_bossbar;      /* hud+0x48, +0x4c, +0x50 and the bar's slide-in clock */
 void game_boss_bar(int on, int cur, int max) { if (on && !g_bossbar.on) g_bossbar.t = 0; g_bossbar.on = on; g_bossbar.cur = cur; g_bossbar.max = max; }   /* 0x4484d0: 0x462470 starts the slide-in */
-void game_explosion(Vec3 p) { blast_add(p, 1400.0f); blast_add(p, 400.0f); }
+void game_explosion(Vec3 p) { fx_explode(1, p, (Vec3){ 0, 1, 0 }); blast_add(p, 1400.0f); blast_add(p, 400.0f); }
 /* classes 15 / 16 (boss.c, docs/BOSS15_16.md) */
 float game_time(void) { return g_now; }
 void game_launcher_start(Instance *in)                                         /* 0x4522b0(1, 1.0, 0) = message 1000 [inst, -1]: one shot on the next think step */
@@ -1624,14 +1765,23 @@ static const float k_fx_shape[12][3] = {                                     /* 
     { 1, 1, 1}, { 1, 1,-1}, { 1,-1, 1}, { 1,-1,-1}, {-1, 1, 1}, {-1, 1,-1}, {-1,-1, 1}, {-1,-1,-1},
     { 0, 0.5f, 0}, {-0.494f,-0.5f, 0.855f}, { 1,-0.5f, 0}, {-0.494f,-0.5f,-0.855f},
 };
-typedef struct { float age, life, acc; Vec3 pos; int kind, shape; Vec3 dir; float D, h, R, acc2; } FxRec;   /* the special attack (docs/PERSO_SPECIAL.md 3): 7 = its emitter (0x47a8d0), 8 = a streak (0x47a790), 9 = a fire ring (0x47a4c0);
+typedef struct { float age, life, acc; Vec3 pos; int kind, shape; Vec3 dir; float D, h, R, acc2; Vec3 n; float acc3, size; int rot, foot; } FxRec;   /* kinds 12..25: the particles of docs/PARTICLES.md (enum FxKind below); the special attack (docs/PERSO_SPECIAL.md 3): 7 = its emitter (0x47a8d0), 8 = a streak (0x47a790), 9 = a fire ring (0x47a4c0);
     the hit star 0x4750e0: 10 = the flash (0x475040), 11 = a spark (0x474e00, dir = its spoke, R = star size, shape = spin) */   /* kind 0 = shape burst (0x478f70), 1 = sparkle box (0x4792d0), 2 = the particle (0x4791f0);
     the water splash (docs/SPLASH.md): 3 = its emitter (0x478360), 4 = a drop (0x477fa0), 5 = the ripple where a drop lands (0x478290), 6 = a ring (0x4781b0) */
 static FxRec g_fx[2000]; static int g_nfx;
+enum FxKind {                                                                 /* docs/PARTICLES.md, one record callback each */
+    FX_STEP_EMIT = 12, FX_STEP_PUFF, FX_STEP_PRINT,                          /* 0x47e460, 0x47e370, 0x47c9a0: footsteps (2) */
+    FX_RING,                                                                 /* 0x475fb0: one cloud of the smoke ring 0x476140 (3) */
+    FX_PECK_EMIT, FX_PECK_CHIP, FX_PECK_FLASH, FX_PECK_HOLE,                 /* 0x4798f0, 0x479670, 0x479760, 0x479800: the beak impact 0x479c80 (4) */
+    FX_DEBRIS_EMIT, FX_DEBRIS,                                               /* 0x476cd0, 0x4764f0: the dust burst of an explosion (5.1) */
+    FX_BURN_EMIT, FX_BURN, FX_TRAIL_SMOKE, FX_TRAIL_SPARK,                   /* 0x476b50, 0x4767f0, 0x476f00, 0x476fb0: the burning debris of explosion kind 1 (5.2) */
+    FX_SKELETON                                                              /* 0x477980: the skeleton flash of Kill 2/9 (6, docs/PERSO_DEATH.md 4.2) */
+};
+static void fx_particle(FxRec *e, float u, float dt);
 static FxRec *fx_new(float life, Vec3 pos, int kind)
 {
     if (g_nfx >= 2000) return NULL;                                          /* 0x4793e7: a full pool silently drops the effect */
-    FxRec *r = &g_fx[g_nfx++]; r->age = 0; r->life = life; r->acc = 0; r->pos = pos; r->kind = kind; r->shape = 0; r->dir = (Vec3){ 0, 0, 0 }; r->D = r->h = r->R = r->acc2 = 0; return r;
+    FxRec *r = &g_fx[g_nfx++]; memset(r, 0, sizeof *r); r->life = life; r->pos = pos; r->kind = kind; return r;
 }
 static float fx_rnd(void) { return (float)rand() / (float)RAND_MAX; }        /* 0x43ff40: rand() / 32767, so [0,1] inclusive */
 static void fx_rotmat(int a0, int a1, int a2, float M[9])                    /* 0x46d220; the angles are in 1/512 turn */
@@ -1659,7 +1809,7 @@ void game_splash(Vec3 c, float speed, float radius)
 static float sin512(int i) { return sinf(6.2831853f * (i & 511) / 512.0f); }   /* -cos512[(i + 128) & 511] */
 static float cos512(int i) { return cosf(6.2831853f * (i & 511) / 512.0f); }
 void game_special_fx(void) { FxRec *e = fx_new(2.5f, (Vec3){ 0, 0, 0 }, 7); if (e) e->shape = 0; }   /* 0x47ab90: no position, the children read the Perso's */
-static Vec3 g_fx_eye;                                                        /* the camera of the last drawn frame (0x4750e0 builds the spark plane on it) */
+static Vec3 g_fx_eye, g_fx_fwd = { 0, 0, 1 };                                /* the camera of the last drawn frame (0x4750e0 builds the spark plane on it) and its look direction */
 void game_hit_star(Vec3 pt)                                                  /* 0x4750e0 */
 {
     fx_new(0.1f, pt, 10);
@@ -1752,6 +1902,8 @@ static void fx_update(float dt, const float *eye)
                 Vec3 h = { e->pos.x + e->dir.x * r, e->pos.y + e->dir.y * r, e->pos.z + e->dir.z * r };
                 if (eye) hud_world_streak(7, &e->pos.x, &h.x, eye, 10.0f, one, 0.0f, 0.1f);
                 hud_world_fx(8, &h.x, e->R, (float)(e->shape ? (int)(256.0f * u) : (int)(511.0f - 256.0f * u)) / 512.0f, one, 1.0f - u);
+            } else if (e->kind >= FX_STEP_EMIT) {                                   /* docs/PARTICLES.md */
+                fx_particle(e, u, dt);
             } else if (e->kind == 2) {                                              /* 0x4791f0: the only thing that draws. The fade in and out is the size, not the alpha */
                 float size = 30.0f * sinf(3.14159265f * (int)(255.0f * u) / 256.0f);
                 hud_world_fx(4, &e->pos.x, size, (float)(int)(45.0f * u) / 512.0f, white, 1.0f);
@@ -1774,176 +1926,243 @@ static void fx_update(float dt, const float *eye)
             }
             continue;
         }
+        if (e->kind == FX_SKELETON && g_player && g_player->inst) g_player->inst->fade = g_player->inst->fade_target = e->R;   /* 0x477e06: 0x44e7f0(P, old +0x6c, 0) */
         g_fx[i] = g_fx[--g_nfx]; i--;                                        /* 0x470cf4: swap with the last and look at this slot again */
     }
 }
 
-/* ---- footsteps (docs/FOOTSTEPS.md) -----------------------------------------------------------------------------
- * The walk cycle calls 0x47cba0(pos, ground normal, direction, foot, kind) twice per turn and a landing on ground
- * type 2 calls 0x476140(pos + (0,30,0), &normal, 3, 0.25, 1.5). Both effect functions are known by their call site
- * only - they are not decompiled - so what is drawn here is a reconstruction with the primitives the port has: a
- * mark that lies in the ground plane and is mirrored between the two feet (faint and short on ordinary ground,
- * kind 2; a lasting print on dust, sand or snow, kind 3), plus a puff of the smoke image for kind 3 and three
- * puffs on landing. The step SOUND is not from here: it comes from the type 4 events of the animation (docs/SOUND.md 3). */
-typedef struct { Vec3 pos, n, dir; float t, life, size, strength; int mirror; } Mark;
-typedef struct { Vec3 pos, vel; float t, life, size0, size1, rot, rgb[3]; } Dust;
-static Mark g_marks[48]; static Dust g_dust[64];
-static Mark *mark_new(void)
+/* ---- the particle effects of docs/PARTICLES.md: footsteps, the smoke ring, the beak impact, explosion debris ------
+ * All of them are records in the one effect pool (g_fx = [0x5e823c]+0xdb8, fx_new / fx_update) with their own
+ * callback, drawn through the sprite primitive 0x470f10 with the original's flags (hud_world_spr). The numbers
+ * below are the exe's (docs/PARTICLES.md cites every constant). */
+static Vec3 v3cross(Vec3 a, Vec3 b) { return (Vec3){ a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
+static void fx_axes(Vec3 d, Vec3 *X, Vec3 *Y)                                /* 0x46d320: rows X, Y of the frame whose Z is d */
 {
-    Mark *pick = &g_marks[0]; float oldest = -1;
-    for (int i = 0; i < 48; i++) { if (g_marks[i].life <= 0) return &g_marks[i]; if (g_marks[i].t > oldest) { oldest = g_marks[i].t; pick = &g_marks[i]; } }
-    return pick;                                                             /* full: the oldest print makes room */
-}
-static const float k_dust_rgb[3] = { 1.0f, 0.95f, 0.85f };                   /* ground dust */
-static const float k_sawdust_rgb[3] = { 0.85f, 0.68f, 0.44f };               /* what a beak raises out of wood */
-static void dust_new(Vec3 pos, Vec3 vel, float life, float size0, float size1, const float *rgb)
-{
-    for (int i = 0; i < 64; i++) if (g_dust[i].life <= 0) {
-        g_dust[i].pos = pos; g_dust[i].vel = vel; g_dust[i].t = 0; g_dust[i].life = life;
-        g_dust[i].size0 = size0; g_dust[i].size1 = size1; g_dust[i].rot = fx_rnd();
-        g_dust[i].rgb[0] = rgb[0]; g_dust[i].rgb[1] = rgb[1]; g_dust[i].rgb[2] = rgb[2]; return;
+    if (fabsf(d.x) < 0.001f && fabsf(d.z) < 0.001f) {                        /* straight up or down (0x46d375) */
+        Vec3 v = { 0, d.z, -d.y }; float l = sqrtf(v.y * v.y + v.z * v.z); if (l > 0) { v.y /= l; v.z /= l; }
+        *Y = v; *X = v3cross(v, d);
+    } else {                                                                 /* 0x46d417 */
+        Vec3 a = { d.z, 0, -d.x }; float l = sqrtf(a.x * a.x + a.z * a.z); if (l > 0) { a.x /= l; a.z /= l; }
+        *X = a; *Y = v3cross(d, a);
     }
 }
-static Vec3 vunit(Vec3 v) { float l = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); if (l < 1e-6f) return (Vec3){ 0, 1, 0 }; v.x /= l; v.y /= l; v.z /= l; return v; }
-void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind)      /* 0x47cba0, from 0x463f40 */
+static Vec3 fx_plane_u(Vec3 n)                                               /* 0x471ee0, column 0: the first axis of the plane with normal n */
 {
-    Vec3 n = vunit(normal), d = vunit(dir);
-    Vec3 side = vunit((Vec3){ d.y * n.z - d.z * n.y, d.z * n.x - d.x * n.z, d.x * n.y - d.y * n.x });
-    float off = foot ? 22.0f : -22.0f;                                       /* the two feet beside the Perso position; the original passes only the flag */
-    Vec3 fp = { pos.x + side.x * off, pos.y + side.y * off, pos.z + side.z * off };
-    Mark *m = mark_new();
-    m->pos = fp; m->n = n; m->dir = d; m->t = 0; m->mirror = foot;
-    m->life = kind == 3 ? 4.0f : 0.6f; m->size = kind == 3 ? 36.0f : 30.0f; m->strength = kind == 3 ? 0.6f : 0.22f;
-    if (kind == 3) {                                                         /* dust ground: the foot kicks a little of it up behind itself */
-        Vec3 v = { -d.x * 30.0f + n.x * 40.0f, -d.y * 30.0f + n.y * 40.0f, -d.z * 30.0f + n.z * 40.0f };
-        dust_new((Vec3){ fp.x + n.x * 10.0f, fp.y + n.y * 10.0f, fp.z + n.z * 10.0f }, v, 0.45f, 14.0f, 34.0f, k_dust_rgb);
+    if (fabsf(n.x) < 0.001f && 1.0f - fabsf(n.y) < 0.001f && fabsf(n.z) < 0.001f) {
+        float l = sqrtf(n.y * n.y + n.z * n.z); if (l <= 0) l = 1;
+        Vec3 v = { 0, -n.z / l, n.y / l }; return v3cross(v, n);
     }
-    if (getenv("WOODY_FXLOG")) printf("footstep %s kind %d at %.0f %.0f %.0f", foot ? "right" : "left", kind, fp.x, fp.y, fp.z), puts("");
+    float l = sqrtf(n.x * n.x + n.z * n.z); if (l <= 0) l = 1;
+    return (Vec3){ n.z / l, 0, -n.x / l };
 }
-void game_land_dust(Vec3 pos, Vec3 normal)                                   /* 0x476140(&pos + (0,30,0), &normal, 3, 0.25, 1.5), argument 3 = the number of particles */
+/* 0x47cba0(pos, ground normal, walk direction, foot, kind) from the walk cycle 0x463f40 (docs/FOOTSTEPS.md 1). Kind bit 0
+ * leaves a print in the ground for 15 s (kind 3 = dust, sand, snow), kind bit 1 raises the dust puffs (kinds 2 and 3). Foot
+ * 0 sits 15 to the left (n x d), foot 1 15 to the right. The step SOUND is not from here (docs/SOUND.md 3). */
+void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind)
 {
-    Vec3 n = vunit(normal);
-    Vec3 a = vunit(fabsf(n.y) < 0.9f ? (Vec3){ n.z, 0, -n.x } : (Vec3){ 1, 0, 0 });     /* two axes in the ground plane */
-    Vec3 b = { n.y * a.z - n.z * a.y, n.z * a.x - n.x * a.z, n.x * a.y - n.y * a.x };
-    for (int i = 0; i < 3; i++) {
-        float t = (i + fx_rnd() * 0.5f) * 2.0944f;                           /* three directions spread around the landing point */
-        Vec3 o = { a.x * cosf(t) + b.x * sinf(t), a.y * cosf(t) + b.y * sinf(t), a.z * cosf(t) + b.z * sinf(t) };
-        Vec3 v = { o.x * 150.0f + n.x * 60.0f, o.y * 150.0f + n.y * 60.0f, o.z * 150.0f + n.z * 60.0f };
-        dust_new(pos, v, 0.5f, 18.0f, 52.0f, k_dust_rgb);
+    Vec3 s = v3cross(normal, dir); float k = foot ? -15.0f : 15.0f;          /* 0x4abd88 / 0x4a9864 */
+    if (kind & 1) {
+        FxRec *r = fx_new(15.0f, (Vec3){ pos.x + s.x * k, pos.y + 0.1f + s.y * k, pos.z + s.z * k }, FX_STEP_PRINT);   /* +0.1 = 0x4a9008 */
+        if (r) { r->n = normal; r->dir = dir; r->foot = foot; }
     }
-    if (getenv("WOODY_FXLOG")) printf("landing dust at %.0f %.0f %.0f", pos.x, pos.y, pos.z), puts("");
+    if (kind & 2) { FxRec *r = fx_new(0.2f, pos, FX_STEP_EMIT); if (r) { r->n = normal; r->dir = dir; r->foot = foot; } }   /* 0x47e660 */
+    if (getenv("WOODY_FXLOG")) printf("footstep foot %d kind %d at %.0f %.0f %.0f", foot, kind, pos.x, pos.y, pos.z), puts("");
 }
-/* ---- the beak impact 0x479c80(kind, point, normal) ------------------------------------------------------------
- * The original marks every place the beak lands: the attack probe calls it on any hit (kind 1, docs/PERSO_JUMP.md
- * 2.4) and the climb loop every 0.3 s on the wall he hangs in (kind 0, with the wall normal, docs/OBJECTS.md
- * 1.3/1.6). Like 0x47cba0 above, the function is known by its call sites only - not decompiled - but what has to
- * come out of it is not in doubt: a beak going into wood takes a bite out of it. So a peck cuts a HOLE in the face
- * it hit and throws the wood it knocked loose out of the wall as CHIPS that tumble and fall:
- *   - the hole is `hud_world_gouge` in the plane of that face, in its own pool, so walking does not push the holes
- *     out of the footstep pool and a wall keeps the whole trail he climbed;
- *   - the chips are `hud_world_chip`, solid slivers, not sprites, on the engine's own fall (vel.y -= dt*g*200 with
- *     the -800 floor and the air damping of the projectile templates, docs/PROJECTILES.md 1.1);
- *   - plus one small puff of sawdust out of the hole.
- * What was here before was the laser hit 0x46efb9 - an additive glow plus sparks at 50 a second. That is what an
- * energy bolt does to a wall, not what a woodpecker does to a plank. */
-#define PECK_MARKS      64                                                   /* a peck every 0.3 s: one climbed wall is about 20 holes */
-#define PECK_MARK_LIFE  20.0f                                                /* the hole stays put: he climbs in seconds and gets to look back at his trail */
-#define PECK_MARK_FADE  4.0f                                                 /* and only closes over in its last seconds */
-#define PECK_MARK_SIZE  26.0f                                                /* outer radius, against his own collision radius of 69 (P+0x04): a beak, not a foot */
-#define PECK_CHIPS      10
-#define CHIP_G          5.0f                                                 /* gravity in the engine's own units (0x44945f): vel.y -= dt * g * 200, floor -800. The thrown bomb uses 15, a chip of wood is light */
-#define CHIP_DAMP       0.97f                                                /* damping per 1/60 s (T+0x28), heavier than a projectile's 0.99: wood flutters down instead of dropping like a stone */
-typedef struct { Vec3 pos, n, dir; float t, life; unsigned seed; } Peck;
-typedef struct { Vec3 pos, vel, ax, ay, rax; float t, life, spin, len, wid, rgb[3]; } Chip;
-static Peck g_pecks[PECK_MARKS]; static int g_peck_next;
-static Chip g_chips[128];
-static Vec3 vrot(Vec3 v, Vec3 k, float a)                                    /* Rodrigues: a chip tumbles around its own axis */
+/* 0x476140(pos, normal, kind, t0, life): a ring of clouds that spreads out in the plane across `normal`. Table 0x4b7c60
+ * per kind: radius, image, cloud size, alpha, alpha blended; kinds 1 and 2 have no caller in the exe. t0 is the age the
+ * clouds start at (at most 0.9 life), so a ring born at t0 = 0.25 of 1.5 s is already a sixth of the way out. */
+static const struct { float R; int img; float size, alpha; int blend; } k_ring[4] = {
+    { 200, 14, 80, 0.5f, 1 }, { 50, 16, 60, 0.05f, 1 }, { 50, 16, 60, 0.025f, 1 }, { 100, 16, 60, 0.1f, 1 } };
+void game_smoke_ring(Vec3 pos, Vec3 normal, int kind, float t0, float life)
 {
-    float c = cosf(a), s = sinf(a), d = (1.0f - c) * (k.x * v.x + k.y * v.y + k.z * v.z);
-    return (Vec3){ v.x * c + (k.y * v.z - k.z * v.y) * s + k.x * d,
-                   v.y * c + (k.z * v.x - k.x * v.z) * s + k.y * d,
-                   v.z * c + (k.x * v.y - k.y * v.x) * s + k.z * d };
+    if (kind < 0 || kind > 3) return;
+    float n = k_ring[kind].R * 6.2831853f / (k_ring[kind].size * 0.3f);     /* clouds 0.3 of their size apart round the ring */
+    int step = (int)lrintf(512.0f / n), a = 0;                               /* fistp: rounded */
+    Vec3 X, Y; fx_axes(normal, &X, &Y);
+    if (t0 > life * 0.9f) t0 = life * 0.9f;
+    for (int i = 0; (float)i < n; i++, a += step) {                          /* a full pool skips the cloud but not its place in the ring */
+        FxRec *r = fx_new(life, pos, FX_RING); if (!r) continue;
+        float c = cos512(a), s = sin512(a), q = k_ring[kind].size * 0.25f;
+        r->age = t0; r->dir = (Vec3){ X.x * c + Y.x * s, X.y * c + Y.y * s, X.z * c + Y.z * s };
+        r->size = fx_rnd() * q * 2.0f - q; r->rot = (i * 5000) & 511; r->shape = kind;
+    }
+    if (getenv("WOODY_FXLOG")) printf("smoke ring kind %d (%d clouds) at %.0f %.0f %.0f", kind, (int)ceilf(n), pos.x, pos.y, pos.z), puts("");
 }
-static void chip_new(Vec3 pos, Vec3 vel, float len, float wid, const float *rgb)
+void game_land_dust(Vec3 pos, Vec3 normal) { game_smoke_ring(pos, normal, 3, 0.25f, 1.5f); }   /* 0x464486 */
+static void fx_explode(int kind, Vec3 pos, Vec3 n)
 {
-    for (int i = 0; i < 128; i++) if (g_chips[i].life <= 0) {
-        Chip *c = &g_chips[i];
-        c->pos = pos; c->vel = vel; c->t = 0; c->life = 0.9f + fx_rnd() * 0.6f;
-        c->ay = vunit(vel);                                                  /* it leaves the wall long side first, then tumbles */
-        Vec3 a = fabsf(c->ay.y) < 0.9f ? (Vec3){ 0, 1, 0 } : (Vec3){ 1, 0, 0 };
-        c->ax = vunit((Vec3){ c->ay.y * a.z - c->ay.z * a.y, c->ay.z * a.x - c->ay.x * a.z, c->ay.x * a.y - c->ay.y * a.x });
-        c->rax = vunit((Vec3){ fx_rnd() - 0.5f, fx_rnd() - 0.5f, fx_rnd() - 0.5f });
-        c->spin = 6.0f + fx_rnd() * 12.0f; c->len = len; c->wid = wid;
-        c->rgb[0] = rgb[0]; c->rgb[1] = rgb[1]; c->rgb[2] = rgb[2];
-        return;
-    }
+    if (kind == 1) fx_new(0.2f, pos, FX_BURN_EMIT);                          /* 0x4770bf */
+    if (kind == 0 || kind == 1) fx_new(0.2f, pos, FX_DEBRIS_EMIT);           /* 0x47710b / 0x4772d6 */
+    if (kind == 0) game_smoke_ring(pos, n, 0, 0.25f, 1.5f);                  /* 0x47733b */
+    if (getenv("WOODY_FXLOG")) printf("explosion kind %d at %.0f %.0f %.0f", kind, pos.x, pos.y, pos.z), puts("");
 }
-void game_peck_fx(int kind, Vec3 pos, const Vec3 *n)                         /* 0x479c80 */
+/* 0x479c80(kind, point, normal): kind 1 (every hit of the attack probe 0x4575b0) is one yellow flash of 0.05 s; kind 0 (the
+ * climb, every 0.3 s) is an emitter of 0.2 s that throws splinters, keeps the flash lit and leaves one hole in the wall. */
+void game_peck_fx(int kind, Vec3 pos, const Vec3 *n)
 {
-    static const float wood[3] = { 0.72f, 0.52f, 0.30f };                    /* fresh wood; every chip takes its own shade of it */
-    Vec3 nn = n ? vunit(*n) : (Vec3){ 0, 1, 0 };
-    if (n) {                                                                 /* there is a face to bite into, so the hole goes in it */
-        Peck *m = &g_pecks[g_peck_next]; g_peck_next = (g_peck_next + 1) % PECK_MARKS;   /* the oldest hole gives way */
-        m->pos = pos; m->n = nn; m->t = 0; m->life = PECK_MARK_LIFE; m->seed = (unsigned)rand();
-        m->dir = fabsf(nn.y) < 0.9f ? (Vec3){ 0, 1, 0 } : (Vec3){ 1, 0, 0 };   /* he climbs upwards, so the hole stands up in the wall */
-    }
-    Vec3 t0 = vunit(fabsf(nn.y) < 0.9f ? (Vec3){ nn.z, 0, -nn.x } : (Vec3){ 1, 0, 0 });   /* two axes in the pecked face */
-    Vec3 t1 = { nn.y * t0.z - nn.z * t0.y, nn.z * t0.x - nn.x * t0.z, nn.x * t0.y - nn.y * t0.x };
-    for (int i = 0; i < PECK_CHIPS; i++) {                                   /* the wood he knocked out: away from the face, spread around the hole */
-        float a = fx_rnd() * 6.2831853f, sp = 40.0f + fx_rnd() * 150.0f, out = 130.0f + fx_rnd() * 190.0f, ca = cosf(a), sa = sinf(a);
-        Vec3 v = { nn.x * out + (t0.x * ca + t1.x * sa) * sp, nn.y * out + (t0.y * ca + t1.y * sa) * sp, nn.z * out + (t0.z * ca + t1.z * sa) * sp };
-        v.y += 70.0f + fx_rnd() * 150.0f;                                    /* they hop up first, so the fall is what you see */
-        float k = 0.8f + fx_rnd() * 0.45f, rgb[3] = { wood[0] * k, wood[1] * k, wood[2] * k };
-        Vec3 p = { pos.x + nn.x * 6.0f + (t0.x * ca + t1.x * sa) * 7.0f, pos.y + nn.y * 6.0f + (t0.y * ca + t1.y * sa) * 7.0f, pos.z + nn.z * 6.0f + (t0.z * ca + t1.z * sa) * 7.0f };
-        chip_new(p, v, 16.0f + fx_rnd() * 12.0f, 5.0f + fx_rnd() * 4.0f, rgb);   /* half axes: a chip is 32 to 56 long against Woody's 193, and has to read at the game's 84 degree fov */
-    }
-    dust_new((Vec3){ pos.x + nn.x * 8.0f, pos.y + nn.y * 8.0f, pos.z + nn.z * 8.0f },
-             (Vec3){ nn.x * 40.0f, nn.y * 40.0f + 25.0f, nn.z * 40.0f }, 0.3f, 7.0f, 26.0f, k_sawdust_rgb);
-    if (getenv("WOODY_FXLOG")) printf("peck kind %d at %.0f %.0f %.0f%s", kind, pos.x, pos.y, pos.z, n ? " (hole)" : ""), puts("");
+    if (kind == 1) fx_new(0.05f, pos, FX_PECK_FLASH);
+    else if (kind == 0) { FxRec *r = fx_new(0.2f, pos, FX_PECK_EMIT); if (r) r->n = n ? *n : (Vec3){ 0, 1, 0 }; }
+    if (getenv("WOODY_FXLOG")) printf("peck kind %d at %.0f %.0f %.0f", kind, pos.x, pos.y, pos.z), puts("");
 }
-/* the holes stay where they were pecked and the chips fall out of them; both are ticked from the same pass as the
- * footsteps, so a paused game (dt = 0) keeps drawing them without moving them. */
-static void peck_draw(float dt)
+/* 0x477e40, Kill 2 and 9 (the laser and the lightning, docs/PERSO_DEATH.md 4.2; also the race kill 2 at 0x44c59d): the
+ * position argument is never read. The record keeps the Perso's fade (+0x10 = old +0x6c) to give it back at the end, and
+ * he turns to face the camera (0x459ff0(M, -view row 2)). */
+void game_skeleton(void)
 {
-    static const float hole[3] = { 0.75f, 0.78f, 0.82f };                    /* what it takes OUT of the wall: dst * (1 - rgb*strength), so a shade less blue stays warm */
-    for (int i = 0; i < PECK_MARKS; i++) {
-        Peck *m = &g_pecks[i]; if (m->life <= 0) continue;
-        float left = m->life - m->t; if (left <= 0) { m->life = 0; continue; }
-        float k = left < PECK_MARK_FADE ? left / PECK_MARK_FADE : 1.0f;
-        hud_world_gouge(&m->pos.x, &m->n.x, &m->dir.x, PECK_MARK_SIZE, m->seed, hole, 0.72f * k, 0.13f * k);
-        m->t += dt;
-    }
-    for (int i = 0; i < 128; i++) {
-        Chip *c = &g_chips[i]; if (c->life <= 0) continue;
-        float u = c->t / c->life; if (u >= 1.0f) { c->life = 0; continue; }
-        float U[3] = { c->ax.x * c->wid, c->ax.y * c->wid, c->ax.z * c->wid };
-        float V[3] = { c->ay.x * c->len, c->ay.y * c->len, c->ay.z * c->len };
-        hud_world_chip(&c->pos.x, U, V, c->rgb, u < 0.7f ? 1.0f : (1.0f - u) / 0.3f);
-        c->vel.y -= dt * CHIP_G * 200.0f; if (c->vel.y < -800.0f) c->vel.y = -800.0f;
-        float d = powf(CHIP_DAMP, dt * 60.0f); c->vel.x *= d; c->vel.y *= d; c->vel.z *= d;
-        c->pos.x += c->vel.x * dt; c->pos.y += c->vel.y * dt; c->pos.z += c->vel.z * dt;
-        float a = c->spin * dt; c->ax = vrot(c->ax, c->rax, a); c->ay = vrot(c->ay, c->rax, a);
-        c->t += dt;
-    }
+    Player *p = g_player; if (!p || !p->inst) return;
+    FxRec *r = fx_new(1.5f, p->pos, FX_SKELETON); if (!r) return;
+    r->R = p->inst->fade; r->shape = g_char == 0; r->dir = (Vec3){ p->pos.x, p->pos.y + 96.0f, p->pos.z };
+    if (fabsf(g_fx_fwd.x) + fabsf(g_fx_fwd.z) > 1e-4f) p->yaw = atan2f(-g_fx_fwd.x, -g_fx_fwd.z);
+    if (getenv("WOODY_FXLOG")) printf("skeleton flash at %.0f %.0f %.0f", p->pos.x, p->pos.y, p->pos.z), puts("");
 }
-static void steps_draw(float dt)
+static void fx_particle(FxRec *e, float u, float dt)
 {
-    static const float mark_rgb[3] = { 0.55f, 0.45f, 0.35f };
-    for (int i = 0; i < 48; i++) {
-        Mark *m = &g_marks[i]; if (m->life <= 0) continue;
-        float u = m->t / m->life; if (u >= 1.0f) { m->life = 0; continue; }
-        float k = u < 0.5f ? 1.0f : (1.0f - u) * 2.0f;                       /* the print stays, then fades away over the second half of its life */
-        hud_world_decal(hud_step_image(), &m->pos.x, &m->n.x, &m->dir.x, m->size, m->mirror, mark_rgb, m->strength * k);
-        m->t += dt;
-    }
-    for (int i = 0; i < 64; i++) {
-        Dust *d = &g_dust[i]; if (d->life <= 0) continue;
-        float u = d->t / d->life; if (u >= 1.0f) { d->life = 0; continue; }
-        hud_world_fx(14, &d->pos.x, d->size0 + (d->size1 - d->size0) * u, d->rot, d->rgb, 0.3f * (1.0f - u));
-        d->pos.x += d->vel.x * dt; d->pos.y += d->vel.y * dt; d->pos.z += d->vel.z * dt;
-        float slow = 1.0f - 2.5f * dt; if (slow < 0) slow = 0;               /* the puff runs out of speed as it fades */
-        d->vel.x *= slow; d->vel.y *= slow; d->vel.z *= slow;
-        d->t += dt;
+    static const float one[3] = { 1, 1, 1 }, half[3] = { 0.5f, 0.5f, 0.5f }, hole[3] = { 0.8f, 0.8f, 0 }, grey8[3] = { 0.8f, 0.8f, 0.8f };
+    switch (e->kind) {
+    case FX_STEP_EMIT: {                                                     /* 0x47e460: 50 puffs a second beside the foot */
+        Vec3 A = v3cross(e->n, e->dir);
+        e->acc += dt; int n = (int)(e->acc * 50.0f); e->acc -= n * 0.02f;
+        while (n-- > 0) {
+            FxRec *p = fx_new(0.8f, e->pos, FX_STEP_PUFF); if (!p) continue;
+            p->age = fx_rnd() * 0.2f;
+            float s = e->foot == 0 ? fx_rnd() * 15.0f + 5.0f : -5.0f - fx_rnd() * 15.0f;
+            p->pos = (Vec3){ e->pos.x + A.x * s, e->pos.y + A.y * s, e->pos.z + A.z * s };
+            p->dir = (Vec3){ -e->dir.x, -e->dir.y, -e->dir.z };             /* they drift back where he came from */
+            p->rot = (int)(fx_rnd() * 512.0f);
+        }
+        break; }
+    case FX_STEP_PUFF: {                                                     /* 0x47e370: 100 back and 30 up over 0.8 s, faint and additive */
+        float pos[3] = { e->pos.x + e->dir.x * u * 100.0f, e->pos.y + e->dir.y * u * 100.0f + u * 30.0f, e->pos.z + e->dir.z * u * 100.0f };
+        hud_world_spr(14, pos, u * 15.0f + 20.0f, e->rot, one, (1.0f - u) * 0.1f, 7, NULL, 0);
+        break; }
+    case FX_STEP_PRINT: {                                                    /* 0x47c9a0: an oval pressed in (68, additive) with its rim shadow (69) */
+        Vec3 R = v3cross(e->dir, e->n), F = v3cross(e->n, R);               /* S+0x23c, S+0x248: +v along the walk */
+        float B[6] = { R.x, R.y, R.z, F.x, F.y, F.z }, size = g_char == 0 ? 40.0f : 20.0f;   /* 0x40c350: Perso subtype 1 (Woody) 40, the others 20 */
+        hud_world_spr(68, &e->pos.x, size, 0, half, (1.0f - u) * 0.1f, 0x22, B, 0);
+        hud_world_spr(69, &e->pos.x, size, 0, half, (1.0f - u) * 0.3f, 0x6a, B, 1);
+        break; }
+    case FX_RING: {                                                          /* 0x475fb0: out along its spoke on a quarter sine, fading as it goes */
+        float S = sin512((int)(u * 128.0f));
+        float R = k_ring[e->shape].R * S, pos[3] = { e->pos.x + e->dir.x * R, e->pos.y + e->dir.y * R, e->pos.z + e->dir.z * R };
+        hud_world_spr(k_ring[e->shape].img, pos, (u + 1.0f) * k_ring[e->shape].size * 0.5f + e->size, e->rot, one,
+                      (1.0f - S) * k_ring[e->shape].alpha, k_ring[e->shape].blend ? 0xf : 7, NULL, 0);
+        break; }
+    case FX_PECK_EMIT: {                                                     /* 0x4798f0: 33 splinters, 50 flashes and 8 holes a second */
+        e->acc += dt; e->acc2 += dt; e->acc3 += dt;
+        int n = (int)(e->acc * 33.0f); e->acc -= n * 0.030303f;
+        while (n-- > 0) {
+            FxRec *c = fx_new((fx_rnd() + 1.0f) * 0.3f, e->pos, FX_PECK_CHIP); if (!c) continue;
+            int a = (int)(fx_rnd() * 511.0f);
+            c->pos = (Vec3){ e->pos.x + cos512(a) * 10.0f, e->pos.y, e->pos.z + sin512(a) * 10.0f };
+            c->dir = (Vec3){ cos512(a), 0, sin512(a) };                      /* level and outward, whatever the wall */
+            c->rot = (int)(fx_rnd() * 511.0f);
+        }
+        n = (int)(e->acc2 * 50.0f); e->acc2 -= n * 0.02f;
+        while (n-- > 0) fx_new(0.05f, e->pos, FX_PECK_FLASH);
+        n = (int)(e->acc3 * 8.0f); e->acc3 -= n * 0.125f;                    /* 0.2 s at 8 a second: one hole per peck */
+        while (n-- > 0) {
+            float hold = fx_rnd() * 0.3f + 5.0f, v = fx_rnd() * 20.0f - 10.0f; Vec3 U = fx_plane_u(e->n);
+            FxRec *h = fx_new(hold + 4.0f, (Vec3){ e->pos.x + U.x * v, e->pos.y + U.y * v, e->pos.z + U.z * v }, FX_PECK_HOLE); if (!h) continue;
+            h->D = hold; h->n = e->n; h->rot = (int)(fx_rnd() * 511.0f);
+        }
+        break; }
+    case FX_PECK_CHIP: {                                                     /* 0x479670: a splinter on an arc 80 out and 100 high */
+        float pos[3] = { e->pos.x + u * e->dir.x * 80.0f, e->pos.y + sin512((int)(u * 255.0f)) * 100.0f, e->pos.z + u * e->dir.z * 80.0f };
+        /* the original never sets the rotation here and draws with whatever S+0x224 the previous sprite left; the port
+         * takes the chip's own rolled angle (+0x20) */
+        hud_world_spr(25, pos, fx_rnd() * 5.0f + 10.0f, e->rot, one, 1.0f, 0xf, NULL, 0);
+        break; }
+    case FX_PECK_FLASH:                                                      /* 0x479760 */
+        hud_world_spr(18, &e->pos.x, 80.0f, 0, one, 0.8f, 3, NULL, 0);
+        break;
+    case FX_PECK_HOLE: {                                                     /* 0x479800: 5 to 5.3 s in the wall, then 4 s to fade */
+        float a = e->age < e->D ? 1.0f : 1.0f - (e->age - e->D) * 0.25f;
+        hud_world_spr(26, &e->pos.x, 15.0f, e->rot, hole, a, 0xe, &e->n.x, 0);
+        break; }
+    case FX_DEBRIS_EMIT: {                                                   /* 0x476cd0: 400 clouds a second, 0.7 s each */
+        e->acc += dt; int n = (int)(e->acc * 400.0f); e->acc -= n * 0.0025f;
+        while (n-- > 0) {
+            FxRec *d = fx_new(0.7f, e->pos, FX_DEBRIS); if (!d) continue;
+            d->size = fx_rnd() * 50.0f + 80.0f;
+            d->foot = (int)(fx_rnd() * 2.0f) != 0 ? 16 : 17;                 /* the image */
+            d->rot = (int)(fx_rnd() * 511.0f);
+            int a = (int)(fx_rnd() * 255.0f), b = (int)(fx_rnd() * 511.0f); float r = fx_rnd() * 150.0f + 20.0f;
+            if (u < 0.8f) { d->D = 600.0f; d->dir = (Vec3){ cos512(a), sin512(a), cos512(a) * sin512(b) }; }   /* the upper half, not normalised */
+            else { d->D = 40.0f; d->dir = (Vec3){ 0, 1, 0 }; }             /* the last fifth only rises */
+            d->pos = (Vec3){ e->pos.x + cos512(a) * r, e->pos.y + sin512(a) * r, e->pos.z + cos512(a) * sin512(b) * r };
+        }
+        break; }
+    case FX_DEBRIS: {                                                        /* 0x4764f0: D * u * cos(u pi/4) along its direction */
+        float s = cos512((int)(u * 64.0f + 128.0f) + 128) * -e->D * u;
+        float pos[3] = { e->pos.x + e->dir.x * s, e->pos.y + e->dir.y * s, e->pos.z + e->dir.z * s };
+        hud_world_spr(e->foot, pos, e->size, e->rot, one, (1.0f - u) * 0.2f, 0xf, NULL, 0);
+        break; }
+    case FX_BURN_EMIT: {                                                     /* 0x476b50: 60 burning pieces a second */
+        e->acc += dt; int n = (int)(e->acc * 60.0f); e->acc -= n * 0.0166667f;
+        while (n-- > 0) {
+            FxRec *b = fx_new(2.0f, e->pos, FX_BURN); if (!b) continue;
+            Vec3 d = { fx_rnd() * 2.0f - 1.0f, 0, 0 }; d.y = fx_rnd() * 2.0f - 0.5f; d.z = fx_rnd() * 2.0f - 1.0f;
+            float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l > 0) { d.x /= l; d.y /= l; d.z /= l; }
+            b->dir = d; b->pos = (Vec3){ e->pos.x + d.x * 300.0f, e->pos.y + d.y * 300.0f, e->pos.z + d.z * 300.0f };
+        }
+        break; }
+    case FX_BURN: {                                                          /* 0x4767f0: 1200 u/s, bent 0.2 down every 0.1 s, a smoke puff and a spark every 0.025 s */
+        e->acc += dt;                                                        /* +0x20: time not yet laid out; e->h = +0x28, the time along this 0.1 s leg */
+        if (e->acc > 0.025f) {
+            do {
+                e->h += 0.025f;
+                Vec3 p = { e->pos.x + e->dir.x * e->h * 1200.0f, e->pos.y + e->dir.y * e->h * 1200.0f, e->pos.z + e->dir.z * e->h * 1200.0f };
+                FxRec *k = fx_new(0.2f, p, FX_TRAIL_SMOKE);
+                if (k) { k->size = fx_rnd() * 20.0f + 40.0f; k->R = 0.3f; k->rot = (int)(fx_rnd() * 512.0f); }
+                k = fx_new(0.15f, p, FX_TRAIL_SPARK);
+                if (k) { k->size = fx_rnd() * 20.0f + 60.0f; k->R = 1.0f; k->rot = (int)(fx_rnd() * 512.0f); }
+                if (e->h >= 0.1f) {                                          /* the next leg starts at the end of this one */
+                    e->pos.x += e->dir.x * 120.0f; e->pos.y += e->dir.y * 120.0f; e->pos.z += e->dir.z * 120.0f;
+                    e->dir.y -= 0.2f; float l = sqrtf(e->dir.x * e->dir.x + e->dir.y * e->dir.y + e->dir.z * e->dir.z);
+                    if (l > 0) { e->dir.x /= l; e->dir.y /= l; e->dir.z /= l; }
+                    e->h = 0;
+                }
+                e->acc -= 0.025f;
+            } while (e->acc > 0.025f);
+        }
+        float t = (e->h + e->acc) * 1200.0f, pos[3] = { e->pos.x + e->dir.x * t, e->pos.y + e->dir.y * t, e->pos.z + e->dir.z * t };
+        hud_world_spr(12, pos, 40.0f, 0, grey8, 1.0f, 3, NULL, 0);           /* the burning head */
+        break; }
+    case FX_TRAIL_SMOKE:                                                     /* 0x476f00: white smoke (image 15), alpha blended */
+        hud_world_spr(15, &e->pos.x, e->size, e->rot, one, (1.0f - u) * e->R, 0xf, NULL, 0);
+        break;
+    case FX_TRAIL_SPARK:                                                     /* 0x476fb0: the fire in it (image 13), additive */
+        hud_world_spr(13, &e->pos.x, e->size, e->rot, one, (1.0f - u) * e->R, 7, NULL, 0);
+        break;
+    case FX_SKELETON: {                                                      /* 0x477980: the model and a sprite skeleton take turns, in eighths of 1.5 s */
+        static const float off[18][3] = {                                    /* 0x4b7d10: head, arm, arm, ribcage, leg, leg; rows 0 (pose B) and 2 (pose A) */
+            { -5, 180, 0 }, { -60, 100, 0 }, { 60, 150, 0 }, { 0, 96, 0 }, { -40, 41, 0 }, { 40, 46, 0 },
+            { -5, 180, 0 }, { -60, 150, 0 }, { 60, 150, 0 }, { 0, 96, 0 }, { -40, 41, 0 }, { 40, 46, 0 },
+            { 10, 180, 0 }, { -60, 150, 0 }, { 60, 100, 0 }, { 0, 96, 0 }, { -40, 41, 0 }, { 40, 46, 0 } };
+        static const int mir[18] = { 0, 1, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 2, 0, 3, 0, 0, 2 };   /* 0x4b7cb0: UV sets per bone, rows 0 and 12 */
+        static const int img[2][12] = { { 0x2a, 0x22, 0x22, 0x23, 0x24, 0x24, 0x2b, 0x26, 0x26, 0x27, 0x28, 0x28 },   /* 0x4b7e60: Knothead, Splinter */
+                                        { 0x25, 0x22, 0x22, 0x23, 0x24, 0x24, 0x29, 0x26, 0x26, 0x27, 0x28, 0x28 } }; /* 0x4b7e30: Woody (subtype 1) */
+        static const float white255[3] = { 255, 255, 255 };
+        Player *pl = g_player; if (!pl || !pl->inst) break;
+        int ph = (u < 0.125f || (u > 0.25f && u < 0.375f)) ? 1 : ((u > 0.5f && u < 0.625f) || (u > 0.75f && u < 0.875f)) ? 2 : 0;
+        pl->inst->fade = pl->inst->fade_target = ph ? 1.0f : 0.0f;          /* 0x44e7f0(P, 1 or 0, 0) with +0x100 = 100/s: at once */
+        if (ph) {
+            Vec3 P = pl->pos, d = { g_fx_eye.x - P.x, g_fx_eye.y - P.y, g_fx_eye.z - P.z }, X, Y;   /* towards the camera, 3D */
+            float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l > 0) { d.x /= l; d.y /= l; d.z /= l; }
+            fx_axes(d, &X, &Y);
+            float jit = fx_rnd() * 20.0f - 10.0f;                            /* one per frame for all six glows */
+            int row = ph == 1 ? 12 : 0, head = ph == 1 ? 40 : 472;           /* A: head tilted 40/512 one way, B: the other */
+            for (int i = 0; i < 6; i++) {
+                const float *o = off[row + i];
+                float pos[3] = { P.x + X.x * o[0] + Y.x * o[1] + d.x * o[2], P.y + X.y * o[0] + Y.y * o[1] + d.y * o[2], P.z + X.z * o[0] + Y.z * o[1] + d.z * o[2] };
+                float size = i == 0 ? 120.0f : i == 3 ? 75.0f : 55.0f; int mode = i == 3 ? 0x1a : 0x12, rot = i == 0 ? head : 0;
+                hud_world_spr_mode(mode, img[e->shape][i], pos, size, rot, NULL, 1.0f, 0x4d, NULL, mir[row + i]);          /* the bone, alpha blended */
+                hud_world_spr_mode(mode, img[e->shape][6 + i], pos, size + jit, rot, NULL, 1.0f, 0x45, NULL, mir[row + i]); /* its flickering glow, additive */
+                e->dir = (Vec3){ pos[0], pos[1], pos[2] };                   /* S+0x208: where the light goes */
+            }
+        }
+        rnd_light_add(0, e->dir, white255, fx_rnd() * 100.0f + 200.0f);      /* 0x498790: registered every frame, never drawn by the original (LIGHTING.md 7) */
+        break; }
     }
 }
 
@@ -2084,7 +2303,7 @@ static void rockets_update(float dt, Player *pl, int have_player)               
             if (r->type == 21) { if (r->t >= 1.0f) { r->t = 0; r->state = 7; } break; }
             rocket_fly(r, dt); in->tint_red = !((int)(r->t * 20.0f) & 1);   /* 0x4537d0: 10 Hz red / normal */
             if (r->t >= 1.0f) { audio_fx_stop(11, in, 1); audio_fx(6, in, &in->position.x); r->t = 0; r->state = 7;
-                blast_add(in->position, 1400.0f); blast_add(in->position, 400.0f); } break;                    /* explosion kind 1: two flash records */
+                game_explosion(in->position); } break;                                                          /* 0x453538: explosion kind 1 (debris, dust, two flash records) */
         case 7: if (r->type == 21) { r->q0 = in->quat; r->q1 = r->start_q; r->t = 0; r->state = 8; break; }   /* 0x453613: turn back to the start rotation */
                                                                                    /* blast 600 on actor list 1 (0x453560, ROCKET.md 4.3): first the player (0x44d040) */
             if (have_player && !pl->dead_kind) { Vec3 d = { pl->inst->position.x - in->position.x, pl->inst->position.y - in->position.y, pl->inst->position.z - in->position.z };
@@ -2229,21 +2448,27 @@ static void env_draw(void)
     }
 }
 
+/* the per-frame instance list the sound Update gets (world+0x64, 0x401ee7): in the world (0x407850 takes an instance out) and
+ * in a drawn sector (0x42a840). Not ported: 0x42a8b4 also drops a stationary instance (sphere cached, +0x88 == 1) whose
+ * bounding sphere is outside the view frustum or whose centre is more than 11000 from the camera (0x42a907, 0x4aa2f4) */
+static int snd_owner_active(const void *owner) { const Instance *in = owner; return in->visible && game_enemy_thinks(in); }
 static uint32_t g_text_var; static int g_hud_ext;                 /* 1080: close flag variable; 1172: extended HUD this frame (app+0x70) */
 static void snd_msg(const EkoMsg *m, Instance *in)
 {
 #define AI(i) ((i) < (int)m->nargs ? (float)(int32_t)m->args[i] : 0.0f)
     uint32_t s2 = m->nargs ? m->args[0] : 0, s3 = m->nargs > 1 ? m->args[1] : 0;   /* sample ref of the 2D / 3D forms */
     const float *pos = in ? &in->position.x : NULL;
+    int q = (m->id >= 1603 && m->id <= 1605) || (m->id >= 1611 && m->id <= 1615) || m->id == 1617 || (m->id >= 1624 && m->id <= 1626) || (m->id >= 1636 && m->id <= 1638);   /* queued variants: vt[0x2c]/[0x30], 3D queue = 1 (0x468466, 0x468587) */
     switch (m->id) {
-    case 1600: case 1603: audio_play(s2, NULL, 0, AI(1), 1.0f, NULL, 0, 0); break;
-    case 1601: case 1604: audio_play(s2, NULL, 0, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
-    case 1602: case 1605: audio_play(s2, NULL, 0, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
-    case 1606: case 1611: audio_play(s2, NULL, 1, AI(1), 1.0f, NULL, 0, 0); break;
-    case 1607: case 1612: audio_play(s2, NULL, 1, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
-    case 1609: case 1614: audio_play(s2, NULL, 1, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
-    case 1608: case 1610: case 1613: case 1615: audio_play(s2, NULL, 1, AI(1), AI(2) * 0.01f, NULL, 0, AI(3) * 0.01f); break;
-    case 1616: case 1617: audio_play(s3, in, 0, AI(2), 1.0f, NULL, 0, 0); break;
+    case 1600: case 1603: audio_play_q(s2, NULL, q, 0, AI(1), 1.0f, NULL, 0, 0); break;
+    case 1601: case 1604: audio_play_q(s2, NULL, q, 0, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
+    case 1602: case 1605: audio_play_q(s2, NULL, q, 0, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
+    case 1606: case 1611: audio_play_q(s2, NULL, q, 1, AI(1), 1.0f, NULL, 0, 0); break;
+    case 1607: case 1612: audio_play_q(s2, NULL, q, 1, AI(1), AI(2) * 0.01f, NULL, 0, 0); break;
+    case 1609: case 1614: audio_play_q(s2, NULL, q, 1, AI(1), AI(2) * -0.01f, NULL, 0, 0); break;
+    case 1608: case 1610: case 1613: case 1615: audio_play_q(s2, NULL, q, 1, AI(1), AI(2) * 0.01f, NULL, 0, AI(3) * 0.01f); break;
+    case 1616: case 1617: audio_play_q(s3, in, q, 0, AI(2), 1.0f, NULL, 0, 0); break;
+    case 1618: case 1619: audio_play_q(s3, in, 1, 0, AI(2), -AI(3), NULL, 0, 0); break;   /* 0x46820a: -arg3 without the 0.01, so arg3 = seconds */
     case 1652: audio_stop2d(s2, AI(1) * 0.01f, (int)AI(2)); break;
     case 1655: audio_music((int)AI(0)); break;
     case 1646: case 1656: audio_music_stop(AI(0) * 0.01f); break;
@@ -2254,17 +2479,17 @@ static void snd_msg(const EkoMsg *m, Instance *in)
     switch (m->id) {                                                                /* 3D: key (instance, sample); default dmin 2 m */
     case 1620: audio_play(s3, in, 1, AI(2), 1.0f, pos, 2.0f, 0); break;
     case 1621: audio_play(s3, in, 1, AI(2), AI(3) * 0.01f, pos, 2.0f, 0); break;
-    case 1622: case 1624: audio_play(s3, in, 0, AI(2), 1.0f, pos, 2.0f, 0); break;
-    case 1623: case 1625: audio_play(s3, in, 0, AI(2), AI(3) * 0.01f, pos, 2.0f, 0); break;
-    case 1626: case 1627: audio_play(s3, in, 0, AI(2), AI(3) * -0.01f, pos, 2.0f, 0); break;
+    case 1622: case 1624: audio_play_q(s3, in, q, 0, AI(2), 1.0f, pos, 2.0f, 0); break;
+    case 1623: case 1625: audio_play_q(s3, in, q, 0, AI(2), AI(3) * 0.01f, pos, 2.0f, 0); break;
+    case 1626: case 1627: audio_play_q(s3, in, q, 0, AI(2), AI(3) * -0.01f, pos, 2.0f, 0); break;
     case 1628: audio_stop3d(s3, in, AI(2) * 0.01f); break;
     case 1629: audio_play(s3, in, 1, AI(2), AI(3) * -0.01f, pos, 2.0f, AI(4) * 0.01f); break;
     case 1630: audio_play(s3, in, 1, AI(2), 1.0f, pos, AI(3) * 0.01f, 0); break;
     case 1631: audio_play(s3, in, 1, AI(2), AI(3) * 0.01f, pos, AI(4) * 0.01f, 0); break;
     case 1632: audio_play(s3, in, 1, AI(2), AI(3) * -0.01f, pos, AI(5) * 0.01f, AI(4) * 0.01f); break;
-    case 1633: case 1636: audio_play(s3, in, 0, AI(2), 1.0f, pos, AI(3) * 0.01f, 0); break;
-    case 1634: case 1637: audio_play(s3, in, 0, AI(2), AI(3) * 0.01f, pos, AI(4) * 0.01f, 0); break;
-    case 1635: case 1638: audio_play(s3, in, 0, AI(2), AI(3) * -0.01f, pos, AI(4) * 0.01f, 0); break;
+    case 1633: case 1636: audio_play_q(s3, in, q, 0, AI(2), 1.0f, pos, AI(3) * 0.01f, 0); break;
+    case 1634: case 1637: audio_play_q(s3, in, q, 0, AI(2), AI(3) * 0.01f, pos, AI(4) * 0.01f, 0); break;
+    case 1635: case 1638: audio_play_q(s3, in, q, 0, AI(2), AI(3) * -0.01f, pos, AI(4) * 0.01f, 0); break;
     default: break;
     }
 #undef AI
@@ -2413,6 +2638,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
         break;
     case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;
+    case 30: if (g_player && in == g_player->inst && m->nargs > 1) player_lock(g_player, (float)(int32_t)m->args[1] * 0.01f); break;   /* Perso LockMove 0x44cde9 [_, cs] (docs/PERSO_LOOK.md 6) */
     case 26:                                                                                                /* Perso teleport 0x44ce11 [_, inst, mode]: 1 = position, 2 = position + direction of the vector marker */
         if (g_player && m->nargs > 2) {
             Instance *to = slot_instance(m->args[1]); int mode = (int)m->args[2];
@@ -2531,7 +2757,7 @@ static void level_free(Level *L)
     g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); memset(g_sparks, 0, sizeof g_sparks); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     car_forget();
-    memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); g_nenv = 0; g_nflies = 0; water_reset(NULL); storm_reset(); g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); memset(g_marks, 0, sizeof g_marks); memset(g_dust, 0, sizeof g_dust); memset(g_pecks, 0, sizeof g_pecks); g_peck_next = 0; memset(g_chips, 0, sizeof g_chips); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); g_nenv = 0; g_nflies = 0; water_reset(NULL); storm_reset(); g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -2629,6 +2855,7 @@ int main(int argc, char **argv)
     }
     if (!getenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
     opt_read(); opt_apply();                                                           /* 0x4691e2: the volumes from the cfg at sound start */
+    in_read_cfg(dir);                                                                  /* 0x405e0f: Woody.cfg (key bindings, controller mode) */
     static Level L; g_level = level_index(lvl); if (level_load(&L, dir, lvl)) return 1;
 
     /* camera: start behind Woody (model 0, instance 0) if present */
@@ -2644,16 +2871,16 @@ int main(int argc, char **argv)
     double t0 = L.t0, last = t0; int pg_prev[2] = {0, 0}, end_prev = 0, l_prev = 0; static int key_prev[256]; int paused = 0, dbg_paused = 0, tab_prev = 0, br_prev[2] = {0, 0}, f_prev[4] = {0, 0, 0, 0}, p_prev = 0, f5_prev = 0; uint32_t frames = 0; double fps_t = t0;
     while (!win.quit) {
         win_poll(&win);
-        {   /* WOODY_KEYS="T:KEY T:KEY:D ...": each entry holds KEY (RET ESC UP DOWN LEFT RIGHT SPACE CTRL BACK or a VK
-             * number) for 0.08 s (or D seconds), once, as soon as the level that is running has been up for T seconds - the
+        {   /* WOODY_KEYS="T:KEY T:KEY:D ...": each entry holds KEY (RET ESC UP DOWN LEFT RIGHT SPACE CTRL RCTRL SHIFT BACK NUM0, a
+             * letter, or a VK number) for 0.08 s (or D seconds), once, as soon as the level that is running has been up for T seconds - the
              * clock of --shot, so a sequence that spans a level change stays in step (testing: drives the menu pages and walks) */
             static const char *keys; static double held_until[256]; static unsigned char fired[64]; if (!keys) keys = getenv("WOODY_KEYS") ? getenv("WOODY_KEYS") : "";
-            static const struct { const char *n; int vk; } kn[] = { {"RET",VK_RETURN}, {"ESC",VK_ESCAPE}, {"UP",VK_UP}, {"DOWN",VK_DOWN}, {"LEFT",VK_LEFT}, {"RIGHT",VK_RIGHT}, {"SPACE",VK_SPACE}, {"CTRL",VK_CONTROL}, {"BACK",VK_BACK} };
+            static const struct { const char *n; int vk; } kn[] = { {"RET",VK_RETURN}, {"ESC",VK_ESCAPE}, {"UP",VK_UP}, {"DOWN",VK_DOWN}, {"LEFT",VK_LEFT}, {"RIGHT",VK_RIGHT}, {"SPACE",VK_SPACE}, {"CTRL",VK_CONTROL}, {"BACK",VK_BACK}, {"RCTRL",VK_RCONTROL}, {"SHIFT",VK_SHIFT}, {"NUM0",VK_NUMPAD0} };
             double wt = win_time(), tn = wt - t0; int e = 0;
             for (const char *s = keys; *s && e < 64; e++) {
                 char name[16] = ""; double t = 0; int used = 0;
                 if (sscanf(s, " %lf:%15[A-Z0-9]%n", &t, name, &used) < 2 || !used) break;
-                s += used; int vk = atoi(name); double hold = 0.08;
+                s += used; int vk = name[0] >= 'A' && name[0] <= 'Z' && !name[1] ? name[0] : atoi(name); double hold = 0.08;
                 if (*s == ':' && sscanf(s, ":%lf%n", &hold, &used) == 1) s += used;
                 for (unsigned i = 0; i < sizeof kn / sizeof kn[0]; i++) if (!strcmp(name, kn[i].n)) vk = kn[i].vk;
                 if (!fired[e] && vk > 0 && vk < 256 && tn >= t) { fired[e] = 1; win.keys[vk] = 1; held_until[vk] = wt + hold; }
@@ -2689,17 +2916,18 @@ int main(int argc, char **argv)
         }
         if (win.keys['P'] && !p_prev) dbg_paused ^= 1; p_prev = win.keys['P'];
         paused = dbg_paused || menu_pauses_world();                                   /* the pause menu and its pages stop the world (table 0x405af8) */
-        /* menu keys (docs/MENU_NEWGAME.md 1.3): confirm = Enter RELEASED or the jump key pressed; back = Esc released
-         * (or Backspace); Esc released also leaves page 0 and skips the intro, like the attack key released */
+        in_frame(&win, fly, now, now - t0);                                          /* the 14 actions of this frame (0x402940, docs/INPUT.md) */
+        /* menu keys (docs/MENU_NEWGAME.md 1.3): confirm = Enter RELEASED or the jump key (action 4 + 0xc) pressed; back = Esc released
+         * or the duck key (action 5) pressed (or Backspace); Esc (action 9) released also leaves page 0 and skips the intro, like the attack key released */
         MenuKeys mk; memset(&mk, 0, sizeof mk);
         {
             #define PRS(k) (win.keys[k] && !key_prev[k])
             #define REL(k) (!win.keys[k] && key_prev[k])
             int synth = enter_at >= 0 && ((now - t0 >= enter_at && now - t0 < enter_at + 0.1) || (getenv("WOODY_ENTER2") && now - t0 >= enter_at + 2 && now - t0 < enter_at + 2.1));
             mk.syn = synth && !l_prev; l_prev = synth;                              /* --enter T: New game at once (testing) */
-            mk.ok = REL(VK_RETURN) || PRS(VK_SPACE); mk.back = REL(VK_ESCAPE) || PRS(VK_BACK);
-            mk.up = PRS(VK_UP) || PRS('W'); mk.dn = PRS(VK_DOWN) || PRS('S'); mk.left = PRS(VK_LEFT) || PRS('A'); mk.right = PRS(VK_RIGHT) || PRS('D');
-            mk.esc_rel = REL(VK_ESCAPE); mk.esc_prs = PRS(VK_ESCAPE); mk.atk_rel = REL(VK_CONTROL) || REL(VK_SHIFT);
+            mk.ok = REL(VK_RETURN) || in_pressed(12); mk.back = REL(VK_ESCAPE) || in_pressed(5) || PRS(VK_BACK);   /* 0x4033fb / 0x4464f0: Enter and Esc are fixed (DIK codes) */
+            mk.up = in_pressed(2); mk.dn = in_pressed(3); mk.left = in_pressed(0); mk.right = in_pressed(1);
+            mk.esc_rel = in_released(9); mk.esc_prs = in_pressed(9); mk.atk_rel = in_released(6);
             #undef PRS
             #undef REL
             for (int k = 0; k < 256; k++) key_prev[k] = win.keys[k];
@@ -2725,7 +2953,7 @@ int main(int argc, char **argv)
         /* player (provisional controller) + follow camera */
         if (L.have_player && !paused) {
             PlayerInput pin = { 0 };
-            pin.forward = win.keys[VK_UP] || (!fly && win.keys['W']) || (now - t0 >= walk_at && now - t0 < walk_at + walk_for);
+            pin.forward = in_held(2) || (now - t0 >= walk_at && now - t0 < walk_at + walk_for);
             if (getenv("WOODY_INSTLOG") && (getenv("WOODY_INSTLOG2") || (int)(now - t0) != (int)(now - t0 - dt))) { Instance *qi = slot_instance((uint32_t)atoi(getenv("WOODY_INSTLOG"))); if (qi) printf("instlog %u: visible %d fade %.2f type %d scripted %d anim %d pos %.0f %.0f %.0f model %d", qi->index, qi->visible, qi->fade, qi->type, qi->scripted, qi->anim, qi->position.x, qi->position.y, qi->position.z, (int)(qi->model - g_ins.models)), printf(" nw0 %.0f %.0f %.0f cull_r %.0f anim_time %.2f speed %.2f alpha? setflags %x", qi->node_world[0].m[12], qi->node_world[0].m[13], qi->node_world[0].m[14], qi->model->cull_r, qi->anim_time, qi->anim_speed, qi->setflags), puts(""); }
             /* WOODY_UVLOG=<slot> or =stand (the instance the player is standing on, Perso+0x298): one UV report per
              * instance, to tell a wrong texture from a wrong projection on a surface that looks untextured */
@@ -2740,11 +2968,12 @@ int main(int argc, char **argv)
                 printf("pos t %.2f: %.0f %.0f %.0f yaw %.0f ground %d | cam %.0f %.0f %.0f yaw %.0f dev %.0f mode %d", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.yaw * 57.3f, L.player.on_ground,
                        cam.pos.x, cam.pos.y, cam.pos.z, cam.yaw * 57.3f, atan2f(fx * az - fz * ax, fx * ax + fz * az) * 57.3f, g_cam.mode), puts("");
             }
-            pin.back = win.keys[VK_DOWN] || (!fly && win.keys['S']);
-            pin.left = win.keys[VK_LEFT] || (!fly && win.keys['A']); pin.right = win.keys[VK_RIGHT] || (!fly && win.keys['D']);
-            pin.jump = (!fly && win.keys[VK_SPACE]) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = win.keys[VK_LCONTROL] || (!fly && win.keys[VK_SHIFT]) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
-            pin.special = win.keys[VK_RCONTROL] || (!fly && win.keys['E']) || (special_at >= 0 && now - t0 >= special_at - 0.1 && now - t0 < special_at);   /* action 11 (RCtrl in the original); it fires on the release */
-            pin.duck = (!fly && win.keys['X']) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);   /* action 5 (Space in the original, which is jump here) */
+            pin.back = in_held(3); pin.left = in_held(0); pin.right = in_held(1);
+            pin.ax = in_held(0) ? g_in.val[0] : g_in.val[1]; pin.az = -(in_held(2) ? g_in.val[2] : g_in.val[3]);   /* 0x45a4b0: x = action 0 if held, else 1; y = 2, else 3 */
+            pin.jump = in_held(4) || (jump_at >= 0 && now - t0 >= jump_at && now - t0 < jump_at + jump_len) || (jump2_at >= 0 && now - t0 >= jump2_at && now - t0 < jump2_at + jump2_len); pin.action = in_held(6) || (peck_at >= 0 && now - t0 >= peck_at && now - t0 < peck_at + peck_len);
+            pin.special = in_held(11) || (special_at >= 0 && now - t0 >= special_at - 0.1 && now - t0 < special_at);   /* action 11 (RCtrl in the original); it fires on the release */
+            pin.duck = in_held(L.player.race_char ? 8 : 5) || (duck_at >= 0 && now - t0 >= duck_at && now - t0 < duck_at + duck_len);   /* action 5, while riding action 8 (0x465b10; Space / LShift in the original's Woody.cfg, X in the port) */
+            pin.look = !fly && in_held(7); pin.mouse_dx = win.mouse_dx; pin.mouse_dy = win.mouse_dy;   /* action 7 (Enter / V / joystick button 4 by default, docs/INPUT.md), on release; mouse with the right button */
             {   /* WOODY_PECKS="T1 T2 ...": more attack taps of 0.1 s (testing: dispenser, pick up, throw) */
                 static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = getenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
                 for (int k = 0; k < npk; k++) if (now - t0 >= pk[k] && now - t0 < pk[k] + 0.1) pin.action = 1;
@@ -2767,6 +2996,7 @@ int main(int argc, char **argv)
             cin_update(&L.vm, dt, g_now);
             rockets_update(dt, &L.player, L.have_player && !fly);
             L.player.idle_hold = g_res.on || g_level == 0 || (g_cam.mode == 4 && !fly);   /* Perso state 9 / title / frozen (0x459090): no idle count, no sleeping */
+            L.player.cam_mode = fly ? 0x100 : g_cam.mode;                         /* CamMgr+0x134 as the Perso sees it (0x44b9a6, 0x44ba26); F5 = the debug camera 0x100 */
             if (!cin_running()) player_update(&L.player, &pin, dt, &L.vm, fly ? cam.yaw : L.player.cam_yaw);
             if (!paused && !cin_running()) bombs_update(dt);                        /* 0x44d820, frame step 18: after the Perso */
             if (!fly) {                                                             /* 0x4459c0 (frame step 33), also during a cinematic: iris, death, respawn */
@@ -2800,7 +3030,12 @@ int main(int argc, char **argv)
                 Vec3 n = { -g_cam.plane_d.z, 0, g_cam.plane_d.x }; float off = (L.player.pos.x - g_cam.plane_a.x) * n.x + (L.player.pos.z - g_cam.plane_a.z) * n.z;
                 L.player.pos.x -= n.x * off; L.player.pos.z -= n.z * off;
             }
-            if (!fly) cam_update(&L.player, &cam, dt, g_cam.mode == 0x20 ? (pin.forward ? 2 : (pin.back || pin.duck) ? 3 : 0) : win.keys['C']); else cam.letterbox = 0;
+            if (L.player.look != g_cam.look_prev) {                               /* 0x4590fb: the camera controller follows a change of Perso state 3 */
+                if (L.player.look) { player_look_start(&L.player); g_cam.cut = 1; cam_set_mode(0x200); }   /* 0x459050 */
+                else if (!L.player.script_act) { g_cam.cut = 1; cam_set_mode(1); }     /* 0x45910e (not into state 5): 0x41f9f0(2), +0x368 = 0, SetMode(0, 0) */
+                g_cam.look_prev = L.player.look;
+            }
+            if (!fly) cam_update(&L.player, &cam, dt, g_cam.mode == 0x20 ? (pin.forward ? 2 : (pin.back || pin.duck) ? 3 : 0) : in_held(10)); else cam.letterbox = 0;
             if (g_level == 0 && !fly && g_cin.state < 2) {                           /* title orbit: camera mode 0x80 on the Perso's animation 73 (docs/TITLE.md 2): no letterbox, vfov 83.97, no smoothing */
                 Vec3 eye, tgt; float ph = fmodf(g_title_t / 10.0f, 1.0f);
                 if (ins_camera_eval(L.player.inst, 73, ph, &eye, &tgt)) {
@@ -2831,11 +3066,12 @@ int main(int argc, char **argv)
         if (!paused) launchers_update((float)g_now, dt, &L.player, &L.gel, L.have_player && !fly && !L.player.dead_kind && !cin_running());
         if (!paused && !cin_running()) bombs_fly(dt, &L.gel);                       /* the carrying projectiles, 0x4490f0 after the VM */
         double pt2 = win_time();
-        if (g_level != 0 && M.page < 0 && mk.esc_prs && L.have_player && !fly && !g_res.on && !cin_running() && g_next_level < 0) { menu_enter(0x18); paused = 1; }
+        if (g_level != 0 && M.page < 0 && mk.esc_prs && L.have_player && !fly && !g_res.on && !cin_running() && g_next_level < 0 && (L.player.game_state == 2 || g_level == 25)) { pause_open(); paused = 1; }   /* 0x403331: action 9, in state 1 only while 0x445980 (Game state 2) */
         if (L.have_player && !fly) { menu_update(&L.vm, &mk, dt); carousel_frame(&cam, dt); }   /* the carousel sits in front of the final title camera */
         if (M.quitting && (M.quit_t -= dt) <= 0) win.quit = 1;                       /* 0x404cb0 -> app+4 */
         { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
         rnd_frame(&L.rnd, &win, &cam, g_now);                  /* the same game clock as the instances: a texture override (message 16) starts on it */
+        audio_update(snd_owner_active);                                             /* 0x401ee7: after the draw, with this frame's instance list */
         {   /* 2D layer (docs/HUD_TEXT.md 5.4): HUD, then the text box, then the fades. No HUD in menus, BlackBox, cinematics and the fall death camera (0x401e19) */
             {   /* pickups: no mesh, a pulsing sprite (50..110, period 1 s) 50 above the instance; type 34 sits on its animated volume node */
                 Vec3 cr = cam_right(&cam), cf = cam_forward(&cam), cu = { cf.y * cr.z - cf.z * cr.y, cf.z * cr.x - cf.x * cr.z, cf.x * cr.y - cf.y * cr.x };
@@ -2880,7 +3116,7 @@ int main(int argc, char **argv)
                         laser_fx_draw(&z->fx[mk], a, b, kind, g, &cam.pos.x, paused ? 0 : dt);   /* pulse, lightning arc, impact */
                     }
                 }
-                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); bubbles_draw(&cam, paused ? 0 : dt); rockets_draw(paused ? 0 : dt); bombs_draw(&cam.pos.x, paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); steps_draw(paused ? 0 : dt); peck_draw(paused ? 0 : dt); fx_update(paused ? 0 : dt, &cam.pos.x);
+                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); bubbles_draw(&cam, paused ? 0 : dt); rockets_draw(paused ? 0 : dt); bombs_draw(&cam.pos.x, paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); g_fx_fwd = cam_forward(&cam); fx_update(paused ? 0 : dt, &cam.pos.x);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */
@@ -2910,7 +3146,7 @@ int main(int argc, char **argv)
             g_npick = 0;
             hud_begin(win.width, win.height);
             storm_overlay_draw(paused, dt);                              /* 0x46e0d0: after the effects (0x46d040), before the HUD */
-            if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && !g_res.on && (M.page < 0 || M.page == 0x18) && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
+            if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && !g_res.on && (M.page < 0 || M.page == 0x18 || M.page == 0x19) && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
                 const Player *pl = &L.player; int race = pl->inst->type == 18 || pl->inst->type == 19;
                 HudState hs = { g_char, race, pl->lives, race ? pl->race_bonus : pl->bonus_count, race ? pl->race_bonus : pl->bonus_got, pl->bonus_total,
                                 g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, paused || g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };
@@ -2949,9 +3185,11 @@ int main(int argc, char **argv)
                 if (!(msgat_done >> k & 1) && now - t0 >= T) { msgat_done |= 1 << k; on_msg(&L.vm, &em, NULL); }
                 k++;
             } }
-        {   /* testing: WOODY_KILLAT="T" = the pit message 1020 (Kill(1) + death camera) T s into the level, once; for the respawn */
+        {   /* testing: WOODY_KILLAT="T" = the pit message 1020 (Kill(1) + death camera) T s into the level, once; for the respawn.
+             * WOODY_KILLAT="T K" calls Kill(K) itself instead (K = 2: the laser death with its skeleton flash) */
             static int killat_done; if (getenv("WOODY_KILLAT") && !killat_done && L.have_player && now - t0 >= atof(getenv("WOODY_KILLAT"))) {
-                killat_done = 1; EkoMsg em; memset(&em, 0, sizeof em); em.id = 1020; on_msg(&L.vm, &em, NULL); } }
+                int kk = 0; const char *ks = strchr(getenv("WOODY_KILLAT"), ' '); if (ks) kk = atoi(ks + 1);
+                killat_done = 1; if (kk > 0) player_kill(&L.player, kk); else { EkoMsg em; memset(&em, 0, sizeof em); em.id = 1020; on_msg(&L.vm, &em, NULL); } } }
         if ((next_name && now - t0 >= next_at && !strcmp(next_name, "END")) || (win.keys[VK_END] && !end_prev)) {   /* End key / --next END T: finish the level as its exit door does (message 1083) */
             EkoMsg em; memset(&em, 0, sizeof em); em.id = 1083; on_msg(&L.vm, &em, NULL); if (next_name && !strcmp(next_name, "END")) next_name = NULL;
         }
