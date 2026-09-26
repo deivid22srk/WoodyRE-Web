@@ -573,8 +573,24 @@ float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b) { return gel_ray_hit(g, a, 
  * instance of the visited cells and of the dynamic list answers through vtbl[6] 0x431de0 with its press nodes, and a nearer
  * one makes it 4. t is in units of dir, not normalised: the callers pass an unnormalised dir and read it that way.
  * Port: a segment to where the ray leaves the level's bounding box, world polygons and then instance press nodes up to the
- * world hit, as the endless laser does. Unlike 0x497a30 both sides of a polygon count (0x497c5a / 0x43214d only take the
- * polygons that face a), and on 1 the original leaves [0x4c4bd4] stale, which here is simply "no hit". */
+ * world hit, as the endless laser does. Like 0x497c5a only the world polygons that face a count (plane(a) >= 0, the ray
+ * going in); the press nodes are tested from both sides here (0x43214d is one-sided too). On 1 the original leaves
+ * [0x4c4bd4] stale, which here is simply "no hit". */
+static float gel_ray_front(const GelFile *g, Vec3 a, Vec3 b)
+{
+    float best = 2.0f;
+    GelPolySet ps = gel_polys_on_seg(g, a, b);
+    for (uint32_t k = 0; k < ps.n; k++) {
+        const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3) continue;
+        float da = pl->plane[0] * a.x + pl->plane[1] * a.y + pl->plane[2] * a.z + pl->plane[3];
+        float db = pl->plane[0] * b.x + pl->plane[1] * b.y + pl->plane[2] * b.z + pl->plane[3];
+        if (da < 0 || db >= 0) continue;                                   /* 0x497c73 / 0x497ca2: back faces and parallel rays are skipped */
+        float t = da / (da - db); if (t >= best) continue;
+        Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
+        if (poly_contains(g, pl, q)) best = t;
+    }
+    return best;
+}
 int player_ray_endless(const Player *p, Vec3 a, Vec3 dir, float *t)
 {
     const float *bb = p->gel->bbox; const float o[3] = { a.x, a.y, a.z }, d[3] = { dir.x, dir.y, dir.z }; float K = 1e30f;
@@ -585,7 +601,7 @@ int player_ray_endless(const Player *p, Vec3 a, Vec3 dir, float *t)
     if (!(K < 1e29f)) return 1;
     if (K < 1.0f) K = 1.0f;
     Vec3 b = { a.x + dir.x * K, a.y + dir.y * K, a.z + dir.z * K };
-    float f = gel_ray_frac(p->gel, a, b), fw = f < 1.0f ? f : 1.0f, fi; int kind = f <= 1.0f ? 3 : 1;
+    float f = gel_ray_front(p->gel, a, b), fw = f < 1.0f ? f : 1.0f, fi; int kind = f <= 1.0f ? 3 : 1;
     Vec3 bw = { a.x + (b.x - a.x) * fw, a.y + (b.y - a.y) * fw, a.z + (b.z - a.z) * fw };
     if (inst_ray_press(p->ins, NULL, a, bw, &fi, NULL, NULL) && fi <= 1.0f && fi * fw < (kind == 3 ? f : 2.0f)) { f = fi * fw; kind = 4; }
     *t = kind == 1 ? 0 : f * K;
