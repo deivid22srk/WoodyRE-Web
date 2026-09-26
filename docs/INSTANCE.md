@@ -31,7 +31,7 @@ Model's animation table: `S = inst+0xf8`, `S+4` = highest valid anim index (test
 | +0xb0 | i32 | slot0 = current animation | |
 | +0xb4/+0xb8/+0xbc | i32 | slot1..3 = queue (−1 = empty) | |
 | +0xc0 | i32 | 1 if slot0 == slot1 (i.e. "running in a loop"), otherwise 0; ctor −1. NOT a "done" flag | `0x43f246` |
-| +0xd0 | u32 | `(1 << round(min(phase,1)·15)) << 16`: phase mask for the renderer | `0x43f285` |
+| +0xd0 | u32 | `(1 << (int)(min(phase,1)·15 + 0.5)) << 16` (`_ftol` `0x499580` truncates: round half up): the phase bit that every collision test ANDs with the `.col` ref of the cell (FORMAT_TEX_COL_VIS_LIT.md 2, PERSO_MOVE.md 6.7) | `0x43f285` |
 
 Ctor init `0x42e250`: speed 0, +0xc0 = −1, slot0 = 0, slot1..3 = −1. `0x42e210`: +0x84 = −1,
 `+0xd8 &= 0xc0`, +0x6c = 0, +0x7c = +0x80 = 0, +0xc4 = −1, +0xd4 = 0.
@@ -470,7 +470,7 @@ camera's `.vis` sectors / floor groups or (stationary) outside the view frustum.
 | +0xb0..0xbc | slots 0..3 |
 | +0xc0 | slot0 == slot1 |
 | +0xc4 / +0xc8 / +0xcc | frame number / animation / frame position of the previous event scan (`0x42f5e0`: events between previous and current frame position → `0x43a880` → `0x4695f0`) |
-| +0xd0 | phase mask `(1<<round(phase·15))<<16`; renderer and collision (`inst+0xd0 & hull-id & 0xffff0000`, see PERSO_MOVE) use it to enable/disable nodes per animation phase |
+| +0xd0 | phase bit `(1<<round(phase·15))<<16`; the collision tests vt[5..9] return at once when `inst+0xd0 & id & 0xffff0000 == 0`, id = the `.col` ref of the cell being walked (phase mask << 16 \| slot) or `slot \| 0xffff0000` for the dynamic list: an instance counts in a cell only at the animation phases at which the level tool registered it there (PERSO_MOVE.md 6.7) |
 | +0xd4 | head of the link list (message 34): instances not drawn while the camera is in this one's volume (§10.1) |
 | +0xd8..0xec | texture override (§2) |
 | +0xf0 | SetFlags bits (§6) |
@@ -575,7 +575,7 @@ typedef struct {
 4. `+0x88 == 2`: meaning of this state in `0x42e2b0`.
 5. ~~Rounding mode of `0x499580` (ftol) for the texture frame index and the phase mask~~: `_ftol` sets RC = 11 around its
    `fistp` and so always truncates; the game's control word is `0x007F` (24-bit, nearest-even; verified live,
-   `tools/wverify.py --probe fpu`), which only matters for inline `fistp`s.
+   `tools/wverify.py --probe fpu`), which only matters for inline `fistp`s. The phase mask adds 0.5 before its `_ftol` (`0x43f28b`), so it rounds half up.
 6. Class 20/21 (message 55), type 60 (`0x474a40`, 1503/1506) and enemy message 11 are not worked out here.
 7. `0x40a0c0` (`+0x18`): what exactly this second cell-like field is.
 8. The path follower doesn't use the "closed" bit (16); whether closed paths repeat the first point in the data has not been checked.

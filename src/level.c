@@ -58,6 +58,16 @@ struct GelQuery {
     int32_t *stack; uint32_t scap;             /* node stack of the box query */
     struct SegNode *segs;                      /* node + clipped segment stack of the segment query */
 };
+/* The instance side of the collision queries (gel_col_* below, docs/FORMAT_TEX_COL_VIS_LIT.md 2.1). */
+struct GelCol {
+    int have;                                  /* a .col file matching the cells was loaded */
+    uint32_t *first, *refs;                    /* .col: the refs of cell c are refs[first[c] .. first[c+1]) (cell+0x40 / +0x44) */
+    Instance **dyn; uint32_t ndyn, dyn_cap;    /* the dynamic list 0x4c3bb4 / [0x4c4bec] */
+    int32_t *visit; uint32_t nvisit, visit_cap;   /* the visited cells 0x4c4be8 / [0x4c4be4] of the last walk */
+    uint32_t *cstamp, cgen;                    /* cell stamp +4 / [0x4c3bac] of the flood walks */
+    uint32_t igen;                             /* instance stamp [0x4c4c08] (Instance.col_stamp) */
+    GelColRef *out; uint32_t nout, out_cap;    /* the instances of the last gel_col_instances() */
+};
 struct SegNode { int32_t node; float a[3], b[3]; };
 
 /* One cell record (0x407f33 / 0x4080e6): u32 npoly, u32 poly[npoly], f32 bbox[6], i32 link[6], u32 nnodes,
@@ -82,6 +92,8 @@ static void gel_build_queries(GelFile *g)
     g->q = (struct GelQuery *)calloc(1, sizeof *g->q);
     g->q->stamp = (uint32_t *)calloc(g->npolys ? g->npolys : 1, 4);
     g->q->off = getenv("WOODY_NOKD") != NULL;      /* fall back to scanning the whole level, to tell a tree bug from a collision bug */
+    g->col = (struct GelCol *)calloc(1, sizeof *g->col);
+    g->col->cstamp = (uint32_t *)calloc(g->ncells ? g->ncells : 1, 4);
     /* A kd leaf that lies above every sector root belongs to no sector, and a polygon can miss every cell list.
      * Such polygons have no place in the tree to be found from, so both the renderer and the queries always take
      * them along. In well built levels there are none. */
@@ -149,6 +161,7 @@ void gel_free(GelFile *g)
     for (uint32_t i = 0; i < g->npolys; i++) free(g->polys[i].indices);
     free(g->polys); free(g->verts); free(g->kd); free(g->groups); free(g->cells); free(g->sectors); free(g->loose);
     if (g->q) { free(g->q->stamp); free(g->q->out); free(g->q->all); free(g->q->stack); free(g->q->segs); free(g->q); }
+    if (g->col) { free(g->col->first); free(g->col->refs); free(g->col->dyn); free(g->col->visit); free(g->col->cstamp); free(g->col->out); free(g->col); }
     free(g->data); memset(g, 0, sizeof *g);
 }
 
@@ -370,6 +383,251 @@ uint32_t gel_sectors_in_box(const GelFile *g, const float box[6], int32_t *out, 
     return n;
 }
 
+/* ---------------------------------------------------------------- .col and the collision cell walks */
+/* .col loader 0x4271e0 (docs/FORMAT_TEX_COL_VIS_LIT.md 2): for every kd leaf cell in .gel order a u32 count n (-> cell+0x40)
+ * and n refs (-> cell+0x44), each ref = phase mask << 16 | object index (world+0x40 = the script slots). Nothing in the exe
+ * writes cell+0x40/+0x44 after the load: the registration is static, the MASK says at which of 16 animation phases the
+ * instance reaches into the cell (a platform on its path is listed along the path, one phase bit per stretch). */
+int gel_col_load(GelFile *g, const char *path)
+{
+    struct GelCol *C = g->col; if (!C) return -1;
+    free(C->first); free(C->refs); C->first = C->refs = NULL; C->have = 0;
+    size_t size; uint8_t *d = read_file(path, &size); if (!d) return -1;
+    size_t nw = size / 4, o = 0; uint32_t cells = 0;
+    const uint32_t *w = (const uint32_t *)d;
+    while (o < nw) { uint32_t c; memcpy(&c, &w[o], 4); if (o + 1 + c > nw) break; o += 1 + c; cells++; }
+    if (o != nw || cells != g->ncells) { fprintf(stderr, "%s: %u records for %u kd cells, not used\n", path, cells, g->ncells); free(d); return -1; }
+    C->first = (uint32_t *)malloc((cells + 1) * sizeof *C->first); C->refs = (uint32_t *)malloc((nw - cells + 1) * sizeof *C->refs);
+    uint32_t k = 0; o = 0;
+    for (uint32_t c = 0; c < cells; c++) { uint32_t m; memcpy(&m, &w[o++], 4); C->first[c] = k; for (uint32_t j = 0; j < m; j++) memcpy(&C->refs[k++], &w[o++], 4); }
+    C->first[cells] = k; C->have = 1; free(d);
+    return 0;
+}
+const uint32_t *gel_col_cell(const GelFile *g, uint32_t cell, uint32_t *n)   /* the refs of one cell (0x42aa0b reads the camera's leaf) */
+{
+    const struct GelCol *C = g->col; *n = 0;
+    if (!C || !C->have || cell >= g->ncells) return NULL;
+    *n = C->first[cell + 1] - C->first[cell]; return C->refs + C->first[cell];
+}
+
+/* +8 & 0x20 in the port's terms: the instances whose own code moves and re-cells them (0x4077f0), so the clock never does -
+ * the Perso and the race rider (types 1-3, 18, 19 bound to the player), the enemies and bosses (PostLoad 0x419e4d, types
+ * 4-16; Instance.cell_dy), the links of messages 59/61/62 (Instance.cell_fixed, 0x40e749 / 0x40d55d), the rocket and the
+ * bomb cannon (1200 -> 0x4529b5, types 20/21) and the bombs (0x44d250, type 40). */
+int ins_flag20(const Instance *in)
+{
+    if (in->cell_dy > 0 || in->cell_fixed) return 1;
+    if (!in->scripted && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19)) return 1;
+    return in->type == 20 || in->type == 21 || in->type == 40 || (in->type >= 4 && in->type <= 16);
+}
+/* The dynamic list 0x4c3bb4, rebuilt right after the instance list (0x401c68..0x401cbc): every instance of this frame's
+ * list world+0x64, in list order, with flag 0x20, object kind 1 and press nodes (model S+0x58 != 0), at most 0x3ff. The
+ * queries test these after the cell lists, with the id slot | 0xffff0000 (every phase). */
+void gel_col_dynamic(const GelFile *g, Instance *const *list, uint32_t n)
+{
+    struct GelCol *C = g->col; if (!C) return;
+    C->ndyn = 0;
+    for (uint32_t i = 0; i < n && C->ndyn < 0x3ff; i++) {
+        Instance *in = list[i]; uint32_t nc;
+        if (!in || !ins_flag20(in)) continue;
+        ins_collision_nodes(in->model, &nc); if (!nc) continue;
+        if (C->ndyn >= C->dyn_cap) { C->dyn_cap = C->dyn_cap ? C->dyn_cap * 2 : 64; C->dyn = (Instance **)realloc(C->dyn, C->dyn_cap * sizeof *C->dyn); }
+        C->dyn[C->ndyn++] = in;
+    }
+    if (getenv("WOODY_CELLCOL")) {                                             /* testing: the dynamic list whenever it changes */
+        static uint32_t last_n = 0xffffffffu, last_sum;
+        uint32_t sum = 0; for (uint32_t i = 0; i < C->ndyn; i++) sum = sum * 31 + C->dyn[i]->index;
+        if (C->ndyn != last_n || sum != last_sum) {
+            printf("CELLCOL dynamic list (%u):", C->ndyn); for (uint32_t i = 0; i < C->ndyn; i++) printf(" %u(type %d)", C->dyn[i]->index, C->dyn[i]->type); puts("");
+            last_n = C->ndyn; last_sum = sum;
+        }
+    }
+}
+/* +0xd0, written by the clock 0x43eee0 after the phase (0x43f264..0x43f2a3): phase = position / length of the current
+ * animation, min(phase, 1.0) * 15.0 + 0.5 truncated (0x499580) = the bit, shifted up by 16. The tests AND it with the ref's
+ * high half (0x4324df and the same lines in 0x432b11, 0x431e40, 0x4331c3, 0x434054). */
+uint32_t ins_phase_mask(const Instance *in)
+{
+    const Model *m = in->model; float L = 1.0f;
+    if (in->anim >= 0 && (uint32_t)in->anim < m->nanims && m->anims[in->anim].duration_s > 0) L = m->anims[in->anim].duration_s;
+    float ph = in->anim_time / L;
+    if (!(ph >= 0)) ph = 0; if (ph > 1.0f) ph = 1.0f;
+    return (1u << (uint32_t)(ph * 15.0f + 0.5f)) << 16;
+}
+
+static void visit_push(struct GelCol *C, int32_t cell)
+{
+    if (C->nvisit >= C->visit_cap) { C->visit_cap = C->visit_cap ? C->visit_cap * 2 : 64; C->visit = (int32_t *)realloc(C->visit, C->visit_cap * sizeof *C->visit); }
+    C->visit[C->nvisit++] = cell;
+}
+static void cstamp_next(const GelFile *g, struct GelCol *C) { if (++C->cgen == 0) { memset(C->cstamp, 0, (size_t)(g->ncells ? g->ncells : 1) * 4); C->cgen = 1; } }
+/* the cell tests of the two floods. 0x40a7a0 (cylinder): out if c.y + up < ymin or c.y - down > ymax; then region codes in
+ * xz (x > xmax 8, x < xmin 4, z > zmax 2, z < zmin 1, jump table 0x40a900): inside -> in; one axis out -> in when
+ * c + r > min / c - r < max; a corner -> in when the xz distance to the corner < r. 0x40a290 (sphere): the same in three
+ * axes (table 0x40a5a0 via the byte map 0x40a610): squared distance to the box < r^2, a face region by c +- r. */
+typedef struct { Vec3 c; float r, up, down; int sphere; } FloodQ;
+static int flood_test(const GelCell *K, const FloodQ *q)
+{
+    const float *b = K->bbox; float d2 = 0; int out = 0;
+    const float v[3] = { q->c.x, q->c.y, q->c.z };
+    if (!q->sphere) { if (q->c.y + q->up < b[2] || q->c.y - q->down > b[3]) return 0; }
+    for (int a = 0; a < 3; a++) {
+        if (a == 1 && !q->sphere) continue;
+        float d = 0;
+        if (v[a] > b[2 * a + 1]) d = v[a] - b[2 * a + 1]; else if (v[a] < b[2 * a]) d = b[2 * a] - v[a]; else continue;
+        out++; d2 += d * d;
+        if (out == 1 && !(d < q->r)) return 0;                                 /* a face region: c + r > min / c - r < max */
+    }
+    return out <= 1 ? 1 : d2 < q->r * q->r;
+}
+/* 0x40a930 / 0x40a640: a link of a cell - a local kd subtree (both children of every node, the <= side first: recursion on
+ * node+8, then loop on node+0xc; indices relative to the subtree root) or a leaf ~link (INT_MIN = nothing). A leaf is stamped
+ * BEFORE its test (0x40a99d), appended when it passes, and then its six links are walked in the order -x +x -y +y -z +z. */
+static void flood_link(const GelFile *g, struct GelCol *C, const FloodQ *q, const uint8_t *base, uint32_t nbase, int32_t idx, int depth)
+{
+    for (uint32_t guard = 0; idx >= 0 && guard <= nbase; guard++) {
+        if (!base || (uint32_t)idx >= nbase) return;
+        const uint8_t *n = base + 16 * (size_t)idx; int32_t le, gt; memcpy(&le, n + 8, 4); memcpy(&gt, n + 12, 4);
+        flood_link(g, C, q, base, nbase, le, depth + 1);
+        idx = gt;
+    }
+    if (idx >= 0 || idx == INT32_MIN || depth > 4096) return;
+    uint32_t cell = (uint32_t)~idx; if (cell >= g->ncells || C->cstamp[cell] == C->cgen) return;
+    C->cstamp[cell] = C->cgen;
+    const GelCell *K = &g->cells[cell];
+    if (!flood_test(K, q)) return;
+    visit_push(C, (int32_t)cell);
+    for (int f = 0; f < 6; f++) {
+        int32_t l = K->link[f];
+        if (l < 0) flood_link(g, C, q, NULL, 0, l, depth + 1);
+        else if ((uint32_t)l < K->nnodes) flood_link(g, C, q, K->nodes + 16 * (size_t)l, K->nnodes - (uint32_t)l, 0, depth + 1);
+    }
+}
+static uint32_t flood(const GelFile *g, const FloodQ *q)                     /* 0x40aa30 / 0x40a700 */
+{
+    struct GelCol *C = g->col; if (!C) return 0;
+    C->nvisit = 0;
+    int32_t c0 = gel_cell(g, q->c); if (c0 < 0) return 0;                  /* the original indexes cells[-1] here */
+    cstamp_next(g, C);
+    C->cstamp[c0] = C->cgen; visit_push(C, c0);                            /* the start cell is not tested (0x40aa76) */
+    const GelCell *K = &g->cells[c0];
+    for (int f = 0; f < 6; f++) {
+        int32_t l = K->link[f];
+        if (l < 0) flood_link(g, C, q, NULL, 0, l, 1);
+        else if ((uint32_t)l < K->nnodes) flood_link(g, C, q, K->nodes + 16 * (size_t)l, K->nnodes - (uint32_t)l, 0, 1);
+    }
+    return C->nvisit;
+}
+uint32_t gel_walk_cyl(const GelFile *g, Vec3 c, float r, float up, float down) { FloodQ q = { c, r, up, down, 0 }; return flood(g, &q); }
+uint32_t gel_walk_sphere(const GelFile *g, Vec3 c, float r) { FloodQ q = { c, r, r, r, 1 }; return flood(g, &q); }
+/* 0x498520: the floor search visits p's cell (0x408180) and, while a cell holds no floor, the cell under it through the -y
+ * link (+0x18: a local subtree descended with p itself, 0x40ab60, or ~link; INT_MIN = no cell below). A cell accepts a floor
+ * polygon only within its own height (maxd = p.y - cell.ymin, 0x4985b9), so the walk ends in the cell that holds the floor
+ * point. found / floor_y = the floor the world part found (the port finds it with its own polygon query). */
+uint32_t gel_walk_down(const GelFile *g, Vec3 p, int found, float floor_y)
+{
+    struct GelCol *C = g->col; if (!C) return 0;
+    C->nvisit = 0;
+    int32_t c = gel_cell(g, p);
+    for (uint32_t guard = 0; c >= 0 && (uint32_t)c < g->ncells && guard <= g->ncells; guard++) {
+        const GelCell *K = &g->cells[c];
+        visit_push(C, c);
+        if (found && floor_y + 0.01f >= K->bbox[2]) break;                    /* 0x498629: dist <= n.y * (p.y - ymin) + 0.001 */
+        int32_t l = K->link[2];
+        if (l == INT32_MIN) break;
+        c = l >= 0 ? cell_subtree(K, l, p) : ~l;
+    }
+    return C->nvisit;
+}
+/* 0x497fb0 (segment, stops in the cell where b lies) / 0x497b10 (endless, dir = b - a): from a's cell (0x408180) to the
+ * exit face of each cell - the candidate faces are fixed in the first cell: the ray goes that way (0x406ee0 < 0) and a lies
+ * inside that face (0x406e50 > 0); t_exit = the smallest dist / -dir over them, the first one on a tie - through its link
+ * (a local subtree descended at the exit point a + d t_exit, 0x40ab60, or ~link; INT_MIN = out of the world) into the next
+ * cell. A cell's polygons count only up to its t_exit, so the walk ends in the cell that holds the world hit (t_stop, a
+ * fraction of d; the port finds it with its own polygon query), or for the segment in the cell with t_exit > 1. */
+static float face_dir(Vec3 d, int f) { const float v[3] = { d.x, d.y, d.z }; return (f & 1) ? -v[f >> 1] : v[f >> 1]; }
+static float face_dist(const GelCell *K, Vec3 p, int f) { const float v[3] = { p.x, p.y, p.z }; return (f & 1) ? K->bbox[f] - v[f >> 1] : v[f >> 1] - K->bbox[f]; }
+uint32_t gel_walk_seg(const GelFile *g, Vec3 a, Vec3 b, float t_stop, int endless)
+{
+    struct GelCol *C = g->col; if (!C) return 0;
+    C->nvisit = 0;
+    Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z };
+    int32_t c = gel_cell(g, a); if (c < 0) return 0;
+    int faces[6], nf = 0;
+    for (int f = 0; f < 6; f++) if (face_dir(d, f) < 0 && face_dist(&g->cells[c], a, f) > 0) faces[nf++] = f;   /* 0x4980a7..0x4980e9 */
+    for (uint32_t guard = 0; guard <= g->ncells; guard++) {
+        const GelCell *K = &g->cells[c];
+        visit_push(C, c);
+        int ef = -1; float te = 0;
+        for (int i = 0; i < nf; i++) {
+            float dist = face_dist(K, a, faces[i]); if (!(dist > 0)) continue;
+            float t = dist / -face_dir(d, faces[i]);
+            if (ef < 0 || t < te) { ef = faces[i]; te = t; }
+        }
+        if (ef < 0) break;                                                     /* no exit face: 0x498145 (raw 1) */
+        if (t_stop <= te) break;                                               /* the world hit lies in this cell */
+        if (!endless && te > 1.0f) break;                                      /* b lies in this cell (0x498136) */
+        int32_t l = K->link[ef];
+        if (l == INT32_MIN) break;                                             /* out of the world (0x498417) */
+        if (l >= 0) { Vec3 q = { a.x + d.x * te, a.y + d.y * te, a.z + d.z * te }; c = cell_subtree(K, l, q); }
+        else c = ~l;
+        if (c < 0 || (uint32_t)c >= g->ncells) break;
+    }
+    return C->nvisit;
+}
+/* The instances of the visited cells, in the order the original tests them (0x407171..0x407301 for 0x407000, the same loop
+ * in 0x4074ca, 0x498475, 0x497f01, 0x497a61): per visited cell its .col refs in file order, then the dynamic list. A new
+ * stamp per query ([0x4c4c08]++); an instance is skipped when it is out of the world (+0x1c == -1: hidden by message 6, or
+ * its cell point outside every sector), already tested (+0x20 == stamp), non-collidable (+8 & 0x40), without press nodes
+ * (S+0x58 == 0), or when its phase bit +0xd0 is not in the ref's mask; otherwise it is stamped (0x432506) and tested. */
+static int g_col_all;                                                          /* gel_col_force_all(): testing, the old every-instance selection */
+void gel_col_force_all(int on) { g_col_all = on; }
+static void out_push(struct GelCol *C, Instance *in, uint32_t id)
+{
+    if (C->nout >= C->out_cap) { C->out_cap = C->out_cap ? C->out_cap * 2 : 128; C->out = (GelColRef *)realloc(C->out, C->out_cap * sizeof *C->out); }
+    C->out[C->nout].in = in; C->out[C->nout].id = id; C->nout++;
+}
+static int col_candidate(const struct GelCol *C, Instance *in, uint32_t id)
+{
+    uint32_t nc;
+    if (!in || !in->visible || !in->node_world || (in->cell_ok && in->cell_sec < 0)) return 0;   /* +0x1c == -1 */
+    if (in->col_stamp == C->igen || in->noncollide) return 0;
+    ins_collision_nodes(in->model, &nc); if (!nc) return 0;
+    return (ins_phase_mask(in) & id & 0xffff0000u) != 0;
+}
+uint32_t gel_col_instances(const GelFile *g, const InsFile *ins, const GelColRef **out)
+{
+    struct GelCol *C = g->col; *out = NULL; if (!C || !ins) return 0;
+    C->nout = 0;
+    if (++C->igen == 0) {                                                      /* wrapped: clear every stamp */
+        for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins->models[mi].instances[k].col_stamp = 0;
+        C->igen = 1;
+    }
+    static int all = -1; if (all < 0) all = getenv("WOODY_COLALL") != NULL;   /* testing: the port's old selection (every instance) */
+    if (!C->have || all || g_col_all) {                                        /* port fallback without a .col: every instance, model order */
+        for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+            Instance *in = &ins->models[mi].instances[k];
+            if (col_candidate(C, in, 0xffff0000u)) { in->col_stamp = C->igen; out_push(C, in, 0xffff0000u | (in->index & 0xffff)); }
+        }
+        *out = C->out; return C->nout;
+    }
+    for (uint32_t v = 0; v < C->nvisit; v++) {
+        uint32_t cell = (uint32_t)C->visit[v]; if (cell >= g->ncells) continue;
+        for (uint32_t j = C->first[cell]; j < C->first[cell + 1]; j++) {
+            uint32_t ref = C->refs[j], slot = ref & 0xffff;
+            Instance *in = slot < ins->nslots ? ins->slots[slot] : NULL;
+            if (!col_candidate(C, in, ref)) continue;
+            in->col_stamp = C->igen; out_push(C, in, ref);
+        }
+    }
+    for (uint32_t i = 0; i < C->ndyn; i++) {                                   /* 0x407267 / 0x4984de / 0x497f79 / 0x497ad9 */
+        Instance *in = C->dyn[i]; uint32_t id = 0xffff0000u | (in->index & 0xffff);
+        if (!col_candidate(C, in, id)) continue;
+        in->col_stamp = C->igen; out_push(C, in, id);
+    }
+    *out = C->out; return C->nout;
+}
+
 /* ---------------------------------------------------------------- .vis */
 /* Loader 0x408260: one record per sector, holding one or two lists of (sector, flag) pairs - the sectors that can
  * be seen from this one (docs/FORMAT_TEX_COL_VIS_LIT.md 3). */
@@ -497,6 +755,10 @@ static int read_model(Rd *r, Model *m)
                 p->material = ru32(r) & 0xffff; p->flags = ru32(r); p->nverts = ru32(r);
                 p->indices = ru32s(r, p->nverts);
             }
+        }
+        for (uint32_t k = 0; k < nd->npoints && base + k < m->npoints; k++) {   /* N+0x2c (0x427daf..0x427e3d): the bounding radius around the pivot */
+            Vec3 q = m->points[base + k].pos; float dx = q.x - nd->pivot.x, dy = q.y - nd->pivot.y, dz = q.z - nd->pivot.z, d = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (d > nd->radius) nd->radius = d;
         }
         base += nd->npoints;
         for (int32_t c = nd->first_child; c >= 0; c = m->nodes[c].next_sibling) {

@@ -176,22 +176,24 @@ void inst_tick(Instance *I, float now, float dt)
  * node [0x4c4be0] -> [0x53a58c], instance [0x4c4c0c]+0x40 -> [0x53a560]. Like every instance test of the original it walks the
  * PRESS nodes (kind 1) of the instances in the cells the ray visits plus the dynamic list 0x4c3bb4 (docs/EVENTS.md 3.1, BOMB.md
  * 5.2); a hidden instance (message 6: no cell) and a non-collidable one (+8 & 0x40, the fade) take no part. The actors do not
- * take part either: the Perso and enemy models have no press node. Same test as player_ray_instances() in player.c, but
- * without its 4000-unit horizontal reject, so that an endless laser (class 50) still finds an instance far down its beam;
- * the segment's bounding box does the culling instead. Two-sided, like gel_ray_frac. Returns 1 on a hit with the fraction
- * of a->b, the normal turned towards a and the instance. */
+ * take part either: the Perso and enemy models have no press node. The instances are the ones the original tests - those
+ * registered (.col) in the cells along a->b, then the dynamic list (level.c gel_col_instances) - but the test stays the
+ * port's: two-sided like gel_ray_frac, the nearest polygon (the original's vt[5] 0x432ab0 is one-sided and lets the last
+ * polygon tested win, player.c ray_instances; the lasers, shots and bombs of main_engine.c keep this approximation).
+ * Returns 1 on a hit with the fraction of a->b, the normal turned towards a and the instance. */
 static Vec3 v3sub(Vec3 a, Vec3 b) { Vec3 r = { a.x - b.x, a.y - b.y, a.z - b.z }; return r; }
 static float v3dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static Vec3 v3cross(Vec3 a, Vec3 b) { Vec3 r = { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; return r; }
-int inst_ray_press(const InsFile *ins, const Instance *skip, Vec3 a, Vec3 b, float *frac, Vec3 *n_out, const Instance **inst_out)
+int inst_ray_press(const GelFile *g, const InsFile *ins, const Instance *skip, Vec3 a, Vec3 b, float *frac, Vec3 *n_out, const Instance **inst_out)
 {
     float best = 2.0f; int hit = 0; Vec3 v[16];
     float sb[6] = { fminf(a.x, b.x) - 1, fmaxf(a.x, b.x) + 1, fminf(a.y, b.y) - 1, fmaxf(a.y, b.y) + 1, fminf(a.z, b.z) - 1, fmaxf(a.z, b.z) + 1 };
-    for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
-        const Model *m = &ins->models[mi]; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
-        if (!ncn) continue;
-        for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || !in->node_world) continue;
+    gel_walk_seg(g, a, b, 2.0f, 0);                                     /* the cells along a->b (0x497fb0's walk; the lasers end b at their wall) */
+    const GelColRef *cr; uint32_t ncr = gel_col_instances(g, ins, &cr);
+    for (uint32_t q = 0; q < ncr; q++) {
+        const Model *m = cr[q].in->model; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+        {
+            const Instance *in = cr[q].in; if (in == skip) continue;
             for (uint32_t ci = 0; ci < ncn; ci++) {
                 uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys) continue;
                 float nb[6]; if (ins_node_world_box(in, ni, nb) && (nb[0] > sb[1] || nb[1] < sb[0] || nb[2] > sb[3] || nb[3] < sb[2] || nb[4] > sb[5] || nb[5] < sb[4])) continue;
@@ -223,14 +225,15 @@ int inst_ray_press(const InsFile *ins, const Instance *skip, Vec3 a, Vec3 b, flo
  * behind every one of its planes -- and then the answer is that instance at t = 0, whatever else the ray meets. The port takes the
  * side of each polygon's plane that the node's own centre lies on as "behind", so the winding does not matter, and wants the
  * point at least 1 unit deep (the original: strictly behind every plane). */
-int inst_point_in_press(const InsFile *ins, const Instance *skip, Vec3 p, const Instance **inst_out)
+int inst_point_in_press(const GelFile *g, const InsFile *ins, const Instance *skip, Vec3 p, const Instance **inst_out)
 {
     Vec3 v[16];
-    for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
-        const Model *m = &ins->models[mi]; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
-        if (!ncn) continue;
-        for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || !in->node_world) continue;
+    gel_walk_seg(g, p, p, 2.0f, 0);                                     /* p's cell: where the ray's walk starts */
+    const GelColRef *cr; uint32_t ncr = gel_col_instances(g, ins, &cr);
+    for (uint32_t q = 0; q < ncr; q++) {
+        const Model *m = cr[q].in->model; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+        {
+            const Instance *in = cr[q].in; if (in == skip) continue;
             for (uint32_t ci = 0; ci < ncn; ci++) {
                 uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys || nd->npolys < 4) continue;
                 float nb[6]; if (ins_node_world_box(in, ni, nb) && (p.x < nb[0] || p.x > nb[1] || p.y < nb[2] || p.y > nb[3] || p.z < nb[4] || p.z > nb[5])) continue;

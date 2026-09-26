@@ -1406,7 +1406,7 @@ static int laser_segment(const Laser *z, uint32_t marker, const GelFile *gel, Ve
          * housing is not skipped, the marker simply starts outside its press node (W1A model 33: marker z -62.9, press tip z -60.4).
          * Woody and the enemies have no press nodes, so the beam passes through them; only the hit test below kills (the player) */
         const Instance *hi = NULL;
-        if (z->type == 51 && inst_point_in_press(&g_ins, NULL, *a, &hi)) {       /* hit kind 3 (raw answer 2, 0x4330c0 in the instance test 0x432ab0 = vtbl[5]): the
+        if (z->type == 51 && inst_point_in_press(gel, &g_ins,NULL, *a, &hi)) {       /* hit kind 3 (raw answer 2, 0x4330c0 in the instance test 0x432ab0 = vtbl[5]): the
                                                                                     * start lies inside a press node; [0x53a558] = 0 (0x4330d4), so 0x4513cd puts b on a,
                                                                                     * rec+0x2c = 1 and the normal 0x4b3108 stays stale: no beam, only the impact at a. The
                                                                                     * endless test 0x431de0 (vtbl[6], type 50) has no such answer */
@@ -1416,7 +1416,7 @@ static int laser_segment(const Laser *z, uint32_t marker, const GelFile *gel, Ve
         }
         float t = gel_ray_frac(gel, *a, *b), tw = t < 1.0f ? t : 1.0f, ti;       /* the instances only up to the wall: a small box to cull with */
         Vec3 bw = { a->x + (b->x - a->x) * tw, a->y + (b->y - a->y) * tw, a->z + (b->z - a->z) * tw };
-        if (inst_ray_press(&g_ins, NULL, *a, bw, &ti, NULL, &hi) && ti * tw < t) t = ti * tw; else hi = NULL;
+        if (inst_ray_press(gel, &g_ins,NULL, *a, bw, &ti, NULL, &hi) && ti * tw < t) t = ti * tw; else hi = NULL;
         if (t <= 1.0f) { b->x = a->x + (b->x - a->x) * t; b->y = a->y + (b->y - a->y) * t; b->z = a->z + (b->z - a->z) * t; *kind = 1; g_hit_frac = z->type == 50 ? t * len : t; }   /* [0x53a558]: 50 = the distance (unit dir) */
         else if (z->type == 50) {                                                   /* 0x4511a2: nothing hit, b = a + dir * [0x53a558] with the STALE value (the last writer's) */
             b->x = a->x + d.x / l * g_hit_frac; b->y = a->y + d.y / l * g_hit_frac; b->z = a->z + d.z / l * g_hit_frac;
@@ -1783,7 +1783,7 @@ static void bombs_fly(float dt, const GelFile *gel)
             }
         }
         { const Instance *hi = NULL;                                               /* hit kind 3: the start inside a press node (not its own) -> projectile gone -> CheckProj ignites */
-          if (inst_point_in_press(&g_ins, b->inst, a, &hi)) { b->p_active = 0; if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u inside instance %u (hit kind 3): projectile gone", b->inst->index, hi->index), puts(""); continue; } }
+          if (inst_point_in_press(gel, &g_ins,b->inst, a, &hi)) { b->p_active = 0; if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u inside instance %u (hit kind 3): projectile gone", b->inst->index, hi->index), puts(""); continue; } }
         float f = gel_ray_hit(gel, a, e, &n);
         if (g_player && player_ray_instances(g_player, b->inst, a, e, &fi, &ni, NULL) && fi < f) { f = fi; n = ni; }   /* a press node: the same bounce */
         if (f <= 1.0f) {                                                           /* Bounce 0x449eb0: mirror the end point in the plane, keep the speed */
@@ -2018,10 +2018,10 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
                                                                                     * the press nodes of instances (2), the launcher's own included; kind 3 = the start point
                                                                                     * lies inside a press node (0x4330c0): the projectile is gone */
             const Instance *hi = NULL; Vec3 n, ni; float fi;
-            if (inst_point_in_press(&g_ins, NULL, a, &hi)) { end = 1; b = a; if (getenv("WOODY_FXLOG")) printf("shot %d starts inside instance %u (hit kind 3)", i, hi->index), puts(""); }
+            if (inst_point_in_press(gel, &g_ins,NULL, a, &hi)) { end = 1; b = a; if (getenv("WOODY_FXLOG")) printf("shot %d starts inside instance %u (hit kind 3)", i, hi->index), puts(""); }
             else {
                 float f = gel_ray_hit(gel, a, b, &n);
-                if (inst_ray_press(&g_ins, NULL, a, b, &fi, &ni, &hi) && fi < f) { f = fi; n = ni; } else hi = NULL;
+                if (inst_ray_press(gel, &g_ins,NULL, a, b, &fi, &ni, &hi) && fi < f) { f = fi; n = ni; } else hi = NULL;
                 if (f <= 1.0f) {
                     if (s->T.max_bounce != -1 && s->bounces >= s->T.max_bounce) { b = (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }; end = 1; }   /* 0x449dff */
                     else {                                                         /* Bounce 0x449eb0: the end point mirrored in the plane, the speed kept, the point put on the hit */

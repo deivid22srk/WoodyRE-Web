@@ -572,10 +572,14 @@ void Inst_FloorRay(Instance *I, vec3 *p, uint32 id)                       /* 0x4
   checked for all 5586 press-node instances), `t < g_dist` against the world floor's distance or 0, the node box as the cull,
   and the reported normal `normalize(M·n)`. Before, the port took any face with `|n.y| ≥ 0.5` of either winding, so the underside
   of a hovering press node (the W1A start saucer, inst 17) could become the floor of a point inside or just above it.
+  The instances are the ones §6.7 gives for the cells `0x498520` visited (`gel_walk_down` from the point to the cell of the
+  world floor, or to the bottom of the world), in that order.
 
 The `0x40a0c0`/`0x407790`/`0x4077f0` mentioned in the task are **not used by player collision**: `0x4077f0(&center)` is only
-called in `0x44bf10` to hang the player's instance in the correct world cell (for rendering/visibility and the cell lists),
-`0x407790` by other classes and the loader. The player's floor comes exclusively from `0x498520` (ray downward from feet+43).
+called in `0x44bf10` to hang the player's instance in the correct world SECTOR (the sector chains `sector+0x44`, for the
+per-frame instance list and the lights), `0x407790` by other classes and the loader. The collision queries never read the
+sector chains: they use the static `.col` lists of the leaf cells (§6.7). The player's floor comes exclusively from
+`0x498520` (ray downward from feet+43).
 
 ### 6.4 Ground info `0x4628e0`
 
@@ -667,7 +671,8 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
    (worst 31.9°, inst 501), in W3D 6 (26.1°), in W2B 10 (9.1°); all other levels ≤ 3.1°.
    **Port** (`body_push`, `press_normal`): the plane is `normalize(M·n_local)` with `n_local` the loader normal of the
    node-space points and `d = −n'·v0`, for both scales (for a uniform scale it equals the true normal); the cull is the node's
-   world box.
+   world box (the original's radius cull is conservative too, so the result is the same). The instances are those of §6.7
+   for the cells `0x40aa30` collected (`gel_walk_cyl`); the max/min merge makes their order irrelevant.
 4. Result: `push.x = max⁺.x + min⁻.x`, `push.z = max⁺.z + min⁻.z`, `push.y = 0` → `[0x4c4bb4..bc]`.
 
 ### 6.6 Other
@@ -702,10 +707,27 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   * Result (`0x4359db..0x435b5f`): `g_raw 3` → kind 1 (world polygon; `[0x53a558]` = t, the normal to `[0x4b3108]`),
     `g_raw 4` → kind 2 (instance polygon; t, the instance `[0x53a560]`, the node `[0x53a58c]`, the local hit point `0x431700`
     → `[0x53a57c..84]`), `g_raw 2` → kind 3 (a inside a press node, t = 0), otherwise 0.
-  * **Port** `ray_4359b0` (player.c): `gel_ray_front` for the world, then the press nodes one-sided as above with the world-space
-    loader planes; an instance polygon replaces the world hit, and among instances the nearest one is taken (the original's cell
-    order is not reproduced); a start inside a press node gives kind 3. Used by the head ray, the crush test and, now, the
-    stand-up test of ducking (which used two-sided rays before).
+  * **The node cull of vt[5] is not conservative** (`0x432b9d..0x432c4a`, only for a uniform scale `sx == sy == sz`): a press
+    node is skipped - polygons and inside test alike - when `|o − a|² > R² + |b − a|²`, `o` = the node matrix's translation
+    (the pivot in world space), `R = sx · N+0x2c` (the node's bounding radius around its pivot, loader `0x427daf..0x427e3d`).
+    That is not a segment-sphere test: a short ray that reaches into a large node far from its pivot is culled although it
+    crosses its polygons. The W1A stamper 186 (model 32, one press node, R = 993, pivot in the middle of a 1900-unit column)
+    is invisible to the crush ray (191 long) until its pivot is within `sqrt(993² + 191²) = 1011` of the feet, i.e. until its
+    bottom face is ~59 above them - after that the free height is already under 30 % of 191 (57.3), so the crush test sees
+    it for the first time with a squash below 0.3 and kills in ONE frame (live trace of the original: squash 0.291 and
+    Kill(4) in the same frame, `--pos 2249 1120 -7577`, ~2 s after the teleport). The vt[7], vt[8] and vt[6] culls are
+    conservative (xz distance > R, origin more than R above; the band; a real line-sphere discriminant `0x431f4a..0x431fce`)
+    and change nothing but speed.
+  * **Port** `ray_instances` / `ray_4359b0` (player.c): `gel_ray_front` for the world, then the instances in the original's
+    order (6.7: the cells along a→b up to the world hit, then the dynamic list), the vt[5] node cull above, the press
+    polygons one-sided with the world-space loader planes, **the last polygon tested wins** and replaces the world hit, a
+    start inside a press node gives kind 3 and blocks every later polygon (a later inside node still takes over). Used by
+    the head ray, the crush test, the stand-up test of ducking, the peck-climb probe (`climb_ray`), the camera's line of
+    sight (`cam_ray_blocked`: an instance hit now counts even behind a nearer wall, as 0x4359b0 reports it) and the race
+    crash rays (`player_ray_instances`: an instance hit replaces the world hit). The stamper now kills in one frame
+    (`WOODY_CRUSHLOG=1`: `CRUSH kind 2 inst 186 free 56.3 of 191.0 -> scale 0.295` then Kill(4); before: 0.952, 0.623,
+    0.295 over three frames). Not converted: the lasers, launcher shots and bombs of main_engine.c keep their two-sided,
+    nearest-hit `inst_ray_press` / `inst_point_in_press` (instance.c), now fed with the instances of the cells along the ray.
 * **Crushing** `0x462a40` (`this` = Perso; one caller, Perso_Update `0x44b87c`, followed by the no-op `0x462c60`). It runs after
   MoveCollide `0x4624f0` (and after `0x4567f0` in state 1) whenever that ran: the dispatch `0x44b7f9` (table `0x44b950`) keeps the
   flag `bl` = 1 for the states 0, 1, 2, 3, 4 and 6 and clears it for 5 (`0x44db50`), 7 (`0x44e1c0`), 8 (`0x4657f0`) and 9
@@ -745,18 +767,11 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   climbing path; `Player.crush` = `P+0x2e8`, multiplied into `player_body_height` and into the z scale of the player's
   instance matrix (`player_apply_transform`); `WOODY_CRUSHLOG=1` logs it. Verified: W1A `--pos 258 -1990 -1677` with
   `WOODY_MSGAT="0.5 4 17 0 1 1000"` (message 4 starts a loop on the start saucer, so its `+0xa0` ≠ 0): kind 2, free 106 of 191
-  → scale 0.557, the model drawn squashed; without the message nothing happens.
-  **A natural crush spot exists and kills in the original** (verified live, `tools/wverify.py --probe crush --level W1A --pos
-  2249 1120 -7577`): W1A objects 186/187 (model 32, at (2249, −7577) and (1453, −7569) on the floor y 1100) are not lifts but
-  **stampers** - the script replays anim 0 once every 2.2 s (`3 [186, 0, 1, 200]` + sounds 1633/1635), and the 1900-high column
-  comes down from 2601 to ~1100. Standing under one, the original logged a single crush frame, squash 0.291 (free 55.6 of 191),
-  and `Kill(4)` in the same frame (`0x462bed`), 2.05 s after the teleport; Perso state 2 follows and the respawn at the level start.
-  The port (`WOODY_POSAT="2 2249 1120 -7577" WOODY_CRUSHLOG=1`, 60 fps) kills him there too, but flattens him over three frames
-  first (0.952, 0.623, 0.295). The original's jump straight to 0.291 (at ~800 fps, where the column moves a few units per
-  frame) presumably comes from the cell registration of the ray `0x4359b0`: it tests
-  only the instances registered in the kd cells the segment visits, and the stamper is registered by its animated root
-  `inst+0x60`, which only enters the cell of Woody's head ray when the column is almost down (the port tests every instance; see
-  the cell-order note below). The static scan `tools/native/crushscan.c` (press nodes of every animated instance posed at 64
+  → scale 0.557, the model drawn squashed; without the message nothing happens. Natural crush spot: the W1A stamper 186
+  (`--pos 2249 1120 -7577`, the script replays its slam every 2.2 s): the original kills in ONE frame (live trace: squash
+  0.291 and Kill(4) together, ~2 s after the teleport), because the vt[5] node cull (§6.6) hides the stamper from the
+  crush ray until it is almost down; the port does the same since the cull is ported (squash 0.295 + Kill(4) in one frame;
+  before: 0.952, 0.623, 0.295 over three frames at 60 fps). Riding the W1B shuttle 605 gives no hit. The static scan `tools/native/crushscan.c` (press nodes of every animated instance posed at 64
   phases against the world floor under / ceiling over them) lists the other candidates: in W1A only 53/54 (model 12, raised once
   in a scripted cutscene) besides the stampers; many more in K2A, K3A, S1A, S3A, W2A, W2B, W3A-W3D (mostly lifts and doors
   whose lower face meets the floor they rest on - whether Woody can stand under them was not checked one by one).
@@ -769,6 +784,68 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   health/lives from the save, `0x44a7ee`: snap to ground), then `0x44a902` and another direct `0x44a6a0` (`0x4458e2`). The `.ins` position
   of the player floats a few units above the floor; without this snap every level would start with a fall (issue #11). Respawn
   (`0x445b41` → `0x44a650`), end of the results screen (`0x45423f`) and end of a cinematic (`0x445af9` → `0x44a650`) also snap.
+
+### 6.7 Which instances a query tests, and in which order
+
+All five instance tests (floor vt[7] `0x432480`, cylinder vt[8] `0x433140`, sphere vt[9] `0x433ff0`, segment ray vt[5]
+`0x432ab0`, endless ray vt[6] `0x431de0`) are driven by the same loop in the five query functions - `0x407171..0x407301`
+(cylinder `0x407000`), `0x4074ca..0x407640` (sphere `0x407340`), `0x498475..0x49850e` (floor `0x498440`), `0x497f01..0x497fa9`
+(segment `0x497ed0`), `0x497a61..0x497b09` (endless `0x497a30`):
+
+```c
+[0x4c4c08]++;                                             /* the instance stamp of this query (the list build 0x42a980 uses the same counter) */
+for (k = 0; k < [0x4c4be4]; k++) {                        /* the cells the world walk visited, in visit order (FORMAT_GEL.md 5.1) */
+    Cell *c = world->cells[list[k]];                      /* 0x4c4be8 */
+    for (j = 0; j < c->n /*+0x40*/; j++) {                 /* the .col refs of that cell, in file order (FORMAT_TEX_COL_VIS_LIT.md 2) */
+        uint32 id = c->refs[j];                           /* +0x44: phase mask << 16 | slot */
+        Instance *I = world->obj[id & 0xffff];            /* world+0x40 */
+        I->vt[n](..., id);
+    }
+}
+for (j = 0; j < [0x4c4bec]; j++)                          /* the dynamic list 0x4c3bb4 */
+    dyn[j]->vt[n](..., dyn[j]->slot /*+4*/ | 0xffff0000);
+```
+(The loops start when the cell-list POINTER `0x4c4be8` is non-zero, `0x498464`/`0x497a50`/`0x497ef0`, i.e. always; the
+cylinder and sphere versions test the count.) Each vt[n] begins the same way (`0x43248e..0x432506` for vt[7], identical
+in the others): return if `+0x1c == −1` (hidden by message 6, or the cell point in no sector), if `+0x20 == [0x4c4c08]`
+(already tested in this query), if `+8 & 0x40` (non-collidable: fade > 0.9, a ridden bomb or rocket), if the model has no
+press node (`S+0x58 == 0`; vt[9] tests it after the stamp); run the clock `vt[2](1)` if it has not run this frame (which
+also re-cells the instance into the front of its sector chain, INSTANCE.md 4.1); return if `+0xd0 & id & 0xffff0000 == 0`
+(the phase bit of its current animation is not in the ref's mask); then `+0x20 = [0x4c4c08]` and the test. So an instance
+is tested at most once, from the first visited cell whose mask holds its current phase bit, in the order: cells in visit
+order, refs in file order, then the dynamic list.
+
+**The dynamic list** `0x4c3bb4` / `[0x4c4bec]` (at most 0x3ff) is rebuilt every frame right after the instance list
+(`0x401c68..0x401cbc`): every instance of this frame's list `world+0x64`, in list order, with flag `+8 & 0x20`, object
+kind 1 and press nodes. Flag 0x20 = moved and re-celled by its own code: the Perso, enemies (PostLoad `0x419e4d`), the race
+board, the rocket and bomb cannon (`0x4529b5`), bombs (`0x44d250`), the links of messages 59/61/62. Its members are tested
+wherever they are, but only while listed (in a sector the camera's `.vis` entry sees, floor group marked, INSTANCE.md 4.1);
+their `.col` refs, if any, still count too. A flag-0x20 instance away from where the level tool registered it and not
+listed is not found by any query (W3D boss-16 pad 805: Buzz stands on it only while the camera lists it).
+
+**Hit selection per test**: floor vt[7] `t < [0x4c4bd4]` strict (the nearest; the first tested on a tie); cylinder vt[8] and
+sphere vt[9] merge per axis into a positive maximum and a negative minimum (the order does not matter, only the set);
+segment vt[5] the LAST polygon tested (6.6); endless vt[6] the nearest, `t < [0x4c4bd4]` strict, with only the first
+entered polygon of each node considered (`0x432315` / `0x432447`). The actor push `0x4627d0` does not use cells at all
+(the actor list `0x4c5258` of the previous frame) and adds its pushes, so its order does not matter either.
+
+**Port** (`src/level.c`): `gel_col_load` (the `.col` into the GelFile, also used by the renderer), `gel_walk_cyl` /
+`gel_walk_sphere` / `gel_walk_down` / `gel_walk_seg` (the four walks, FORMAT_GEL.md 5.1), `gel_col_dynamic` (called at the
+end of `rnd_instance_list`), `ins_phase_mask` (+0xd0 from `Instance.anim` / `anim_time`), `ins_flag20`, and
+`gel_col_instances` (the loop above, with `Instance.col_stamp`). Every instance loop of `src/player.c` uses it - floor
+`ins_floor_below` (after `gel_walk_down`), push-out `body_push` (`gel_walk_cyl`), sphere `player_sphere_push`
+(`gel_walk_sphere`), segment `ray_instances` (`gel_walk_seg` up to the world hit), endless `player_ray_endless`
+(vt[6] ported: first entered polygon per node, nearest), the climb probe - and `inst_ray_press` / `inst_point_in_press`
+(`src/instance.c`). The port's old distance rejects (3000/4000 units around the query point) are gone. "In the world" =
+visible and the renderer's cell point in a sector (`Instance.cell_sec`). Without a `.col` file every visible instance with
+press nodes is tested in model order (port fallback). Test hooks: `WOODY_CELLCOL=1` prints the dynamic list whenever it
+changes, `WOODY_CELLCHECK=1` recomputes every floor, push-out and ray with every instance (the old selection) and prints
+each difference, `WOODY_COLALL=1` runs the old selection. Checked: the four walks equal brute force over the cell boxes
+(4000 random queries each, W1A, W3D, K1R, WWS, House); `WOODY_CELLCHECK` over walks in 17 levels, the W1A climb, saucer
+and door, the W1B shuttles and boss, W2D/W3D bosses and the W2A cannon found differences only for the W3D boss-16 pad
+805 (see above). Not ported: the clock side effect of a test on an instance that was not clocked this frame (the re-cell
+moves it to the front of its sector chain, which changes the next frame's draw order; the port's chains are only
+changed by the renderer).
 
 ## 7. Open questions and contradictions
 
@@ -804,11 +881,11 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
 * Behavior without a floor (GetHeight "NotFound", §6.6) is derived from the code but not seen in the game.
 * Read and ported since: the floor test vt[7] `0x432480` (§6.3), the non-uniform branch `0x4335d7` of `0x433140` (§6.5), the
   head ray of the sweep (§6.2, which is not a crouch-only sub-ray: it runs every substep), the segment ray `0x4359b0` with its
-  instance part vt[5] `0x432ab0` and the crush test `0x462a40` (§6.6). Left over: the instance tests run in the original only for
-  the instances registered in the cells the query visits (plus the dynamic list), in that order; the port tests every
-  instance (culled by the node boxes) and so cannot reproduce the "last instance wins" order of `0x432ab0`, nor an instance
-  that the original misses because its cell was not visited. The Kill(4) branch of the crush test is live-verified under the
-  W1A stampers 186/187 (§6.6).
+  instance part vt[5] `0x432ab0` and the crush test `0x462a40` (§6.6), and now the instance selection of every query (the
+  cells visited, the `.col` phase masks, the dynamic list, the order; §6.7) with the "last instance wins" rule of `0x432ab0`
+  and its non-conservative node cull (§6.6), which makes the W1A stamper 186 kill in one frame as in the original. Left
+  over: the lasers, shots and bombs of `main_engine.c` keep their two-sided nearest-hit instance test (only their instance
+  set follows §6.7). The Kill(4) branch of the crush test is live-verified under the W1A stampers 186/187 (§6.6).
 * **Press nodes, not hulls.** All four instance tests (floor vt[7] `0x432480`, cylinder vt[8] `0x433140`, sphere vt[9] `0x433ff0`,
   ray `0x4359b0`) walk only the press node list `model+0x58/0x5c` (node flag 0x01). The hull list `model+0x38/0x3c` (flag 0x04) is only
   read by the draw function `0x42e2b0` (`0x42e7e8`): hull nodes are the visible meshes of characters and props (Woody: 43 hull nodes,
