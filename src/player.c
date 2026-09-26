@@ -2080,6 +2080,12 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (!p->dead_kind && p->script_act) {                                  /* state 5, 0x44db50: the Perso stands still, the movement is in the root track of the animation */
         int door = p->script_act == 17 || p->script_act == 18;
         anim_request(p, p->script_log, 1.0f);
+        if (p->script_carry) {                                             /* 0x44db76 (message 1043 only; no shipped script sends it): the instance sits on the camera-track point of
+                                                                            * the running animation (0x42fa40, like the carried bomb) with the Perso's rotation (+0x28..+0x48 copied) */
+            const Model *m = p->inst->model; int a = p->inst->anim; Vec3 at, tg;
+            float ph = (uint32_t)a < m->nanims && m->anims[a].duration_s > 0 ? p->inst->anim_time / m->anims[a].duration_s : 0;
+            if (ins_camera_eval(p->inst, a, ph, &at, &tg)) { Instance *c = p->script_carry; c->position = at; c->quat = p->inst->quat; mat4_from_trs(&c->world, c->position, c->quat, c->scale); }
+        }
         if (p->script_act == 17 && !p->script_faded && p->script_t < 0.6f) { p->script_faded = 1; p->fade_req = 1; }
         p->script_t -= dt;
         if (!door) {                                                       /* 0x44e290 (docs/OBJECTS.md 1.5): pos stays put, the root track of the action carries the model */
@@ -2094,7 +2100,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             if (p->script_act == 18) {                                     /* he came out backwards: facing flips, ground snap, idle, follow camera */
                 p->yaw += 3.14159265f; int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
                 if (found) { p->pos.y = gy; p->floor_y = gy; } p->lanim = -1; anim_request(p, 0, 1.0f);
-                p->cam_end_req = 1;                                        /* 0x44e5a0: follow camera behind the NEW facing, 0.5 s travelling */
+                if (!p->side_on) p->cam_end_req = 1;                       /* 0x44dce9: 0x44e5a0 (follow camera behind the NEW facing, 0.5 s travelling) only outside the side view +0x4ec */
             } else if (!door) {                                            /* last frame of 0x44e290: he ends where the root track left him, facing -E.row2 */
                 Vec3 q, fw;
                 if (ins_root_at(p->inst, p->script_act, 1.0f, 1, &q, &fw)) { p->pos = q; if (fw.x * fw.x + fw.z * fw.z > 1e-6f) p->yaw = atan2f(fw.x, fw.z); }
@@ -2102,7 +2108,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
                 if (found) { p->pos.y = gy; p->floor_y = gy; }             /* SnapToGround 0x462990 */
                 p->use_root = 0; p->lanim = -1; anim_request(p, 0, 1.0f); p->cam_end_req = 1;
             } else lock_move(p, 0.3f);                                     /* 17: the pose is held until the teleport (message 26) resets the controller */
-            p->script_act = 0;
+            p->script_act = 0; p->script_carry = NULL;
         }
         player_apply_transform(p); perso_mask200(p, vm, 1); return;       /* state 5: no 0x4624f0, +0x22c kept */
     }
@@ -2556,11 +2562,28 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
     if (have) p->ground_22c = 1;                                    /* 0x44dede: onGround = 1 only with a vector (msgmask 0x200) */
-    p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = anim_len(p, lg, 0); p->script_faded = 0;
+    p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = anim_len(p, lg, 0); p->script_faded = 0; p->script_carry = NULL;   /* +0x554 = arg 3 (0x44dde1) */
     if (act == 18) p->fade_req = 2;   /* fade in 0.5 s on the first frame (0x44dc2b). The camera is NOT cut here: the tail of 0x44dda0
                                        * puts it on the animation's own camera track (message 1040 in main_engine.c) and a cut back to the
                                        * follow camera would undo that one frame later. Coming out of the door ends with 0x44e5a0, a 0.5 s
                                        * blend back to it - that is cam_end_req, raised when the action runs out. */
+    player_apply_transform(p);
+}
+/* message 1041 [inst, act] (0x445481 -> 0x44e040(act, &inst.pos)); no shipped script sends it. Facing = the xz direction to `at`
+ * (Mover_SetDir 0x459ff0, left alone when the distance is 0), ground snap 0x462990, the action's record requested after a Reset,
+ * +0x53c = +0x538 = 0 (length 0), +0x554 = 0, +0x540 = act, SetState(5). Unlike 0x44dda0 it neither moves him, nor drops the side
+ * view, nor leaves the volumes, nor cuts to a camera track. With the length 0 the next state-5 frame (0x44db50) ends it at once:
+ * idle, and for anything but 17/18 the end of 0x44e290 = he stands where the action's root motion ends, facing -E.row2 */
+void player_face_action(Player *p, int act, Vec3 at)
+{
+    if (p->dead_kind) return;
+    int lg = log_from_raw(act); if (lg < 0) { printf("  1041: action %d has no logical record", act), puts(""); return; }
+    float dx = at.x - p->pos.x, dz = at.z - p->pos.z;
+    if (dx * dx + dz * dz > 0) p->yaw = atan2f(dx, dz);
+    bomb_drop(p); p->throw_hold = 0; p->look = 0;                       /* SetState(5) */
+    p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
+    player_ground_snap(p);
+    p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = 0; p->script_faded = 0; p->script_carry = NULL;
     player_apply_transform(p);
 }
 /* 0x462990: the floor under feet + 43 (GetHeight 0x435650) becomes his height, onGround = 1, Jumper reset. The level start

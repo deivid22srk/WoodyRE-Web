@@ -1027,20 +1027,21 @@ static void res_text(float x, float y, uint32_t col, int shadow)                
     if (shadow) { float d = 0.05f * font_cell(); font_draw(x + d, y + d, g_row, 0xfe808080); }
     font_draw(x, y, g_row, col);
 }
-static void res_icon(int n, float xoff)                                           /* the six icons of 0x4542f0, all centred on x 45 */
+static void res_icon(int n, float xoff)                                           /* the six icons of 0x4549c0 (table 0x454f08), positions from 0x4542f0, all centred on x 45 */
 {
+    /* every rect goes to RectVirtual 0x480a10 as ints: fistp (round to nearest even, control word 0x007F) of x + xoff, y, w, h (0x454dd2..0x454e25) */
     switch (n) {
-    case 0: case 1:                                                               /* clock / enemy face: hub bank image 1, additive (flag 4) */
+    case 0: case 1:                                                               /* clock (51, 0, 36, 36) -> (27, 75) / enemy face (0, 0, 50, 50) -> (20, 170): hub bank image 1 (0x4ab260 / 0x4ab274 = 0x01010001), additive (flag 4) */
         if (!H.logo) break;
         { float sx = n ? 0 : 51, sw = n ? 50 : 36, x = n ? 20 : 27, y = n ? 170 : 75;
           glBlendFunc(GL_ONE, GL_ONE);
-          quad(x + xoff, y, sw, sw, H.logo, sx / H.logo_w, 0, (sx + sw) / H.logo_w, sw / H.logo_h, 0xfe808080, 0xfe808080, 0xfe808080, 0xfe808080);
+          quad((float)lrintf(x + xoff), y, sw, sw, H.logo, sx / H.logo_w, 0, (sx + sw) / H.logo_w, sw / H.logo_h, 0xfe808080, 0xfe808080, 0xfe808080, 0xfe808080);
           glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); }
         break;
-    case 2: sprite_rect(4, 9 + xoff, 275, 71, 71); break;                         /* the big W, 94 x 0.76 */
-    case 3: sprite_rect(5, 9 + xoff, 225, 71, 71); break;                         /* the flag (race) */
-    case 4: glBlendFunc(GL_ONE, GL_ONE); quad(16 + xoff, 370, 140, 2, 0, 0, 0, 0, 0, 0xfe808080, 0xfe808080, 0xfe808080, 0xfe808080); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;   /* the bar above TOTAL */
-    case 5: sprite_rect(3, 21 + xoff, 410, 49, 49); break;                        /* $, 64 x 0.76 */
+    case 2: sprite_rect(4, (float)lrintf(9.28f + xoff), 275, 71, 71); break;     /* the big W: bank 0 image 62 (0, 0, 94, 94) at 45 - 94 * 0.38 = 9.28, 94 * 0.76 = 71.44 -> 71, flag 8 */
+    case 3: sprite_rect(5, (float)lrintf(9.28f + xoff), 225, 71, 71); break;     /* the flag (race): image 63, same size */
+    case 4: glBlendFunc(GL_ONE, GL_ONE); quad((float)lrintf(16 + xoff), 370, 140, 2, 0, 0, 0, 0, 0, 0xfe808080, 0xfe808080, 0xfe808080, 0xfe808080); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;   /* the bar above TOTAL: no texture, (16, 370, 140, 2), flag 4 */
+    case 5: sprite_rect(3, (float)lrintf(20.68f + xoff), 410, 49, 49); break;    /* $: image 61 (63, 63, 64, 64) at 45 - 64 * 0.38 = 20.68, 64 * 0.76 = 48.64 -> 49, flag 8 */
     }
 }
 static float res_slide(float start) { float d = RS.clock - start; return d < 0.2f ? (0.2f - d) * -1000.0f : 0; }   /* 0x454f20 */
@@ -1075,35 +1076,37 @@ static float res_total(const HudResults *r, float start)                        
 }
 static float res_dollar(const HudResults *r, float start)                          /* 0x455650: the number of new unique items, big and red */
 {
-    row_reset(); res_line(res_slide(start), 5, 0, 0xfe808080, 0);
+    row_reset(); res_line(res_slide(start), 5, 15.0f, 0xfe808080, 0);            /* 0x455690: icon 5, no label (str 0), size 15 */
     if (start + 0.2f <= RS.clock) { font_size(40.0f); row_reset(); row_str(8); font_draw(k_res_row[6][0] - font_measure(g_row) * 0.5f, k_res_row[6][1], g_row, 0xfe808080); }
     return res_count(start + 0.4f, r->cats, 6, 40.0f, 0xfeff0000, 1);
 }
+static float res_time(const HudResults *r, float start)                          /* 0x455160: "m:ss" (t = _ftol(app+0x84), a leading 0 below 10 s, ":" = string 10), value 0x453d70 */
+{
+    int t = (int)r->time;                                                         /* _ftol */
+    row_reset(); row_num(t / 60); row_str(10); if (t % 60 < 10) row_num(0); row_num(t % 60);
+    res_line(res_slide(start), 0, 15.0f, 0xfe808080, 0);
+    return res_count(start, (t < 1800 ? 1800 - t : 0) * 10, 1, 15.0f, 0xfe808080, 0);
+}
+static float res_ratio_line(int got, int tot, float start, int icon, int row)     /* 0x4552b0 (enemies, icon 1, row 2), 0x4553a0 (W, 2, 3), 0x455490 (flag, 3, 4): "got/tot" (itoa, string 9 "/") */
+{
+    res_ratio(got, tot); res_line(res_slide(start), icon, 15.0f, 0xfe808080, 0);
+    return res_count(start, res_bonus(got, tot), row, 15.0f, 0xfe808080, 0);
+}
 static void res_lines(const HudResults *r, float dt)                              /* 0x454700 (normal) / 0x454860 (race) */
 {
-    RS.clock += dt;
-    float *e = RS.end;
+    RS.clock += dt;                                                               /* [0x509adc]+0x38 */
+    float *e = RS.end;                                                            /* e[0] = +0x40 .. e[5] = +0x54 */
     if (!r->race) {
-        int t = (int)r->time;                                                     /* _ftol */
-        row_reset(); row_num(t / 60); row_str(10); if (t % 60 < 10) row_num(0); row_num(t % 60);
-        res_line(res_slide(e[0]), 0, 15.0f, 0xfe808080, 0);
-        { float d = res_count(e[0], (t < 1800 ? 1800 - t : 0) * 10, 1, 15.0f, 0xfe808080, 0); if (e[1] == -1.0f) e[1] = d; }
-        if (e[1] <= -1.0f) return;
-        res_plus(1);
-        res_ratio(r->st[2], r->st[0]); res_line(res_slide(e[1]), 1, 15.0f, 0xfe808080, 0);
-        { float d = res_count(e[1], res_bonus(r->st[2], r->st[0]), 2, 15.0f, 0xfe808080, 0); if (e[2] == -1.0f) e[2] = d; }
-        if (e[2] <= -1.0f) return;
-        res_plus(2);
-        res_ratio(r->st[3], r->st[1]); res_line(res_slide(e[2]), 2, 15.0f, 0xfe808080, 0);
-        { float d = res_count(e[2], res_bonus(r->st[3], r->st[1]), 3, 15.0f, 0xfe808080, 0); if (e[3] == -1.0f) e[3] = d; }
+        /* each line runs every frame; its result is stored only while the slot is still -1 (0x454716 / 0x454777 / 0x4547c6 / 0x454802).
+         * The "+" between the lines (0x454920) is drawn in the else branch, i.e. only from the frame AFTER the line above was done */
+        if (e[1] == -1.0f) e[1] = res_time(r, e[0]); else { res_plus(1); res_time(r, e[0]); }
+        if (e[1] > -1.0f) { if (e[2] == -1.0f) e[2] = res_ratio_line(r->st[2], r->st[0], e[1], 1, 2); else { res_plus(2); res_ratio_line(r->st[2], r->st[0], e[1], 1, 2); } }
+        if (e[2] > -1.0f) { float d = res_ratio_line(r->st[3], r->st[1], e[2], 2, 3); if (e[3] == -1.0f) e[3] = d; }
     } else {                                                                      /* the flag line starts at +0x48 = -1: no slide, the counter is as good as done */
-        res_ratio(r->st[3], r->st[1]); res_line(res_slide(e[2]), 3, 15.0f, 0xfe808080, 0);
-        { float d = res_count(e[2], res_bonus(r->st[3], r->st[1]), 4, 15.0f, 0xfe808080, 0); if (e[3] == -1.0f) e[3] = d; }
+        float d = res_ratio_line(r->st[3], r->st[1], e[2], 3, 4); if (e[3] == -1.0f) e[3] = d;
     }
-    if (e[3] <= -1.0f) return;
-    { float d = res_total(r, e[3]); if (e[4] == -1.0f) e[4] = d; }
-    if (e[4] <= -1.0f) return;
-    { float d = res_dollar(r, e[4]); if (e[5] == -1.0f) e[5] = d; }
+    if (e[3] > -1.0f) { float d = res_total(r, e[3]); if (e[4] == -1.0f) e[4] = d; }
+    if (e[4] > -1.0f) e[5] = res_dollar(r, e[4]);                                 /* 0x454848 / 0x454909: +0x54 is overwritten EVERY frame (the clock of this frame once done) */
 }
 static void res_name(int level, uint32_t *a, uint32_t *b)                        /* 0x4559b0, table 0x455b60: 47 Space / 48 Pirate / 49 House / 50 Mini Game, 51..54 Part A..D, 55 Race */
 {
