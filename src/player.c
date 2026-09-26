@@ -97,14 +97,9 @@ float gel_floor_below(const GelFile *g, Vec3 p, float step_up, float max_drop, i
     return best;
 }
 
-/* Horizontal distance from p to an instance, measured from its animated root node (as the renderer's cull does), not
- * from the .ins origin: an animation can carry the whole model far away - the W1B shuttle platforms (model 42) travel
- * 4400 units from their origin and back, and an origin-based reject threw them out at the far end (issue #27). */
-static float inst_dist2_xz(const Instance *in, Vec3 p)
-{
-    const float *w = in->node_world ? in->node_world[0].m : in->world.m;
-    float dx = w[12] - p.x, dz = w[14] - p.z; return dx * dx + dz * dz;
-}
+/* The instance tests below take their instances from the .col registration of the cells each query visits
+ * (level.c gel_col_instances, docs/PERSO_MOVE.md 6.7) instead of a distance reject around the query point; the .col masks
+ * follow an animated platform along its path (the W1B shuttles, model 42, 4400 units of travel: issue #27). */
 static Vec3 g_ground_n = { 0, 1, 0 };   /* normal of the last world_ground() hit ([0x4b3108..10]) */
 static int32_t g_ground_mat = -1;       /* material of that hit when it is a world polygon ([0x53a554] == 1, poly+8), else -1 */
 static Vec3 g_ins_n;
@@ -160,16 +155,19 @@ static int press_normal(const Instance *in, const InsPoly *ip, Vec3 *out)
  * world floor's distance, and 0x498520 starts it at 0 (0x49852e): with no world floor under p no instance can be the floor
  * either. Culling (uniform scale only, 0x43259a): p within node radius * scale of the node origin in xz and the origin not
  * more than that above p - the node box here. The hit ([0x4c4bd0] = 4) is the instance, the press-list index, the polygon
- * and the normal press_normal(). best_dist in/out = the distance below p; returns 1 if an instance polygon won. */
-static int ins_floor_below(const InsFile *ins, Vec3 p, float *best_dist, const Instance *skip, const Instance **hit_inst, const InsNode **hit_node)
+ * and the normal press_normal(). best_dist in/out = the distance below p; returns 1 if an instance polygon won.
+ * Which instances, in which order (0x498475): those registered in the cells the world search visited (gel_walk_down, called by
+ * world_ground) and then the dynamic list - gel_col_instances(). "t < best" is strict, so of two floors at the same height
+ * the first instance tested keeps it. */
+static int ins_floor_below(const GelFile *g, const InsFile *ins, Vec3 p, float *best_dist, const Instance *skip, const Instance **hit_inst, const InsNode **hit_node)
 {
     int won = 0; Vec3 v[32]; *hit_inst = NULL; *hit_node = NULL;
-    for (uint32_t mi = 0; mi < ins->nmodels; mi++) {
-        const Model *m = &ins->models[mi];
-        uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn); if (!ncn) continue;
-        for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, skip) || !in->node_world) continue;
-            if (inst_dist2_xz(in, p) > 4000.0f * 4000.0f) continue;       /* cheap reject: far away horizontally */
+    const GelColRef *cr; uint32_t ncr = gel_col_instances(g, ins, &cr);
+    for (uint32_t q = 0; q < ncr; q++) {
+        const Instance *in = cr[q].in; if (skip_inst(in, skip)) continue;
+        const Model *m = in->model;
+        uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+        {
             for (uint32_t ci = 0; ci < ncn; ci++) {
                 uint32_t ni = cn[ci]; const InsNode *n = &m->nodes[ni];
                 float nb[6];                                              /* the node's own box: not under p, or wholly above it */
@@ -294,12 +292,14 @@ static Vec3 body_push(const Player *p, Vec3 c, float r, float up, float down, in
         for (uint32_t t = 0; t < pl->nverts; t++) { const GelVert *gv = &g->verts[pl->indices[t]]; v[t] = (Vec3){ gv->x, gv->y, gv->z }; }
         any |= cyl_poly(v, pl->nverts, pl->plane, c, r, up, down, acc);
     }
-    const InsFile *ins = p->ins;
-    for (uint32_t mi = 0; ins && mi < ins->nmodels; mi++) {
-        const Model *m = &ins->models[mi];
-        for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, p->inst) || !in->node_world) continue;
-            if (inst_dist2_xz(in, c) > 3000.0f * 3000.0f) continue;
+    /* the instances registered in the cells the band touches (0x40aa30), then the dynamic list: 0x407171..0x407301. The
+     * merge is a per-axis maximum / minimum, so their order does not matter here, only which ones are tested */
+    const InsFile *ins = p->ins; const GelColRef *cr; uint32_t ncr = 0;
+    if (ins) { gel_walk_cyl(g, c, r, up, down); ncr = gel_col_instances(g, ins, &cr); }
+    for (uint32_t q = 0; q < ncr; q++) {
+        const Instance *in = cr[q].in; const Model *m = in->model; int mi = (int)(m - ins->models);
+        if (skip_inst(in, p->inst)) continue;
+        {
             uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
                 uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1) continue;
@@ -320,6 +320,11 @@ static Vec3 body_push(const Player *p, Vec3 c, float r, float up, float down, in
         }
     }
     *hit = any;
+    if (getenv("WOODY_CELLCHECK") && ins) {                               /* testing: the same with every instance (the old selection) */
+        static int depth; if (!depth) { depth = 1; gel_col_force_all(1); int h2; Vec3 o = body_push(p, c, r, up, down, &h2); gel_col_force_all(0); depth = 0;
+            if (fabsf(o.x - (acc[0] + acc[1])) > 0.01f || fabsf(o.z - (acc[2] + acc[3])) > 0.01f || h2 != any)
+                printf("CELLCHECK push at %.0f %.0f %.0f: cells %.1f %.1f (%d) | all %.1f %.1f (%d)", c.x, c.y, c.z, acc[0] + acc[1], acc[2] + acc[3], any, o.x, o.z, h2), puts(""); }
+    }
     return (Vec3){ acc[0] + acc[1], 0, acc[2] + acc[3] };
 }
 
@@ -382,13 +387,13 @@ Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r)
         for (uint32_t t = 0; t < pl->nverts; t++) { const GelVert *gv = &g->verts[pl->indices[t]]; v[t] = (Vec3){ gv->x, gv->y, gv->z }; }
         sphere_accum(v, pl->nverts, (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }, c, r, acc);
     }
-    const InsFile *ins = p->ins;
-    for (uint32_t mi = 0; ins && mi < ins->nmodels; mi++) {
-        const Model *m = &ins->models[mi];
-        for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k];
-            if (!in->visible || in->noncollide || in == p->inst || skip_inst(in, skip) || !in->node_world) continue;
-            if (inst_dist2_xz(in, c) > 4000.0f * 4000.0f) continue;
+    /* the instances of the cells the sphere touches (0x40a700), then the dynamic list (0x4074ca..0x407640); vt[9] 0x433ff0 */
+    const InsFile *ins = p->ins; const GelColRef *cr; uint32_t ncr = 0;
+    if (ins) { gel_walk_sphere(g, c, r); ncr = gel_col_instances(g, ins, &cr); }
+    for (uint32_t q = 0; q < ncr; q++) {
+        const Instance *in = cr[q].in; const Model *m = in->model;
+        if (in == p->inst || skip_inst(in, skip)) continue;
+        {
             uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
                 uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->npoints) continue;
@@ -431,7 +436,15 @@ static float world_ground(const Player *p, Vec3 pt, int *found, const Instance *
     float y1 = pt.y - best;
     /* the instances only beat a world floor that was found: [0x4c4bd4] starts at 0 (0x49852e), and t < 0 never wins */
     float bi = f1 ? best : 0.0f;
-    f2 = ins_floor_below(p->ins, pt, &bi, g_ground_skip ? g_ground_skip : p->inst, hit_inst, hit_node);
+    gel_walk_down(g, pt, f1, y1);                                        /* the cells 0x498520 visited: pt's cell down to the floor's */
+    float bi0 = bi;
+    f2 = ins_floor_below(g, p->ins, pt, &bi, g_ground_skip ? g_ground_skip : p->inst, hit_inst, hit_node);
+    if (getenv("WOODY_CELLCHECK")) {                                     /* testing: what every instance (the old selection) would give */
+        float b2 = bi0; const Instance *h2; const InsNode *n2; Vec3 keep_n = g_ins_n;
+        gel_col_force_all(1); int w2 = ins_floor_below(g, p->ins, pt, &b2, g_ground_skip ? g_ground_skip : p->inst, &h2, &n2); gel_col_force_all(0); g_ins_n = keep_n;
+        if (w2 != f2 || h2 != *hit_inst || fabsf(b2 - bi) > 0.01f)
+            printf("CELLCHECK floor at %.0f %.0f %.0f: cells inst %d y %.1f | all inst %d y %.1f", pt.x, pt.y, pt.z, f2 ? (int)(*hit_inst)->index : -1, pt.y - bi, w2 ? (int)h2->index : -1, pt.y - b2), puts("");
+    }
     if (f2) { *found = 1; g_ground_n = g_ins_n; g_ground_mat = -1; return pt.y - bi; }
     *hit_inst = NULL; *hit_node = NULL; *found = f1; g_ground_n = f1 ? gn : (Vec3){ 0, 1, 0 }; g_ground_mat = f1 ? gm : -1; return f1 ? y1 : pt.y;
 }
@@ -547,10 +560,12 @@ static int jumper_tick(Jumper *j, float dt, int on_ground)
     j->h_prev = h;
     return !(u < 0.45f && !j->short_hop);
 }
-static void jumper_update(Jumper *j, int jump_held, int on_ground, float height_above_ground, float dt)
+static void jumper_update(Jumper *j, int jump_held, int allowed, int on_ground, float height_above_ground, float dt)
 {
     if (j->state == 2) { j->dy = 0; j->fallen = 0; j->hard_fall = 0; }
-    if (height_above_ground <= J_REARM_H && !jump_held) j->armed = 1;
+    if (!allowed) jump_held = 0;                                  /* 0x462d9c: Perso_Move's input flag off = the key counts as up */
+    if (height_above_ground <= J_REARM_H && !jump_held && allowed) j->armed = 1;   /* 0x462dc0: but it re-arms only with input allowed (a lock,
+                                                                   * an attack or the knockback timer keep a held key from firing on release of the lock) */
     if (j->coyote) { j->coyote_t += dt; if (j->coyote_t > J_COYOTE) j->coyote = 0; }
     switch (j->state) {
     case 2:
@@ -573,6 +588,44 @@ static void jumper_update(Jumper *j, int jump_held, int on_ground, float height_
     case 5: if (jumper_tick(j, dt, on_ground) && on_ground) j->state = 6; return;
     case 6: j->state = 2; return;
     }
+}
+
+/* ---- the second air action (docs/PERSO_JUMP.md 1.5) ------------------------------------------------------------
+ * 0x465e50, a pre-step of every Perso state (0x44b764): back on the ground (+0x22c) it may be used again; action 4 JUST pressed
+ * while the air-move window +0x6f8 is open (the jumper opens it with the attack window at t >= -0.15, the recoil of a peck at
+ * T < 0.5), more than P+0x84 = 100 above the ground and not used since the ground starts it once per air time, by subtype:
+ * 3 (Knothead, script type 2) an air dash along the facing, 0.15 s at 3000 u/s; 2 (Splinter, type 3) a double jump straight up,
+ * 0.25 s at 1200 u/s less 1 % per 1/60 s; SoundFx 0x3a. Woody (1) and the riders (4/5) only get the "used" flag. No animation
+ * request and no controller reset: whatever the Jumper state asks for (the somersault, anim 5) plays on. */
+static void air_move_start(Player *p, const PlayerInput *in)
+{
+    int pressed = in->jump && !p->am_jprev; p->am_jprev = in->jump;      /* 0x467420(4) */
+    if (p->on_ground) p->am_used = 0;                                    /* 0x465e62 */
+    if (!(p->am_win > 0) || !pressed || p->am_on || p->am_used || !(p->pos.y - p->floor_y > J_REARM_H)) return;   /* 0x465e68..0x465eb5 */
+    p->am_acc = 0; p->am_on = 1; p->am_used = 1;
+    if (p->subtype == 3) {                                               /* 0x465ee3: M+0x10, normalised when longer than 0 */
+        p->am_dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) }; p->am_t = 0; p->am_dur = 0.15f; p->am_speed = 3000.0f;
+    } else if (p->subtype == 2) {                                        /* 0x465f8b */
+        p->am_dir = (Vec3){ 0, 1, 0 }; p->am_t = 0; p->am_dur = 0.25f; p->am_speed = 1200.0f;
+    } else { p->am_on = 0; return; }                                     /* 0x465fcf */
+    audio_fx(0x3a, NULL, NULL);
+    if (getenv("WOODY_JUMPLOG")) printf("  AIR MOVE %s (jumper %d t %.3f, %.0f above the floor, anim %d)\n", p->subtype == 3 ? "dash" : "double jump", p->jumper.state, p->jumper.t, p->pos.y - p->floor_y, p->lanim);
+}
+/* 0x465fe0, the head of Perso_Move (states 0/6/2/3): the window runs down; while active, +0x204 = dir * step * speed with
+ * step = the part of this frame inside the length, the direction keeping the last displacement; returns 1 = Perso_Move stops */
+static int air_move_tick(Player *p, float dt, Vec3 *disp)
+{
+    if (p->am_win > 0) p->am_win -= dt;
+    if (!p->am_on) return 0;
+    if (p->am_t >= p->am_dur) { p->am_on = 0; return 0; }               /* 0x466026: the frame after the end is a normal one */
+    float t0 = p->am_t; p->am_t += dt; if (p->am_t > p->am_dur) p->am_t = p->am_dur;
+    float step = p->am_t - t0;
+    if (p->subtype == 2) { p->am_acc += step; while (p->am_acc >= 1.0f / 60.0f) { p->am_speed *= 0.99f; p->am_acc -= 1.0f / 60.0f; } }   /* 0x4a9990, 0x4ab7d8 */
+    float l = sqrtf(vdot(p->am_dir, p->am_dir)), k = step * p->am_speed;
+    if (l > 0) { p->am_dir.x /= l; p->am_dir.y /= l; p->am_dir.z /= l; }
+    p->am_dir = (Vec3){ p->am_dir.x * k, p->am_dir.y * k, p->am_dir.z * k };
+    *disp = p->am_dir;
+    return 1;
 }
 
 /* ---- volumes ------------------------------------------------------------------ */
@@ -611,6 +664,7 @@ void player_bind(Player *p, Instance *inst)
     p->yaw = atan2f(fwd.x, fwd.z);
     p->spawn_pos = p->start_pos = p->pos; p->spawn_yaw = p->yaw;        /* +0x318 = +0x30c (0x44a44a) */
     p->race_char = inst->type == 18 || inst->type == 19;                  /* subtypes 5/4: Reset 0x44ab20 enters state 1 through SurfEnter */
+    p->subtype = inst->type == 2 ? 3 : inst->type == 3 ? 2 : inst->type == 18 ? 5 : inst->type == 19 ? 4 : 1;   /* the Perso ctor's argument per script type (0x403560..0x403607) */
     g_jH = p->race_char ? 400.0f : J_HEIGHT; g_jP68 = p->race_char ? 1250.0f : J_P68; g_jV = p->race_char ? 1250.0f : J_V;
     if (p->race_char) race_enter(p, 0);                                   /* SetTypeInstance, inside the init tick; the Game ctor's SurfEnter follows (player_race_start) */
 }
@@ -677,8 +731,13 @@ float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b) { return gel_ray_hit(g, a, 
  * one makes it 4. t is in units of dir, not normalised: the callers pass an unnormalised dir and read it that way.
  * Port: a segment to where the ray leaves the level's bounding box, world polygons and then instance press nodes up to the
  * world hit, as the endless laser does. Like 0x497c5a only the world polygons that face a count (plane(a) >= 0, the ray
- * going in); the press nodes are tested from both sides here (0x43214d is one-sided too). On 1 the original leaves
- * [0x4c4bd4] stale, which here is simply "no hit". */
+ * going in). On 1 the original leaves [0x4c4bd4] stale, which here is simply "no hit".
+ * The instance side (0x497a61..0x497b09): the instances registered in the cells the world walk visited (gel_walk_seg,
+ * endless: up to the world hit or out of the world) and then the dynamic list, each through vt[6] 0x431de0: per press node,
+ * the FIRST polygon in list order that a sees from its front (loader plane >= 0, 0x432169) and that the ray enters (every
+ * edge (v_k - a) x (v_k+1 - a) . dir > 0, 0x432261) is the node's only candidate: t = -f(a) / n.dir, recorded when
+ * t < [0x4c4bd4] (strict, 0x43230a) - then or otherwise the node is done (0x432447). So the nearest wins, the first tested
+ * on a tie, and a node whose first entered polygon is farther hides a nearer one behind it in its list. */
 static float gel_ray_front(const GelFile *g, Vec3 a, Vec3 b)
 {
     float best = 2.0f;
@@ -703,10 +762,28 @@ int player_ray_endless(const Player *p, Vec3 a, Vec3 dir, float *t)
     }
     if (!(K < 1e29f)) return 1;
     if (K < 1.0f) K = 1.0f;
-    Vec3 b = { a.x + dir.x * K, a.y + dir.y * K, a.z + dir.z * K };
-    float f = gel_ray_front(p->gel, a, b), fw = f < 1.0f ? f : 1.0f, fi; int kind = f <= 1.0f ? 3 : 1;
-    Vec3 bw = { a.x + (b.x - a.x) * fw, a.y + (b.y - a.y) * fw, a.z + (b.z - a.z) * fw };
-    if (inst_ray_press(p->ins, NULL, a, bw, &fi, NULL, NULL) && fi <= 1.0f && fi * fw < (kind == 3 ? f : 2.0f)) { f = fi * fw; kind = 4; }
+    Vec3 b = { a.x + dir.x * K, a.y + dir.y * K, a.z + dir.z * K }, dd = vsub(b, a), v[32];
+    float f = gel_ray_front(p->gel, a, b); int kind = f <= 1.0f ? 3 : 1;
+    const GelColRef *cr; uint32_t ncr = 0;
+    if (p->ins) { gel_walk_seg(p->gel, a, b, kind == 3 ? f : 2.0f, 1); ncr = gel_col_instances(p->gel, p->ins, &cr); }
+    for (uint32_t q = 0; q < ncr; q++) {
+        const Instance *in = cr[q].in; const Model *m = in->model; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+        for (uint32_t ci = 0; ci < ncn; ci++) {
+            const InsNode *nd = &m->nodes[cn[ci]];
+            for (uint32_t pi = 0; pi < nd->npolys; pi++) {
+                const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 32) continue;
+                for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
+                float P[4]; if (!loader_plane(v, pl->nverts, P)) continue;
+                float fa = P[0] * a.x + P[1] * a.y + P[2] * a.z + P[3]; if (fa < 0) continue;   /* 0x432174 */
+                uint32_t e = 0;
+                for (; e < pl->nverts; e++) { Vec3 u = vsub(v[e ? e - 1 : pl->nverts - 1], a), w = vsub(v[e], a); if (!(vdot(vcross(u, w), dd) > 0)) break; }
+                if (e < pl->nverts) continue;                                 /* 0x43226c: not entered, next polygon */
+                float den = P[0] * dd.x + P[1] * dd.y + P[2] * dd.z;
+                if (den < 0) { float ti = -fa / den; if (ti < (kind == 1 ? 1e30f : f)) { f = ti; kind = 4; } }   /* 0x432302..0x432315 */
+                break;                                                          /* 0x432447: the node is done */
+            }
+        }
+    }
     *t = kind == 1 ? 0 : f * K;
     return kind;
 }
@@ -817,13 +894,17 @@ static int attack_probe(Player *p, Vec3 v)                                      
     p->atk = n == 0xe ? 7 : 6; p->atk_t = anim_len(p, n, 0); lock_move(p, p->atk_t);
     return 1;
 }
-/* target finder 0x4632e0 / 0x463420: nearest attackable instance (type bit 0x400) within r (3D) */
+/* target finder 0x4632e0 / 0x463420 (finder object Perso+0x604): the instances of this frame's list world+0x64 whose type
+ * word (vtbl[4] 0x403fe0 = inst+0x104) has bit 0x400, strictly within r of the feet (3D, instance origin +0xc), at most the
+ * first 16 in list order, bubble-sorted by distance; the first is taken. Bit 0x400 = Enemy.attackable: set by the enemy
+ * PostLoad 0x419e30 / Reset 0x41a010, cleared in the dead state of types 4..13, never for the bosses 14..16; 1201 / 1202
+ * (enemies_msg1201) are never sent. Port difference: no 16-candidate cap (the enemy array is not in list order) */
 static Enemy *nearest_enemy(Player *p, float r)
 {
     Enemy *best = NULL; float bd = r * r;
     if (!p->enemies) return NULL;
     for (int i = 0; i < p->enemies->n; i++) {
-        Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible) continue;
+        Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible || !game_enemy_thinks(e->inst)) continue;
         Vec3 d = vsub(e->pos, p->pos); float dd = vdot(d, d); if (dd < bd) { bd = dd; best = e; }
     }
     return best;
@@ -912,7 +993,7 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
         }
         p->dash_start = p->pos; audio_fx(55 + rand() % 3, NULL, NULL);          /* 0x45752b: air attack cry, 0x37 + rand(0,3) */
         { float l = sqrtf(vdot(p->atk_dir, p->atk_dir)); p->atk_dir.x /= l; p->atk_dir.y /= l; p->atk_dir.z /= l; }
-        p->jumper.fallen = 0; p->jumper.hard_fall = 0; p->air_win = 0; p->atk = 2; return; }
+        p->jumper.fallen = 0; p->jumper.hard_fall = 0; p->air_win = 0; p->am_win = 0; p->atk = 2; return; }   /* 0x457560(0, 1), 0x465e00(0, 1) */
     case 2:
         p->atk_disp = (Vec3){ p->atk_dir.x * dt * 1500.0f, p->atk_dir.y * dt * 1500.0f, p->atk_dir.z * dt * 1500.0f }; p->use_atk_disp = 1;
         if (!attack_probe(p, (Vec3){ p->atk_dir.x * 50.0f, p->atk_dir.y * 50.0f, p->atk_dir.z * 50.0f }))
@@ -929,7 +1010,7 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
         p->atk_t = 0.75f; p->atk = 5; return;
     case 5:
         p->atk_t -= dt; { float v = dt * p->atk_t * 1000.0f; p->atk_disp = (Vec3){ p->atk_dir.x * v, p->atk_dir.y * v, p->atk_dir.z * v }; } p->use_atk_disp = 1;
-        if (p->atk_t < 0.5f && !(p->air_win > 0)) p->air_win = 0.5f;          /* chained attack possible */
+        if (p->atk_t < 0.5f && !(p->air_win > 0)) { p->air_win = 0.5f; if (p->am_win < 0.5f) p->am_win = 0.5f; }   /* chained attack possible (0x458873: 0x465e00(0.5) too) */
         if (p->atk_t <= 0) { jumper_force_fall(&p->jumper, 1); p->atk = 0; }
         return;
     case 6:
@@ -945,7 +1026,8 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
             return;
         }
         if ((p->atk_t -= dt) <= 0) p->atk = 10;
-        auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
+        if (p->atk9_first) p->atk9_first = 0; else auto_aim(p);            /* 0x457b6c: no aim on the first windup frame (+0x5fd) */
+        dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
         p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return;
     case 10:
         auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
@@ -1019,7 +1101,7 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
     if (p->move_lock > 0 || p->atk != 0) return;
     if (p->on_ground) {
         if (released) {                                                    /* charge run starts on RELEASE */
-            p->atk_t = anim_len(p, 0x10, 0) + anim_len(p, 0x11, 0); p->atk = 9;
+            p->atk_t = anim_len(p, 0x10, 0) + anim_len(p, 0x11, 0); p->atk = 9; p->atk9_first = 1;   /* 0x457499: +0x5fd */
             if (p->charge <= 0.1f) { lock_move(p, p->atk_t); p->charge = 0; }
         } else if (held) { p->charge += 4.0f * dt; if (p->charge > 1.5f) p->charge = 1.5f; }
     } else if (pressed && p->air_win > 0) p->atk = 1;                      /* air: peck dash */
@@ -1111,6 +1193,7 @@ static void player_reset(Player *p)                                     /* vt[17
     p->crush = 1.0f;                                                     /* 0x44ab3b: +0x2e8 = 1 (and the scale +0x4c..+0x54) */
     p->look = 0; p->look_show = 0; p->inst->fade = p->inst->fade_target = 0; p->inst->fade_rate = 100.0f;   /* 0x44ac15 +0x268 = 0; 0x44ad6a: 0x44e7f0(0, 1), visible again after a death in state 3 */
     p->special_st = 0; p->special_t = 0;                                 /* 0x44ad5e / 0x44ad64 */
+    p->am_win = 0; p->am_used = 0; p->am_on = 0;                         /* 0x44ad34 / 0x44ad3a / 0x44ad40 */
     p->follow = NULL;                                                    /* 0x44ac84: +0x55c = 0; Reset's SetState(0) (0x44ac3f) ends state 7 */
     if (p->race_char) race_enter(p, 1);                                /* 0x44ac33: SurfEnter + state 1 */
     player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
@@ -1168,66 +1251,87 @@ void player_restart(Player *p)
 
 /* ---- peck climbing: Perso state 4 (0x4651d0). A press node (kind 1) with typecode 4 is a peckable wall. ---- */
 static float g_climb_frac;   /* fraction of the last climb_ray hit */
-/* the instance half of the ray 0x4359b0: 0x497ed0 answering 4 is hit kind 2 with the node in [0x53a58c] and the instance in
- * [0x53a560] (0x435a46); like every instance test of the original it walks the PRESS nodes (kind 1). Returns the first
- * polygon of a visible, collidable instance on a->b as a fraction of the segment, with its normal turned towards a.
- * `skip` (a bomb itself: flag 0x40 during its own ray, 0x449da2) and the player are left out. */
+/* The instance half of the ray 0x4359b0 (docs/PERSO_MOVE.md 6.6-6.7): 0x497ed0 runs vt[5] 0x432ab0 for the instances
+ * registered in the cells the world part visited - a's cell (0x408180) along a->b to the cell of the world hit t_world, or
+ * of b (gel_walk_seg) - and then for the dynamic list (gel_col_instances). Per press node, per polygon, with the loader
+ * plane (world-space loader_plane, the same side as the node-space one): f(a) < 0 -> counted as behind and skipped
+ * (0x432d8c); f(b) > 0 -> skipped (0x432dc3); every edge (v_k - a) x (v_k+1 - a) . (b - a) > 0 (0x432ee2), else skipped;
+ * t = f(a) / (f(a) - f(b)). The polygon is recorded when t < [0x4c4bd4] OR [0x53a554] == 0 (0x432f7a..0x432f8e) - and only
+ * the "inside" branch below ever writes [0x53a554], which 0x4359b0 zeroes before the cast: so EVERY such polygon is
+ * recorded and the LAST one tested wins (last instance in cell order, last node, last polygon), not the nearest, and it
+ * replaces a world hit even when that is nearer. A node whose polygons all have f(a) < 0 (0x4330c0, count == N+4): a lies
+ * inside it -> [0x53a554] = 3, t = 0, instance and node recorded ([0x4c4bd0] = 2 -> hit kind 3); from then on no polygon
+ * can win (t < 0 is impossible, [0x53a554] != 0), but a later inside node overwrites the instance again (last inside wins).
+ * The normal of a kind-2 hit is M.n normalised (0x432f94..0x433054, press_normal), which faces a. Returns 0, 2 or 3.
+ * `skip` (a bomb itself: flag 0x40 during its own ray, 0x449da2) and the player's own instance take no part. */
+typedef struct { int kind; float t; const Instance *in; const InsNode *node; Vec3 n; } InsRayHit;
+static int ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b, float t_world, InsRayHit *h)
+{
+    const GelFile *g = p->gel; const InsFile *ins = p->ins; Vec3 v[32], ab = vsub(b, a); int inside = 0;
+    h->kind = 0; h->t = 2.0f; h->in = NULL; h->node = NULL; h->n = (Vec3){ 0, 1, 0 };
+    if (!ins) return 0;
+    gel_walk_seg(g, a, b, t_world, 0);
+    const GelColRef *cr; uint32_t ncr = gel_col_instances(g, ins, &cr);
+    float sb[6] = { fminf(a.x, b.x) - 1, fmaxf(a.x, b.x) + 1, fminf(a.y, b.y) - 1, fmaxf(a.y, b.y) + 1, fminf(a.z, b.z) - 1, fmaxf(a.z, b.z) + 1 };
+    for (uint32_t q = 0; q < ncr; q++) {
+        const Instance *in = cr[q].in; if ((skip && in == skip) || skip_inst(in, p->inst)) continue;
+        const Model *m = in->model; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
+        int uniform = in->scale.x == in->scale.y && in->scale.x == in->scale.z;   /* 0x432b9d / 0x432bb7 */
+        for (uint32_t ci = 0; ci < ncn; ci++) {
+            uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni];
+            if (uniform) {                                                  /* 0x432bc5..0x432c4a: skip the node (its inside test too) when */
+                const float *M = in->node_world[ni].m; float R = in->scale.x * nd->radius;   /* |o - a|^2 > R^2 + |b - a|^2, o = the node origin (pivot) */
+                Vec3 o = { M[12] - a.x, M[13] - a.y, M[14] - a.z };      /* NOT a segment-sphere test: a short ray that reaches into a big */
+                if (R * R + vdot(ab, ab) < vdot(o, o)) continue;           /* node far from its origin is culled (the W1A stamper 186, 993) */
+            }
+            float nb[6]; if (ins_node_world_box(in, ni, nb) && (nb[0] > sb[1] || nb[1] < sb[0] || nb[2] > sb[3] || nb[3] < sb[2] || nb[4] > sb[5] || nb[5] < sb[4])) continue;
+            uint32_t behind = 0;
+            for (uint32_t pi = 0; pi < nd->npolys; pi++) {
+                const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 32) continue;
+                for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
+                float P[4]; if (!loader_plane(v, pl->nverts, P)) continue;
+                float fa = P[0] * a.x + P[1] * a.y + P[2] * a.z + P[3], fb = P[0] * b.x + P[1] * b.y + P[2] * b.z + P[3];
+                if (fa < 0) { behind++; continue; }                         /* 0x432d8c */
+                if (fb > 0 || !(fa - fb > 0)) continue;                    /* 0x432dc3 */
+                uint32_t e = 0;
+                for (; e < pl->nverts; e++) { Vec3 u = vsub(v[e], a), w = vsub(v[(e + 1) % pl->nverts], a); if (!(vdot(vcross(u, w), ab) > 0)) break; }
+                if (e < pl->nverts || inside) continue;                    /* after an inside node t < 0 would be needed */
+                h->kind = 2; h->t = fa / (fa - fb); h->in = in; h->node = nd;   /* no "t < best": the last one wins */
+                if (!press_normal(in, pl, &h->n)) h->n = (Vec3){ P[0], P[1], P[2] };
+            }
+            if (nd->npolys && behind == nd->npolys) { inside = 1; h->kind = 3; h->t = 0; h->in = in; h->node = nd; }   /* 0x4330c8 */
+        }
+    }
+    if (getenv("WOODY_CELLCHECK")) {                                     /* testing: the same with every instance (the old set, model order) */
+        static int depth; if (!depth) { depth = 1; InsRayHit h2; gel_col_force_all(1); ray_instances(p, skip, a, b, t_world, &h2); gel_col_force_all(0); depth = 0;
+            if (h2.kind != h->kind || h2.in != h->in || fabsf(h2.t - h->t) > 0.001f)
+                printf("CELLCHECK ray %.0f %.0f %.0f -> %.0f %.0f %.0f: cells kind %d inst %d t %.3f | all kind %d inst %d t %.3f", a.x, a.y, a.z, b.x, b.y, b.z, h->kind, h->in ? (int)h->in->index : -1, h->t, h2.kind, h2.in ? (int)h2.in->index : -1, h2.t), puts(""); }
+    }
+    return h->kind;
+}
+/* the instance half for callers with a world test of their own: the cells up to the one-sided world hit (0x497fb0's walk),
+ * the original's selection (above). *frac = the fraction of a->b (0 for a start inside a press node, whose normal the
+ * original leaves stale - here the reverse ray direction). The original lets any instance hit replace the world hit. */
 int player_ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b, float *frac, Vec3 *n_out, const Instance **inst_out)
 {
-    float best = 2.0f; int hit = 0; Vec3 v[16];
-    float sb[6] = { fminf(a.x, b.x) - 1, fmaxf(a.x, b.x) + 1, fminf(a.y, b.y) - 1, fmaxf(a.y, b.y) + 1, fminf(a.z, b.z) - 1, fmaxf(a.z, b.z) + 1 };
-    for (uint32_t mi = 0; mi < p->ins->nmodels; mi++) {
-        const Model *m = &p->ins->models[mi];
-        for (uint32_t k = 0; k < m->ninstances; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || in == skip || in == p->inst || !in->node_world) continue;
-            if (inst_dist2_xz(in, a) > 4000.0f * 4000.0f) continue;
-            uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
-            for (uint32_t ci = 0; ci < ncn; ci++) {
-                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys) continue;
-                float nb[6]; if (ins_node_world_box(in, ni, nb) && (nb[0] > sb[1] || nb[1] < sb[0] || nb[2] > sb[3] || nb[3] < sb[2] || nb[4] > sb[5] || nb[5] < sb[4])) continue;
-                for (uint32_t pi = 0; pi < nd->npolys; pi++) {
-                    const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 16) continue;
-                    for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
-                    Vec3 nrm = vcross(vsub(v[1], v[0]), vsub(v[2], v[0])); float l = sqrtf(vdot(nrm, nrm)); if (l < 1e-6f) continue;
-                    nrm.x /= l; nrm.y /= l; nrm.z /= l;
-                    float da = vdot(vsub(a, v[0]), nrm), db = vdot(vsub(b, v[0]), nrm); if ((da > 0) == (db > 0)) continue;
-                    float t = da / (da - db); if (t >= best) continue;
-                    Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
-                    if (!point_in_poly3(v, pl->nverts, nrm, q)) continue;
-                    if (da < 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }
-                    best = t; hit = 1; *n_out = nrm; if (inst_out) *inst_out = in;
-                }
-            }
-        }
-    }
-    *frac = best; return hit;
+    float tw = gel_ray_front(p->gel, a, b); InsRayHit h;
+    int k = ray_instances(p, skip, a, b, tw < 1.0f ? tw : 2.0f, &h);
+    *frac = k ? h.t : 2.0f; if (!k) return 0;
+    if (k == 3) { Vec3 d = vsub(a, b); float l = sqrtf(vdot(d, d)); h.n = l > 1e-6f ? (Vec3){ d.x / l, d.y / l, d.z / l } : (Vec3){ 0, 1, 0 }; }
+    *n_out = h.n; if (inst_out) *inst_out = h.in;
+    return 1;
 }
+/* the probe ray of the peck climb (0x4575b0 for the grab, 0x46545e while climbing): 0x4359b0, of which only an instance hit
+ * matters here - hit kind 2 on a press node with type code 4 is peckable ([0x53a58c] -> node type code); kind 3 (the start
+ * inside a press node) is a hit that is not peckable. Instances as the original picks them (ray_instances: the cells up to
+ * the world hit, the last polygon tested wins); the normal faces the player (one-sided). */
 static int climb_ray(const Player *p, Vec3 from, Vec3 to, Vec3 *n_out, const Instance **inst_out, int *peckable)
 {
-    float best = 2.0f; int hit = 0;
-    for (uint32_t mi = 0; mi < p->ins->nmodels; mi++) {
-        const Model *m = &p->ins->models[mi];
-        for (uint32_t ni = 0; ni < m->nnodes; ni++) {
-            const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->polys) continue;
-            for (uint32_t k = 0; k < m->ninstances; k++) {
-                const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, p->inst)) continue;
-                if (inst_dist2_xz(in, from) > 3000.0f * 3000.0f) continue;
-                for (uint32_t pi = 0; pi < nd->npolys; pi++) {
-                    const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 8) continue;
-                    Vec3 v[8]; for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
-                    Vec3 nrm = vcross(vsub(v[1], v[0]), vsub(v[2], v[0])); float l = sqrtf(vdot(nrm, nrm)); if (l < 1e-6f) continue;
-                    nrm.x /= l; nrm.y /= l; nrm.z /= l;
-                    float da = vdot(vsub(from, v[0]), nrm), db = vdot(vsub(to, v[0]), nrm); if ((da > 0) == (db > 0)) continue;
-                    float t = da / (da - db); if (t >= best) continue;
-                    Vec3 q = { from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t, from.z + (to.z - from.z) * t };
-                    if (!point_in_poly3(v, pl->nverts, nrm, q)) continue;
-                    if (da < 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }   /* normal towards the player */
-                    best = t; g_climb_frac = t; hit = 1; *n_out = nrm; *inst_out = in; *peckable = nd->type_code == 4;
-                }
-            }
-        }
-    }
-    return hit;
+    float tw = gel_ray_front(p->gel, from, to); InsRayHit h;
+    if (!ray_instances(p, NULL, from, to, tw < 1.0f ? tw : 2.0f, &h)) return 0;
+    g_climb_frac = h.t; *n_out = h.n; *inst_out = h.in; *peckable = h.kind == 2 && h.node->type_code == 4;
+    if (h.kind == 3) { Vec3 d = vsub(from, to); float l = sqrtf(vdot(d, d)); *n_out = l > 1e-6f ? (Vec3){ d.x / l, d.y / l, d.z / l } : (Vec3){ 0, 1, 0 }; }
+    return 1;
 }
 static Vec3 climb_probe_to(const Player *p, Vec3 from) { Vec3 to = { from.x + sinf(p->yaw) * (P_RADIUS + 100.0f), from.y, from.z + cosf(p->yaw) * (P_RADIUS + 100.0f) }; return to; }
 
@@ -1483,7 +1587,7 @@ static Vec3 race_ride(Player *p, const PlayerInput *in, float dt)
         if (p->race_crash_t == 0.0f) { p->cam_dist = 400.0f; race_request(p, 0x70); jumper_force_fall(&p->jumper, 0); }
         p->race_crash_t += dt;
         float L = anim_len(p, 0x70, 1) + anim_len(p, 0x70, 0);
-        if (p->race_crash_t >= L) { jumper_update(&p->jumper, 0, p->on_ground, p->pos.y - p->floor_y, dt); disp.y = p->jumper.dy; }   /* before L he hangs where he crashed */
+        if (p->race_crash_t >= L) { jumper_update(&p->jumper, 0, 1, p->on_ground, p->pos.y - p->floor_y, dt); disp.y = p->jumper.dy; }   /* before L he hangs where he crashed */
         if ((p->race_crash_t >= L && p->on_ground) || p->race_crash_t >= 2.0f) player_kill(p, 8);
         return disp; }
     case 1: disp = p->race_dir; break;                                     /* 0x456cf0: M+0x1c, the direction of the previous frame */
@@ -1514,7 +1618,7 @@ static Vec3 race_ride(Player *p, const PlayerInput *in, float dt)
     if (disp.x * disp.x + disp.z * disp.z < 1e-4f) disp = (Vec3){ 1, 0, 0 };   /* M_SetRideDir: |dir| < 0.01 -> x = 1 */
     p->race_dir = xz_unit(disp); p->yaw = atan2f(p->race_dir.x, p->race_dir.z);   /* M+0x1c = M+0x10: the facing */
     disp = (Vec3){ p->race_dir.x * step, 0, p->race_dir.z * step };
-    jumper_update(&p->jumper, in->jump, p->on_ground, p->pos.y - p->floor_y, dt);   /* 0x462d70 with action 4 */
+    jumper_update(&p->jumper, in->jump, 1, p->on_ground, p->pos.y - p->floor_y, dt);   /* 0x462d70 with action 4, input allowed */
     disp.y = p->jumper.dy;
     p->bfx.active = 1;                                                     /* 0x4567d1: the app ticks the spray emitter this frame */
     p->race_snd |= 1;                                                      /* 0x468e40 */
@@ -1630,7 +1734,7 @@ static void look_update(Player *p, const PlayerInput *in)
         p->look = 1;
         if (getenv("WOODY_LOOKLOG")) printf("  LOOK on (from state %d), facing %.0f\n", p->look_prev6 ? 6 : 0, p->yaw * 57.2958f);
     } else {
-        audio_fx(9, NULL, NULL);                                            /* 0x44ba5f: "can't" (only while the App is in a game) */
+        if (!p->app_menu) audio_fx(9, NULL, NULL);                          /* 0x44ba5f: "can't" (only while the App is in a game, App+0 != 0, 0x44ba52) */
         if (getenv("WOODY_LOOKLOG")) printf("  LOOK refused (ground %d, camera mode %d)\n", p->on_ground, p->cam_mode);
     }
 }
@@ -1669,20 +1773,30 @@ void player_look_camera(Player *p, FreeCamera *cam, float dt)
 /* 0x459c70, the Perso's half of the side view (runs while Perso+0x4ec, after 0x458bf0, before the Mover; 0x44b7be). Only while
  * +0x238 <= 0 (the move lock, 0x459c80): with no attack (+0x5b4), not climbing (+0x50c), not dead (state 2) and the camera in
  * mode index 5, action 0 held sets +0x4ed and clears +0x4ee, action 1 the reverse (0 wins); the flip byte p+0x20 is the OLD value
- * of the flag being cleared (a turn round, for one frame), else 0. On a flip the walking vector +0x500 is negated (0x459d18),
- * which the Mover's facing follows (not ported: the port's side movement is the camera-relative walk). While the move lock
- * runs the byte keeps its value: a lock that starts in the frame right after a flip leaves it at 1, and the camera update then
- * flips again every frame of the lock (a peck released one frame after the turn does it; the original's blend then goes NaN,
- * sv_ahead in main_engine.c avoids that; docs/CAMERA_SCRIPT.md 4.2). The height byte p+4 is the app's behind_key. */
+ * of the flag being cleared (a turn round, for one frame), else 0. On a flip the walking vector +0x500 is negated (0x459d18).
+ * While the move lock runs the byte keeps its value: a lock that starts in the frame right after a flip leaves it at 1, and the
+ * camera update then flips again every frame of the lock (a peck released one frame after the turn does it; the original's
+ * blend then goes NaN, sv_ahead in main_engine.c avoids that; docs/CAMERA_SCRIPT.md 4.2). The height byte p+4 is the app's
+ * behind_key. Then, lock or not and in every Perso state, the facing snaps to the walking vector (0x459def..0x459eaa): RampA's
+ * dir M+0x34 = xzNormalize(+0x500) (|.| < 0.01 -> x = 1), M+0x1c = M+0x10 = it. There is no turn slerp in a side section: a
+ * turn is a snap to -d, and what an attack, a climb start or a hit set as the facing earlier in the frame is overwritten here
+ * (a later SetDir in the same frame, the climb 0x4650c3 or a ride, still wins for that frame). docs/CAMERA_SCRIPT.md 4.2.1. */
 static void side_update(Player *p, const PlayerInput *in)
 {
-    if (!p->side_on || p->move_lock > 0) return;
-    int flip = 0;
-    if (!p->atk && !p->climb_sub && !p->dead_kind && p->cam_mode == 0x20) {
-        if (in->left) { flip = p->side_r; p->side_l = 1; p->side_r = 0; }       /* 0x459cf1 */
-        else if (in->right) { flip = p->side_l; p->side_r = 1; p->side_l = 0; } /* 0x459d84 */
+    if (!p->side_on) return;
+    if (p->move_lock <= 0) {                                                    /* 0x459c80 */
+        int flip = 0;
+        if (!p->atk && !p->climb_sub && !p->dead_kind && p->cam_mode == 0x20) {
+            if (in->left) { flip = p->side_r; p->side_l = 1; p->side_r = 0; }       /* 0x459cf1 */
+            else if (in->right) { flip = p->side_l; p->side_r = 1; p->side_l = 0; } /* 0x459d84 */
+        }
+        if (flip) p->side_walk = (Vec3){ -p->side_walk.x, -p->side_walk.y, -p->side_walk.z };   /* 0x459d18: * -1.0 (0x4a9500) */
+        p->side_flip = flip;                                                    /* 0x459d4e */
     }
-    p->side_flip = flip;                                                        /* 0x459d4e */
+    Vec3 w = { p->side_walk.x, 0, p->side_walk.z }; float l = sqrtf(w.x * w.x + w.z * w.z);   /* 0x459def: y = 0, xz length */
+    if (l > 0) { w.x /= l; w.z /= l; }                                          /* 0x459e28: only when > 0 */
+    if (sqrtf(w.x * w.x + w.z * w.z) < 0.01f) w.x = 1.0f;                       /* 0x459e6b: 0x4a94f8 = 0.01 */
+    p->yaw = atan2f(w.x, w.z); p->move_dir = w;                                 /* 0x459e7e: M+0x1c (+0x3a4) = M+0x10 (+0x398) = M+0x34 (+0x3bc) */
 }
 /* the tail of the Perso's key steps (0x44b7a8..0x44b7ca): 0x44b980 look-around, 0x458bf0 special attack, then 0x459c70 side view.
  * They follow the attack controller 0x457a50, the pick-up 0x44ba70 and ducking 0x465b10 in every Perso state. */
@@ -1723,7 +1837,7 @@ static void race_check_crash(Player *p, Vec3 old_pos, Vec3 disp, float body_h)
     for (int k = 0; k < 2; k++) {
         Vec3 a = { p->pos.x, p->pos.y + hs[k], p->pos.z }, b = { end.x, end.y + hs[k], end.z }, n, ni;
         float f = gel_ray_hit(p->gel, a, b, &n), fi;                     /* 0x4359b0: world polygons, then instance press nodes */
-        if (player_ray_instances(p, NULL, a, b, &fi, &ni, NULL) && fi <= 1.0f && fi < f) { f = fi; n = ni; }
+        if (player_ray_instances(p, NULL, a, b, &fi, &ni, NULL)) { f = fi; n = ni; }   /* an instance hit replaces the world hit (0x432f87) */
         if (f > 1.0f) both = 0; else if (k == 1) n40 = n;
     }
     if (both && p->race_sub != 2 && !getenv("WOODY_GOD")) {
@@ -1780,48 +1894,15 @@ static void bonus_blink(Player *p, float dt)
 
 /* The segment test 0x4359b0(a, b, -1) as the sweep's head ray and the crush test use it (docs/PERSO_MOVE.md 6.6):
  * 0x497ed0 = the world half 0x497fb0 (the cells along a -> b; a polygon counts when a is on its front side and b strictly
- * behind it, gel_ray_front) and then vt[5] 0x432ab0 of every instance in the visited cells and the dynamic list, in node space:
- *  - a polygon of a press node counts when a is on its front (loader plane >= 0, 0x432d7f) and b not (<= 0, 0x432dc3) and the
- *    segment passes inside it (every edge (v_i - a) x (v_i+1 - a) . (b - a) > 0, 0x432ee2); t = -f(a) / n.(b - a). It is
- *    recorded when t < [0x4c4bd4] OR when [0x53a554] is still 0 (0x432f87) - and 0x4359b0 zeroes [0x53a554] before the cast,
- *    so any instance polygon on the segment replaces the world hit, and among instances the last one tested wins. The port
- *    takes the nearest instance polygon (the order of the original's cell lists is not reproduced).
- *  - a behind every polygon of a node (the count of polygons with f(a) < 0 equals the node's polygon count, 0x4330c0): a starts
- *    inside that press node -> [0x53a554] = 3, t = 0 ([0x4c4bd0] = 2, turned into kind 3 by 0x435b4f); later polygons then no
- *    longer override it (t < 0 is impossible and [0x53a554] != 0).
+ * behind it, gel_ray_front) and then vt[5] 0x432ab0 of every instance in the visited cells and the dynamic list
+ * (ray_instances: any instance polygon on the segment replaces the world hit and the LAST one tested wins; a start inside a
+ * press node is kind 3 and blocks every later polygon).
  * Kinds: 0 nothing, 1 world polygon, 2 instance polygon, 3 a inside a press node. *t = the fraction of a -> b. */
 static int ray_4359b0(const Player *p, Vec3 a, Vec3 b, float *t, const Instance **inst_out)
 {
-    float tw = gel_ray_front(p->gel, a, b), ti = 2.0f; int kind = tw < 1.0f ? 1 : 0; Vec3 v[32], ab = vsub(b, a);
-    const Instance *hi = NULL, *hin = NULL;
-    float sb[6] = { fminf(a.x, b.x) - 1, fmaxf(a.x, b.x) + 1, fminf(a.y, b.y) - 1, fmaxf(a.y, b.y) + 1, fminf(a.z, b.z) - 1, fmaxf(a.z, b.z) + 1 };
-    const InsFile *ins = p->ins;
-    for (uint32_t mi = 0; ins && mi < ins->nmodels && !hin; mi++) {
-        const Model *m = &ins->models[mi]; uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn); if (!ncn) continue;
-        for (uint32_t k = 0; k < m->ninstances && !hin; k++) {
-            const Instance *in = &m->instances[k]; if (!in->visible || in->noncollide || skip_inst(in, p->inst) || !in->node_world) continue;
-            for (uint32_t ci = 0; ci < ncn && !hin; ci++) {
-                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni];
-                float nb[6]; if (ins_node_world_box(in, ni, nb) && (nb[0] > sb[1] || nb[1] < sb[0] || nb[2] > sb[3] || nb[3] < sb[2] || nb[4] > sb[5] || nb[5] < sb[4])) continue;
-                uint32_t behind = 0;
-                for (uint32_t pi = 0; pi < nd->npolys; pi++) {
-                    const InsPoly *pl = &nd->polys[pi]; if (pl->nverts < 3 || pl->nverts > 32) continue;
-                    for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
-                    float P[4]; if (!loader_plane(v, pl->nverts, P)) continue;
-                    float fa = P[0] * a.x + P[1] * a.y + P[2] * a.z + P[3], fb = P[0] * b.x + P[1] * b.y + P[2] * b.z + P[3];
-                    if (fa < 0) { behind++; continue; }                         /* 0x432d8c */
-                    if (fb > 0 || !(fa - fb > 0)) continue;
-                    uint32_t e = 0;
-                    for (; e < pl->nverts; e++) { Vec3 u = vsub(v[e], a), w = vsub(v[(e + 1) % pl->nverts], a); if (!(vdot(vcross(u, w), ab) > 0)) break; }
-                    if (e < pl->nverts) continue;
-                    float tq = fa / (fa - fb); if (tq < ti) { ti = tq; hi = in; }
-                }
-                if (nd->npolys && behind == nd->npolys) hin = in;              /* 0x4330c8: a is inside this press node */
-            }
-        }
-    }
-    if (hin) { *t = 0; if (inst_out) *inst_out = hin; return 3; }
-    if (hi) { *t = ti; if (inst_out) *inst_out = hi; return 2; }
+    float tw = gel_ray_front(p->gel, a, b); int kind = tw < 1.0f ? 1 : 0; InsRayHit h;
+    int k = ray_instances(p, NULL, a, b, kind ? tw : 2.0f, &h);
+    if (k) { *t = h.t; if (inst_out) *inst_out = h.in; return k; }
     *t = kind ? tw : 2.0f; if (inst_out) *inst_out = NULL; return kind;
 }
 
@@ -1981,6 +2062,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->bonus_inv > 0) p->bonus_inv -= dt;                             /* 0x44b1fa */
     bonus_blink(p, dt);
     if (p->game_state == 0) return;                                      /* waiting for the respawn */
+    air_move_start(p, in);                                               /* 0x465e50: pre-step of every Perso state, after 0x464ef0 (0x44b764) */
     if (!p->dead_kind && !p->race_char && (p->script_act || p->ride || p->climb_sub || p->follow)) duck_update(p, in, dt, 1, p->ride ? 1 : p->on_ground);   /* 0x465b10 also in the states 5 / 8 / 4, which return early below; before 0x44b980 as in 0x44b797 */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
@@ -2059,17 +2141,36 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     perso_keys_tail(p, in, dt);                                           /* 0x44b980, 0x458bf0, 0x459c70 after 0x457a50 / 0x44ba70 / 0x465b10 (0x44b7a8) */
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
+    else if (air_move_tick(p, dt, &disp)) { }                              /* 0x465fe0 returned 1: the air dash / double jump owns +0x204, Perso_Move
+                                                                            * stops there (no Mover, no Jumper, no +0x244) */
     else {
     /* Perso_Move 0x44bb20: no input (no walking, no jump) while locked or attacking; states 2 and 3 call it with arg 0 (0x44b8a3) */
     int allow = !(p->move_lock > 0 || p->atk != 0 || p->dead_kind || p->look);
+    /* ... and while the knockback timer M+0xec (+0x474, 0.2 s from the hit, 0x45a140) runs (0x44bb48): no input either, but the Mover is
+     * not stopped - RampA just gets no key and runs out as on a release (the knockback does not touch it) */
+    int input = allow && !(p->push_t > 0);
     /* 0x45a850 loads RampA's times every frame: P+0x2c / P+0x30 (0.25 / 0.1 s), on slippery ground (Perso+0x308 == 1) P+0x34 / P+0x38 */
     const int ice = p->ground_kind == 1;
     const float acc_T = ice ? P_ICE_ACC_TIME : P_ACC_TIME, dec_T = ice ? P_ICE_DEC_TIME : P_DEC_TIME;
     /* input direction relative to the camera */
-    float ix = allow ? (float)(in->right - in->left) : 0, iz = allow ? (float)(in->forward - in->back) : 0, stick = 1.0f;
-    if (allow && (in->ax != 0 || in->az != 0)) { ix = in->ax; iz = in->az; stick = sqrtf(ix * ix + iz * iz); if (stick > 1.0f) stick = 1.0f; }   /* 0x45a4b0: the deflection scales speed and turn */
+    float ix = input ? (float)(in->right - in->left) : 0, iz = input ? (float)(in->forward - in->back) : 0, stick = 1.0f;
+    if (input && (in->ax != 0 || in->az != 0)) { ix = in->ax; iz = in->az; stick = sqrtf(ix * ix + iz * iz); if (stick > 1.0f) stick = 1.0f; }   /* 0x45a4b0: the deflection scales speed and turn */
     float len = sqrtf(ix * ix + iz * iz);
-    if (len > 0) {
+    if (p->side_on) {
+        /* 0x45b292..0x45b2af: with flag 2 (allow) and Perso+0x4ec the Mover runs the side walk 0x45a7b0 instead of 0x45a4b0. It clears
+         * flags 8/0x10/0x20 (0x45a1f0) and reads only Held(0) / Held(1) (the left / right keys, or the stick past its dead zone): the held
+         * key must be the one the facing belongs to, (Held(0) && +0x4ed) || (Held(1) && +0x4ee) - the swap of both pairs for
+         * CamMgr+0x61c == 1 (0x45a7eb) changes nothing. Then target M+0x44 = M+0x48 (= P+0x1c, 600, copied by 0x45b0a3) and flag 8, no
+         * turn slow-down and no stick scaling; else target 0 and flag 0x10 (= no input: the ramp runs out). The direction is the facing
+         * that 0x459c70 (side_update) snapped to +0x500 earlier this frame, so a turn reverses him at full speed. Up / down only move the
+         * camera (p+4, 0x459db3); jump, attack, duck work as anywhere. */
+        int key = allow && ((in->left && p->side_l) || (in->right && p->side_r));
+        if (key) {
+            p->ramp_target = P_WALK_SPEED;
+            if (p->ramp_phase == 0 || p->ramp_phase == 3) { p->ramp_phase = 1; p->ramp_t = sqrtf(p->speed / P_WALK_SPEED) * acc_T; }   /* 0x45ad30: 0/3 -> 1 */
+        } else if (!allow && !p->look) { p->ramp_phase = 0; p->speed = 0; }   /* flag 2 off: 0x45a1f0 + phase 0 (0x45b2b8) */
+        else if (p->ramp_phase == 1 || p->ramp_phase == 2) { p->ramp_phase = 3; p->ramp_t = 0; p->ramp_v0 = p->speed; }
+    } else if (len > 0) {
         ix /= len; iz /= len;
         float cs = cosf(cam_yaw), sn = sinf(cam_yaw);
         /* camera forward = (sin yaw, 0, cos yaw); camera right (right-handed, +x left when looking +z) = (-cos yaw, 0, sin yaw) */
@@ -2120,8 +2221,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     /* vertical motion comes from the Jumper; air control is the unchanged Mover (docs/PERSO_JUMP.md 1.4) */
     if (p->dead_kind == 7) jumper_reset(&p->jumper);                       /* 0x4649bf: the water death never falls further */
     if (p->nograv_t > 0) { p->nograv_t -= dt; p->jumper.dy = 0; if (p->dead_kind == 1 && p->nograv_t <= 0) p->dead_cam_req = 1; }
-    else if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, allow && in->jump, p->on_ground, p->pos.y - p->floor_y, dt);
-    if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
+    else if (p->atk != 6 && p->atk != 7) jumper_update(&p->jumper, in->jump, input, p->on_ground, p->pos.y - p->floor_y, dt);
+    if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; if (p->am_win < 0.5f) p->am_win = 0.5f; }   /* 0x463002: 0x457560(0.5) + 0x465e00(0.5) */
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
     disp = p->use_atk_disp ? p->atk_disp : (Vec3){ p->move_dir.x * p->speed * dt, p->jumper.dy, p->move_dir.z * p->speed * dt };
     int hlock = p->move_lock > 0;                                          /* 0x44bc16: ANY LockMove (+0x238 > 0: ducking, hard landing, special attack, bomb pick-up/throw,
@@ -2135,6 +2236,12 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (!p->use_atk_disp && !hlock && p->slide_speed > 0) { disp.x += p->slide_dir.x * p->slide_speed * dt; disp.z += p->slide_dir.z * p->slide_speed * dt; }
     disp.y += dt * p->vy_corr;
+    if (p->side_on) {                                                      /* 0x44bcd8 -> 0x459eb0, the last step of Perso_Move (so not in the states 1/4/5/7/8) */
+        float m = sqrtf(disp.x * disp.x + disp.y * disp.y + disp.z * disp.z);   /* |disp|, 3D (the jumper's dy counts) */
+        float e = p->side_n.x * p->pos.x + p->side_n.y * p->pos.y + p->side_n.z * p->pos.z + p->side_pd;   /* signed distance of the feet (+0x1f4) */
+        if (e > m) e = m; if (e < -m) e = -m;                              /* 0x459f38 / 0x459f53: at most |disp| per frame */
+        disp.x -= e * p->side_n.x; disp.y -= e * p->side_n.y; disp.z -= e * p->side_n.z;   /* 0x459faf: disp += -e n */
+    }
     }
     p->vel = (Vec3){ disp.x / dt, disp.y / dt, disp.z / dt };
     if (disp.y < 0) p->jumper.fallen -= disp.y;                                      /* 0x44b914: fallen height accumulates */
@@ -2265,13 +2372,14 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
 
 /* ---- follow camera, mode 1 (docs/CAMERA.md 0.1 / 3: 0x424760 -> 0x422790 -> 0x4231e0) ------------------- */
 /* the camera's line of sight: ray 0x4359b0 (world polygons, then instance press nodes) filtered by 0x422140, which lets
- * the nearest hit through when it is an instance of category 7 (type word 0x27 = class 80, the storm with shelter
- * zones, 0x451b28) */
+ * the hit through when it is an instance of category 7 (type word 0x27 = class 80, the storm with shelter zones, 0x451b28).
+ * The hit 0x4359b0 reports is the instance one whenever an instance polygon lies on the segment (the last one tested,
+ * ray_instances), even behind a nearer wall */
 static int cam_ray_blocked(const Player *p, Vec3 a, Vec3 b)
 {
-    float fw = gel_ray_frac(p->gel, a, b), fi; Vec3 n; const Instance *hi = NULL;
-    if (!player_ray_instances(p, NULL, a, b, &fi, &n, &hi) || fi > 1.0f) return fw <= 1.0f;
-    return fw < fi || !hi || hi->type != 80;
+    float fw = gel_ray_frac(p->gel, a, b), tw = gel_ray_front(p->gel, a, b); InsRayHit h;
+    if (!ray_instances(p, NULL, a, b, tw < 1.0f ? tw : 2.0f, &h)) return fw <= 1.0f;
+    return h.kind != 2 || h.in->type != 80;                              /* 0x422140: only hit kind 2 on category 7 lets it through */
 }
 /* state 2 "FIND" (0x423ab0): the target went out of sight, so the camera walks the trail the target left behind.
  * The trail starts as {P, Tprev, T} (0x4229de); whenever the last crumb loses sight of T, the point where the target was a
@@ -2299,7 +2407,8 @@ static Vec3 camera_breadcrumbs(Player *p, Vec3 T, float dt)
  * (set by 0x434820) is pushed out of the world and the instance press nodes by 0x407340, on all three axes. n = floor(|N-P| / 35)
  * + 1, but it reaches the loop through an inline fistp of n + 0.5 into [0x5ac8ac] (not the truncating _ftol 0x499580 the other
  * sweeps use), so under the FPU's round-to-nearest-even an odd n becomes n + 1 while the step stays |N-P| / n: the sweep goes one
- * step PAST N, and a move under 35 units is swept twice. Returns whether any step touched something ([0x4c4bd0]). */
+ * step PAST N, and a move under 35 units is swept twice (verified live, tools/wverify.py --probe fpu: control word 0x007F =
+ * nearest-even, 24-bit precision; W1A standing still: fistp 1.5 -> 2). Returns whether any step touched something ([0x4c4bd0]). */
 static int camera_sweep(const Player *p, Vec3 P, Vec3 N, Vec3 *out)
 {
     Vec3 d = vsub(N, P); float k = floorf(sqrtf(vdot(d, d)) / 35.0f) + 1.0f; int n = (int)nearbyintf(k + 0.5f), hit = 0;
@@ -2480,6 +2589,24 @@ void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44c
      * what the rest of the tick does with the camera has to win over it. The follow camera still seats itself one frame later,
      * on the position and facing a door action gives him (mode 1 of message 26 carries no direction), because SetMode(0, 0)
      * only clears cam_init and player_camera() re-seats on the next camera update - which runs after the tick. */
+}
+/* the Perso half of message 1088 (0x459960, first call; a repeat while +0x4ec is set only re-enters camera mode 5), docs/CAMERA_SCRIPT.md
+ * 4.2.1. d = xzNormalize(B - A) of the marker (type 0, n 0), (1, 0, 0) when shorter than 0.01. */
+void player_side_start(Player *p, Vec3 a, Vec3 d, int v)
+{
+    Vec3 from = p->pos;
+    p->yaw = atan2f(d.x, d.z); p->move_dir = d;                        /* 0x459a48..0x459ad3: RampA dir M+0x34 = d, M+0x1c = M+0x10 = d: the facing */
+    if (!p->script_act) {                                               /* 0x459ad8 -> 0x44a650(p, &A): nothing in state 5 */
+        p->pos = a; p->lanim = -1; p->step_u = -1.0f; p->board_lanim = -1;   /* feet onto the marker's FIRST point, A->Reset (+0x494), B->Reset (+0x498) */
+        player_ground_snap(p);                                          /* 0x44a678 */
+    }
+    player_ground_snap(p);                                              /* 0x459adf: 0x462990 again, outside the state-5 test */
+    p->side_l = v == 1; p->side_r = v != 1;                             /* 0x459ae9: v == 1 -> +0x4ed (the left key walks along d), else +0x4ee */
+    p->side_n = (Vec3){ -d.z, 0, d.x };                                 /* 0x459bbf..0x459c13: +0x4f0 = normalize(d x (0,1,0)) (0x41af10 = this x arg, 0x4239f0) */
+    p->side_pd = -(p->side_n.x * a.x + p->side_n.z * a.z);              /* 0x459c09..0x459c4f: +0x4fc = -n.A */
+    p->side_walk = d;                                                   /* 0x459c52: +0x500 = d */
+    printf("  PLAYER side view: marker A %.0f %.0f %.0f d %.3f %.3f, v %d; feet %.0f %.0f %.0f -> %.0f %.0f %.0f%s\n", a.x, a.y, a.z, d.x, d.z, v,
+           from.x, from.y, from.z, p->pos.x, p->pos.y, p->pos.z, p->script_act ? " (state 5: not moved)" : "");
 }
 void player_script_hold(Player *p, float t) { p->atk = 0; p->charge = 0; p->use_atk_disp = 0; lock_move(p, t); }
 

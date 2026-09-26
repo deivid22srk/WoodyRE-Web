@@ -194,6 +194,15 @@ Callers of `0x463170` (force a fall): `0x44c110` (TakeHit), `0x44ca9f`, `0x456c0
 * subtype 2 (`0x40`): **double jump** direction (0,1,0): duration `0.25 s`, speed `1200`, sound 0x3a.
 * otherwise (Woody = subtype 1): `p+0x6e4 = 0` – **Woody has no double jump / hover**.
 
+Which character is which: the Perso ctor `0x44a2d0(subtype)` gets its argument from the SetTypeInstance switch (`0x403543..0x403607`,
+byte table `0x403f3c`, jump table `0x403e94`): script type 1 → subtype 1 (Woody), **type 2 (the K levels) → 3 = Knothead: air dash**,
+**type 3 (the S levels) → 2 = Splinter: double jump**, 18 → 5, 19 → 4 (the race riders; 0x465e50 does nothing for them). The window
+`+0x6f8` is opened with the attack window by the jumper (t ≥ −0.15, `0x46302e`) and by the recoil of a peck (`0x458873`), closed by the
+peck-dash start (`0x458179`) and by Reset (`0x44ad34`, also `+0x6fd`, `+0x6e4`). Nothing in either function requests an animation or
+resets the controller; while it runs the Jumper stands still (so does the Mover), which the port's air-dash log shows as an unchanged
+Jumper state. **Port**: `air_move_start` / `air_move_tick` in `src/player.c` (before §6's round the port had neither), subtype from
+`player_bind`; `WOODY_JUMPLOG=1` logs the start.
+
 `0x465fe0` (start of `Perso_Move`): `p+0x6f8 -= dt`; if `p+0x6e4`: `p+0x6ec += dt` (up to `p+0x6e8`, then
 end), for subtype 2 the speed is multiplied by 0.99 per 1/60 s (`0x4a9990`, `0x4ab7d8`);
 `p+0x204 = normalize(p+0x6d8) · step · p+0x6f0`, and the function returns 1 ⇒ `Perso_Move` skips both the Mover and
@@ -548,7 +557,66 @@ camera, cinematics, or outside levels 1..24. Port difference: the original submi
 one frame later than the port's. The reconstructed ring of the previous rounds (radius 69, white, 0.7, `hud_world_ring`, `WOODY_RING`) is gone.
 Test: `W1A --jump 1 --shot f.ppm 1.5` (the jump pad throws him high: the ring grows on the pad under him).
 
-## 6. Open questions
+## 6. Mid-air jump press (the somersault)
+
+User report: "the somersault (salto) is cancelled / drops out when pressing jump in mid-air". Static answer, from the Jumper
+(§1), the air actions (§1.5), the attack trigger (§2.2) and the animation controller.
+
+**The somersault** is logical anim **5** = `.ins` 5 → 6 → 7 at speed 2.0, prio 1050 (record 5 of `0x4b6180`). `.ins` 5 is the flip
+itself: the torso turns a full −360° about the model's x axis over its 180 frames (measured by posing Woody's model, and the same in
+Knothead's and Splinter's models); at speed 2 it lasts **0.45 s**. `.ins` 6 (0.4 s) lands the pose, `.ins` 7 holds it. `0x4642f0`
+requests anim 5 in Jumper state 7 (from `t ≥ −0.15`), and in states 3 / 4 (air) requests nothing new unless `fellOff` (anim 7) or
+`shortHop` (anim 6), so the chain plays on.
+
+**The controller** (`0x436a50` Tick, read in full): if the hold timer `+0x50 > 0` it only counts it down; otherwise it takes this
+frame's request with the highest prio (of equal ones the last made), and switches only if it differs from the current one **and** its
+prio is ≥ the current prio or the instance's animation is done (`inst+0xc0 == 1`). So the flip can only be replaced by a request of
+prio ≥ 1050. Timeline of a full jump (key held ≥ 0.21 s; the clock `t` runs from −0.406 at the take-off, apex at 0):
+
+| take-off + | t | what |
+|---|---|---|
+| 0 | −0.406 | Jumper 0 → 1, anim 4 (`.ins` 3, 4; 1501) |
+| 0.206 | −0.2 | last moment a key release still makes a short hop |
+| 0.256 | −0.15 | Jumper 1 → 7: anim 5 starts (the flip); attack window `+0x5c8` and air-move window `+0x6f8` open for 0.5 s |
+| 0.406 | 0 | apex, Jumper 7 → 3 (fall parabola) |
+| 0.706 | +0.30 | `.ins` 5 over (the flip is complete), `.ins` 6 |
+| 0.710 | +0.305 | Jumper 3 → 4 (`u ≥ 0.45`): the first moment a landing can register at all |
+| 0.756 | +0.35 | both windows closed |
+| 1.094 | +0.688 | landing on flat ground: Jumper 4 → 6 → 2, anim 8 (1500) |
+
+**Inputs in the air, original (certain from the code above; nothing traced live):**
+
+| input | when | effect on the somersault |
+|---|---|---|
+| jump **released** | before take-off + 0.206 s (Jumper 1, `t < −0.2`) | **short hop** (`0x462e9d`): the clock jumps to −0.2, the Jumper never enters state 7, so **the flip never starts** (anims 4 → 6); no attack / air-move window either |
+| jump released | later | nothing |
+| jump **pressed again**, Woody | any time in the air (Jumper 1, 7, 3, 4, 5) | **nothing**. The Jumper has no second jump: only its state 2 starts one, and the coyote jump of state 3 exists only after walking off an edge (`coyote = armed` at `0x462e4d..0x462e61`, 0.15 s; that starts a new jump with an anim reset, so a fresh flip follows). `0x465e50` sees the press (window open, > 100 up) but for subtype 1 only sets its "used" flag |
+| jump pressed, **Knothead** | 0.256 .. 0.756 s, more than 100 above the floor, once per air time | **air dash** (§1.5): 450 units along the facing in 0.15 s; Jumper and Mover stand still meanwhile. **The flip keeps playing** (no request, no reset) |
+| jump pressed, **Splinter** | same window | **double jump**: about 280 up in 0.25 s; the flip keeps playing, the landing comes later |
+| jump held into the landing | released once at ≤ 100 above the floor with input allowed (re-arm, `0x462dc0`) | a new jump the frame after the landing: anim 4 replaces the landing, a new flip at the new apex |
+| **attack** (action 6) just pressed | while the attack window is open: take-off + 0.256 .. 0.756 s, full jumps only | **peck dive** (atk 1, `0x457330`): anim 0xb, prio 1600 ≥ 1050, **replaces the flip at once**; the window covers the whole flip |
+| attack pressed | before 0.256 s or after 0.756 s, or in a short hop / a plain fall | nothing (no window) |
+| special (action 11) released | in the air | refused (`0x458c23`: needs the ground): SoundFx 9, the flip plays on |
+| look-around (action 7) released | in the air | refused (needs `+0x22c`): SoundFx 9 |
+| duck (action 5) | in the air | nothing until the ground (`0x465b10` needs `+0x22c`); held into the landing he goes down (0x31, 1750) |
+| (landing) | — | cannot cut the flip: the Jumper registers no landing in state 7 or in 3 before `u ≥ 0.45` (take-off + 0.71 s), and `.ins` 5 ends at 0.706 s. The landing anim 8 / walk / idle only cut the `.ins` 6 / 7 tail |
+| (a hit) | any | hit anim (5110) and `Jumper_ForceFall` (fellOff) → anim 7 (5000): the flip is gone |
+
+**The port** (`src/player.c`, checked with `WOODY_ANIMLOG=1` on W1A, `--jump 2` and `--jump2 LEN T2`): Woody's chain and every row above
+behave the same - a second press at 2.35 / 2.5 / 2.7 / 2.9 s leaves anim 5 alone (5 → 8 at the landing, t 0.688), a release after 0.1 s
+gives 4 → 6 (no flip), `--peck 2.4 0.1` gives 5 → 0xb, `--peck 2.85 0.1` (window closed) nothing. Differences found and fixed:
+1. `0x465e50` / `0x465fe0` were missing: Knothead and Splinter had no air dash / double jump (`air_move_start` / `air_move_tick` now;
+   K1A `--jump 2 --jump2 0.3 2.4`: `AIR MOVE dash (jumper 7 t −0.004, 380 above the floor, anim 5)`, the flip plays on; S1A: double
+   jump, landing at t 0.889 instead of 0.688, flip unchanged).
+2. The Jumper re-armed while Perso_Move's input flag was off (lock, attack, look): the original re-arms only with input allowed
+   (`0x462dc0`), so a jump key held through a lock no longer fires when the lock ends; it has to be released first.
+3. The knockback timer `M+0xec` (0.2 s after a hit) now blocks the input (walk and jump) as `0x44bb48` does; the Mover runs out as on a
+   key release.
+
+So in the original the jump key never cancels Woody's somersault in the air. What does: letting go of jump within about 0.2 s of the
+take-off (a short hop, which never gets a flip), the attack key during the flip (the peck dive), or a hit.
+
+## 7. Open questions
 
 * Substate 2 (peck dash) has **no dedicated time-out**: it only ends via a wall/ground hit from
   `0x4575b0` (50 along the dash direction, then 100 horizontal) or a target hit. Because the direction

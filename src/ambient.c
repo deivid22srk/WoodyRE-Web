@@ -1,4 +1,4 @@
-/* ambient.c - instance class 90, the "environment instance", modes 1 (motes) and 2 (rain). docs/AMBIENT.md.
+/* ambient.c - instance class 90, the "environment instance": modes 0 (butterflies), 1 (motes) and 2 (rain). docs/AMBIENT.md.
  *
  * The class (ctor 0x403d2c: 0x150 bytes, base 0x42e1a0, vtable 0x4a90ac; think vt[3] 0x472560, vt[0x70/4] 0x472b30,
  * vt[0x74/4] 0x472b40, dtor 0x472e30) owns no geometry of its own: everything is measured on its FIRST VOLUME NODE
@@ -6,8 +6,9 @@
  * The box is taken over the node's own points in NODE-LOCAL space (0x47285b / 0x472bde) and the author treats local z as
  * "up" (the 3ds Max axis): the rain falls along local -z from the plane z = maxZ - minZ, the motes start on z = minZ.
  *
- * Particles live in the one effect pool of the original (2000 x 0x50 at [0x5e823c]+0xdb8, docs/PARTICLES.md 0); the
- * port keeps its own pool of the same size for these two modes. */
+ * Every particle is a record of the one effect pool of the game ([0x5e823c]+0xdb8, 2000 x 0x50 B, bump allocator, a full
+ * pool drops the new record; docs/PARTICLES.md 0, AMBIENT.md 5): the records are FxRec kind FX_AMB of main_engine.c's pool,
+ * shared with every other effect, and run by its driver (0x470c70) through ambient_fx_run. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,27 +20,26 @@
 typedef struct {
     Instance *in;
     int mode;                  /* +0xfc (1501) */
-    int count, live;           /* +0x100 wanted (1502 / 1504), +0x108 alive: a mote that dies gives its place back */
-    int off, fill;             /* +0x120 (1511; 1502 clears it via 0x472b30), +0x121 = "the stream starts empty": spawn at a random age */
-    unsigned stamp;            /* +0x104 = the frame counter [[0x509adc]] of the last think; a mote dies on a frame its owner did not think */
+    int count, live;           /* +0x100 wanted (1502 / 1504), +0x108 alive: a particle that dies gives its place back */
+    int off, fill;             /* +0x120 (1511; 1502 clears it via 0x472b30), +0x121 = "the stream starts empty": motes spawn at a random age */
+    unsigned stamp;            /* +0x104 = the frame counter [[0x509adc]] of the last think; a mote / butterfly dies on a frame its owner did not think */
+    float floor_y;             /* +0x10c: world y of the local minY (0x472911); the butterflies land on it (0x47d6dc) */
     float rgb[3], life0;       /* +0x110..0x118 = rgb / 255, +0x11c = arg * 0.01: the base lifetime in s */
     int force; float interval, acc, zr; int rot, grid_ok;   /* +0x14c, +0x140, +0x13c, +0x148, +0x138, +0x124 != NULL */
     float grid[400][3];        /* +0x124: 5 x 5 cells x 16 start points on the top of the box (0x472b40) */
     int logged;
 } Amb;
 
-enum { K_MOTE = 1, K_DROP, K_RIPPLE };
-typedef struct { int kind, owner; float age, life, speed, fallen, len; Vec3 pos, dir; } AmbFx;
+enum { K_BUTTERFLY = 1, K_MOTE, K_DROP, K_RIPPLE };
 
 #define AMB_MAX 32
-#define FX_MAX 2000
 static Amb g_amb[AMB_MAX]; static int g_namb;
-static AmbFx g_fx[FX_MAX]; static int g_nfx;
 static unsigned g_frame;
+static int g_flylog; static float g_flyt;                                        /* WOODY_FLYLOG: the butterflies once a second */
 static uint32_t g_seed = 1;
 static float rnd01(void) { g_seed = g_seed * 214013u + 2531011u; return (float)((g_seed >> 16) & 0x7fff) / 32767.0f; }   /* 0x43ff40 */
 
-void ambient_reset(void) { g_namb = 0; g_nfx = 0; }
+void ambient_reset(void) { g_namb = 0; g_flyt = 0; }                           /* the pool itself is emptied with the level (0x470d50) */
 
 static Amb *amb_of(Instance *in, int create)
 {
@@ -48,7 +48,7 @@ static Amb *amb_of(Instance *in, int create)
     Amb *a = &g_amb[g_namb++]; memset(a, 0, sizeof *a); a->in = in; a->interval = 0.2f; a->stamp = ~0u; return a;
 }
 
-/* the first volume node: 0-based index, or -1 ("une instance d'environnement n'a pas de volume", 0x4725c5) */
+/* the first volume node: 0-based index, or -1 ("une instance d'environnement n'a pas de volume", 0x4725c5 / 0x47284e) */
 static int amb_node(const Instance *in)
 {
     const Model *m = in->model;
@@ -87,11 +87,15 @@ static Vec3 m_dir(const Mat4 *M, const float d[3])
     const float *o = M->m;
     return (Vec3){ o[0] * d[0] + o[4] * d[1] + o[8] * d[2], o[1] * d[0] + o[5] * d[1] + o[9] * d[2], o[2] * d[0] + o[6] * d[1] + o[10] * d[2] };
 }
-
+static void v_norm(Vec3 *v)                                                      /* the normalisations of 0x47e050 / 0x47d440 / 0x47e230: skipped when |v| <= 0 */
+{
+    float l = sqrtf(v->x * v->x + v->y * v->y + v->z * v->z);
+    if (l > 0) { v->x /= l; v->y /= l; v->z /= l; }
+}
 static AmbFx *fx_new(int kind, int owner)
 {
-    if (g_nfx >= FX_MAX) return NULL;                                            /* a full pool drops the new record (0x47e172) */
-    AmbFx *f = &g_fx[g_nfx++]; memset(f, 0, sizeof *f); f->kind = kind; f->owner = owner; return f;
+    AmbFx *f = game_fx_amb_new(); if (!f) return NULL;                            /* 0x47e062 / 0x47e172 / 0x47e241 / 0x47e321: count >= 2000 -> nothing */
+    f->kind = kind; f->owner = owner; return f;
 }
 
 /* 0x472b40 (vt[0x74/4], called by 1503): 25 cells over the x/y extent of the box, 16 random start points each, all on the
@@ -135,11 +139,25 @@ void ambient_msg(Instance *in, int id, const uint32_t *args, int nargs)
 #undef AI
 }
 
-/* 0x4727d3 with mode 1: keep `count` motes alive. x anywhere across the box, z on its bottom, but y is drawn over the
- * z EXTENT (minY + rnd * (maxZ - minZ), 0x47296a): a slip in the original, kept. A point in front of the node's first
- * polygon is mirrored through it (0x472985; the loop never advances past polygon 0). Every mote moves along the
- * world image of the local normal of the polygon that faces most along local +z (0x472a47), i.e. up out of the box. */
-static void amb_think_motes(Amb *a, int ai)
+/* 0x47e050: a butterfly at w. Phase rnd*10 (0x4a9750), life 1e6 (0x49742400), direction (rnd*2-1) per axis, normalised
+ * when not zero, image 0x10035 - ftol(rnd * -3.99) = bank 0 image 53..56 (0x4abd98). +0x24 = 0; +0x2c (the state) is
+ * NOT written: the record keeps what the last record in that pool slot left there (the port starts at 0, AMBIENT.md 6.2) */
+static void amb_butterfly(int ai, Vec3 w)
+{
+    AmbFx *f = fx_new(K_BUTTERFLY, ai); if (!f) return;
+    f->age = rnd01() * 10.0f; f->life = 1e6f; f->pos = w;
+    f->dir.x = rnd01() * 2.0f - 1.0f; f->dir.y = rnd01() * 2.0f - 1.0f; f->dir.z = rnd01() * 2.0f - 1.0f;
+    f->wander = 0;
+    f->img = (int)(rnd01() * 3.99f);                                             /* 0..3 = images 53..56 */
+    v_norm(&f->dir);
+}
+
+/* 0x4727d3, modes 0 and 1: keep `count` butterflies / motes alive. x anywhere across the box; mode 1 puts z on the bottom
+ * of the box, mode 0 draws it over the local Y extent from minZ (0x472953), and y is drawn over the local Z extent from
+ * minY (0x47296a): the y/z slip of the original, kept (harmless for the shipped 400-unit cubes). A point in front of the
+ * node's first polygon is mirrored through it (0x472985; the loop never advances past polygon 0). The world point is M p.
+ * Every mote moves along the world image of the local normal of the polygon that faces most along local +z (0x472a47). */
+static void amb_think_spawn(Amb *a, int ai)
 {
     if (a->off && !getenv("WOODY_AMBON")) return;                                /* 0x4727d3; WOODY_AMBON=1 (test hook) ignores 1511 and hiding */
     if (a->live == 0) a->fill = 1;
@@ -148,34 +166,40 @@ static void amb_think_motes(Amb *a, int ai)
     const Model *m = a->in->model; const InsNode *n = &m->nodes[ni]; const Mat4 *M = &a->in->node_world[ni];
     float lo[3], hi[3]; amb_box(a->in, ni, lo, hi);
     float zr = hi[2] - lo[2], pl0[4] = { 0, 0, 0, -1 }, up[3] = { 0, 0, 1 };
+    a->floor_y = lo[1] * M->m[5] + M->m[13];                                     /* 0x472911: minY * M[4] (row 1 .y) + M[10] (origin .y) */
     if (n->npolys) {
         amb_plane(m, n, &n->polys[0], pl0);
-        float best = -2;
-        for (uint32_t k = 0; k < n->npolys; k++) { float pl[4]; amb_plane(m, n, &n->polys[k], pl); if (k == 0 || pl[2] > best) { best = pl[2]; up[0] = pl[0]; up[1] = pl[1]; up[2] = pl[2]; } }
+        if (a->mode == 1) {
+            float best = -2;
+            for (uint32_t k = 0; k < n->npolys; k++) { float pl[4]; amb_plane(m, n, &n->polys[k], pl); if (k == 0 || pl[2] > best) { best = pl[2]; up[0] = pl[0]; up[1] = pl[1]; up[2] = pl[2]; } }
+        }
     }
     Vec3 N = m_dir(M, up);                                                       /* not normalised: a scaled node scales the speed */
     if (getenv("WOODY_AMBLOG") && !a->logged) {
         a->logged = 1;
-        printf("ambient: inst %u mode 1 count %d life %.2f rgb %.2f %.2f %.2f box x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f up %.2f %.2f %.2f world %.0f %.0f %.0f\n",
-               a->in->index, a->count, a->life0, a->rgb[0], a->rgb[1], a->rgb[2], lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], N.x, N.y, N.z, M->m[12], M->m[13], M->m[14]);
+        printf("ambient: inst %u mode %d count %d life %.2f rgb %.2f %.2f %.2f box x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f up %.2f %.2f %.2f world %.0f %.0f %.0f floor %.0f\n",
+               a->in->index, a->mode, a->count, a->life0, a->rgb[0], a->rgb[1], a->rgb[2], lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], N.x, N.y, N.z, M->m[12], M->m[13], M->m[14], a->floor_y);
     }
     while (a->live < a->count) {
         float p[3];
         p[0] = rnd01() * (hi[0] - lo[0]) + lo[0];
-        p[2] = lo[2];                                                            /* mode 1: [esp+0x3c] = minZ */
+        p[2] = a->mode == 1 ? lo[2] : rnd01() * (hi[1] - lo[1]) + lo[2];         /* 0x472936: mode 1 = minZ; else the Y extent from minZ */
         p[1] = rnd01() * zr + lo[1];
         if (n->npolys) {
             float d = p[0] * pl0[0] + p[1] * pl0[1] + p[2] * pl0[2] + pl0[3];
             if (d > 0) for (int q = 0; q < 3; q++) p[q] -= 2 * d * pl0[q];
         }
         Vec3 w = m_point(M, p);
-        AmbFx *f = fx_new(K_MOTE, ai);                                           /* 0x47e160 */
-        if (f) {
-            float s = a->fill ? rnd01() : 0.0f;
-            f->life = rnd01() * 2.0f + a->life0; f->age = f->life * s;          /* the first fill starts spread over the lifetime */
-            f->dir = N;
-            f->speed = rnd01() * 20.0f + 40.0f;                                  /* 0x4a9994 = 20, 0x4ab294 = 40 */
-            f->pos = (Vec3){ w.x + N.x * f->age * f->speed, w.y + N.y * f->age * f->speed, w.z + N.z * f->age * f->speed };
+        if (a->mode == 0) amb_butterfly(ai, w);                                  /* 0x472ae8 -> 0x47e050 */
+        else {
+            AmbFx *f = fx_new(K_MOTE, ai);                                       /* 0x47e160 */
+            if (f) {
+                float s = a->fill ? rnd01() : 0.0f;
+                f->life = rnd01() * 2.0f + a->life0; f->age = f->life * s;      /* the first fill starts spread over the lifetime */
+                f->dir = N;
+                f->speed = rnd01() * 20.0f + 40.0f;                              /* 0x4a9994 = 20, 0x4ab294 = 40 */
+                f->pos = (Vec3){ w.x + N.x * f->age * f->speed, w.y + N.y * f->age * f->speed, w.z + N.z * f->age * f->speed };
+            }
         }
         a->live++;                                                               /* counted even when the pool was full */
     }
@@ -197,13 +221,12 @@ static void amb_think_rain(Amb *a, int ai, float dt)
     while (a->acc > a->interval) {
         a->acc -= a->interval;
         static const float dl[3] = { 0.05f, 0.05f, -0.8f };                     /* +0x12c..0x134 */
-        Vec3 d = m_dir(M, dl); float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
-        if (l > 0) { d.x /= l; d.y /= l; d.z /= l; }
+        Vec3 d = m_dir(M, dl); v_norm(&d);
         const float *o = M->m; float len = sqrtf(o[8] * o[8] + o[9] * o[9] + o[10] * o[10]) * a->zr;   /* |row 2| * height */
         for (int c = 0; c < 25; c++) {
             Vec3 w = m_point(M, a->grid[(a->rot + 16 * c) % 400]);
-            AmbFx *f = fx_new(K_DROP, ai);                                       /* 0x47e230 */
-            if (f) { f->life = 1.0f; f->pos = w; f->dir = d; f->fallen = 0; f->len = len; f->speed = 4000.0f; }   /* 0x457a0000 */
+            AmbFx *f = fx_new(K_DROP, ai);                                       /* 0x47e230 (normalises D once more) */
+            if (f) { f->age = 0; f->life = 1.0f; f->pos = w; f->dir = d; v_norm(&f->dir); f->fallen = 0; f->len = len; f->speed = 4000.0f; }   /* 0x457a0000 */
         }
         a->rot = (a->rot + (int)(rnd01() * 15.0f + 1.0f)) & 15;                 /* 0x4a9864 = 15 */
     }
@@ -212,62 +235,137 @@ static void amb_think_rain(Amb *a, int ai, float dt)
 void ambient_update(float dt)
 {
     g_frame++;
+    g_flylog = 0;
+    if (getenv("WOODY_FLYLOG") && (int)(g_flyt + dt) != (int)g_flyt) { g_flylog = 1; printf("  FLY t %.0f\n", g_flyt + dt); }
+    g_flyt += dt;
     for (int i = 0; i < g_namb; i++) {                                           /* think 0x472560 (vt[3]): only for the instances of this frame's list world+0x64 (0x42b400) */
         Amb *a = &g_amb[i];
         if (a->in->type != 90) continue;
         if ((!a->in->visible || !game_enemy_thinks(a->in)) && !getenv("WOODY_AMBON")) continue;   /* hidden = out of the world (0x407850); a stationary volume also drops out with its sphere off screen (0x42a8b4) */
-        a->stamp = g_frame;                                                      /* +0x104 */
-        if (a->mode == 1) amb_think_motes(a, i);
+        a->stamp = g_frame;                                                      /* +0x104 (0x472576) */
+        if (a->mode == 0 || a->mode == 1) amb_think_spawn(a, i);
         else if (a->mode == 2) amb_think_rain(a, i, dt);
-    }
-    for (int i = 0; i < g_nfx; i++) {                                            /* the pool driver 0x470c70: new records run this frame too */
-        AmbFx *f = &g_fx[i]; Amb *a = &g_amb[f->owner]; int dead = 0;
-        if (f->kind == K_MOTE) {                                                 /* 0x47dca0 */
-            if (a->stamp != g_frame) dead = 1;                                   /* the owner did not think: gone at once */
-            else if ((f->age += dt) >= f->life) dead = 1;
-            else { f->pos.x += dt * f->dir.x * f->speed; f->pos.y += dt * f->dir.y * f->speed; f->pos.z += dt * f->dir.z * f->speed; }
-            if (dead) a->live--;
-        } else if (f->kind == K_DROP) {                                          /* 0x47de10 */
-            f->age += dt;
-            float s = dt * f->speed * f->dir.y, nf = f->fallen - s;              /* +0x24 counts the height fallen */
-            if (nf < f->len) {
-                f->fallen = nf;
-                f->pos.x += dt * f->speed * f->dir.x; f->pos.y += s; f->pos.z += dt * f->speed * f->dir.z;
-                if (f->age > 5.0f) dead = 1;                                     /* port guard: a drop that never falls (dir.y >= 0) would live for ever */
-            } else {                                                             /* 0x47df30: the rest of the step down to the bottom, a ripple there */
-                float t = (f->fallen - f->len) / s * dt;
-                f->pos.x += t * f->dir.x * f->speed; f->pos.y += t * f->dir.y * f->speed; f->pos.z += t * f->dir.z * f->speed;
-                Vec3 p = f->pos; int ow = f->owner; dead = 1;
-                AmbFx *r = fx_new(K_RIPPLE, ow);                                 /* 0x47e310 */
-                if (r) { r->life = 0.2f; r->pos = p; f = &g_fx[i]; }
-            }
-        } else if (f->kind == K_RIPPLE) {                                        /* 0x47df80 */
-            if ((f->age += dt) / f->life >= 1.0f) dead = 1;
-        }
-        if (dead) { g_fx[i] = g_fx[--g_nfx]; i--; }
     }
 }
 
-void ambient_draw(const float *eye)
+/* 0x4300c0: is the point inside one of the instance's volume nodes */
+static int amb_inside(const Instance *in, Vec3 p)
 {
-    static const float grey[3] = { 0.4f, 0.4f, 0.4f }, white[3] = { 1, 1, 1 }, up[3] = { 0, 1, 0 };
-    for (int i = 0; i < g_nfx; i++) {
-        const AmbFx *f = &g_fx[i];
-        if (f->kind == K_MOTE) {
-            /* flags 7 (camera facing, own colour, rotation, additive), mode 0x12, size 25, image 29 (0x1001d), rotation
-             * (int)(age * 250) in 1/512 turn; alpha 1 until u = 0.7, then down to 0 at u = 1 (0x4aa1d8, 0x4abd30 = 3.33) */
-            float u = f->age / f->life, al = u < 0.7f ? 1.0f : 1.0f - (u - 0.7f) * 3.33f;
-            hud_world_spr(29, &f->pos.x, 25.0f, (int)lrintf(f->age * 250.0f), g_amb[f->owner].rgb, al, 7, NULL, 0);
-        } else if (f->kind == K_DROP) {
-            /* line 0x471a10(0xe00): from 250 behind (alpha 0) to the drop (alpha 0.5), grey 0.4, half width 4, image 57 */
-            if (!eye) continue;
-            float a[3] = { f->pos.x - f->dir.x * 250.0f, f->pos.y - f->dir.y * 250.0f, f->pos.z - f->dir.z * 250.0f };
-            hud_world_streak(57, a, &f->pos.x, eye, 4.0f, grey, 0.0f, 0.5f);
-        } else if (f->kind == K_RIPPLE) {
-            /* flags 2 (plane with normal (0,1,0), own colour, additive), image 3 = byte-identical to 58 (hud slot 0x3a),
-             * size u*30 + 5, alpha 0.5 - 0.5u */
-            float u = f->age / f->life;
-            hud_world_spr(0x3a, &f->pos.x, u * 30.0f + 5.0f, 0, white, 0.5f - 0.5f * u, 2, up, 0);
+    const Model *m = in->model; if (!m) return 0;
+    for (uint32_t k = 0; k < m->nvolume_nodes; k++) { uint32_t ni = m->volume_nodes[k] - 1; if (ni < m->nnodes && volume_contains(in, ni, p)) return 1; }
+    return 0;
+}
+
+/* 0x47d440: a butterfly. One rnd a frame decides the state changes (0 -> 1 with r <= 0.001, 0x4a94c4; 2 -> 0 with
+ * r <= 0.008, 0x4abd94, turning towards the instance origin); landed (2) it neither moves nor tests the volume and flaps
+ * at F = 166.667 (0x47d767) instead of 1000. Flying, every 0.3 s (0x4aab98; the timer also runs while landed, so a
+ * butterfly that takes off after a long rest re-steers every frame until it has caught up) the course gets a random push
+ * of up to 3.5 (0x4abd90) along the sign it already has in x and z, and up (0.7) / down (-0.5) at random or -0.8 while
+ * coming down; then pos += 100 dt dir (0x4a9010). Outside the volume (0x4300c0) it turns back to the instance origin;
+ * coming down, at or under the floor (+0x10c) outside the volume it lands: state 2, dir = (dx, 0, dz) to the origin. */
+static int amb_butterfly_run(AmbFx *f, Amb *a, float dt)
+{
+    const Instance *in = a->in;
+    f->age += dt; f->wander += dt;
+    float r = rnd01(), k = dt * 60.0f;                                           /* the original rolls once per frame; normalised to 60 Hz here */
+    if (dt > 0) {
+        if (f->state == 0 && r <= 0.001f * k) f->state = 1;
+        if (f->state == 2 && r <= 0.008f * k) {
+            f->state = 0;
+            f->dir = (Vec3){ in->position.x - f->pos.x, in->position.y - f->pos.y, in->position.z - f->pos.z }; v_norm(&f->dir);
         }
     }
+    float F = 1000.0f;
+    if (f->state == 2) F = 166.667f;                                             /* 0x4326aaab */
+    else {
+        if (f->wander > 0.3f) {
+            f->wander -= 0.3f;
+            float sx = f->dir.x < 0 ? -1.0f : 1.0f, ky, sz;
+            if (f->state == 1) ky = -0.8f; else ky = rnd01() * 2.0f - 1.0f > 0 ? 0.7f : -0.5f;
+            sz = f->dir.z < 0 ? -1.0f : 1.0f;
+            float ax = rnd01() * sx * 3.5f, ay = rnd01() * ky * 3.5f, az = rnd01() * sz * 3.5f;
+            f->dir.x += ax; f->dir.y += ay; f->dir.z += az; v_norm(&f->dir);
+        }
+        f->pos.x += dt * f->dir.x * 100.0f; f->pos.y += dt * f->dir.y * 100.0f; f->pos.z += dt * f->dir.z * 100.0f;
+        if (!amb_inside(in, f->pos)) {
+            if (f->state == 0 || (f->state == 1 && f->pos.y > a->floor_y)) {
+                f->dir = (Vec3){ in->position.x - f->pos.x, in->position.y - f->pos.y, in->position.z - f->pos.z }; v_norm(&f->dir);
+            } else if (f->state == 1) {                                          /* 0x47d74f */
+                f->state = 2;
+                f->dir = (Vec3){ in->position.x - f->pos.x, 0, in->position.z - f->pos.z }; v_norm(&f->dir);
+            }
+        }
+    }
+    if (a->stamp != g_frame) { a->live--; return 0; }                            /* 0x47dc77: the owner did not think, gone at once */
+    if (g_flylog) printf("    fly inst %u [%.0f %.0f %.0f s%d]\n", in->index, f->pos.x, f->pos.y, f->pos.z, f->state);
+    /* 0x47d78b: not a sprite but two squares hinged along V = (dir.x, 0.5, dir.z) normalised; B0/B1 an orthonormal pair
+     * across it (0x46d320). Hinge angle from the cosine table: 255 - fistp(128 cos^2(F t + 128)) in 1/512 turn, i.e.
+     * theta = 134.30 + 45.00 cos(2 pi (2F/512) t) degrees (3.906 Hz flying, 0.651 Hz landed). Wing 1 U = cos B0 + sin B1,
+     * wing 2 U' = -cos B0 + sin B1; each 21.2132 (30 cos 45) half-extents, centre 20.2757 along U, plus a vertical bob
+     * 3 sin(2 pi (2F/512) t) (0x47da2c). Mode 0x12, UV set 4, flags 0x68: alpha blended with colour key (TITLE.md 3.1) */
+    Vec3 V = { f->dir.x, 0.5f, f->dir.z };
+    float l = sqrtf(V.x * V.x + V.y * V.y + V.z * V.z); if (l < 1e-6f) return 1;
+    V.x /= l; V.y /= l; V.z /= l;
+    Vec3 B0 = { V.z, 0, -V.x };
+    l = sqrtf(B0.x * B0.x + B0.z * B0.z); if (l < 1e-6f) { B0 = (Vec3){ 1, 0, 0 }; l = 1; }
+    B0.x /= l; B0.z /= l;
+    Vec3 B1 = { V.y * B0.z - V.z * B0.y, V.z * B0.x - V.x * B0.z, V.x * B0.y - V.y * B0.x };
+    float w = 2 * 3.14159265f * (2.0f * F / 512.0f) * f->age;
+    float th = (134.30f + 45.0f * cosf(w)) * 3.14159265f / 180.0f, c = cosf(th), sn = sinf(th), bob = 3.0f * sinf(w);
+    for (int q = 0; q < 2; q++) {
+        float cc = q ? -c : c;
+        Vec3 U = { cc * B0.x + sn * B1.x, cc * B0.y + sn * B1.y, cc * B0.z + sn * B1.z };
+        float ctr[3] = { f->pos.x + 20.2757f * U.x, f->pos.y + 20.2757f * U.y + bob, f->pos.z + 20.2757f * U.z };
+        hud_world_wing(f->img, ctr, &U.x, &V.x, 21.2132f);
+    }
+    return 1;
+}
+
+int ambient_fx_run(AmbFx *f, float dt, const float *eye)
+{
+    if (f->owner < 0 || f->owner >= g_namb) return 0;
+    Amb *a = &g_amb[f->owner];
+    if (f->kind == K_BUTTERFLY) return amb_butterfly_run(f, a, dt);
+    if (f->kind == K_MOTE) {                                                     /* 0x47dca0 */
+        if (a->stamp != g_frame) { a->live--; return 0; }                        /* the owner did not think: gone at once */
+        if ((f->age += dt) >= f->life) { a->live--; return 0; }                  /* its place is refilled next think */
+        f->pos.x += dt * f->dir.x * f->speed; f->pos.y += dt * f->dir.y * f->speed; f->pos.z += dt * f->dir.z * f->speed;
+        /* flags 7 (camera facing, own colour, rotation, additive), mode 0x12, size 25, image 29 (0x1001d), rotation
+         * (int)(age * 250) in 1/512 turn; alpha 1 until u = 0.7, then down to 0 at u = 1 (0x4aa1d8, 0x4abd30 = 3.33) */
+        float u = f->age / f->life, al = u < 0.7f ? 1.0f : 1.0f - (u - 0.7f) * 3.33f;
+        hud_world_spr(29, &f->pos.x, 25.0f, (int)lrintf(f->age * 250.0f), a->rgb, al, 7, NULL, 0);
+        return 1;
+    }
+    if (f->kind == K_DROP) {                                                     /* 0x47de10 */
+        static const float grey[3] = { 0.4f, 0.4f, 0.4f };
+        f->age += dt;
+        float s = dt * f->speed * f->dir.y, nf = f->fallen - s;                  /* +0x24 counts the height fallen */
+        if (nf < f->len) {
+            f->fallen = nf;
+            f->pos.x += dt * f->speed * f->dir.x; f->pos.y += s; f->pos.z += dt * f->speed * f->dir.z;
+            if (f->age > 5.0f) return 0;                                         /* port guard: a drop that never falls (dir.y >= 0) would live for ever */
+            /* line 0x471a10(0xe00): from 250 behind (alpha 0) to the drop (alpha 0.5), grey 0.4, half width 4, image 57 */
+            if (eye) {
+                float p0[3] = { f->pos.x - f->dir.x * 250.0f, f->pos.y - f->dir.y * 250.0f, f->pos.z - f->dir.z * 250.0f };
+                hud_world_streak(57, p0, &f->pos.x, eye, 4.0f, grey, 0.0f, 0.5f);
+            }
+            return 1;
+        }
+        float t = (f->fallen - f->len) / s * dt;                                 /* 0x47df30: the rest of the step down to the bottom, a ripple there */
+        f->pos.x += t * f->dir.x * f->speed; f->pos.y += t * f->dir.y * f->speed; f->pos.z += t * f->dir.z * f->speed;
+        Vec3 p = f->pos; int ow = f->owner;
+        AmbFx *r = fx_new(K_RIPPLE, ow);                                         /* 0x47e310: age 0, life 0.2 */
+        if (r) { r->age = 0; r->life = 0.2f; r->pos = p; }
+        return 0;
+    }
+    if (f->kind == K_RIPPLE) {                                                   /* 0x47df80 */
+        static const float white[3] = { 1, 1, 1 }, up[3] = { 0, 1, 0 };
+        float u = (f->age += dt) / f->life;
+        if (u >= 1.0f) return 0;
+        /* flags 2 (plane with normal (0,1,0), own colour, additive), image 3 = byte-identical to 58 (hud slot 0x3a),
+         * size u*30 + 5, alpha 0.5 - 0.5u */
+        hud_world_spr(0x3a, &f->pos.x, u * 30.0f + 5.0f, 0, white, 0.5f - 0.5f * u, 2, up, 0);
+        return 1;
+    }
+    return 0;
 }

@@ -125,18 +125,42 @@ into the pool.
 | +0x00 | 4 | u32 | `n` (→ `sector+0x40`) |
 | +0x04 | `4n` | u32[] | references (→ `sector+0x44`): `(mask << 16) \| object_index` |
 
-Usage (`0x4071ae`, `0x407502`, `0x42aa0b`, `0x434771`, `0x497a9c`, …): `object_index =
+Usage (`0x4071ae`, `0x407502`, `0x42aa0b`, `0x434771`, `0x497a9c`, `0x497f3c`, `0x4984ab`): `object_index =
 v & 0xFFFF` indexes the object table `world+0x40` (the `.ins` objects; `[obj+8] & 0x1f` =
-object type), the full u32 is passed as an argument to the collision method `vtable+0x20` of
-that object; `0x407282` itself constructs such values with `id | 0xFFFF0000`. The high 16 bits
-are thus a mask (0xFFFF = "everything"; also 0x7FFF, 0x03C0, 0x0780, … in the data), presumably
-which sub-parts of the object lie in this sector.
+object type), the full u32 is passed as the `id` argument to the instance's collision methods (vt[5] `+0x14`
+ray, vt[6] `+0x18` endless ray, vt[7] `+0x1c` floor, vt[8] `+0x20` cylinder, vt[9] `+0x24` sphere);
+`0x407282` itself constructs such values with `id | 0xFFFF0000` for the dynamic list.
+
+**The high 16 bits are a PHASE mask.** Each test ANDs them with the instance's `+0xd0`
+(`0x4324df`, `0x432b11`, `0x431e40`, `0x4331c3`, `0x434054`: `if (!(inst+0xd0 & id & 0xffff0000)) return`),
+and `+0xd0` is written by the animation clock `0x43eee0` after every pose: `(1 << (int)(min(phase, 1.0)·15.0 + 0.5)) << 16`
+(`0x43f264..0x43f2a3`, constants `0x4a9864` = 15.0, `0x4a9014` = 0.5, `_ftol` `0x499580`), phase = position / length of the
+current animation. So a ref says "this instance reaches into this cell at these of the 16 sample phases of its
+animation": a static prop has 0xFFFF, a moving platform is listed along its whole path with one or a few bits per
+stretch (W1B shuttle 605, model 42: 78 cells, e.g. cell 3718 mask 0x0c38, cell 4791 mask 0x0180; the W1A stamper 186:
+137 cells, 0xFFFF in the column above the floor, 0x00F8 in the floor cell). Of 11615 refs in W1B 450 are partial
+masks; masks are never 0. The registration is **static**: nothing writes `cell+0x40/+0x44` after the loader, so an
+instance moved by code away from where the level tool registered it (a boss pad, a thrown bomb, a flying rocket) is
+found only through the dynamic list 0x4c3bb4 (the listed instances with flag 0x20), or not at all. The level tool
+evidently registered the geometry per phase generously (every sampled node box that touches a cell is registered, and
+more; the TRAJ points of the path-followers of W1B/WWS/W2D/W3D lie inside their registered cells, except lasers
+50-52 and the bomb cannons 21 whose TRAJ is not their own path).
+
+Order: within a cell the refs are NOT sorted by object index (W1B: 5746 of 11615 consecutive pairs descend), no ref
+occurs twice in a cell, and every index is an `.ins` instance (no camera) on all levels.
 
 Validation: record count == `.gel` objects on all levels; `object_index` < number of
 `.ins` objects (1st u32 of `.ins`) on all levels.
 
+### 2.1 How the queries use it
+Every instance collision test runs only for the instances registered in the cells the query visited (FORMAT_GEL.md 5.1)
+and then for the dynamic list; see PERSO_MOVE.md 6.7 for the order, the skips and the hit selection. Port: the file is
+loaded into the level's GelFile by `gel_col_load` (`src/level.c`, through `rnd_load_col`), the renderer reads the camera
+leaf's list with `gel_col_cell` (message-34 pass `0x42aa0b`), the collision queries with `gel_col_instances`.
+
 ### Uncertain
-- Exact semantics of the 16-bit mask.
+- Which animation the level tool sampled for the masks (presumably animation 0, the only one most props have); an
+  instance that plays another animation is still tested with the bit of its CURRENT phase, as in the original.
 
 ---
 

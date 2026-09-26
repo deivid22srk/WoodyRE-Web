@@ -924,6 +924,18 @@ static void enemy_reset(Enemy *e)
     enemy_place(e);
 }
 
+/* game messages 1201 / 1202 [inst] (0x4034ba / 0x403473, docs/OBJECTS.md 3.1): type word (inst+0x104, vtbl[4] 0x403fe0) bit
+ * 0x400 on / off, the "attackable" bit the target finder 0x4632e0 reads. The handler tests bit 0 of the instance REF, not of
+ * anything in the instance (0x403496 / 0x4034de: test byte [msg+8], 1), so only odd slots are touched; it calls vtbl[4]
+ * before the NULL test and never checks its result (the classes whose vtbl[4] is 0x4078b0 = NULL, e.g. 41/60/70/90/100/110,
+ * would crash the original). No shipped level sends either message; of the classes with a type word only the enemies
+ * (4..16) are targets in the port, so the others are ignored here. */
+void enemies_msg1201(EnemySet *s, Instance *inst, uint32_t ref, int on)
+{
+    if (!inst || !(ref & 1)) return;
+    for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst) s->e[i].attackable = on;
+}
+
 /* Enemy::HandleMsg 0x41a740, id 11 [inst, n, v] (jump table 0x41ac40; docs/ENEMY.md 7). The scripts of the 28 levels send
  * n = 0, 1, 4, 5, 6, 7, 8, 13, 32, 33, 37 (scan: docs/MESSAGES.md 11); the rest is ported from the handler all the same. */
 void enemies_msg11(EnemySet *s, Instance *inst, int n, int v)

@@ -141,7 +141,7 @@ void Perso_Update(Perso *p, bool arg /* always 1 */)
         case 5: 0x44db50(p); doPost = false; break;      /* scripted animation (§2.4) */
         case 7: 0x44e1c0(p); doPost = false; break;      /* position follows object +0x55c (0x42f6b0), direction from it */
         case 8: 0x4657f0(p); doPost = false; break;      /* 233 instr, quaternion 0x440370 – rail/lift? */
-        case 9: 0x454090(p); doPost = false; break;      /* sub-state +0x724 (0..5), anim 0x4b, calls 0x44db50 */
+        case 9: 0x454090(p); doPost = false; break;      /* results sequence, sub-state +0x724 (0..5), calls 0x44db50 (PERSO_STATE9.md) */
     } else if (p->state == 7) { 0x44e1c0(p); doPost = false; }
     if (doPost) Perso_MoveCollide(p);                    /* 0x4624f0 (§2.4) – for 0/1/4/6/2/3 */
     if (p->state == 1) 0x4567f0(p);                      /* 271 instr */
@@ -224,7 +224,7 @@ flag 0x80) ⇒ `M+0x10 = normalize(target − pos)` (look direction towards the 
   `M+0x44 = (dot(new, old)+1)/2 · P+0x1c (600) · min(|stick|,1)` (turning slows you down),
   `M+0x10 = slerp(old, new, |stick|·0.25 (0x4a9ca0))` (`0x45a320`, threshold `0x4aa41c` = 0.9999),
   y = 0, normalize; flag 8.
-  With `+0x4ec` (altMode): **`0x45a7b0`**: keys 0/1 (mirrored if cam+0x61c == 1) with flags
+  With `+0x4ec` (side view, CAMERA_SCRIPT.md §4.2.1): **`0x45a7b0`**: keys 0/1 (mirrored if cam+0x61c == 1) with flags
   `+0x4ed/+0x4ee` ⇒ target speed P+0x1c or 0.
 * otherwise `0x45a1f0` (clear flags 8/0x10/0x20), phase = 0.
 * **`0x45a850` direction**: if `+0x308 == 1` (ground type slippery, PERSO_MOVE.md §6.4) and not flag 0x40 and target speed ≥ 0:
@@ -352,7 +352,7 @@ animation speed, `+0x1c` cell, `+0xf8` model.
 | 0x200 | u32 | result of `0x437180` (ground/material code) | `0x4624f0` |
 | 0x204..0x20c | vec3 | displacement this frame | `0x44bb20`, `0x4627d0`, `0x456210`, `0x4653b4` |
 | 0x210..0x218 | vec3 | filtered up vector (state 1) | `0x44bd30`, reset `0x44ab20` (0,1,0) |
-| 0x21c | int | **state** 0 normal, 1 ?, 2 dead, 3 key-7 mode, 4 ?, 5 scripted anim, 6 on object/ridden, 7 follows object +0x55c, 8 rail?, 9 sub-automaton +0x724 | `0x44c980`, `0x44c9f0` |
+| 0x21c | int | **state** 0 normal, 1 ?, 2 dead, 3 key-7 mode, 4 ?, 5 scripted anim, 6 on object/ridden, 7 follows object +0x55c, 8 rail?, 9 results sequence (sub-automaton +0x724, PERSO_STATE9.md) | `0x44c980`, `0x44c9f0` |
 | 0x220 | int | previous state | `0x44c980` |
 | 0x224 | f32 | ground height | `0x4624f0` |
 | 0x228 | f32 | height above ground | `0x4624f0` |

@@ -303,15 +303,24 @@ bank 0). Differences for the rocket:
 * emitter state `+8`: 0 until the end of turning; then **1 = starting up**: timer `+0x1c` runs for 1.0 s, scale factor `s` for the sizes (`0x475560..0x475601`):
   `0 < τ < 0.15` → `τ·6.667`; `0.3 < τ < 0.45` → `(τ − 0.3)·6.667`; `0.85 < τ < 1.0` → `(τ − 0.85)·6.667`; otherwise 0 (three "sputters"; `0x4aa1c8`, `0x4aab98`, `0x4ab79c`,
   `0x4aa3d8`, `0x4abd04`); at `τ ≥ 1` → state **2 = on** (`0x475542`). Because the ignition only lasts 0.3 s, the second and third sputter already fall within the flight.
-* only drawn on frames where the think step sets `+0xc = 1` (rocket state ≠ 0).
+* only drawn on frames where the think step sets `+0xc = 1` (`0x452e67`: every rocket state ≠ 0, **including 7 and 9**, and not
+  while paused, `0x452e3b`); the list driver `0x46d0a4` ignores visibility and fade, so the flame burns on at the blast point for
+  the 0.5 s of state 9 while the rocket itself is invisible.
 * trail direction `d` (`0x47563d..0x475694`): the first frame `P1 − P0` of the marker, after that the stored point minus this frame's `P0`;
   for size index **6** (and 9) the stored point is the marker's own `P1` (`0x475c2c..0x475c75`, written in the puff loop), for the others the
   last puff position. So the rocket's flame lies along `P1(previous frame) − P0`: in flight it leans back along the way flown.
 * the puffs run in state 1 too, also between the three sputters: `+0x20` (the puff accumulator) grows in every state but 0 (`0x4754e3`).
+* the smoke (`0x475b7a..0x475c95`): `n = ftol(acc·200)`, `acc −= n·0.005` (`0x4aa164`, `0x4abd08`); for `k = n−1 … 0` a pool record
+  (life 0.2, callback `0x475380`, image 14) at `P0 + d·(k/n·len + 100)` (`len` = the trail length before normalising, 100 = the
+  size-6 entry of `0x4abcc8`), age `k·dt/n` (`0x475bbf`), rotation `ftol(rnd·512)`; the stored point is written only when a record
+  was allocated. So the smoke starts 100 behind the nozzle, just past the flame.
 * **Port** (`rockets_draw` → `exhaust_glow_flames`, shared with the race board's spray): the camera-facing glow (70), the glow in the plane
   across `d` (60, flags 6), and the flame as **three 2:1 quads** (image 31, mode 0x13, alpha 0.8, flags 0x62) crossed on `d` at 0/85/170
   (1/512 turn) + `f3·512`, size `s·100 + rand·10 − 5` (the ramp scales the table size only, `0x4758b8`), centred `d · size · (cos 37 − 1/64)`
   from the nozzle (`0x475912..0x4759c5`). Until this round it was one billboard of `(100 ± 5)·s` at `0.4·size` and both glows camera facing.
+  The smoke is the race board's (`FX_BOARD_PUFF` records of the effect pool, the loop above); it used to be a private 96-cloud ring
+  spread between the previous and the current nozzle point, on top of the flame. The exhaust is drawn in states 7 and 9 too, and
+  not in a paused frame (`dt = 0`).
 
 ### 5.2 Flashing red (vtbl[26] `0x4537d0`)
 
@@ -482,19 +491,24 @@ still > 600 from the explosion point for 323 (725), but **not** automatically fo
 
 ## 10. Uncertain / not checked
 
-1. **Axis direction of the start orientation**: with the quaternion from the `.ins` "as stored," the nose (−Y) of 323 points toward (0, −0.38, +0.92), i.e. away from the target, and the rocket
-   turns more than 150° in state 3; with the conjugated reading it points toward (0, −0.38, −0.92). Which is correct follows from the port's existing instance convention
-   (`inst->quat`); not visually verified. The target matrix of §3.2 is unambiguous either way (rows = model axes).
+1. ~~**Axis direction of the start orientation**~~ - **verified live** (`tools/wverify.py --probe rocket`, W1A, Woody teleported to
+   (8845, 1160, 385), attack tapped at 7 s): the rows `+0x28` of 323 start as (1, 0, 0), (0, 0.3827, −0.9239), (0, 0.9239, 0.3827), so the
+   nose (−Y) points toward (0, −0.38, +0.92), away from the target, exactly the port's `.ins` reading; state 2 stores q0 = (0.5556, 0, 0,
+   0.8315) and q1 = (−0.0416, 0.6275, 0.7768, −0.0336) (x, y, z, w; the rows are the transposed matrix of the quaternion), the 2 s of
+   state 3 follow `slerp(q0, q1, t/2)` to within 0.001 over all 1517 traced frames, and the end rows (−0.9943, 0, −0.1069),
+   (−0.1045, −0.2102, 0.9721), (−0.0225, 0.9777, 0.2090) are the port's (`WOODY_ROCKETLOG=1` prints the port's rows; max difference
+   against the same slerp 0.0006). The drawn node matrices (palette `[0x509adc]+0xa0`) follow the rows with one frame of lag, so
+   the rocket visibly turns. State timings: 0.83 s mount, 1 frame state 2, 2.0 s turn, 0.3 s ignition, then the flight.
 2. The channel of the flash color: `[0x5ac854]` is the first component of the vertex color `+0x24`; assumed to be red (vertex colors are R,G,B).
 3. ~~Explosion kind 1: the particle records `0x4767f0` and `0x4764f0` are not decompiled~~ — resolved, PARTICLES.md §5.
 4. Camera: state 8 only sets the behind flag (`0x4591ec`); the stored direction is row 1 of the rocket matrix and has a **y component** here. How `0x424760` handles
    that (ignores y or tilts the camera along) has not been checked. There are no separate distances/heights for the ride.
-5. Speed after jumping off: Mover ramp A is never cleared or set anywhere; assumed ≈ 0 because the player was standing still/attacking when mounting. A charge run (attack
-   released = also the trigger for the charge run, PERSO_JUMP §2.2) could have started in the same frame just before message 40 arrives; `0x465740` clears `+0x5b4`, but whether the
-   ramp still holds 700 u/s at the moment of jumping off has not been tested.
-6. Exhaust state `+8` is not reset to 0 by Reset: on a **second** ride the exhaust is already burning (state 2) right from mounting. That's how it is in the code
-   (`0x452baa..0x452bcb` only clears `+0x2c[]`); whether that is visible in the game has not been verified. The port may set `exhaust = 0` in the Reset.
-7. The smoke/flame details of `0x475440` are taken over from PROJECTILES.md §5.4 ("read in broad strokes"); only the index-6 sizes and the startup ramp have been checked here.
+5. ~~Speed after jumping off~~ — resolved: the jump-off path always runs `0x465a5f` → `0x459ff0(Perso+0x388, dir)`, which calls `0x467110` on
+   all three Mover ramps (`+0x34`, `+0x68`, `+0x9c`) and clears their values: no speed carries over (the port's `speed = 0` is right).
+6. Exhaust state `+8` is not reset to 0 by Reset: on a **second** ride the exhaust is already burning (state 2) right from mounting, until the
+   ignition (`0x45322d`) sets it back to 1 and the sputters replay. That's how it is in the code (`0x452baa..0x452bcb` only clears `+0x2c[]`);
+   the port now does the same (`rocket_reset` keeps `exhaust`). Not verified in the running game.
+7. ~~The smoke/flame details of `0x475440`~~ — checked: glows and flames (`0x4756fe..0x475b74`) match `exhaust_glow_flames`; the smoke is §5.1.
 8. Type 21: not read further than §7 (bomb update `0x44d870`, what happens to the Perso if the cannon is already in state 8/0 while he is still in state 8 —
    presumably the bomb has already exploded by then and he is dead or has jumped off).
 9. Staying seated without dying (`+0x270 > 0`, cheat): the original then stays stuck in state 8 on the respawned rocket (object state 0/9 ⇒ no exit). See the
