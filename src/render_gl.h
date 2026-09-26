@@ -52,6 +52,7 @@ typedef struct {
     /* drawn after the models and before the fade list: texture list 8 of the flush 0x4293f0 (docs/LIGHTING.md 1.5),
      * where the water surfaces of class 60 go (water.c) */
     void (*post_models)(const TexFile *tex, Vec3 eye);
+    uint8_t *model_blend;                              /* per .ins model: 1 = a drawn mesh node has a polygon of a blended group (list +0x1cc), built on the first frame */
 } Renderer;
 
 int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis);   /* lit / vis may be NULL */

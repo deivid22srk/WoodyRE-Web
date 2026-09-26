@@ -78,36 +78,74 @@ Vec3 cam_right(const FreeCamera *c) { Vec3 v = { -cosf(c->yaw), 0, sinf(c->yaw) 
  * three smaller levels itself with a 2x2 box filter (0x47fd83..0x47fe17: (a+b+c+d)/4 per channel, alpha included).
  * The device samples them with MIN/MAG LINEAR and MIPFILTER POINT (0x47ed3a..0x47ed62, D3D7 D3DTFP_POINT = 2), i.e.
  * GL_LINEAR_MIPMAP_NEAREST. Without the smaller levels a far wall of a dense texture aliases into noise: W1B's star
- * box (group 52, one-texel stars repeated every 100 units) turned into flickering speckles (issue #38). */
-static void box_halve(const uint8_t *src, int w, int h, uint8_t *dst, int colour_key)
+ * box (group 52, one-texel stars repeated every 100 units) turned into flickering speckles (issue #38).
+ *
+ * Every level is a 16-bit surface, and the port keeps the texels in exactly that form before it widens them for GL:
+ * - 0x47f090(v, 0) widens the file's RGB565 to ARGB8888 with the low bits 0 (r5 << 3, g6 << 2, b5 << 3, alpha 0), the
+ *   colour key test 0x47fc0e..0x47fc1e runs on that (magenta -> 0x00000000, anything else | 0xff000000), and 0x47f170
+ *   packs it back into the surface format: [0x5e8690] (0x40283b: 0 = RGB565 when the device offers it, 1 = 555,
+ *   2 = 4444) or, for a colour key texture, format 3 = ARGB1555 (0x47fae9, 0x47f1fd). The low-bits-0 value is only
+ *   ever an intermediate: an RGB565 texture reaches the device bit for bit as the file has it, a colour key texture
+ *   loses the lowest bit of green and keeps one alpha bit. What the sampler makes of the 16-bit texel is up to the
+ *   hardware; the port widens it by bit replication (= x * 255 / 31 up to rounding), as D3D7-era cards and every
+ *   current one do. Widening with zeros instead would darken every texture by up to 7/255.
+ * - the smaller levels (0x47fd83..0x47fe17) decode the four source texels of the level above the same way (format 3
+ *   decodes its alpha bit as 0x80, 0x47f127), average them per channel with truncation - (sum of (p & 0xfcfcfc)) >> 2,
+ *   alpha (sum of (p >> 2) & 0x3fc00000) & 0xff000000 - and pack the result with truncation again. So each level
+ *   loses a fraction of a 5/6-bit step (they grow a little darker), and in a colour key texture a smaller texel is
+ *   opaque only when all four sources are: 4 x 0x80 / 4 = 0x80 keeps the 1555 alpha bit, 3 x 0x80 / 4 = 0x60 does not. */
+static uint16_t tex16_texel(uint16_t v, int ck)                          /* level 0: 0x47f090(v, 0), colour key, 0x47f170(argb, fmt) */
+{
+    if (!ck) return v;                                                   /* 565 -> 8888 (low bits 0) -> 565 is the identity */
+    uint32_t r5 = v >> 11 & 31, g6 = v >> 5 & 63, b5 = v & 31;
+    if ((r5 << 3 & 0xf0) == 0xf0 && (g6 << 2 & 0xf0) == 0 && (b5 << 3 & 0xf0) == 0xf0) return 0;   /* 0x47fc1e: (argb & 0xf0f0f0) == 0xf000f0 */
+    return (uint16_t)(0x8000 | r5 << 10 | (g6 >> 1) << 5 | b5);         /* 0x47f1fd: ARGB1555, green truncated to 5 bits */
+}
+static void tex16_halve(const uint16_t *src, int w, int h, uint16_t *dst, int ck)   /* 0x47fd83..0x47fe17 */
 {
     int dw = w > 1 ? w / 2 : 1, dh = h > 1 ? h / 2 : 1;
     for (int y = 0; y < dh; y++) for (int x = 0; x < dw; x++) {
         int x0 = 2 * x < w ? 2 * x : w - 1, x1 = 2 * x + 1 < w ? 2 * x + 1 : x0, y0 = 2 * y < h ? 2 * y : h - 1, y1 = 2 * y + 1 < h ? 2 * y + 1 : y0;
-        const uint8_t *a = src + 4 * (y0 * w + x0), *b = src + 4 * (y0 * w + x1), *c = src + 4 * (y1 * w + x0), *d = src + 4 * (y1 * w + x1);
-        uint8_t *o = dst + 4 * (y * dw + x);
-        for (int k = 0; k < 4; k++) o[k] = (uint8_t)((a[k] + b[k] + c[k] + d[k]) >> 2);
-        if (colour_key) o[3] = o[3] >= 128 ? 255 : 0;   /* the surface is ARGB1555 (0x47f1fd): alpha survives as its top bit, so 3 of 4 opaque texels stay opaque */
+        uint16_t p[4] = { src[y0 * w + x0], src[y0 * w + x1], src[y1 * w + x0], src[y1 * w + x1] };
+        uint32_t r = 0, g = 0, b = 0, a = 0;
+        for (int k = 0; k < 4; k++) {                                    /* 0x47f090: fmt 0 = 0x47f0a4, fmt 3 = 0x47f127; every channel has its low bits 0, so & 0xfc drops nothing */
+            if (ck) { r += (p[k] >> 10 & 31u) << 3; g += (p[k] >> 5 & 31u) << 3; b += (p[k] & 31u) << 3; a += p[k] & 0x8000 ? 0x80u : 0; }
+            else { r += (p[k] >> 11 & 31u) << 3; g += (p[k] >> 5 & 63u) << 2; b += (p[k] & 31u) << 3; }
+        }
+        r >>= 2; g >>= 2; b >>= 2; a >>= 2;
+        dst[y * dw + x] = ck ? (uint16_t)((a & 0x80 ? 0x8000 : 0) | (r >> 3) << 10 | (g >> 3) << 5 | b >> 3)   /* 0x47f1fd */
+                             : (uint16_t)((r >> 3) << 11 | (g >> 2) << 5 | b >> 3);                            /* 0x47f184 */
+    }
+}
+static void tex16_widen(const uint16_t *s, uint8_t *d, uint32_t n, int ck)  /* the sampler's side: 5/6 bits -> 8 by replication */
+{
+    for (uint32_t i = 0; i < n; i++, d += 4) {
+        uint32_t v = s[i], r5, g, b5;
+        if (ck) { r5 = v >> 10 & 31; b5 = v & 31; g = v >> 5 & 31; g = g << 3 | g >> 2; d[3] = v & 0x8000 ? 255 : 0; }
+        else { r5 = v >> 11 & 31; b5 = v & 31; g = v >> 5 & 63; g = g << 2 | g >> 4; d[3] = 255; }
+        d[0] = (uint8_t)(r5 << 3 | r5 >> 2); d[1] = (uint8_t)g; d[2] = (uint8_t)(b5 << 3 | b5 >> 2);
     }
 }
 static GLuint upload_texture(const TexGroup *g, int frame)
 {
     GLuint id; glGenTextures(1, &id); glBindTexture(GL_TEXTURE_2D, id);
-    int w = (int)g->width, h = (int)g->height; uint32_t n = g->width * g->height;
-    uint8_t *rgba = (uint8_t *)malloc((size_t)n * 4), *half = (uint8_t *)malloc((size_t)n * 4 + 4);
-    rgb565_to_rgba(g->frames[frame], rgba, n, g->flags & 1);
+    int w = (int)g->width, h = (int)g->height, ck = g->flags & 1; uint32_t n = g->width * g->height;
+    uint16_t *s = (uint16_t *)malloc((size_t)n * 2 + 2), *half = (uint16_t *)malloc((size_t)n * 2 + 2); uint8_t *rgba = (uint8_t *)malloc((size_t)n * 4 + 4);
+    for (uint32_t i = 0; i < n; i++) s[i] = tex16_texel(g->frames[frame][i], ck);
+    tex16_widen(s, rgba, n, ck);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     int level = 0;
     while (w > 1 || h > 1) {                  /* the original stops after 3 levels (GL_TEXTURE_MAX_LEVEL below); the rest only makes the chain complete for GL 1.1 */
-        box_halve(rgba, w, h, half, g->flags & 1);
+        tex16_halve(s, w, h, half, ck);
         w = w > 1 ? w / 2 : 1; h = h > 1 ? h / 2 : 1; level++;
-        glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, half);
-        uint8_t *t = rgba; rgba = half; half = t;
+        tex16_widen(half, rgba, (uint32_t)(w * h), ck);
+        glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        uint16_t *t = s; s = half; half = t;
     }
     glTexParameteri(GL_TEXTURE_2D, 0x813D /* GL_TEXTURE_MAX_LEVEL (1.2) */, level < 3 ? level : 3);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    free(rgba); free(half); return id;
+    free(s); free(half); free(rgba); return id;
 }
 
 /* ---------------------------------------------------------------- world batches */
@@ -429,7 +467,7 @@ void rnd_free(Renderer *r)
 {
     for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->batches[i].idx); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); free(r->litb[i].idx); }
     free(r->batches); free(r->litb); free(r->face_bound);
-    free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev);
+    free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev); free(r->model_blend);
     for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); free(r->lightb[t].idx); free(r->lightb[t].face); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
     for (uint32_t g = 0; r->tex && g < r->tex->ngroups; g++) {                 /* the level's textures live in the GL context, not in the TexFile */
         TexGroup *tg = &r->tex->groups[g]; if (!tg->gl_frames) continue;
@@ -1237,7 +1275,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         glEnable(GL_DEPTH_TEST); glDepthMask(GL_TRUE);
     }
 
-    for (int pass = 0; pass < 2; pass++) {                      /* pass 0 opaque, pass 1 additive (no depth writes) */
+    for (int pass = 0; pass < 2; pass++) {                      /* pass 0 opaque, pass 1 additive world faces (no depth writes); the additive model faces go through the buckets below */
     if (r->show_world) {
         glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_COLOR_ARRAY); glEnableClientState(GL_TEXTURE_COORD_ARRAY);
         set_blend(pass);
@@ -1279,13 +1317,13 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         glDisableClientState(GL_VERTEX_ARRAY); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
         if (pass == 0 && g_ndyn && r->show_light && dyn_draw()) draw_dyn_world(r);   /* WOODY_DYNLIGHT only (port extra) */
     }
-    if (r->show_instances) {
+    if (r->show_instances && pass == 0) {                          /* list +0x1c0; the additive faces (+0x1cc) wait for the buckets below */
         double a = win_time(); g_last_material = 0xffffffffu;
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) {
             Model *m = &r->ins->models[mi];
             for (uint32_t k = 0; k < m->ninstances; k++) {
-                Instance *inst = &m->instances[k]; if (!inst->drawn || (pass == 0 && inst_fading(inst))) continue;   /* a fading instance's opaque parts go to the fade list below */
-                { static double mt[512]; static int mn; double b0 = win_time(); draw_instance(r, inst, pass); if (pass == 0) draw_outline(r, inst); if (mi < 512) mt[mi] += win_time() - b0; if (getenv("WOODY_PROF2") && pass == 1 && mi == r->ins->nmodels - 1 && k == m->ninstances - 1 && ++mn == 120) { for (uint32_t z = 0; z < r->ins->nmodels && z < 512; z++) if (mt[z] / 120 * 1000 > 0.3) { printf("   model %u: %.2f ms (%u nodes, %u tris, %u inst)", z, mt[z] / 120 * 1000, r->ins->models[z].nnodes, r->ins->models[z].ntris, r->ins->models[z].ninstances); puts(""); } } }
+                Instance *inst = &m->instances[k]; if (!inst->drawn || inst_fading(inst)) continue;   /* a fading instance's opaque parts go to the fade list below */
+                { static double mt[512]; static int mn; double b0 = win_time(); draw_instance(r, inst, 0); draw_outline(r, inst); if (mi < 512) mt[mi] += win_time() - b0; if (getenv("WOODY_PROF2") && mi == r->ins->nmodels - 1 && k == m->ninstances - 1 && ++mn == 120) { for (uint32_t z = 0; z < r->ins->nmodels && z < 512; z++) if (mt[z] / 120 * 1000 > 0.3) { printf("   model %u: %.2f ms (%u nodes, %u tris, %u inst)", z, mt[z] / 120 * 1000, r->ins->models[z].nnodes, r->ins->models[z].ntris, r->ins->models[z].ninstances); puts(""); } } }
             }
         }
         bt_flush(); g_last_material = 0xffffffffu;
@@ -1294,26 +1332,56 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     }
     if (r->show_instances && r->post_models) { r->post_models(r->tex, cam->pos); set_blend(0); g_last_material = 0xffffffffu; }
     if (r->show_instances) {
-        /* list +0x1c4 (0x428d00): depth = camera-space z of the .ins position (0x43b528, clamped at 0), bucket =
-         * round(depth * 254 / max(1, deepest)), drawn from bucket 255 down to 0; per bucket all batches depth-only,
-         * then all blended. The additive parts of these instances stay in pass 1 above (their RGB already carries
-         * 1 - fade); the original sorts those into the same buckets, but with a depth left over from the last fading
-         * instance, so their order against the fade list is arbitrary there too. */
-        static Instance **fl; static float *fd; static uint32_t fcap; uint32_t fn = 0; float dmax = 1.0f;
+        /* 0x428d00, run after the transparent world lists: the fade list +0x1c4 and the additive list +0x1cc (every
+         * face of a blended group, mode 3 at 0x43d7c8) share 256 depth buckets, drawn from 255 down to 0 (far to near).
+         * bucket = round(depth * 254 / deepest) (fistp, [0x4aa2f0] = 254), deepest = max(1, every batch depth) (0x428d27..0x428db8).
+         * Per bucket: the fade batches depth-only (ZERO/ONE, ZWRITE on, 0x428f10) and again blended (SRCALPHA/INVSRCALPHA,
+         * 0x428fdd), then ZWRITE off (0x42908d), list +0x1c8 (SRCALPHA; only the 2D quads, drawn later by the port) and
+         * list +0x1cc with ONE/ONE (0x429182). Bucket 0 merges +0x1c8 and +0x1cc by batch address (0x429240).
+         * The sort depth is the global [0x5ac8d4], which every model batch copies when a polygon lands in it (0x43e0d3,
+         * 0x43eec7, 0x43ea1d); its only writer is 0x43b56a, for an instance that is fading (alpha < 252): camera-space
+         * z of its .ins position (row +0x11c/+0x12c/+0x13c/+0x14c against inst+0xc), clamped at 0. A batch holds
+         * consecutive polygons of one (texture, mode, instance) (0x43dbac..0x43dbbb), so the sort is per instance, not per
+         * face, and an additive batch of an instance that is not fading gets whatever the last fading instance drawn
+         * before it left there - 0 (.bss) until the first fade of the session. In the usual case that is bucket 0: the
+         * glow faces come after every fade bucket. Among themselves ONE/ONE without z-write commutes, so only their
+         * place against the fade list (which writes z) is visible. The additive RGB of a fading instance carries 1 - fade
+         * (lit_vertex_colour); the vertex alpha stays 1 here, ONE/ONE ignores it. ALPHATESTENABLE follows the colour
+         * key bit for this list too (0x4291c4), and no blended group of the 28 levels has one: off. */
+        static float sort_depth;                                     /* [0x5ac8d4], never reset (not even on a level change) */
+        double a = win_time();
+        if (!r->model_blend) {
+            r->model_blend = (uint8_t *)calloc(r->ins->nmodels + 1, 1);
+            for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { const Model *m = &r->ins->models[mi];
+                for (uint32_t ni = 0; ni < m->nnodes && !r->model_blend[mi]; ni++) { const InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || n->type_code == 2) continue;
+                    for (uint32_t k = 0; k < n->npolys; k++) if (n->polys[k].nverts >= 3 && mat_blended(r, n->polys[k].material)) { r->model_blend[mi] = 1; break; } } }
+        }
+        static Instance **fl, **al; static float *fd, *ad; static int *fb, *ab; static uint32_t fcap, acap; uint32_t fn = 0, an = 0; float dmax = 1.0f;
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
-            Instance *inst = &m->instances[k]; if (!inst->drawn || !inst_fading(inst)) continue;
-            if (fn == fcap) { fcap = fcap * 2 + 16; fl = (Instance **)realloc(fl, fcap * sizeof *fl); fd = (float *)realloc(fd, fcap * sizeof *fd); }
-            float d = (inst->position.x - cam->pos.x) * fw.x + (inst->position.y - cam->pos.y) * fw.y + (inst->position.z - cam->pos.z) * fw.z;
-            if (d < 0) d = 0;
-            if (d > dmax) dmax = d;
-            fl[fn] = inst; fd[fn++] = d; } }
-        if (fn) {
-            g_zfunc = GL_LEQUAL; glDepthFunc(GL_LEQUAL);
-            for (int b = 255; b >= 0; b--) {
+            Instance *inst = &m->instances[k]; if (!inst->drawn || inst->type == 60) continue;
+            int fading = inst_fading(inst), add = r->model_blend[mi];
+            if (!fading && !add) continue;
+            if (fn == fcap) { fcap = fcap * 2 + 16; fl = (Instance **)realloc(fl, fcap * sizeof *fl); fd = (float *)realloc(fd, fcap * sizeof *fd); fb = (int *)realloc(fb, fcap * sizeof *fb); }
+            if (an == acap) { acap = acap * 2 + 64; al = (Instance **)realloc(al, acap * sizeof *al); ad = (float *)realloc(ad, acap * sizeof *ad); ab = (int *)realloc(ab, acap * sizeof *ab); }
+            if (fading) {                                            /* 0x43b528..0x43b56a */
+                float d = (inst->position.x - cam->pos.x) * fw.x + (inst->position.y - cam->pos.y) * fw.y + (inst->position.z - cam->pos.z) * fw.z;
+                sort_depth = d < 0 ? 0 : d;
+            }
+            if (fading) { fl[fn] = inst; fd[fn++] = sort_depth; }
+            if (add) { al[an] = inst; ad[an++] = sort_depth; }
+            if (sort_depth > dmax) dmax = sort_depth;
+        } }
+        for (uint32_t i = 0; i < fn; i++) fb[i] = (int)lrintf(fd[i] * 254.0f / dmax);
+        for (uint32_t i = 0; i < an; i++) ab[i] = (int)lrintf(ad[i] * 254.0f / dmax);
+        int bmax = -1; for (uint32_t i = 0; i < fn; i++) if (fb[i] > bmax) bmax = fb[i];
+        for (uint32_t i = 0; i < an; i++) if (ab[i] > bmax) bmax = ab[i];
+        for (int b = bmax; b >= 0; b--) {
+            if (fn) {
+                g_zfunc = GL_LEQUAL; glDepthFunc(GL_LEQUAL);
                 for (int sub = 1; sub <= 2; sub++) {
                     int any = 0;
                     for (uint32_t i = 0; i < fn; i++) {
-                        if ((int)lrintf(fd[i] * 254.0f / dmax) != b) continue;
+                        if (fb[i] != b) continue;
                         if (!any) { any = 1; g_fading = sub; g_last_material = 0xffffffffu; if (sub == 1) glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); }
                         g_fade_alpha = 1.0f - fl[i]->fade;
                         draw_instance(r, fl[i], 0); draw_outline(r, fl[i]);
@@ -1321,9 +1389,18 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
                     if (!any) break;
                     bt_flush(); glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
                 }
+                g_fading = 0; g_fade_alpha = 1.0f; g_zfunc = GL_LESS; glDepthFunc(GL_LESS);
             }
-            g_fading = 0; g_fade_alpha = 1.0f; g_zfunc = GL_LESS; glDepthFunc(GL_LESS); glEnable(GL_ALPHA_TEST); g_last_material = 0xffffffffu;
+            int any = 0;                                             /* list +0x1cc of this bucket, in the port's instance order (ONE/ONE commutes) */
+            for (uint32_t i = 0; i < an; i++) {
+                if (ab[i] != b) continue;
+                if (!any) { any = 1; g_last_material = 0xffffffffu; glDisable(GL_ALPHA_TEST); }
+                draw_instance(r, al[i], 1);
+            }
+            if (any) { bt_flush(); glEnable(GL_ALPHA_TEST); }
         }
+        g_last_material = 0xffffffffu; glEnable(GL_ALPHA_TEST);
+        T[3] += win_time() - a;
     }
     set_blend(0);
     g_ndyn = 0; g_idyn_n = 0;                                      /* the dynamic lights of this frame are used up */

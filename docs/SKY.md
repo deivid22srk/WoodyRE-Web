@@ -343,7 +343,7 @@ The original (everything read statically):
 | `0x47fa93..0x47fa9d`, `0x47fac2` | `mips ≠ 0` → DDSD flags `0x21007` (+`DDSD_MIPMAPCOUNT`), `dwMipMapCount = 4` |
 | `0x47fb4f..0x47fb5c` | caps `0x401008` = `TEXTURE | MIPMAP | COMPLEX` |
 | `0x47fc80..0x47fed1` | loop of 3: `GetAttachedSurface` to the next level, half width/height (`0x47fd2b`, `0x47fd2d`), per destination texel the **2×2 box average** of the four source pixels, alpha included (`0x47fd83..0x47fe17`: `Σ (p & 0xfcfcfc) >> 2` for RGB, `Σ ((p >> 2) & 0x3fc00000)` for A), back to the surface format (`0x47f170`) |
-| `0x47f1fd` | format 3 (colour key) = ARGB1555: alpha survives only as the top bit, so an averaged texel is opaque if ≥ 3 of the 4 sources are |
+| `0x47f1fd` | format 3 (colour key) = ARGB1555: alpha survives only as the top bit. The loop decodes that bit as `0x80` (`0x47f127`), so the average is `0x80` (opaque) only if **all 4** sources are opaque; 3 of 4 give `0x60` and the bit is gone (MODEL_RENDER.md §9) |
 | `0x47ed3a..0x47ed62` | device init, stage 0: `SetTextureStageState` (IDirect3DDevice7 `+0x94`) MAGFILTER 2 = `D3DTFG_LINEAR`, MINFILTER 2 = `D3DTFN_LINEAR`, **MIPFILTER 2 = `D3DTFP_POINT`** (D3D7: NONE 1, POINT 2, LINEAR 3); the same three for stage 1 at `0x47edc4..0x47ede6`. No other writer of 0x10/0x11/0x12 in the exe, no LOD bias (0x13) or MAXMIPLEVEL (0x14) |
 
 So: 4 levels (128, 64, 32, 16 for a 128×128 group), bilinear within the nearest
@@ -356,9 +356,9 @@ a one-texel star is smeared over 16 or 64 texels; the far starfield walls then b
 almost black, calm plane and only close by (the ceiling at y = 1253 directly above the player)
 do loose stars remain visible. No flicker.
 
-**Port** (`src/render_gl.c`, `upload_texture` + `box_halve`): mip 0 as before, then
-repeatedly the half size with the same 2×2 box average (alpha of colour-key textures snapped back
-to 0/255 with threshold 128, as with the 1555 bit), `GL_TEXTURE_MAX_LEVEL` (`0x813D`) = 3,
+**Port** (`src/render_gl.c`, `upload_texture` + `tex16_halve`): mip 0 as before, then
+repeatedly the half size with the same 2×2 box average, `GL_TEXTURE_MAX_LEVEL` (`0x813D`) = 3,
 `GL_LINEAR_MIPMAP_NEAREST` / `GL_LINEAR`. The chain is computed down to 1×1 so the texture
 is also complete under a strict GL 1.1; `MAX_LEVEL` restricts usage to the original's four
-levels. Not replicated: the 16-bit quantization between the levels.
+levels. Since MODEL_RENDER.md §9 every level is kept as the original's 16-bit surface (RGB565, or ARGB1555 for a
+colour key) with the original's truncating average, and only widened for GL.
