@@ -298,12 +298,12 @@ iris opens (0 → 0.85, 0.5 s) when you come back to page 1 from the load/world-
 |---|---|---|---|
 | 2 | load slot select (class `0x45dd00`, 0x68 B) | | not worked out |
 | 3 | world select, 3D carousel (class `0x45e560`, 0x148 B; GAMEFLOW §7) | | how the camera moves to the carousel at (−11300, −6, 600) not investigated |
-| 4 | class `0x45bfb0` (0x40 B) | | not worked out |
+| 4 | high scores (class `0x45bfb0`, 0x40 B; MENU_LOAD §4.8) | | black page, rows per finished level |
 | 5 | save slot select (class `0x45e1f0`, 0x68 B) | | not worked out |
 | 6 | 35 "Do you want to save?" / 5 Yes / 6 No | 0.4 | result 8/9 |
 | 7 | 64, 65, 66, 4 "Continue" | 0.4 | no save found |
 | 8 / 9 / 0xa | 67 "Game Saved" / 59 "Save failed." / 60 "Load failed." + 4 | 0.4 | |
-| 0xb, 0xc, 0xe | empty (wait pages for reading/writing) | 0.4 | |
+| 0xb, 0xc, 0xe | empty (wait pages for reading/writing; 0xc stands 2 frames, 0xb/0xe 1, MENU_LOAD §5) | 0.4 | |
 | 0xd, 0xf..0x16 | PS2 memory card texts 69..97 | 0.3/0.4 | almost unreachable on PC |
 | 0x17 | 61 "…overwrite this save?" / Yes / No | 0.4 | |
 | 0x18 / 0x19 | pause: 4 Continue, (19 Start again), 36 Options, 2 Quit | 0.05 | enter `0x45b390` (logo off) |

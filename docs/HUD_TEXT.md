@@ -358,7 +358,7 @@ end rect `0x80ff0000` from `X − 2` to 640 (`0x47ae6e`), `cur` B balls sprite 1
 ### 4.5 Message 1172 and the temporary counters
 
 `1172` sets `app+0x70 = 1` for one frame → `0x4484a0`: if `hud+0xc == 0` and no slide-out animation is running,
-start the slide-in animation (`0x4618d0`, flag `+0x3b`); `hud+0xc = 2`. `0x447210` counts `hud+0xc` down every frame; as soon as
+start the slide-in animation (`0x4618d0`, flag `+0x3b`); `hud+0xc = 2` (details and port: §4.6). `0x447210` counts `hud+0xc` down every frame; as soon as
 it hits 0 the slide-out animation starts (`0x461a70`, flag `+0x3c`). The script must therefore send 1172 **every frame**
 as long as the $ counter should be visible (hub: near the Jackpot door). While `hud+0xc > 0` the
 bonus icon (rows 5–7) disappears and the $ counter takes its place.
@@ -475,12 +475,47 @@ A four-stage sequence, ≈ 2.5 s: (1) 0.2 s flight together with the circle grow
 0.4 s, (3) 1.5 s hold, (4) circle shrinks to 0 while the icon slides to `x = −spriteW` (0.2 s).
 The `IconSlide` object is started right at pickup but only ticked in stage 4.
 
+#### The $ counter of message 1172 (+0x3b / +0x3c), the pause HUD (+0x3d / +0x3e), the "minus 1" of $ (+0x3f)
+
+All of them work on the same animator objects as the pickup sequences: `+0x18` the slide of the W icon (sprite 4),
+`+0x24` the plate under it (slot 1), `+0x1c` / `+0x28` / `+0x0c` the slide, plate and number pop of the $ (slots 2 / 3,
+anchor A1), `+0x20` / `+0x2c` / `+0x10` the same for the charge (slots 4 / 5, A2). A plate `0x47bf90(x, y, w0, h0, w1,
+h1)` takes the slot (the top left of the full 34×34 plate) and keeps its **centre** `(x + 17, y + 17)`; a slide
+`0x47c1a0(x0, y0, x1, y1, sprite)` draws the sprite at full size along the line. Both run 0.2 s, linear. The step
+flags `animator+0x76..0x7e` are the return values of those ticks.
+
+| anim | start | tick | sequence |
+|---|---|---|---|
+| $ in (+0x3b) | `0x4618d0` | `0x461820(hud+0x18)` | the bonus plate shrinks under the W (W drawn at slot 0), then the W slides to x = −94; at the same time the $ slides in from x = −64, its plate grows, then the number pops (A1, 2 phases 17 → 37 → 17, 0.2 s); returns the pop's result, so it ends with the pop |
+| $ out (+0x3c) | `0x461a70` | `0x461a00` | the W slides back from −94, then its plate grows; the $ plate shrinks (icon drawn), then the $ slides to −64; ends with the $ slide |
+| pause in (+0x3d) | `0x461c40` | `0x461b60($, charges)` | $ and charge slide in together (from −64 / −63), both plates grow, both numbers pop; ends with the $ pop |
+| pause out (+0x3e) | `0x461e10` | `0x461da0` | both plates shrink (no numbers), then both icons slide out; ends with the $ slide |
+| $ minus (+0x3f) | `0x462330` | `0x461f70($)` | icon and plate appear at once (no slide), the OLD value ($ + 1) pops 17 → 37 → 17, then a 1-phase pop 17 → 0 in 0.2 s; `animator+0x54` = phase |
+
+Driving (`0x4480d0`): `+0x3b` ticks only while `+0x3c` is clear; when it ends and `hud+0xc < 2` (1172 stopped),
+`0x461a70` starts at once (`+0x3c = 1`). `+0x3c` ticks only while `+0x3b` is clear; when it ends and `hud+0xc == 2`
+(1172 came back), `0x4618d0` starts again. `0x4484a0` (1172) starts `+0x3b` only when `hud+0xc == 0` and `+0x3c` is
+clear, then `hud+0xc = 2`; `0x447232` counts `hud+0xc` down after every HUD frame and starts `+0x3c` when it reaches 0
+and `+0x3b` is clear. So one frame without 1172 is enough to send the counter out. `+0x3d/+0x3e` come from the state
+setter `0x448450`: 0 → 1 starts `0x461c40` (+0x3d = 1, +0x3e = 0), 1 → anything starts `0x461e10` (+0x3e = 1,
++0x3d = 0); on a race level (`hud+4 == 1`) the state changes without any animation. `+0x3f` is started by the $
+setter `0x448340` whenever the value drops (not on the silent first set), ticked only while `+0x38` (the $ pickup)
+is clear, and `+0x38` in turn only ticks while `+0x3f` is clear.
+
+What `0x447660` draws meanwhile: with `hud+0xc == 0`, the bonus icon row (W, plate, number, "n / total") only when
+neither `+0x3b` nor `+0x3c` runs (race: always the flag row, and nothing below it); on the pause page, $ and charge
+only when neither `+0x3d` nor `+0x3e` runs. With `hud+0xc > 0` (1172): no bonus row at all, the health row, the $ row
+unless `+0x3b`, `+0x3c` or `+0x3f` runs, the charge row only on the pause page (same test).
+
 #### Port status
 
 Ported in `src/hud.c` (`hud_anim_pickup`, `hud_anim_tick`, ticked from `hud_draw`) and `src/render_gl.c`
 (`rnd_project`). The port itself watches the counters to recognize the reward, just like the setter `0x448380`.
-Not yet ported: the slide in/out of the $ counter (+0x3b/+0x3c), the pause HUD (+0x3d/+0x3e) and the "minus 1" of $
-and charge (+0x3f/+0x41); the "minus 1" of the lives (+0x40) is already in.
+The $ counter of 1172 (`dollar_in_*` / `dollar_out_*`, `hud_draw` does `0x4484a0` and the countdown), the pause HUD
+(`hud_state` = `0x448450`, called by the main loop every frame with 0 / 1 / 2) and the "minus 1" of $
+(`dollar_minus_*`) are ported, as are the "minus 1" of lives and charge. Test hook: `WOODY_DOLLAR="T0 T1"` sends
+1172 every frame between T0 and T1. A port fix on the way: the plates used to be centred on the slot's top left
+corner (17 units up and left of the static plate) instead of on the plate's centre (`0x47bf90`).
 ---------------------------------------------------------------------------------------------------
 
 ## 5. Images and the 2D blit
