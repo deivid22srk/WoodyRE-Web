@@ -219,6 +219,7 @@ original's flags as they are (§1); the alpha-blended path uses `GL_COMBINE` wit
 | `0x477060` particles | `fx_explode` (kind 0 from `bomb_explode`, kind 1 from `game_explosion`, which the rocket now also uses) |
 | `0x478c0e` muzzle ring | in `bombs_draw` with the launcher's muzzle smoke |
 | `0x477e40` | `game_skeleton` from `player_kill` kinds 2/9 and the race kind 2 |
+| `0x475440` / `0x475380` | `board_fx_draw` / `FX_BOARD_PUFF`: the race board's jets and smoke (RACE.md §2.2); needs sprite mode 0x13 (base 37, a 2:1 quad), which `hud_world_spr_mode` now knows |
 
 Deviations: the splinter's rotation (§4); the player's facing at the skeleton flash is set to face the camera's look
 direction at once (0x459ff0 resets the Mover ramps; the port sets `yaw`); the plane sprites get a GL polygon offset
