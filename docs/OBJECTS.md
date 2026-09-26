@@ -578,7 +578,10 @@ starting position/rotation in `+0x134..0x160`), think step `0x452e10` (states `+
 `55 [.,1,380]`, `55 [.,2,1500]`, activated by releasing the attack in volume 61 (script object 324) resp. volume 62 (script object 327). What it exactly represents (rocket/catapult): **uncertain**, not
 decompiled. Model 47: housing group 108, two press nodes, markers type code 0 and 9.
 
-## 3. Other unported classes (brief)
+## 3. Other classes (brief)
+
+All of these have been ported since this section was written (status in TODO.md "Object classes"); only type 17 is left
+(analysis done, BOMB_CARRY.md §4.2).
 
 | type | what | key addresses |
 |---|---|---|
@@ -589,7 +592,7 @@ decompiled. Model 47: housing group 108, two press nodes, markers type code 0 an
 | 42 + projectiles | §2.2 and **PROJECTILES.md**; 200 projectiles `0x5d7d48` (0x104 B), templates `0x5d7ba8` (0x68 B), Press/UnPress by landing projectiles | `0x4490a0`, `0x449130`, `0x4490f0`, `0x4493c0`; visuals `0x4700e0` (missile), `0x46f8a0`, `0x470af0` |
 | 60 | water volume (message 1506): **WATER.md**, ported in `src/water.c` | vtable `0x4a9194`, handler `0x474a40` (`0x403ca3`) |
 | 80 | lightning rod of the thunderstorm (messages 54, game 1100/1101): **STORM.md**, ported in `src/storm.c` | ctor `0x451a90`, vtable `0x4ab0c4`, Init `0x451b10`, handler `0x451b50`, storm `0x451cc0` |
-| messages 15..19 | texture frame/UV override per instance (INSTANCE.md §2); W1A: 16 12×, 18 10×; **not in `src/instance.c`** | `0x42d9c3`, `0x42da32`, `0x42daae`, `0x42db0f`, `0x42db86`, reader `0x47f290` |
+| messages 15..19 | texture frame/UV override per instance (INSTANCE.md §2); W1A: 16 12×, 18 10×; ported (TODO.md) | `0x42d9c3`, `0x42da32`, `0x42daae`, `0x42db0f`, `0x42db86`, reader `0x47f290` |
 | 1201 / 1202 | set/clear type-word bit 0x400 (attackable target), §3.1; **no level sends them**; ported (`enemies_msg1201`) | `0x403440` |
 
 ### 3.1 Messages 1201 / 1202 and the type word

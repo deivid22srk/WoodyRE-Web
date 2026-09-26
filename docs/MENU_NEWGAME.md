@@ -347,7 +347,7 @@ save slot index `app+0x60` (only chosen on page 5), `cfg+0x380` (the character f
 
 | # | original | port now | recipe |
 |---|---|---|---|
-| 1 | Esc = action 9 / menu back (release); pause menu in-game | `WM_KEYDOWN VK_ESCAPE → w->quit = 1` (render_gl.c) | remove the quit line (or for now only `g_level != 0` as long as pause menu 0x18 is not ported); read Esc as an edge (below) |
+| 1 | Esc = action 9 / menu back (release); pause menu in-game | `WM_KEYDOWN VK_ESCAPE → w->quit = 1` (render_gl.c) | done: Esc is read as an edge and opens pause menu 0x18/0x19 in a level (ported, TODO.md "2D, menus, game flow"); read Esc as an edge (below) |
 | 2 | confirm = Enter **release** or jump key **press** | Enter or Space **press** | `m_ok = REL(VK_RETURN) \|\| PRS(VK_SPACE)` (Space = the port's jump key) |
 | 3 | page 0: also Esc release → page 1 | `(win.keys[VK_ESCAPE] && 0)` | `if (m_ok \|\| REL(VK_ESCAPE)) page1_enter();` |
 | 4 | attract timer 35 s, page 0 only | missing | §9.2 |

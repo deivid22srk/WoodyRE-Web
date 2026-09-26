@@ -552,7 +552,7 @@ A command-line level can keep working as a "dev slot": index 0x1b, character unc
 4. Messages 1020, 1041, 1044, 1045 and the action codes of `0x44dda0` (0x11 walk through door, 0x49
    menu pose, 0x4a..0x4e results) are only inferred from usage.
 5. The BlackBox object (`0x484420`, 0xc0780 B, state 3, level 0x19, unlocked after S3R) and the credits
-   trigger in `0x401d1b..0x401d42` have not been analyzed.
+   trigger in `0x401d1b..0x401d42` have not been analyzed (TODO.md "Not analysed yet"; round 33 takes them on).
 6. Dev flags `cfg+0x384` (2 = sound debug, 4 = level-picker dialog, 8 = debug keys incl. `SavePos.bin`, 0x10 = BlackBox object
    always on): `0x44fa54` clears 1..0x10 and only `0x44fe5f` sets 2 again (from the cfg), so 4/8/0x10 are never set in the shipped
    exe (PERSO_DEATH.md §3.4); `0x493e53` is a store to a different object (the 3D library's window/thread object), not this field.

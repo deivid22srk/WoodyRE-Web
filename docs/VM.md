@@ -121,7 +121,7 @@ Handler signature: `uint32* handler(uint32* pc)` returns the next pc. Opcode ≥
 
 Handlers that return `true` are retried (`0x401250`, list of 32 deferred records).
 
-Reference encoding in arguments: `0x01000000 | i` = instance i (in `[0x50944c]->0x6c[i]`), `0x02000000 | i` = second kind of reference (still to be determined), `0x0002xxxx` pairs occur as (type, index).
+Reference encoding in arguments: `0x01000000 | i` = instance i (in `[0x50944c]->0x6c[i]`), `0x02000000 | i` = script variable i (FORMAT_INS.md §5), `0x0002xxxx` pairs occur as (type, index).
 
 ## 5. Engine → VM
 
@@ -141,6 +141,7 @@ Source of the volume events: `0x430210` (bounding-volume test per actor, `push 0
 
 ## 7. What's still missing for a 1:1 reimplementation
 
-- Semantics per message type: see [MESSAGES.md](MESSAGES.md) (routing complete, behavior partial).
-- Location of the VM tick in the frame loop (`0x4019c0` is called from `0x401ab0`/`0x404822`).
-- Meaning of the `0x02000000` references and the `.ins` linkage object ↔ instance.
+Nothing for the VM itself: every message id the 28 level scripts send is handled by the port (MESSAGES.md "Coverage of the
+port"), the VM tick `0x4019c0` is called from the game frame `0x401ab0` and from `0x404822`, and the `0x02000000 | i`
+references are script variables (FORMAT_INS.md §5, CAMERA_SCRIPT.md), `0x01000000 | i` instances and `0x03000000 | i`
+volumes (EVENTS.md). What is still open lives in the engine classes the messages drive; see TODO.md.
