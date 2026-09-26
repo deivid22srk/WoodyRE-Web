@@ -206,6 +206,8 @@ the save struct (§6.2): lives, items, charges, health.
   respawns there (via `0x445930`). Not persistent. The respawn also clears the side view (`Perso+0x4ec = 0` in Reset
   `0x44ab20`) and hard-cuts the follow camera back (`0x458f90`): if you die in a side-view section
   you end up back in 3D at the last checkpoint, usually right before the door of that section (PERSO_DEATH §3.4).
+  `1030` with instance 0 takes Woody's current position and facing (`0x44a920(NULL, 0)`). `SavePos.bin` (the `save = 1`
+  paths of `0x44a920`/`0x44a810`) belongs only to the dev-flag debug keys, which the shipped exe cannot enable (PERSO_DEATH §3.4).
   (Message 1020 = `perso->vt[0x98](1)` + camera `0x459030`: belongs to the same kind of volumes; exact
   meaning not worked out.)
 - **Back in the hub**: the hub script handles it itself. Object 297 in WWS (KWS/SWS analogous):
@@ -551,8 +553,9 @@ A command-line level can keep working as a "dev slot": index 0x1b, character unc
    menu pose, 0x4a..0x4e results) are only inferred from usage.
 5. The BlackBox object (`0x484420`, 0xc0780 B, state 3, level 0x19, unlocked after S3R) and the credits
    trigger in `0x401d1b..0x401d42` have not been analyzed.
-6. Dev flags `cfg+0x384` (2 = sound debug, 4 = level-picker dialog, 0x10 = BlackBox object always on):
-   where they are set has not been searched for; `0x493e53` sets them to 0.
+6. Dev flags `cfg+0x384` (2 = sound debug, 4 = level-picker dialog, 8 = debug keys incl. `SavePos.bin`, 0x10 = BlackBox object
+   always on): `0x44fa54` clears 1..0x10 and only `0x44fe5f` sets 2 again (from the cfg), so 4/8/0x10 are never set in the shipped
+   exe (PERSO_DEATH.md §3.4); `0x493e53` is a store to a different object (the 3D library's window/thread object), not this field.
 7. Menu pages 4, 7..0x15, 0x1a, 0x1b (options, error messages; `0x4033f6` opens 0x1a from the
    frame input) have only been identified in general terms; the meaning of result codes 2 and 18 is
    inferred from the handlers, not from the page classes.

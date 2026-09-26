@@ -193,7 +193,7 @@ registered actor, wherever it is — in practice everything alive in the sectors
 | 13 | `0x414490` | logs `'TimeHit : %f'`, state 6, `hitT`, kind 0 | hp 3 ⇒ **dead** |
 | 14 (Buzz) | `0x40fe90` | only in the low phase (`+0x224 == 0`) and `hitT ≤ 0`: state 9, `hitT`, SoundFx 42/47, smoke/explosion (BOSS14 §6.2), `Enemy_TakeDamage(…, **1.0**, kind **2** passed through)` | **1 of 5** hits, no hit star |
 | 15 | `0x40e720` | `xor al,al; ret 0x14` | **immune** |
-| 16 | `0x40d480` | only state 3/4: `+0x26c −= 0.2`, `+0x298 = 0`, state 5, `Enemy_TakeDamage(…, 3.0, kind 0)`, stop SoundFx 0x42 (`0x468a30`), SoundFx 0x41; hp ≤ 0 ⇒ state 7; otherwise `AnimCtrl->vtbl[2](2)`; **always returns true** | 3 damage (boss 16's hp not analyzed) |
+| 16 | `0x40d480` | only state 3/4: `+0x26c −= 0.2`, `+0x298 = 0`, state 5, `Enemy_TakeDamage(…, 3.0, kind 0)`, stop SoundFx 0x42 (`0x468a30`), SoundFx 0x41; hp ≤ 0 ⇒ state 7; otherwise `AnimCtrl->vtbl[2](2)`; **always returns true** | 3 of his 10 hp (BOSS15_16.md) |
 
 `Enemy_TakeDamage` `0x41adc0(att, dmg, dir, pt, kind)`:
 ```c
@@ -476,7 +476,12 @@ static void special_hit(Player *p)                                              
   * type 14: `boss_take_damage(e)` (always 1.0); no hit star if `kind == 2`, otherwise `game_hit_star(pt)` if the hit was accepted;
   * types 4..9 and 13: exactly the current `enemy_take_damage`, and **if the hit was accepted** (not dead, `hit_t <= 0`, `knock_t <= 0`)
     `game_hit_star(pt)` (kind becomes 0 ⇒ star also for the special attack, at Woody's feet);
-  * types 12 and 15 (not yet ported): nothing; 16: state 3/4, damage 3, SoundFx 0x41 (not ported).
+  * types 12 and 15: nothing; 16: state 3/4, damage 3, SoundFx 0x41 - **ported** (`enemy_hit` → `boss16_take_damage`, `0x40d480`:
+    interval −0.2, state 5 or 7, stop 0x42 / play 0x41; "dead" = true whatever the hp, then `vtbl[38]` = `ret 4`, so nothing follows;
+    no star for kind 2) and type 15 → `return 0` (`0x40e720`). The special-attack loop needs no extra case: its original list
+    `0x4c5258` holds the bosses in every state (`0x41a4d0`), and the port's `e->hp <= 0` / `attackable` filters only drop class 16 in
+    its state 7, where `0x40d480` refuses anyway. Class 16 has 10 hp (BOSS15_16.md §0), so a special attack is 3 of them; W3D run:
+    BOSS15_16.md §12. Boss 15 (W2D) is immune (only a bomb blast hurts him, `0x40e800`).
   * **Do not** play `audio_fx(6)` on a killed enemy: SoundFx 6 belongs to the bomb explosion (`0x44d730`, ENEMY.md §8 and BOMB.md); the peck loop
     in `player.c` (≈ line 704) currently does that — that is an existing port bug, do not carry it over.
 * The peck loop can use the same `enemy_hit` with the real hit point (dash: `p+0x59c`, charge run: `lerp(a, b, 0.5)`, PERSO_JUMP §3) so that it
@@ -540,7 +545,8 @@ constants; the colour conversion of `0x481560`; the HUD functions `0x448300`, `0
 3. How the original handles a charge run already in progress when the special attack starts during it (§1.5); the controller `0x457a50` and
    the lock run in parallel then.
 4. The "sound" of ref 114/115 (only measured).
-5. Boss 16 (W3D): hp and states 3/4/5/7 not analyzed; boss 15 is certainly immune to every `vtbl[39]`.
+5. ~~Boss 16 (W3D): hp and states 3/4/5/7 not analyzed~~ - done in BOSS15_16.md (10 hp; states 3/4 = taunting/throwing on a pad); boss
+   15 is certainly immune to every `vtbl[39]`.
 
 ### 6.1 Constants
 

@@ -243,11 +243,24 @@ it is the same travel, while a request every frame would restart the port's came
 
 Called from state 0 of `0x4459c0` (PERSO_FRAME §4.1), 0.25 s after losing a life (`0x44c730`):
 ```c
-Fader(Game+4, 0, 0, 0.1);  Game->state = 0;  Game->timer = 0.1;  [0x4b3354] = 0.2f;
+Fader(Game+4, 0, 0, 0.1);  Game->state = 0;  Game->timer = 0.1;  [0x4b3354] = 0.2f;   /* 0x445952: write-only, see below */
 Perso_Respawn(P, 0);                    /* 0x44a810 */
-Actors_ResetAll();                      /* 0x40c040: vtbl[28] of all actors */
+Actors_ResetAll();                      /* 0x40c040: vtbl[28] of every Npc but the Perso - a no-op, see below */
 CamFollow_Reset(Game+8);                /* 0x458f90 (§1.1): 0x41df70, 0x41f9f0(2) hard cut, SetMode(0, 0) = follow camera */
 ```
+**`Actors_ResetAll` `0x40c040` does nothing** (certain). It walks the Npc table `0x4c4e00[0x4c5318]`, skips category 1 (the Perso,
+`0x40c340`) and calls `vtbl[28]` (`+0x70`) on the rest. Slot 28 is `0x445840` = a bare `ret` in **every** Npc vtable: Npc `0x4a9530`,
+Enemy `0x4a9fbc`, Perso `0x4aabc0` and the nine class vtables 4-6 `0x4a9ec0`, 7-9 `0x4a9dc0`, 10 `0x4a9cb8`, 11 `0x4a9ab0`, 12 `0x4a99b0`,
+13 `0x4a9bb0`, 14 `0x4a98a8`, 15 `0x4a9778`, 16 `0x4a9658` (read from the exe; the only Npc ctors are `0x419cd0` Enemy and `0x44a2d0`
+Perso). `0x445840` is the generic empty stub (also pushed as a callback at `0x404b1a`, `0x417ac0`, …). So **neither a death respawn
+nor the pause-menu "Start again" (`0x40584d` → `0x445930`, INPUT.md §5.3) resets an enemy**, a projectile or a bonus: killed enemies
+stay dead, living ones keep their state and place. The only callers of `0x40c040` and `0x445930` are `0x445965` / `0x405860`,
+`0x4458db` (Game ctor) and `0x445a31` (Game state 0). `[0x4b3354]` (initial 0.1f) has no reader anywhere in the exe (no other
+reference to the address, `.text` or `.data`): write-only, nothing to port. What a respawn does restore is the race-bonus count:
+Reset → SurfEnter `0x456150` puts `+0x264 = +0x71c = +0x4e0` (the count at the last checkpoint, `0x44aaef`) and brings every type-37
+bonus back (`0x44f8a0`, BONUS.md §2.1); the race restart `0x4560f0` first zeroes `+0x4e0`, so it restarts from 0. Non-race levels
+have no such restore (SurfEnter only runs for subtypes 4/5; Woody bonuses do not come back, BONUS.md §2.1). Port: `player_reset` → `race_enter`
+(`race_bonus = race_bonus_ckpt`), `player_restart` (`race_bonus_ckpt = 0`), both in `src/player.c`.
 `0x44a810(P, save)`: if `P+0x250` (lives) is 0 ⇒ game over (`0x404e10`, or `0x44a6a0` = level restart if
 `[0x5e5814]+0x384 & 4`). Otherwise (with `save` = 1 first reading `SavePos.bin`, here 0): **`P.pos = P+0x318`**, `P->vtbl[17]()`
 = Reset `0x44ab20`, ground snap `0x462990`. Reset sets, among other things, **`0x459ff0(M, P+0x324)`** (checkpoint facing),
@@ -259,6 +272,37 @@ a side-view section, Woody simply stands in 3D at the last checkpoint, with the 
 The checkpoint itself (`1030 SaveAuto`, `0x445129` → `0x44aa10`): `+0x318 = inst.pos`; `+0x324` = `(P1.x − P0.x, 0, P1.z − P0.z)`
 of the marker with typecode 0 (`0x42f6b0(inst, 0, v, 0)`), normalized; without a marker the current facing (`0x445780`);
 `+0x330 = 1`, `+0x4e0 = +0x264`. All checkpoint instances of W1B (0x196, 0x200..0x20b, 0x238) have such a marker.
+`1030` with instance 0 (`0x44514d`): the warning `'Verifier le code de votre volume de sauvegarde : SaveAuto(this) …'` goes to
+`0x462c60` (an empty logger), then `0x44a920(NULL, 0)`: the checkpoint is Woody's **current** position `+0x1f4` and facing
+(`0x445780(M)`), **without** `+0x330` / `+0x4e0`. No shipped script sends it; ported anyway (`src/main_engine.c`, case 1030).
+
+#### `SavePos.bin` — a developer key, not a game feature (certain)
+
+`0x44a920(P, Vec3 *pos, bool save)` (`ret 8`): `+0x318 = pos ? *pos : +0x1f4`; `+0x324 = 0x445780(M)` (current facing); if `save`:
+`File f; f.open("SavePos.bin", 6 = "wb", 1)` (`0x43fcc0`/`0x43fd00`; the mode bits 2/8 turn the default `"rb"` at `0x4b3390` into
+`w`/`t`; the last argument 1 = **fatal**: "Can't open file %s" and `exit(0)` `0x49980a` if it fails), `write(+0x318, 12, 1)`,
+`write(+0x324, 12, 1)` (`0x43fde0`), close (`0x43fe00`/`0x43fcd0`). File = 24 bytes: position then facing, 3 floats each, in the
+working directory. `0x44a810(P, save = 1)` reads the same 24 bytes back (`0x43fdb0`, mode 5 = `"rb"`, also fatal) into `+0x318`/`+0x324`
+before the respawn, and after Reset calls `0x443ff0(P+4)` = leave_all (`0x44a8d3`; EVENTS.md §4.3 lists it as `0x44a7f5`). Neither
+touches `+0x330` or `+0x4e0`.
+
+Callers with `save = 1`: only the **debug keys** block of the input frame `0x402940`, which runs only when `[cfg+0x384] & 8`
+(`0x402959`, the dev flags of `[0x5e5814]`, GAMEFLOW.md §10 item 6, INPUT.md §4). **Nothing in the shipped exe sets flag 8**: the
+ctor `0x44fa40` clears flags 1..0x10 (`& ~0x1f`, `0x44fa54`), and the only later store to the cfg's `+0x384` is `0x44fe5f`, which
+sets flag 2 (sound) from the cfg bytes - so flags 4, 8 and 0x10 all stay 0; the other `[reg+0x384]` stores (`0x424bd4`, `0x492aac`, `0x49374e`, `0x493c23`,
+`0x493e53`, `0x493eb8`) belong to other objects (the camera, the window/thread object of the 3D library - so GAMEFLOW.md §10
+item 6's "`0x493e53` sets them to 0" is a different field). The block is dead code in the retail game. Keys are the internal
+key codes of `kbd->vtbl[5]` ("just pressed"):
+
+| code | address | action |
+|---|---|---|
+| `0x0f` | `0x402aeb` | `0x44a920(NULL, 1)`: checkpoint = here, **write** `SavePos.bin` |
+| `0x10` | `0x402b02` | `0x44a810(1)`: **read** `SavePos.bin` and respawn there (no life lost, no iris), then the camera `0x41df70`, `+0x368 = 0`, `0x41f9f0(2)` hard cut, `0x41f410(0, 0)` follow camera |
+| `0x11` | `0x402b55` | `0x44a920(cam+0x52c, 1)`: checkpoint = the camera's position (the free debug camera), **write** `SavePos.bin` |
+
+The other callers pass 0: `0x445960` (respawn), `0x456124` (race restart), `0x445160` (1030 with instance 0). So `SavePos.bin` is a
+developer "save/restore position" hotkey pair; in a normal game it is never written or read. **Not ported** (the port has no dev-flag
+debug keys, INPUT.md §6); nothing in the game depends on it.
 
 **W1B, issue #39.** The side-view section behind door 392 (→ 409, plane 411, `1088 [411, 2]`) has no checkpoint of its own;
 the last one is 0x206 at (−8009, 430, −16808), 575 units before door 392, marker toward the door (−x). The port kept the

@@ -1095,7 +1095,10 @@ void player_game_tick(Player *p, EkoVM *vm, float dt)
 /* Pause menu "Start again" (page 0x19 = the pause menu while riding, result 18, 0x40584d): 0x445930 = the respawn step of the Game
  * sequence (state 0 with 0.1 s to go, the iris shut, Perso respawn 0x44a810(0) at the checkpoint), then the race restart 0x4560f0:
  * no checkpoint any more (+0x330 = 0, +0x4e0 = 0), respawn position = the start (+0x318 = +0x30c), respawn again. State 0 then
- * respawns once more after 0.1 s and opens the iris 0 -> 1 in 1 s (docs/PERSO_FRAME.md 4.1), as after a death but no life is lost. */
+ * respawns once more after 0.1 s and opens the iris 0 -> 1 in 1 s (docs/PERSO_FRAME.md 4.1), as after a death but no life is lost.
+ * The race bonuses come back through Reset -> SurfEnter (race_enter: 0x44f8a0, +0x264 = +0x4e0 = 0). "Reset all actors" 0x40c040
+ * (vtbl[28] of every Npc but the Perso) is a no-op in the shipped game: slot 28 is 0x445840 = a bare `ret` in the Npc, Enemy,
+ * Perso and all nine enemy/boss class vtables, so neither this restart nor a death respawn resets an enemy. [0x4b3354] = 0.2 has no reader. */
 void player_restart(Player *p)
 {
     iris_set(p, 0, 0, 0.1f); p->iris = 0; p->iris_t = 0; p->game_state = 0; p->game_t = 0.1f;   /* 0x445930: Fader(Game+4, 0, 0, 0.1), state 0, timer 0.1 */
@@ -1486,20 +1489,27 @@ float player_body_height(const Player *p)                                 /* 0x4
 }
 /* ducking 0x465b10 (docs/PERSO_DUCK.md 1.2): hold action 5 on the ground -> 0x31 (down, 0.375 s), 0x32 (lying, every frame),
  * released and the segment feet+61 .. feet+132 free -> 0x33 (up, 0.2 s). Sub-states 1 and 3 end on their timer only.
- * With a bomb 0x4e/0x4f/0x50. Every frame he is down, LockMove(dt, 0) = max: no walking, turning, jumping or attacking. */
-static void duck_update(Player *p, const PlayerInput *in, float dt)
+ * With a bomb 0x4e/0x4f/0x50. Every frame he is down, LockMove(dt, 0) = max: no walking, turning, jumping or attacking.
+ * It is a pre-step of Perso::Update (0x44b797) for EVERY Perso state but 2 (dead) and attacks, so it also runs in the states
+ * 3/4/5/7/8/9 (docs/PERSO_DUCK.md 1.3). anim_owned: the Perso state owns the animation there - climbing 0x14..0x17 (prio
+ * 5000..5002), a scripted action (6000), the rocket 0x3b..0x3e (1800) all outrank the duck set (1750), and the handlers
+ * 0x4651d0 / 0x44db50 / 0x4657f0 read neither +0x694 nor +0x238 - so only the sub-state, its timers, the lock and the body
+ * height (61, for shots and lasers) go on, and he comes out of the state still ducking (Reset 0x44ad28 is the only clear).
+ * ground = +0x22c as 0x44bcf0 reads it: the port's on_ground, except on the rocket, where the port keeps on_ground 0 but the
+ * original's flag stays 1 from the mount (0x465740 needs the ground; 0x4657f0 never writes +0x22c and MoveCollide does not run). */
+static void duck_update(Player *p, const PlayerInput *in, float dt, int anim_owned, int ground)
 {
     if (p->dead_kind || p->atk) return;                                     /* state 2 / +0x5b4: nothing, no LockMove either */
     int b = p->state6;                                                      /* 0x465bc0: the bomb set whenever state == 6, bomb or not */
     switch (p->duck) {
-    case 0: if (in->duck && p->on_ground) { p->duck = 1; p->duck_anim = b ? 0x4e : 0x31; p->duck_t = anim_len(p, p->duck_anim, 0); p->lanim = -1; } break;
+    case 0: if (in->duck && ground) { p->duck = 1; p->duck_anim = b ? 0x4e : 0x31; p->duck_t = anim_len(p, p->duck_anim, 0); if (!anim_owned) p->lanim = -1; } break;
     case 1: if ((p->duck_t -= dt) <= 0) p->duck = 2; break;
     case 2: p->duck_anim = b ? 0x4f : 0x32;
             if (!in->duck) {                                                /* 0x4359b0 from feet + P+0x10 to feet + P+0x0c - P+0x10: any hit keeps him down */
                 Vec3 a = { p->pos.x, p->pos.y + P_DUCK_H, p->pos.z }, e = { p->pos.x, p->pos.y + (P_BODY_H - P_DUCK_H), p->pos.z }, n; float f;
                 int blocked = gel_ray_frac(p->gel, a, e) <= 1.0f || (player_ray_instances(p, p->inst, a, e, &f, &n, NULL) && f <= 1.0f);
                 if (getenv("WOODY_DUCKLOG") && blocked) { const Instance *hi = NULL; float gw = gel_ray_frac(p->gel, a, e); int ih = player_ray_instances(p, p->inst, a, e, &f, &n, &hi); printf("  DUCK blocked: world %.3f inst %d (%u) f %.3f\n", gw, ih, hi ? hi->index : 0u, f); }
-                if (!blocked) { p->duck_anim = b ? 0x50 : 0x33; p->duck_t = anim_len(p, p->duck_anim, 0); p->duck = 3; p->lanim = -1; }
+                if (!blocked) { p->duck_anim = b ? 0x50 : 0x33; p->duck_t = anim_len(p, p->duck_anim, 0); p->duck = 3; if (!anim_owned) p->lanim = -1; }
             }
             break;
     case 3: if ((p->duck_t -= dt) <= 0) p->duck = 0; break;
@@ -1724,7 +1734,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->bonus_inv > 0) p->bonus_inv -= dt;                             /* 0x44b1fa */
     bonus_blink(p, dt);
     if (p->game_state == 0) return;                                      /* waiting for the respawn */
-    look_update(p, in);                                                   /* 0x44b980 runs in every Perso state too (the original calls it after the attack controller) */
+    if (!p->dead_kind && !p->race_char && (p->script_act || p->ride || p->climb_sub)) duck_update(p, in, dt, 1, p->ride ? 1 : p->on_ground);   /* 0x465b10 also in the states 5 / 8 / 4, which return early below; before 0x44b980 as in 0x44b797 */
+    look_update(p, in);                                                 /* 0x44b980 runs in every Perso state too (the original calls it after the attack controller) */
     special_update(p, in, dt);                                            /* 0x458bf0 runs in every Perso state */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
@@ -1793,7 +1804,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     int racing = p->race_char && !p->dead_kind;                           /* Perso state 1: no attacks, no Mover (0x44b530) */
-    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } duck_update(p, in, dt); }
+    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } duck_update(p, in, dt, 0, p->on_ground); }
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
     else {
@@ -1861,7 +1872,9 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->jumper.open_window) { p->jumper.open_window = 0; if (p->air_win < 0.5f) p->air_win = 0.5f; }
     /* displacement this frame: the attack's own, or Mover + Jumper; then disp.y += dt * (+0x244) */
     disp = p->use_atk_disp ? p->atk_disp : (Vec3){ p->move_dir.x * p->speed * dt, p->jumper.dy, p->move_dir.z * p->speed * dt };
-    int hlock = p->duck != 0;                                              /* 0x44bc16: +0x238 > 0 zeroes the horizontal vector (walk, slide, knockback); the port only applies that while ducked */
+    int hlock = p->move_lock > 0;                                          /* 0x44bc16: ANY LockMove (+0x238 > 0: ducking, hard landing, special attack, bomb pick-up/throw,
+                                                                            * message 30, pecks) zeroes the horizontal vector h = walk + slide (RampB) + knockback (RampC); the
+                                                                            * jumper's vertical and the attack's own displacement (+0x5bc) are not touched (docs/PERSO_DUCK.md 2.2) */
     if (hlock && !p->use_atk_disp) disp.x = disp.z = 0;
     if (p->push_t > 0 || p->push_speed > 0) {                              /* RampC 0x45acb0: 500 u/s, 0.1 s up, 0.5 s out */
         if (p->push_t > 0) { p->push_t -= dt; p->push_speed += 500.0f / 0.1f * dt; if (p->push_speed > 500.0f) p->push_speed = 500.0f; }

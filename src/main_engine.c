@@ -3073,6 +3073,8 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             Vec3 p0, dir; g_player->spawn_pos = in->position; g_player->has_ckpt = 1;   /* +0x330 */
             g_player->race_bonus_ckpt = g_player->race_bonus;                                               /* +0x4e0 = +0x264 (0x44aaef) */
             g_player->spawn_yaw = inst_vector(in, 0, &p0, &dir) && dir.x * dir.x + dir.z * dir.z > 1e-6f ? atan2f(dir.x, dir.z) : g_player->yaw;
+        } else if (g_player && m->nargs && (m->args[0] & 0xffffff) == 0) {                                 /* 0x44514d: SaveAuto(0) -> the (silent, 0x462c60) warning "SaveAuto(this)", then */
+            g_player->spawn_pos = g_player->pos; g_player->spawn_yaw = g_player->yaw;                       /* 0x44a920(NULL, 0): +0x318 = +0x1f4, +0x324 = the Mover's facing; no +0x330 / +0x4e0 */
         }
         break;
     case 1142: g_prop = in; break;

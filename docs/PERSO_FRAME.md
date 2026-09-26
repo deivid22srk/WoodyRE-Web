@@ -460,7 +460,7 @@ after 1.00 s; start of the boss fight (vt 28.33..28.62) only `1152` ×44, `1150 
 camera, **no iris**; Woody (with no input) dies at vt 38.54 ⇒ state 3, iris 1 → 0 at 40.54 (death
 duration 3.0 − 1.0), life lost at 41.54, respawn at 41.79, iris 0 → 1, state 2 at 42.80.
 * state 0: `0x451bd0()` (thunderstorm off), fader tick, `Game+0xc -= dt`; ≤ 0 ⇒ `0x445930(Game)`
-  (fader (0,0,0.1), timer 0.1, `Perso->0x44a810(0)`, all actors `vtbl[28]()` via `0x40c040`,
+  (fader (0,0,0.1), timer 0.1, `Perso->0x44a810(0)`, all actors `vtbl[28]()` via `0x40c040` = an empty `ret` in every class, PERSO_DEATH §3.4,
   `0x458f90(Game+8)`), iris (0 → 1.0 over 1.0 s), **state 1** (iris opens).
 * state 1: iris done ⇒ **state 2** (gameplay).
 * state 2: `Perso->vtbl[36]()` (dead) ⇒ **state 3**, timer 0.
