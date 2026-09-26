@@ -304,6 +304,9 @@ the port these torches were dark cups.
 
 ## 10. Message 1509 and the smoke plume `0x475f30`
 
+Senders (scan of the 28 disassembled scripts for `PUSH 1509 ... SEND 5`): only W1B, five sends `[405, 399, mode, x]` = (4, 1), (5, 0),
+(5, 1), (5, 2), (4, 0) around cinematic 73; the handler `0x46cf6f..0x46cffa` was re-read against the port (`game_msg1509`): it matches.
+
 **1509 `[a, inst, mode, x]`** (`0x46cf6f`, subsystem `0x46cca0`; `a` = arg 0 is not read, the instance is arg **1**):
 mode 5 = `0x42f6b0(0, &v, x)` (typecode-0 marker x of inst) then `0x477060(1, &v, 0)` = explosion kind 1 (§5); mode 4 with
 `x == 1` = `0x475f30(inst, 0)`, `(inst, 1)`, `(inst, 2)`; mode 4 with any other x = bytes `0x5e857c..0x5e857e` = 0 (the

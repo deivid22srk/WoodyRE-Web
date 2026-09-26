@@ -83,6 +83,7 @@ typedef struct Enemy {
     int need_snap;                               /* Reset's ground snap 0x41a1a0 still to do (needs the level geometry, so on the next update) */
     uint32_t path_to; int path_dir;              /* patrol along the instance TRAJ */
     EnemySensor sens;                            /* +0x124 */
+    uint32_t col_cur;                            /* +0x198 = probe +0x178 +0x20: the world_collision it presses, 0xffffffff none (ctor 0x436cf0) */
 } Enemy;
 
 #define MAX_ENEMIES 256
@@ -115,6 +116,10 @@ Enemy *enemies_bomb_contact(EnemySet *s, const Enemy *owner, Vec3 a, Vec3 b, flo
 void enemies_actor_blast(EnemySet *s, Vec3 c, float r);                       /* rocket explosion 0x453560: vtbl[40](c, r) on the enemies of actor list 1 (thrower 12, Boss2 15) */
 int  game_enemy_bomb(Enemy *e, Vec3 pos, Vec3 dir, float speed, float fuse);  /* Fire 0x411e80: 0 = no free bomb in the pool (in main_engine.c) */
 void game_msgmask(Instance *in, uint32_t bits, int on);                      /* MsgMask_Set 0x443e50 / _Clear 0x443e90 on the instance's script object (in main_engine.c) */
+void game_col_probe(uint32_t *cur, int on, uint32_t col, const Instance *actor);   /* 0x436dc0's Press/In/UnPress (cur = Probe+0x20; in main_engine.c) */
+int  enemy_probe(Enemy *e, struct Player *pl, Vec3 pt, float tol, float *gy, int *found);   /* Probe_Test 0x436dc0 on the probe +0x178: 1 = on the ground */
+void enemy_reset_probe(Enemy *e);                                             /* the probe of Enemy::Reset 0x41a010 at the start position */
+void enemies_msg6_off(EnemySet *s, Instance *inst);                           /* Enemy::HandleMsg 0x41abfd: message 6 with 0 on an enemy in the world */
 
 /* class 14, the Buzz boss (boss.c, docs/BOSS14.md) */
 void boss_init(Enemy *e);                                                     /* ctor 0x40eb50 + PostLoad 0x40ec50 + factory Reset */

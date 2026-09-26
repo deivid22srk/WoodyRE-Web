@@ -76,6 +76,7 @@ typedef struct Player {
     int floor_is_hull;              /* floor came from an instance press node (kind 1) */
     const Instance *att_inst; uint32_t att_node; Vec3 att_local, att_world;   /* platform attachment (Perso+0x298) */
     uint32_t cur_col;               /* world_collision id currently pressed, 0xffffffff = none (Probe+0x20) */
+    int ground_22c;                 /* Perso+0x22c as msgmask 0x200 sees it (getter 0x44bcf0): on_ground, except that the rocket (state 8) keeps it */
     /* volume tracking: one flag per (instance, volume node) */
     uint32_t nvol; uint8_t *inside; Instance **vol_inst; uint32_t *vol_node; uint32_t *vol_id;
     /* follow camera state */
@@ -140,6 +141,8 @@ void player_sync_board(Player *p);
 void player_race_start(Player *p);                     /* level start (Game ctor 0x445850): the race's SurfEnter after the init messages */                    /* 0x44bf10 tail + 0x463e60: the race board takes the Perso's placement and animation */
 /* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
+float player_ground_query_col(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col);   /* + the world_collision id under pt (0x436dc0), 0xffffffff none */
+void  player_leave_all(Player *p, EkoVM *vm);                  /* 0x443ff0 leave_all: PersoLeave on every volume he is in */
 float player_body_height(const Player *p);            /* 0x462490 -> P+0x08: 193 standing / 61 ducked (Woody), race 160 / 81 */
 void player_set_carried(const Instance *owner, const Instance *follower);   /* follower moves with owner: a query that skips owner skips it too */
 /* landing ring 0x44af90 (docs/PERSO_JUMP.md 5): runs the fade by dt and gives the floor point, its normal and the sprite

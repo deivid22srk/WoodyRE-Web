@@ -464,7 +464,7 @@ in the script).
 | 1040 | inst, action | Perso scripted action `0x44dda0(action, vector of inst, 0)` (17 = walk through door) |
 | 1043 | inst, action, inst2 | same, with a target instance |
 | 1041 | inst, x | `0x44e040(x, position of inst)` |
-| 1042 | inst, dist, angle, var | var = 0; if Perso is free (`0x44bcf0`, `+0x21c == 0`), within `dist` (XZ, not ×0.01) of inst and looking within `angle`° of the direction to inst → `0x458e40`, var = 1 |
+| 1042 | inst, dist, angle, var | var = 0; if the Perso is on the ground (`0x44bcf0` = `+0x22c`, `0x44527f`) and in state 0 (`+0x21c == 0`), within `dist` (XZ, not ×0.01) of inst and looking within `angle`° of the direction to inst → `0x458e40`, var = 1 |
 | 1044 / 1045 | inst | `0x44e140` / `0x44e1a0` |
 | 1048 / 1049 / 1050 | var, mode | var = 0; key 0 / 1 / 6 on `[0x5e6188]`; mode 0 = `0x467400`, 1 = `0x467420`, 2 = `0x467440` → var = 1 |
 | 1081 | level | **GotoLevel** (fade 1.5 s) |

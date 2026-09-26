@@ -397,13 +397,25 @@ static float world_ground(const Player *p, Vec3 pt, int *found, const Instance *
     *hit_inst = NULL; *hit_node = NULL; *found = f1; g_ground_n = f1 ? gn : (Vec3){ 0, 1, 0 }; g_ground_mat = f1 ? gm : -1; return f1 ? y1 : pt.y;
 }
 
-float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found)
+/* the world_collision behind a GetHeight hit (0x436e03..0x436e65): hit type 2 (an instance press node), the model has
+ * collisions (S+0x60), the node's type code is 1 -> inst+0x70[nvol + sub-index]; anything else 0xffffffff */
+static uint32_t hit_collision(const Instance *hi, const InsNode *hn)
+{
+    if (!hi || !hn || hn->kind != 1 || hn->type_code != 1) return 0xffffffffu;
+    const Model *hm = hi->model; uint32_t k = hm->nvolume_nodes + hn->sub_index;
+    return hm->ncollision_ids && k < hi->nids ? hi->ids[k] : 0xffffffffu;
+}
+/* GetHeight for another actor (skip = its own instance); col (may be NULL) = the world_collision it stands over, for the
+ * generic probe 0x436dc0 of enemies and bombs */
+float player_ground_query_col(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col)
 {
     const Instance *hi; const InsNode *hn; Vec3 keep = g_ground_n;
     int32_t keep_mat = g_ground_mat;
     g_ground_skip = skip; g_skip_self = skip ? p->inst : NULL; float y = world_ground(p, pt, found, &hi, &hn); g_ground_skip = NULL; g_skip_self = NULL; g_ground_n = keep; g_ground_mat = keep_mat;
+    if (col) *col = *found ? hit_collision(hi, hn) : 0xffffffffu;
     return y;
 }
+float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found) { return player_ground_query_col(p, skip, pt, found, NULL); }
 
 /* Landing ring 0x44af90 (docs/PERSO_JUMP.md 5), run by the Perso post-render update 0x44b4a0 every frame that is not
  * paused. Not in Perso state 2 (dead), 4 (climbing), 5 (scripted) or 8 (rocket), nor while the game's mode object is in a
@@ -1086,8 +1098,8 @@ void player_game_tick(Player *p, EkoVM *vm, float dt)
     case 3: p->game_t += dt; if (p->game_t >= p->death_delay - 1.0f) { iris_set(p, 1.0f, 0, 1.0f); p->game_state = 4; } break;   /* 0x445ac1 */
     case 4: if (iris_tick(p, dt)) {
                 if (p->lives > 0) p->lives--;                            /* 0x44c730: life lost, leave all volumes, msgmask 0x10 pulse */
-                if (vm) { eko_actor_leave_all(vm, p->inst->id); eko_msgmask_set(vm, p->inst->id, 0x10); p->mask10_frames = 2; }
-                for (uint32_t v = 0; v < p->nvol; v++) p->inside[v] = 0;
+                player_leave_all(p, vm);
+                if (vm) { eko_msgmask_set(vm, p->inst->id, 0x10); p->mask10_frames = 2; }
                 p->game_state = 0; p->game_t = 0.25f; } break;
     }
     if (p->mask10_frames > 0 && --p->mask10_frames == 0 && vm) eko_msgmask_clear(vm, p->inst->id, 0x10);
@@ -1347,6 +1359,22 @@ static void player_volumes_y(Player *p, EkoVM *vm, float probe_y)
 
 static Quat q_unit(Quat q);
 static void player_volumes(Player *p, EkoVM *vm) { player_volumes_y(p, vm, P_VOL_PROBE_Y); }
+/* 0x44b888..0x44b8c4, after the state dispatch of 0x44b530 in every Perso state: msgmask 0x200 = onGround +0x22c (getter
+ * 0x44bcf0; not "Perso state is free"). +0x22c is written only by Perso_MoveCollide 0x4624f0 (0x462725 / 0x462733: the
+ * result of the probe 0x436f00, states 0/1/2/3/4/6) and set to 1 by Reset 0x44abc0, the ground snap 0x4629da and a scripted
+ * action with a vector 0x44dede; states 5/7/8/9 skip 0x4624f0 and leave it as it was. keep = one of those states (the port's
+ * rocket ride writes on_ground = 0 for its own use, the scripted action does not go through the ground test) */
+static void perso_mask200(Player *p, EkoVM *vm, int keep)
+{
+    if (!keep) p->ground_22c = p->on_ground;
+    if (vm) { if (p->ground_22c) eko_msgmask_set(vm, p->inst->id, 0x200); else eko_msgmask_clear(vm, p->inst->id, 0x200); }   /* 0x44b89c / 0x44b8bf */
+}
+/* 0x443ff0(perso id): PersoLeave on every volume the VM has him in (0x4444b0); the port's "was inside" cache follows */
+void player_leave_all(Player *p, EkoVM *vm)
+{
+    if (vm) eko_actor_leave_all(vm, p->inst->id);
+    for (uint32_t v = 0; v < p->nvol; v++) { if (p->inside[v]) printf("  VOL leave_all 0x%x (inst %u)\n", p->vol_id[v], p->vol_inst[v]->index); p->inside[v] = 0; }
+}
 
 /* ---- Perso state 1: riding the race board (subtypes 4/5 = script types 18/19, docs/RACE.md) ------------------ */
 static Vec3 xz_unit(Vec3 v) { float l = sqrtf(v.x * v.x + v.z * v.z); return l > 0 ? (Vec3){ v.x / l, 0, v.z / l } : (Vec3){ v.x, 0, v.z }; }
@@ -1773,7 +1801,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             } else lock_move(p, 0.3f);                                     /* 17: the pose is held until the teleport (message 26) resets the controller */
             p->script_act = 0;
         }
-        player_apply_transform(p); return;
+        player_apply_transform(p); perso_mask200(p, vm, 1); return;       /* state 5: no 0x4624f0, +0x22c kept */
     }
     if (!p->dead_kind && p->ride) {                                        /* state 8, 0x4657f0: the Perso follows the rocket (seat marker + its full rotation); no move, no collision, no gravity */
         Quat rq = p->ride_q; int st = p->ride_state, can = 0, ending = 0;
@@ -1793,18 +1821,18 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             p->ride = NULL; jumper_reset(&p->jumper); jumper_force_fall(&p->jumper, 1); p->on_ground = 0; p->lanim = -1; p->speed = 0; p->ramp_phase = 0; p->action_prev = in->action;
             p->floor_y = p->pos.y; player_apply_transform(p); puts("  PLAYER leaves the rocket");
         } else { p->on_ground = 0; p->inst->position = p->pos; p->inst->quat = p->ride_cur; mat4_from_trs(&p->inst->world, p->pos, p->ride_cur, p->inst->scale); }
-        if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200);
-        player_volumes_y(p, vm, 20.0f); return;                            /* 0x462760(p, 20.0) */
+        player_volumes_y(p, vm, 20.0f);                                    /* 0x462760(p, 20.0) */
+        perso_mask200(p, vm, 1); return;                                   /* state 8 skips 0x4624f0: +0x22c keeps the value from before the ride */
     }
     if (!p->dead_kind && p->climb_sub) {                                   /* state 4: 0x4651d0, then Perso_MoveCollide 0x4624f0 (0x44b834) */
         Vec3 d = climb_update(p, in, dt); const Instance *hi; const InsNode *hn;
         p->vel = (Vec3){ d.x / dt, d.y / dt, d.z / dt };
         move_collide(p, &d, dt, 0, &hi, &hn);
-        player_apply_transform(p); if (vm) eko_msgmask_clear(vm, p->inst->id, 0x200); player_volumes(p, vm); return;
+        player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return;   /* state 4 runs 0x4624f0: +0x22c = its probe */
     }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     int racing = p->race_char && !p->dead_kind;                           /* Perso state 1: no attacks, no Mover (0x44b530) */
-    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); player_volumes(p, vm); return; } duck_update(p, in, dt, 0, p->on_ground); }
+    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return; } duck_update(p, in, dt, 0, p->on_ground); }
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }
     else {
@@ -2004,9 +2032,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         } else if (p->cur_col != 0xffffffffu) {
             eko_col_perso_unpress(vm, p->cur_col, p->inst->id); p->events_sent++; printf("  COL unpress 0x%x\n", p->cur_col); p->cur_col = 0xffffffffu;
         }
-        /* msgmask 0x200 = "player stands on the ground" (0x44b89c / 0x44b8bf) */
-        if (p->on_ground) eko_msgmask_set(vm, p->inst->id, 0x200); else eko_msgmask_clear(vm, p->inst->id, 0x200);
     }
+    perso_mask200(p, vm, 0);                                              /* msgmask 0x200 = onGround +0x22c */
 
     player_volumes(p, vm);
 }
@@ -2194,6 +2221,7 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
     p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
+    if (have) p->ground_22c = 1;                                    /* 0x44dede: onGround = 1 only with a vector (msgmask 0x200) */
     p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = anim_len(p, lg, 0); p->script_faded = 0;
     if (act == 18) p->fade_req = 2;   /* fade in 0.5 s on the first frame (0x44dc2b). The camera is NOT cut here: the tail of 0x44dda0
                                        * puts it on the animation's own camera track (message 1040 in main_engine.c) and a cut back to the
