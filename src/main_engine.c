@@ -1775,7 +1775,8 @@ enum FxKind {                                                                 /*
     FX_PECK_EMIT, FX_PECK_CHIP, FX_PECK_FLASH, FX_PECK_HOLE,                 /* 0x4798f0, 0x479670, 0x479760, 0x479800: the beak impact 0x479c80 (4) */
     FX_DEBRIS_EMIT, FX_DEBRIS,                                               /* 0x476cd0, 0x4764f0: the dust burst of an explosion (5.1) */
     FX_BURN_EMIT, FX_BURN, FX_TRAIL_SMOKE, FX_TRAIL_SPARK,                   /* 0x476b50, 0x4767f0, 0x476f00, 0x476fb0: the burning debris of explosion kind 1 (5.2) */
-    FX_SKELETON                                                              /* 0x477980: the skeleton flash of Kill 2/9 (6, docs/PERSO_DEATH.md 4.2) */
+    FX_SKELETON,                                                             /* 0x477980: the skeleton flash of Kill 2/9 (6, docs/PERSO_DEATH.md 4.2) */
+    FX_FLAME                                                                 /* 0x47cd00: one flame of a torch of message 1508 (9) */
 };
 static void fx_particle(FxRec *e, float u, float dt);
 static FxRec *fx_new(float life, Vec3 pos, int kind)
@@ -1824,6 +1825,38 @@ void game_hit_star(Vec3 pt)                                                  /* 
         Vec3 d = { U.x * cos512(a1) + V.x * sin512(a2), U.y * cos512(a1) + V.y * sin512(a2), U.z * cos512(a1) + V.z * sin512(a2) };
         l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); s->dir = l > 1e-5f ? (Vec3){ d.x / l, d.y / l, d.z / l } : U;
         s->shape = fx_rnd() * 2.0f > 1.0f; s->R = fx_rnd() * 20.0f - 5.0f + 25.0f;   /* spin; size 20..40 (half diagonal) */
+    }
+}
+/* message 1508 [inst] (0x46ceae, docs/PARTICLES.md 9): a torch. A 20-byte node {inst, n, timers, points, next} goes on the
+ * list 0x5e8638 with the points of the instance's type-0 markers, taken once at the message (0x47cdf0); 0x47cea0 runs the
+ * list every frame just before the pool driver (0x46d0ba) and 0x47cec0 frees it with the level. */
+#define MAX_TORCH 32
+static struct { Instance *in; int n; float t[4]; Vec3 p[4]; } g_torch[MAX_TORCH]; static int g_ntorch;
+static void torch_add(Instance *in)
+{
+    if (!in || g_ntorch >= MAX_TORCH) return;
+    if (!in->node_world) ins_pose(in, in->anim, in->anim_time);                  /* 0x42f6b0 poses it (vtbl[2](1)) before reading the marker */
+    int n = 0; Vec3 p, d;
+    while (n < 4 && inst_vector_at(in, 0, (uint32_t)n, &p, &d)) g_torch[g_ntorch].p[n++] = p;   /* 0x47ce0f: count, then read (only P0 is used) */
+    g_torch[g_ntorch].in = in; g_torch[g_ntorch].n = n; memset(g_torch[g_ntorch].t, 0, sizeof g_torch[g_ntorch].t); g_ntorch++;
+    if (getenv("WOODY_FXLOG")) printf("torch: inst %u, %d marker%s at %.0f %.0f %.0f", in->index, n, n == 1 ? "" : "s", n ? g_torch[g_ntorch - 1].p[0].x : 0, n ? g_torch[g_ntorch - 1].p[0].y : 0, n ? g_torch[g_ntorch - 1].p[0].z : 0), puts("");
+}
+static void torch_update(float dt)                                           /* 0x47cf10 per node */
+{
+    for (int i = 0; i < g_ntorch; i++) {
+        if (!g_torch[i].in->drawn) continue;                                 /* inst+0x58 == this frame: its clock ran, i.e. it was drawn */
+        for (int k = 0; k < g_torch[i].n; k++) {
+            float *t = &g_torch[i].t[k]; *t += dt;
+            int n = (int)(*t * 15.0f); *t -= (float)n * 0.0666667f;           /* 15 flames a second (0x4a9864, 0x4abd8c) */
+            while (n-- > 0) {
+                FxRec *f = fx_new(0, g_torch[i].p[k], FX_FLAME); if (!f) continue;
+                float dx = fx_rnd() * 20.0f - 10.0f, dz = fx_rnd() * 20.0f - 10.0f;   /* 0x47cfc3 */
+                f->pos.x += dx; f->pos.z += dz;
+                float k2 = 1.0f - sqrtf(dx * dx + dz * dz) * 0.1f;           /* 1 at the centre, 0 at 10 out, down to -0.41 in the corners */
+                f->R = fx_rnd() * (fx_rnd() * k2 * 20.0f) + 40.0f;           /* +0x14: the size */
+                f->life = fx_rnd() * k2 * 0.5f + 2.5f;                        /* +4 */
+            }
+        }
     }
 }
 int game_enemy_thinks(const Instance *inst)                                  /* Think runs for the instances of the drawn sectors (world+0x64, 0x42a980) */
@@ -2162,6 +2195,11 @@ static void fx_particle(FxRec *e, float u, float dt)
             }
         }
         rnd_light_add(0, e->dir, white255, fx_rnd() * 100.0f + 200.0f);      /* 0x498790: registered every frame, never drawn by the original (LIGHTING.md 7) */
+        break; }
+    case FX_FLAME: {                                                         /* 0x47cd00: rises 40 a second, shrinks to nothing, white -> red, additive */
+        e->pos.y += dt * 40.0f;                                              /* +0xc += dt * 0x4ab294 */
+        float pos[3] = { e->pos.x + fx_rnd() * u, e->pos.y, e->pos.z + fx_rnd() * u }, rgb[3] = { 0.5f, 0.5f - u * 0.5f, 0.5f - u * 0.5f };
+        hud_world_spr(12, pos, (1.0f - u) * e->R, 0, rgb, 1.0f, 3, NULL, 0);  /* image 0x1000c, mode 0x12, flags 3: camera facing, own colour */
         break; }
     }
 }
@@ -2539,6 +2577,10 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
      * being measured from the .ins position instead of the animated root inst+0x60 (issue #35, ins_anim_centre). */
     case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || (in->type >= 12 && in->type <= 16)) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if ((in->type == 20 || in->type == 21) && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->type = in->type; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890; 21 = the bomb cannon */ if (in->type == 40 && !bomb_of(in) && g_nbombs < 16) { Bomb *b = &g_bombs[g_nbombs++]; memset(b, 0, sizeof *b); b->inst = in; b->var = -1; }   /* ctor 0x44d250: into the pool, parked visible where the .ins has it */ if ((in->type == 120 || in->type == 121) && g_nchests < 32) { int k = 0; while (k < g_nchests && g_chests[k] != in) k++; if (k == g_nchests) g_chests[g_nchests++] = in; }   /* ctor 0x451650, list 0x5e581c */ if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 90 && !env_of(in) && g_nenv < 8) { EnvInst *E = &g_env[g_nenv++]; E->inst = in; E->mode = 0; E->count = 0; E->spawned = 0; } if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 80) storm_add(in);   /* the lightning rod (storm.c, docs/STORM.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->life = 15.0f; l->T = 1.0f; l->visual = 2; l->anim = -1; l->speed = 1000.0f; }   /* 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     case 1505: if (in && m->nargs > 1) game_splash(in->position, 1000.0f, (float)(int32_t)m->args[1] * 0.01f); break;   /* splash 0x46cdfd -> 0x478660 (docs/SPLASH.md 1) */
+    case 1507: if (in) game_hit_star(in->position); break;                          /* 0x46ce85 -> 0x4750e0(&inst+0xc): the hit star at the instance (docs/PARTICLES.md 9) */
+    case 1508: torch_add(in); break;                                                /* 0x46ceae: torch flames on the type-0 markers, list 0x5e8638 (docs/PARTICLES.md 9) */
+    case 34: if (in && m->nargs > 1 && g_rnd) rnd_link((Renderer *)g_rnd, in, slot_instance(m->args[1])); break;   /* 0x42dc21: hide args[1] while the camera is in inst's volume (docs/INSTANCE.md 10.1) */
+    case 33: break;                                                                 /* only ever sent to class 60, whose handler 0x474a40 drops it (like the base 0x42d5e0); docs/WATER.md 1.1 */
     case 1506: if (in && m->nargs > 4) water_param(in, (int32_t)m->args[1], (int32_t)m->args[2], (int32_t)m->args[3], (int32_t)m->args[4]); break;   /* SetWaterVolumeParameter 0x46ce38 */
     case 1500: if (in && m->nargs > 4) game_bubble(in, (int32_t)m->args[1], (int32_t)m->args[2] * 0.01f, (float)(int32_t)m->args[3], (float)(int32_t)m->args[4], NULL); break;   /* speech bubble 0x46ccc0: [inst, kind, duration cs, offY, offX] (K2R, S2R) */
     case 1501: case 1504: {                                                         /* environment instance (class 90): 0x46cd07 mode, 0x46cdcc count */
@@ -2757,7 +2799,7 @@ static void level_free(Level *L)
     g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); memset(g_sparks, 0, sizeof g_sparks); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     car_forget();
-    memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); g_nenv = 0; g_nflies = 0; water_reset(NULL); storm_reset(); g_nfx = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); g_nenv = 0; g_nflies = 0; water_reset(NULL); storm_reset(); g_nfx = 0; g_ntorch = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -3116,7 +3158,7 @@ int main(int argc, char **argv)
                         laser_fx_draw(&z->fx[mk], a, b, kind, g, &cam.pos.x, paused ? 0 : dt);   /* pulse, lightning arc, impact */
                     }
                 }
-                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); bubbles_draw(&cam, paused ? 0 : dt); rockets_draw(paused ? 0 : dt); bombs_draw(&cam.pos.x, paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); g_fx_fwd = cam_forward(&cam); fx_update(paused ? 0 : dt, &cam.pos.x);
+                launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); bubbles_draw(&cam, paused ? 0 : dt); rockets_draw(paused ? 0 : dt); bombs_draw(&cam.pos.x, paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); g_fx_fwd = cam_forward(&cam); torch_update(paused ? 0 : dt); fx_update(paused ? 0 : dt, &cam.pos.x);
                 hud_world_sprites_end();
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */

@@ -244,3 +244,59 @@ Testing (`WOODY_FXLOG=1` logs every footstep, ring, peck, explosion and skeleton
 * PROJECTILES.md §5.3 / ROCKET.md §5.3 uncertain 3, BOMB.md §4.3: `0x4767f0`, `0x4764f0`, `0x476cd0` and `0x476140`
   are read (§3, §5).
 * FOOTSTEPS.md §1 swapped nothing, but the port did: foot 1 is the step at 0.38, foot 0 the one at 0.9.
+
+## 9. Script effects: messages 1507 (hit star) and 1508 (torch flames)
+
+Both are cases of the 1500 subsystem handler `0x46cca0` (this `0x5e823c`); the argument is the instance reference,
+`& 0xffffff` into the level table `[0x50944c]+0x6c`.
+
+### 9.1 Message 1507 `[inst]` = the hit star at the instance (`0x46ce85`)
+
+`0x4750e0(&inst+0xc)`: the same hit star as a hit ordinary enemy's (PERSO_SPECIAL.md §3.4 has every constant: one 0.1 s
+flash `0x475040`, image 9, half diagonal `250·u`, alpha 0.4, flags 3; eight 0.4 s sparks `0x474e00`, speed lines to
+spinning stars of image 8, 20..40, on spokes 45° ± 17.6° apart across the view direction). The point is the instance's
+`+0xc` position, read once. Senders (all cinematics, repeated with `DELAYPOP`): K3R object 277 → slot 420 (model 38,
+a marker + volume dummy) four times at the race-end cinematic, S2R object 425 → slot 429 (model 44) once, WWS object 344
+→ slots 372 (twice) / 373 (model 50) in the cinematic behind var 59. Port: `case 1507` → `game_hit_star(in->position)`.
+
+### 9.2 Message 1508 `[inst]` = torch flames (`0x46ceae`, `0x47cdf0`, `0x47cea0`, `0x47cf10`, `0x47cd00`)
+
+`0x46ceae`: `node = malloc(0x14)`, `node+0 = inst`, `node+0x10 = [0x5e8638]`, `[0x5e8638] = node` (push front), then
+`0x47cdf0(node)`:
+```
+node->n = 0;                                                      /* +4 */
+while (n < model+0x50 && 0x42f6b0(inst, /*typecode*/0, &tmp, n)) n++;   /* count the type-0 markers (0x47ce0f) */
+node->pts = malloc(n * 24); node->t = malloc(n * 4);              /* +0xc: both points of every marker, +8: timers = 0 */
+for (i = 0; i < n; i++) { 0x42f6b0(inst, 0, &node->pts[i], i); node->t[i] = 0; }
+```
+The marker points are taken **once**, in the pose of the moment (`0x42f6b0` runs `vtbl[2](1)` first); only point 0 is
+used later. Per frame `0x47cea0` walks the list (called by the subsystem frame `0x46d004` at `0x46d0ba`, right before the
+pool driver `0x470c70`); level end frees it (`0x47cec0` from `0x46d180`). Per node `0x47cf10`:
+```
+if (inst+0x58 != [0x509adc]+0) return;                            /* the instance's clock did not run this frame = not drawn */
+for (i = 0; i < n; i++) {
+    t[i] += dt; k = ftol(t[i] * 15); t[i] -= k * 0.0666667;       /* 15 flames a second per marker (0x4a9864, 0x4abd8c) */
+    while (k--) {                                                 /* pool record, callback 0x47cd00 */
+        dx = rnd*20 - 10; dz = rnd*20 - 10;                       /* 0x4a9994, 0x4a9750 */
+        rec.pos = pts[i].P0 + (dx, 0, dz);
+        f = 1 - sqrt(dx*dx + dz*dz) * 0.1;                        /* 0x4a974c; 1 in the middle, down to -0.41 in the corners */
+        rec+0x14 R = rnd * (rnd * f * 20) + 40;                   /* 0x4ab294 */
+        rec+4 life = rnd * f * 0.5 + 2.5;                         /* 0x4a9014, 0x4aa3e0 */
+    }
+}
+```
+The flame `0x47cd00` (u = age / life): `pos.y += dt * 40` (`0x4ab294`, it rises 40 a second and so about 100 in all);
+sprite at `(pos.x + rnd*u, pos.y, pos.z + rnd*u)` (a jitter of at most one unit), rgba `(0.5, 0.5 − 0.5u, 0.5 − 0.5u,
+1.0)`, image `0x1000c` = bank 0 **image 12**, mode 0x12, half diagonal `(1 − u) · R`, flags **3** (camera facing, own
+colour, additive). So about 40 additive puffs of 40..60 per marker, white-orange at the bottom (image 12 at full
+strength), turning red and shrinking to nothing as they rise: a torch flame.
+
+Senders: W2D objects 772/773/776/777 (model 60, the torches that flank the two doors at z 16300 and 9120) and W3D
+objects 111-116, 126, 127, 130, 131, 165, 832, 833 (model 19, the wall torches of the tunnels). Each model has one
+type-0 marker (W3D model 19: node 7, P0 = (9, −1.2, 53) in model space = the mouth of the torch cup).
+
+Port (`src/main_engine.c`): `torch_add` (the node, marker points via `inst_vector_at(in, 0, n)`), `torch_update` (the
+emission, run before `fx_update`; "clock ran" = the renderer's `inst->drawn`) and `FX_FLAME` in `fx_particle`.
+`WOODY_FXLOG=1` prints `torch: inst …, 1 marker at …`. Test: `W3D --cam 3400 -3080 -3840 -90 -5 --shot t.ppm 4` (torch
+111 burning next to the tunnel wall), `W2D --cam -3925 2850 15700 0 -5` (the two torches beside the door). Before
+the port these torches were dark cups.
