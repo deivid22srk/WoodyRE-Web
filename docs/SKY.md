@@ -78,6 +78,8 @@ Consequences:
   `.vis`). A port without `.vis` culling simply always draws it if the level has a sky group;
   interior spaces are closed off, so it would not be visible there anyway. (Uncertain: whether there
   are spots where the original shows the clear color through a gap instead of the sky.)
+  The port draws it always, except on the race path of the visibility (RACE.md §2.1, round 30): there only two `.gel`
+  groups are stamped, and the cube follows the original's rule (a sky face of the listed sectors in one of those groups).
 - The sky faces are also not lit: they do not go through `0x42b6c0` and thus not into buckets
   1/10. In the data, no sky face appears in a `.lit` list A or B (checked for
   House, K1R, K2R, K3R, WWS, W2A, W2B, W2D, W3C, W3D), so no light polygon is produced either.
@@ -307,11 +309,7 @@ animated liquid of §4.1.
 - W1B (§8): the original's image has not been placed side by side with the port; that the far
   starfield walls there are almost black follows from the mipmap chain and MIPFILTER POINT, not from
   a screenshot.
-- Left/right orientation on screen has not been separately verified: the recipe uses
-  world coordinates directly and thus inherits the port's (already checked against a screenshot)
-  convention "right-handed, y up, +x left of +z". The seams are independent
-  of that choice. A screenshot of the original's title screen (sun/cloud positions) would settle
-  this.
+- ~~Left/right orientation on screen~~: verified statically, the port's cube is not mirrored (§9).
 - Meaning of byte 1 `== 3` and of bits `0x10..0x80` for the *editor*; for the engine
   they have no effect (§4.1, §4.3).
 
@@ -362,3 +360,29 @@ repeatedly the half size with the same 2×2 box average, `GL_TEXTURE_MAX_LEVEL` 
 is also complete under a strict GL 1.1; `MAX_LEVEL` restricts usage to the original's four
 levels. Since MODEL_RENDER.md §9 every level is kept as the original's 16-bit surface (RGB565, or ARGB1555 for a
 colour key) with the original's truncating average, and only widened for GL.
+
+## 9. Left/right orientation of the cube (round 30)
+
+Question: is the port's cube mirrored (a sky that should show a feature on the left shows it on the right)? The seam
+check of §5 cannot answer it: mirroring the whole cube (x → −x, and every image flipped in u) maps the cube onto itself
+and keeps every seam closed. The answer comes from the transforms, all read statically:
+
+| Step | World face (`0x42b6c0`) | Sky quad (`0x42ad40` → `0x439540`, flags `0x40`) |
+|---|---|---|
+| view matrix | `[this+8] + 0x30`, rows `+0x30/+0x40/+0x50` (`0x42b765..0x42b7b8`), `this` = renderer | `[[0x509adc]+8] + 0x30` (`0x43964d..0x439689`); `[0x509adc]` = the same renderer (`0x42a451`) |
+| screen | `sx = x'/z'·V[0] + V[2]`, `sy = y'/z'·V[1] + V[3]`, `V = [[0x509adc]+0xc]` (`0x42b839..0x42b87e`) | identical (`0x4396f5..0x439746`) |
+| texture | `.tex` frame via the loader `0x426e9f` → `0x47fa60`, u/v from the material | the same `.tex` frames (or the bank images, §2.1), u/v per corner as in §2 |
+| culling | none (CULL_NONE, per-face CPU test only) | none (`flags & 1` = 0) |
+
+So the original applies to the five sky quads exactly the same camera matrix and the same projection as to the level
+geometry; the sky cannot be mirrored relative to the world, it is fixed in world space with the corners and UVs of
+§2. The camera matrix itself has det +1 with "looking along +z, screen right = −x, screen down = −y" (CAMERA.md §0, §3.7 look-at `0x4223b0` with up (0,−1,0), §5 projection); whatever `V` holds, it is the same for
+both paths.
+
+The port (`rnd_frame`, `src/render_gl.c`): the cube is drawn with the world's own modelview (`glLoadMatrixf(view)` before
+the sky block), corners `cam.pos + S·sign` from the same table, the same four UVs per quad, textures uploaded with
+file row 0 at v = 0 exactly as the world textures (a u or v flip would show on every world texture too), and
+`cam_right(yaw 0) = (−1, 0, 0)`, `up = right × forward = (0, 1, 0)`: the same det +1 mapping as the original. Hence
+**the port's cube is not mirrored**; no change was needed. The only assumption left is the one the whole port rests on
+(world handedness, CAMERA.md), not a sky-specific one.
+

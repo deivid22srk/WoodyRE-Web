@@ -3013,6 +3013,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             memset(&g_player->bfx, 0, sizeof g_player->bfx); g_player->bfx.inst = in; g_player->bfx.mode = 2; g_player->bfx.size_idx = 3;   /* the spray emitter (0x34 B) */
             { Vec3 p0, d; while (g_player->bfx.n < 4 && inst_vector_at(in, 9, (uint32_t)g_player->bfx.n, &p0, &d)) g_player->bfx.n++; }   /* its type-9 markers (0x455e58) */
             printf("  RACE board = instance %u, path = camera %u (%u points), %d spray markers\n", in->index, pc->index, pc->traj.npoints, g_player->bfx.n);
+            if (g_rnd && g_player->race_char && !getenv("WOODY_NORACEVIS")) rnd_set_race((Renderer *)g_rnd, &pc->traj);   /* 0x455f10: region list -> renderer+0xc0, read by 0x42a980 for subtypes 4/5 only (0x401c36) */
         }
         break;
     case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */

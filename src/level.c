@@ -61,8 +61,8 @@ struct GelQuery {
 struct SegNode { int32_t node; float a[3], b[3]; };
 
 /* One cell record (0x407f33 / 0x4080e6): u32 npoly, u32 poly[npoly], f32 bbox[6], i32 link[6], u32 nnodes,
- * node[nnodes]. The six neighbour links and their local subtrees are only a shortcut from a cell to the cell
- * next to it; the port descends from the root instead, so it skips them. */
+ * node[nnodes]. The six neighbour links and their local subtrees are a shortcut from a cell to the cell next to it;
+ * the queries below descend from the root instead, only the floor search 0x40a0c0 follows the -y link. */
 static int read_cells(Rd *r, GelCell *out, uint32_t n)
 {
     for (uint32_t i = 0; i < n && !r->err; i++) {
@@ -70,8 +70,8 @@ static int read_cells(Rd *r, GelCell *out, uint32_t n)
         c->npolys = ru32(r);
         c->polys = (const uint32_t *)rraw(r, 4 * (size_t)c->npolys);
         for (int k = 0; k < 6; k++) c->bbox[k] = rf32(r);
-        r->pos += 24;                                        /* i32 link[6] */
-        { uint32_t nn = ru32(r); r->pos += 16 * (size_t)nn; }
+        for (int k = 0; k < 6; k++) c->link[k] = (int32_t)ru32(r);
+        c->nnodes = ru32(r); c->nodes = (const uint8_t *)rraw(r, 16 * (size_t)c->nnodes);
         if (r->pos > r->size) r->err = 1;
     }
     return r->err;
@@ -185,6 +185,79 @@ int32_t gel_cell(const GelFile *g, Vec3 p)
         i = c;
     }
     return -1;
+}
+
+/* 0x40a0c0(p, -1): the floor polygon under a point. Start in the kd leaf of p (0x408180); in that cell's polygon list take
+ * every polygon that faces up (ny >= 0, 0x40a141), has p in front of it (n.p + D > 0, 0x40a16a), lies no lower than the
+ * cell's bottom (n.p + D <= ny * (p.y - cell.ymin) + 0.001, 0x40a17b, [0x4a94c4] = 0.001) and holds p in its xz shadow
+ * (every edge prev -> cur: (cur.x-p.x)(prev.z-p.z) - (prev.x-p.x)(cur.z-p.z) >= 0, 0x40a1b3..0x40a1f8). The loop does not
+ * stop at a hit: the LAST hit of the list wins, not the highest. No hit: follow the cell's -y link (+0x18): >= 0 a local
+ * subtree (0x40ab60, child indices relative to its root), INT_MIN = nothing below (-1), else cell ~link. */
+static int32_t cell_subtree(const GelCell *c, int32_t root, Vec3 p)
+{
+    const float v[3] = { p.x, p.y, p.z };
+    int32_t i = 0;
+    for (uint32_t guard = 0; guard <= c->nnodes; guard++) {
+        if (root < 0 || (uint32_t)(root + i) >= c->nnodes) return -1;
+        const uint8_t *n = c->nodes + 16 * (size_t)(root + i);
+        int32_t t, le, gt; float d; memcpy(&t, n, 4); memcpy(&d, n + 4, 4); memcpy(&le, n + 8, 4); memcpy(&gt, n + 12, 4);
+        int axis = (int16_t)(t & 0xffff); float x = axis == 0 ? v[0] + d : axis == 1 ? v[1] + d : axis == 2 ? v[2] + d : 0.0f;   /* 0x40ab10: other axis = 0.0 */
+        int32_t ch = x <= 0 ? le : gt;
+        if (ch < 0) return ~ch;
+        i = ch;
+    }
+    return -1;
+}
+int32_t gel_floor_poly(const GelFile *g, Vec3 p)
+{
+    int32_t c = gel_cell(g, p);
+    for (uint32_t guard = 0; c >= 0 && (uint32_t)c < g->ncells && guard <= g->ncells; guard++) {
+        const GelCell *C = &g->cells[c]; float dy = p.y - C->bbox[2]; int32_t hit = -1;
+        for (uint32_t k = 0; k < C->npolys; k++) {
+            uint32_t i = C->polys[k]; if (i >= g->npolys) continue;
+            const GelPoly *P = &g->polys[i]; const float *pl = P->plane;
+            if (pl[1] < 0 || P->nverts < 1) continue;
+            float d = pl[1] * p.y + pl[2] * p.z + pl[0] * p.x + pl[3];
+            if (d <= 0 || pl[1] * dy + 0.001f < d) continue;
+            const GelVert *a = &g->verts[P->indices[P->nverts - 1]]; uint32_t e = 0;
+            for (; e < P->nverts; e++) {
+                const GelVert *b = &g->verts[P->indices[e]];
+                if ((b->x - p.x) * (a->z - p.z) - (a->x - p.x) * (b->z - p.z) < 0) break;
+                a = b;
+            }
+            if (e == P->nverts) hit = (int32_t)i;
+        }
+        if (hit >= 0) return hit;
+        int32_t l = C->link[2];                                       /* -y */
+        if (l == INT32_MIN) return -1;
+        c = l >= 0 ? cell_subtree(C, l, p) : ~l;
+    }
+    return -1;
+}
+int32_t gel_floor_group(const GelFile *g, Vec3 p)
+{
+    int32_t f = gel_floor_poly(g, p); if (f < 0) return -1;
+    for (uint32_t i = 0; i < g->ngroups; i++) if ((uint32_t)f < g->groups[i].end) return (int32_t)i;   /* 0x40a26a: first group whose last polygon >= f */
+    return -1;
+}
+const VisList *vis_entry(const VisFile *v, const GelFile *g, Vec3 p)
+{
+    int32_t s = gel_sector(g, p);                                     /* 0x40821a */
+    if (!v || s < 0 || (uint32_t)s >= v->nsectors || !v->sectors[s].nlists) return NULL;
+    int32_t grp = gel_floor_group(g, p);                              /* 0x408224 */
+    const VisSector *S = &v->sectors[s];
+    for (uint32_t e = 0; e < S->nlists; e++) if ((int32_t)v->pool[S->first + e].id == grp) return &v->pool[S->first + e];   /* 0x40823f */
+    return &v->pool[S->first];                                        /* 0x408256: no entry with that id -> the first */
+}
+void gel_race_regions(const GelFile *g, const Vec3 *pts, uint32_t n, int32_t out[6])
+{
+    int k = 0; for (int i = 0; i < 6; i++) out[i] = -1;               /* 0x455ee0 list of 5 = -1, +0xd4 = -1 terminator */
+    for (uint32_t i = 0; i < n && i < 0x7fff; i++) {                  /* count read as a 16-bit word (0x455f2a) */
+        int32_t grp = gel_floor_group(g, pts[i]);                     /* 0x455f51 */
+        if (grp == -1 || out[k] == grp) continue;
+        if (out[k] != -1) { if (++k == 5) break; }
+        out[k] = grp;
+    }
 }
 
 /* ---- polygon queries over the kd-tree ---------------------------------------------------------

@@ -87,7 +87,7 @@ init -1 by `0x40ab00`; "group visible this frame", `0x42aa9b`),
 `+4` first polygon, `+8` last polygon (`end-1`), `+0xc` k,
 `+0x10` `u32* portal`, `+0x14` `u32* group`.
 
-Use: the `.vis` lists (per sector, per floor polygon) yield pairs
+Use: the `.vis` lists (per sector, per floor group, `0x408210`) yield pairs
 `(sector, group)`; the renderer `0x42a980` marks those groups and `0x42ac10`
 stamps every polygon in the range of each visible group. `0x40a26a`
 looks up the group of a polygon index. No mapping from `.ins` instances to
@@ -129,7 +129,8 @@ count x record:
 | .. | 16·nnodes | node[] | local kd subtrees for the neighbor links (see 6 for the node layout) | `+0x48` (malloc, NULL if 0) |
 
 Neighbor link encoding (`0x40a0c0`, which follows link 2 = `-y` to find the
-floor):
+floor; the full floor search is in RACE.md §2.1, ported as `gel_floor_poly`, which keeps the links and
+local subtrees in `GelCell.link/nodes` since round 30):
 
 * `0x80000000` (INT_MIN): no neighbor (world edge).
 * `< 0`: exactly one neighbor cell, index `~link`.
@@ -150,7 +151,7 @@ init `0x406e40`), `+0x40/+0x44` count/array of dynamic objects registered
 in the cell (indices into `gel+0x40`, low 16 bits); for sectors, `+0x44`
 is the head of the linked list of entities in the sector (`0x407790`
 inserts, `0x407850` removes; entity `+0x1c` = sector, `+0x18` =
-floor polygon, `+0x24` = next).
+floor **group** (return value of `0x40a0c0`, `0x4077bc`; read by `0x42a840`, RACE.md §2.1), `+0x24` = next).
 
 For sectors it additionally holds that: the bbox is exactly the union of
 the bboxes of the leaf cells under the sector root in section 6, and the
