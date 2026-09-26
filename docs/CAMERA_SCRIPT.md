@@ -72,9 +72,9 @@ Count of `PUSH id; PUSH <cameraslot>` (receiver actually being an `.ins` camera)
 | 500 | 80 | back to the follow camera (behind the player) |
 | 520 | 62 | **mode 4**: fixed cinematic camera with letterbox |
 | 570 | 51 | transition duration (cs) |
-| 660 / 670 / 680 / 650 | 29 / 27 / 19 / 14 | race info off / follow camera height / distance / race info on (R levels, races) |
+| 660 / 670 / 680 / 650 | 29 / 27 / 19 / 14 | back to the remembered follow-camera distance/height / follow camera height / distance / remember them (once) and re-seat the follow camera; R levels and 9 others (W1A, W2D, W3A, W3B, K1A, K3A, S1A, S2A, S3A), CAMERA.md §4 |
 | 540 | 23 | mode 8 rail camera |
-| 710 | 9 | auto-zoom on |
+| 710 | 9 | auto-zoom on (with the boss rail cameras) |
 | 510 | 8 | **mode 2**: fixed camera without letterbox (player stays controllable) |
 | 560 | 4 | transition at speed |
 | 800 | 3 | camera registers itself as a volume actor (§5) |
@@ -133,7 +133,7 @@ quantities the transition (§6.1 there) interpolates.
 void Fixed_Update(Sub *s, float dt) {                // 0x4254c0 / 0x425810
     s->dt (+0x274) = dt;                             // unused otherwise
     s->P (+0x280) = s->params->pos;                  // 0x4254ea..0x42550a
-    if (FindCell(s->P) == -1)                        // 0x40aba0([0x4c93b0]+0x14, x,y,z)
+    if (FindCell(s->P) == -1)                        // 0x40aba0([0x4c93b0]+0x14, x,y,z) - never true, CAMERA.md 3.3
         s->P = s->prev.pos (sub+0x130 = sub+0xa0+0x90);   // camera outside the world -> keep the previous camera position
     Fixed_LookAt(s);                                 // 0x4255e0 / 0x425930
     s->state.pos (+0x94) = s->P;
@@ -279,6 +279,19 @@ R = lookAt(S->P -> C, up (0,-1,0));  state = [I|-P]*[R|0];
 So a horizontally-looking side camera at 1000 units from the plane, looking 300 ahead in the walking direction, with
 ↑/↓ putting the camera 500/0 instead of 340 above the player. No collision.
 
+**Which side (settled).** `0x4400f0(a, b)` computes `a × b` with `a` = the first argument (the last push): `x = a.y·b.z − a.z·b.y`
+etc. At `0x424cee` the pushes are `dir` then `up`, so `side = up × dir = (0,−1,0) × d = (−d.z, 0, d.x)`, scaled by `−Lat` when
+`p->side (CamMgr+0x61c) == 0` and `+Lat` when it is 1 (any other value leaves it a unit vector). `0x459960` takes `(inst, v)` in
+message order (`0x445001`: `msg+8` = inst, `msg+0xc` = v; the second argument is compared with 1 at `0x459ae9`) and writes
+`+0x61c = 0` for `v == 1`, else 1; `d` is `xzNormalize(B − A)` of marker (type 0, n 0) (`0x4599e4`: `[esp+0x3c] − [esp+0x30]`).
+Result: the camera stands at `C + Lat·(d.z, 0, −d.x)` for `v == 1` and `C + Lat·(−d.z, 0, d.x)` for `v == 2`; on screen, `A → B`
+points **left** for `v == 1` and **right** for `v == 2` (screen right = `(0,−1,0) × fwd`). The port had exactly this. Geometric
+check over all 41 distinct `1088 (inst, v)` pairs of the 8 levels that use them (`WOODY_SIDECHECK`, five points along `A..B`,
+camera 340 up and 1000 aside, ray to the body at +100): with this sign 5 of 205 lines of sight are blocked by the world, with the
+opposite sign 114 (W2B, W2D and W3C 5/5 almost everywhere). Rendered: W1A door 164 → the side section of 144 (`v` 2) and W1B door
+392 → 408 (`v` 1, `WOODY_SETVAR="1.0 42 1" --pos -8500 400 -16806 --yaw -90`) both show the walkway with its bonuses in the
+open, the rock behind it.
+
 **Message 1110 `(n, v)`** (`0x444b9d`, jump table `0x445754`, `p = CamMgr+0x61c`, v as float):
 
 | n | field | meaning | default |
@@ -403,7 +416,7 @@ void cam_fixed_update(float dt) {                                   /* mode 2 an
 
 ```c
 /* on 1088(inst, v): d = xz direction of marker type 0 of inst; side = (v == 1) ? -1 : +1; A = 300; H = 340; Lat = 1000; cut */
-Vec3 sideV = normalize(cross((Vec3){0,-1,0}, d));           /* engine convention; port: verify the sign once in-game */
+Vec3 sideV = normalize(cross((Vec3){0,-1,0}, d));           /* = (-d.z, 0, d.x); sign settled in 4.2 */
 Htarget = up_held ? h_up : (down_or_crouch ? h_down : h_norm);      /* 500 / 0 / 340, via 1110 n = 1 / 3 / 2 */
 A = ramp(A, a_target, 700*dt);  H = ramp(H, Htarget, 400*dt);  Lat = ramp(Lat, lat_target, 200*dt);   /* linear */
 C = playerPos + (d.x*A*s, H, d.z*A*s);                      /* s = +1/-1 walking direction, blended linearly on flip */
@@ -414,8 +427,7 @@ P = C + sideV * (side * Lat);   view = lookAt(P, C, up=(0,1,0));
 
 1. Letterbox: whether the black of the bars comes from an explicit clear or from simply not drawing outside the viewport was not
    checked (renderer `0x4843b0`); it is certain that there is no bar animation in the CamMgr.
-2. Mode 0x20: (a) the sign of `side` (which side of the plane at `v == 1`) is only derived from the formula, not verified
-   in-game; (b) the exact flip blend (`S+0x340..+0x350`, `0x4250e8..0x42520e`) is shown simplified;
+2. Mode 0x20: (a) ~~the sign of `side`~~ settled statically and geometrically (§4.2); (b) the exact flip blend (`S+0x340..+0x350`, `0x4250e8..0x42520e`) is shown simplified;
    (c) the plane calculation in `0x459bbf..0x459c57` (`0x41af10`, `0x4239f0`) is not spelled out; (d) K1A sends a series of
    1110 messages right **before** 1088, while `0x459960` resets the defaults on a new start – whether those 1110 values
    are then lost, or whether `+0x4ec` is already set at that point, was not investigated.

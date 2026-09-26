@@ -39,8 +39,6 @@
 #define P_EDGE_T       3.0f       /* 0x4a988c: the sensor fires when the ray's first hit lies beyond 3 x its aim */
 #define P_VOL_PROBE_Y  71.0f     /* volume test point above the feet: 0x462760(perso, 71.0), docs/EVENTS.md 2.1 */
 /* follow camera (docs/CAMERA.md 3) */
-#define CAM_DIST_MIN   300.0f     /* xz distance to T is kept inside 300..400 */
-#define CAM_DIST_MAX   400.0f
 #define CAM_HEIGHT     180.0f     /* camera y approaches T.y + 180 with 6*dt */
 #define CAM_TARGET_Y   120.0f     /* position target T = player + (0,120,0) */
 #define CAM_LOOK_Y     140.0f     /* look target = player + (0,140,0) */
@@ -281,6 +279,7 @@ static void actor_push(const Player *p, float r, float h, Vec3 *disp)
  * direction from its closest point to the centre, front side only; per axis the positive maximum plus the negative
  * minimum is the result, of which the sweep uses x and z. The closest-point form is the port's reading of 0x409ad0 /
  * 0x433ff0 (plane distance 0.001 < d < r, then edge tests), not a line-by-line port. */
+static int g_sphere_contact;               /* [0x4c4bd0]: the last player_sphere_push touched something */
 static void sphere_accum(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 c, float r, float acc[6])
 {
     float d = vdot(nrm, vsub(c, v[0])); if (d <= 0.001f || d >= r) return;
@@ -296,13 +295,14 @@ static void sphere_accum(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 c, float r, f
         cp = bc;
     }
     Vec3 w = vsub(c, cp); float dist = sqrtf(vdot(w, w)); if (dist >= r || dist < 1e-4f) return;
+    g_sphere_contact = 1;
     float k = (r - dist) / dist, px[3] = { w.x * k, w.y * k, w.z * k };
     for (int a = 0; a < 3; a++) { if (px[a] > acc[a]) acc[a] = px[a]; if (px[a] < acc[3 + a]) acc[3 + a] = px[a]; }
 }
 Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r)
 {
     float acc[6] = { 0, 0, 0, 0, 0, 0 }, box[6]; Vec3 v[32];
-    const GelFile *g = p->gel;
+    const GelFile *g = p->gel; g_sphere_contact = 0;
     query_box(g, c, r, c.y - r, c.y + r, box);
     GelPolySet ps = gel_polys_in_box(g, box);
     for (uint32_t k = 0; k < ps.n; k++) {
@@ -1814,6 +1814,46 @@ static Vec3 camera_breadcrumbs(Player *p, Vec3 T, float dt)
     if (!cam_ray_blocked(p, P, T)) p->cam_state = 0;
     return P;
 }
+/* 0x439c50(out, P, -1, N, 35.0, 0): the path P -> N in n equal steps; after every step the sphere of radius [0x4b3118] = 40
+ * (set by 0x434820) is pushed out of the world and the instance press nodes by 0x407340, on all three axes. n = floor(|N-P| / 35)
+ * + 1, but it reaches the loop through an inline fistp of n + 0.5 into [0x5ac8ac] (not the truncating _ftol 0x499580 the other
+ * sweeps use), so under the FPU's round-to-nearest-even an odd n becomes n + 1 while the step stays |N-P| / n: the sweep goes one
+ * step PAST N, and a move under 35 units is swept twice. Returns whether any step touched something ([0x4c4bd0]). */
+static int camera_sweep(const Player *p, Vec3 P, Vec3 N, Vec3 *out)
+{
+    Vec3 d = vsub(N, P); float k = floorf(sqrtf(vdot(d, d)) / 35.0f) + 1.0f; int n = (int)nearbyintf(k + 0.5f), hit = 0;
+    d.x /= k; d.y /= k; d.z /= k; *out = P;
+    for (; n > 0; n--) {
+        out->x += d.x; out->y += d.y; out->z += d.z;
+        Vec3 push = player_sphere_push(p, NULL, *out, CAM_RADIUS);
+        if (g_sphere_contact) { hit = 1; out->x += push.x; out->y += push.y; out->z += push.z; }
+    }
+    return hit;
+}
+/* Center_BehindArc 0x423ed0, only in behind mode (F = the player's facing, the camera is pulled to T - F * dist):
+ * (1) the player stands still (|T - Tprev|xz < 0.5), outside the reset loop (+0x9c8) and the camera is within 10 of the
+ *     distance: a step that would carry it across the line straight behind him (((T - P) x F).y changes sign) is dropped;
+ * (2) a step that crosses the ring dist +- 5 around T (from inside dist - 5 to outside dist + 5 or the other way) is cut
+ *     where it meets the circle of radius dist: |P + s*move - T|xz = dist, the root with the smaller |s|. */
+static int g_cam_resetting;                                              /* C+0x9c8: inside the 100 pre-simulation steps of 0x424200 */
+static void camera_behind_arc(const Player *p, Vec3 T, Vec3 P, Vec3 F, Vec3 *mv)
+{
+    float dist = p->cam_dist, ax = T.x - P.x, az = T.z - P.z, d0 = sqrtf(ax * ax + az * az);
+    float ux = T.x - p->cam_tprev.x, uz = T.z - p->cam_tprev.z;
+    if (sqrtf(ux * ux + uz * uz) < 0.5f && !g_cam_resetting && fabsf(d0 - dist) < 10.0f) {
+        float bx = T.x - (P.x + mv->x), bz = T.z - (P.z + mv->z), ca = az * F.x - ax * F.z, cb = bz * F.x - bx * F.z;
+        if ((ca < 0 && cb > 0) || (ca > 0 && cb < 0)) *mv = (Vec3){ 0, 0, 0 };
+    }
+    float bx = T.x - (P.x + mv->x), bz = T.z - (P.z + mv->z), d1 = sqrtf(bx * bx + bz * bz), lo = dist - 5.0f, hi = dist + 5.0f;
+    if ((d0 < lo && hi < d1) || (d0 > hi && d1 < lo)) {
+        float A = mv->x * mv->x + mv->z * mv->z, B = 2.0f * ((P.x - T.x) * mv->x + (P.z - T.z) * mv->z);
+        float C = (P.x - T.x) * (P.x - T.x) + (P.z - T.z) * (P.z - T.z) - dist * dist, D = B * B - 4.0f * A * C;
+        if (A > 1e-12f && D >= 0) {                                      /* a crossing always has a root; the guard is the port's */
+            float sq = sqrtf(D), s1 = (-B - sq) / (2.0f * A), s2 = (sq - B) / (2.0f * A), s = fabsf(s2) <= fabsf(s1) ? s2 : s1;
+            mv->x *= s; mv->y *= s; mv->z *= s;
+        }
+    }
+}
 static void camera_step(Player *p, float dt, int behind, int quick, int collide)
 {
     Vec3 look = { sinf(p->yaw), 0, cosf(p->yaw) };
@@ -1839,26 +1879,32 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
     if (behind) {
         float k = dt * (quick ? 7.0f : 3.0f);
         mv.x = (T.x - look.x * p->cam_dist - P.x) * k; mv.z = (T.z - look.z * p->cam_dist - P.z) * k;
-    } else {
-        float vx = T.x - P.x, vz = T.z - P.z, d = sqrtf(vx * vx + vz * vz);
+    } else {                                                            /* 0x4242d0: C+0x7e0 = C+0x7e4 = the distance of message 680 (400), dead zone 100 */
+        float vx = T.x - P.x, vz = T.z - P.z, d = sqrtf(vx * vx + vz * vz), dmax = p->cam_dist, dmin = dmax - 100.0f;
         if (d > 1e-3f) {
             vx /= d; vz /= d;
             float lx = L.x - P.x, lz = L.z - P.z, ll = sqrtf(lx * lx + lz * lz);
             float k = (ll > 1e-3f && (lx * -look.x + lz * -look.z) / ll > 0.7f) ? 10.0f : 1.0f;   /* player walks toward the camera */
-            if (d < CAM_DIST_MIN) { float st = (CAM_DIST_MAX / d) * dt * k * 66.6667f; if (d + st > CAM_DIST_MIN) st = CAM_DIST_MIN - d; mv.x = -vx * st; mv.z = -vz * st; }
-            else if (d > CAM_DIST_MAX) { float st = (d / CAM_DIST_MAX) * dt * 433.333f; if (d - st < CAM_DIST_MAX) st = d - CAM_DIST_MAX; mv.x = vx * st; mv.z = vz * st; }
+            if (d < dmin) { float st = (dmax / d) * dt * k * 66.6667f; if (d + st > dmin) st = dmin - d; mv.x = -vx * st; mv.z = -vz * st; }
+            else if (d > dmax) { float st = (d / dmax) * dt * 433.333f; if (d - st < dmax) st = d - dmax; mv.x = vx * st; mv.z = vz * st; }
         }
     }
+    if (behind) camera_behind_arc(p, T, P, look, &mv);
     if (rising) mv.y = (P.y - T.y < 300.0f) ? T.y - p->cam_tprev.y : 0;
     else mv.y = (T.y + p->cam_height - P.y) * 6.0f * dt;
     Vec3 N = { P.x + mv.x, P.y + mv.y, P.z + mv.z };
     if (collide) {
-        /* sphere r = 40 pushed out of walls (0x422e30 -> 0x439c50, here one push per frame), then the veto 0x423a40: a
-         * step after which the camera no longer sees T is refused (P itself saw T, or the breadcrumbs would have run) */
-        Vec3 push = gel_push(p->gel, N, CAM_RADIUS, N.y - CAM_RADIUS, N.y + CAM_RADIUS);
-        N.x += push.x; N.z += push.z;
-        { Vec3 ip = ins_push(p->ins, p->inst, N, CAM_RADIUS, N.y - CAM_RADIUS, N.y + CAM_RADIUS); N.x += ip.x; N.z += ip.z; }
-        if (cam_ray_blocked(p, N, T)) N = P;
+        /* Center_Collide 0x422e30: the sphere r = 40 swept from P to P + move (0x439c50); on contact the correction corr = where
+         * the sweep ended - (P + move). Then the veto 0x423a40: a step after which the camera no longer sees T is refused -
+         * move = 0, and SubCenter 0x422f10 sweeps again with that zero move, so corr keeps only the push-out of the spot the
+         * camera stands on (0 when it touches nothing). P += move + corr. The out-of-world tests around it (0x40aba0 = -1)
+         * can never fire: the kd descent 0x40ab60 always ends in a leaf (docs/CAMERA.md 3.6). */
+        Vec3 out;
+        if (camera_sweep(p, P, N, &out)) N = out;
+        if (cam_ray_blocked(p, N, T)) {
+            if (getenv("WOODY_CAMLOG") && getenv("WOODY_CAMLOG")[0] == '2') printf("  CAM blind move refused at %.0f %.0f %.0f\n", N.x, N.y, N.z);
+            N = camera_sweep(p, P, P, &out) ? out : P;
+        }
     }
     p->cam_pos = N; p->cam_tprev = T;
 drop:                                                                   /* the look point (0x4223b0) runs in every state */
@@ -1872,7 +1918,8 @@ void player_camera_reset(Player *p)
 {
     p->cam_init = 1; p->cam_state = 0; p->cam_tprev = (Vec3){ p->pos.x, p->pos.y + CAM_TARGET_Y, p->pos.z };   /* 0x422350: state 0 */
     p->cam_pos = (Vec3){ p->pos.x - sinf(p->yaw), p->pos.y + 100.0f, p->pos.z - cosf(p->yaw) };
-    camera_step(p, 0.1f, 1, 0, 1); for (int i = 0; i < 100; i++) camera_step(p, 0.04f, 1, 0, 1);   /* Center_Step collides during the pre-simulation too */
+    camera_step(p, 0.1f, 1, 0, 1);
+    g_cam_resetting = 1; for (int i = 0; i < 100; i++) camera_step(p, 0.04f, 1, 0, 1); g_cam_resetting = 0;   /* 0x424200: Center_Step collides during the pre-simulation too */
 }
 
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
