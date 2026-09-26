@@ -1,7 +1,7 @@
 /* enemy.c - enemy types 4/5/6 after docs/ENEMY.md (state machine 0x418cf0, behaviours 0x41b2c0..0x41cf00).
- * The obstacle sensor (16 directions, docs/OBSTACLE.md 3) steers Chase and Wander. Simplifications: no actor avoidance, the
- * idle variations all use one animation; movement is a straight step that is refused at ledges / steps over 10 units
- * (as the original's sweep does) instead of the full swept cylinder; the death particles are not spawned. */
+ * The obstacle sensor (16 directions, docs/OBSTACLE.md 3) steers Chase and Wander; Wander (0x41bf30) is the original's
+ * weighted action machine with its animation chains. Simplification: movement is a straight step that is refused at
+ * ledges / steps over 10 units (as the original's sweep does) instead of the full swept sphere. */
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
