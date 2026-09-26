@@ -443,7 +443,7 @@ camera's `.vis` sectors / floor groups or (stationary) outside the view frustum.
 
 | field | meaning |
 |---|---|
-| +0x00 | vtable (`0x4aa31c`; [2] = update/draw `0x42e2b0`, [3] = think step, [8] = collision `0x433140`, [17] = anim reset `0x42e250`, [22] = messages) |
+| +0x00 | vtable (`0x4aa31c`; [2] = update/draw `0x42e2b0`, [3] = think step, [5]..[9] = the collision tests segment `0x432ab0`, endless ray `0x431de0`, floor `0x432480`, cylinder `0x433140`, sphere `0x433ff0` (PERSO_MOVE.md §6.5-6.8), [11] `0x4305c0` / [12] `0x430af0` = swept / static sphere tests that nothing calls (§6.9), [17] = anim reset `0x42e250`, [22] = messages) |
 | +0x04 | id `0x01000000 + slot` |
 | +0x08 | flags: bits 0-4 kind (1 = instance, **2 = a `.lit` light record** – set by the `.lit` loader at `0x40ae60` (`and edx, 0xffffffe2 / or edx, 2`), vtable `0x4a9508`, Update = the empty `0x462c60`; not "type 60" as previously stated here –, 3 = camera); 0x20 = don't re-cell on animated position (`0x43f2ed`); 0x40 = non-collidable |
 | +0x0c..0x14 | position |

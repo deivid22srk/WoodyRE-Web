@@ -43,6 +43,8 @@ BONUS.md (types 30..40, 120/121), ENEMY.md (types 4..13).
 the 19 places with `call [reg+0x2c]` are DirectDraw/COM (`0x4266e3`, `0x42674a`, `0x495e04`), the menu (`0x446588`), sound
 (`0x467797`…`0x46822d`) and runtime (`0x47eeb4`, `0x48ce0f`…); none of them operate on an instance. Dead code (uncertain whether an
 indirect `mov reg,[vt+0x2c]; call reg` exists; not found in the world functions `0x497a30`/`0x497ed0`/`0x498440`).
+Confirmed round 33 (PERSO_MOVE.md §6.9): no call or jump through `[reg+0x2c]` or `[reg+0x30]` on an instance in any encoding
+(byte scan of `.text`, incl. `mov reg,[reg+0x2c]; call reg`), so vt[11] `0x4305c0` and its neighbour vt[12] `0x430af0` are dead.
 In practice msgmask 0x20 is only set by chests (`0x451814`, by a bomb explosion, BONUS.md §7); 12 levels use
 `MSGTEST` (incl. W2B 6×, on type 121), not W1A.
 
@@ -669,4 +671,4 @@ Verification without game data: `tools/native/switchtest.c` (the header of that 
 4. Type 20/21: state machine `0x452e10` and Perso state 8 (`0x4657f0`) have only been traced at a high level.
 5. Type 90: which particle for which mode (`+0xfc` 0/1/2).
 6. Whether there's a one-VM-tick delay between 1050 and 1042 (watcher wake within the same tick) — not relevant to the port as long as 1042 doesn't look at the key.
-7. `0x4305c0` looks like dead code; to be confirmed with a breakpoint in the original.
+7. ~~`0x4305c0` looks like dead code~~ - statically certain now (no caller in any encoding, PERSO_MOVE.md §6.9).
