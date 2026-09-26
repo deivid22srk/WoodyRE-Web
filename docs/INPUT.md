@@ -97,8 +97,8 @@ handler `0x405896`: action 9 → back to page `app+0x64`) never runs.
 | 0x1c | 0x20 | `0x4c2bec` | 0 | **DirectDraw driver GUID**, all 0 = primary (NULL) | `0x4027bd` |
 | 0x2c..0x38 | 0x30 | `0x4c2bfc..c08` | 0x1ff, 1, 1, 3 | device caps / modes (Setup) | – |
 | 0x3c | 0x40 | `0x4c2c0c` | 2 | detail option (outline, LIGHTING.md §5) | `0x42b380`, `0x43b43a` |
-| 0x40, 0x44, 0x48 | 0x44 | `0x4c2c10/14/18` | 640, 480, 32 | display mode | `0x4027da`, `0x40614f` |
-| 0x50 | 0x54 | `0x4c2c20` | 0 | VSync flag | `0x47ee16` |
+| 0x40, 0x44, 0x48 | 0x44 | `0x4c2c10/14/18` | 640, 480, 32 | display mode (DISPLAY.md §1) | `0x4027da`, `0x40614f` |
+| 0x50 | 0x54 | `0x4c2c20` | 0 | Detect's "Disable VSYNC", inverted on NT (DISPLAY.md §2.2) | `0x47ee16`, `0x47eea0` |
 | 0x68..0x98 | 0x6c | `0x4c2c38..c68` | 0 | sound: device flags, volumes (`0x4c2c50` sfx, `0x4c2c54` music), … | `0x4691e2`, `0x44fe2e` (bit 1 of `app+0x384`) |
 | 0x9c | 0xa0 | `0x4c2c6c` | 0 | GUID of the joystick Setup found (`0x10001070`) | **not read**: the game enumerates itself |
 | **0xac** | 0xb0 | `0x4c2c7c` | ↑ ↓ ← → Space LShift LCtrl LShift Enter Esc Num0 RCtrl | **keys config 1**, 12 × u32 | `0x44fc5a..` |

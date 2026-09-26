@@ -54,6 +54,7 @@ python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c s
 ./out/woody.exe extract/Data                     # without a level: the three logo films (Esc skips, --nologo), then the title screen (House, level 0); Enter starts, then the hub
 ./out/woody.exe extract/Data W1A                 # arrow keys/WASD walk (relative to camera), space jumps, Enter (or V) looks around (release toggles; arrows turn the view, mouse with the right button; docs/PERSO_LOOK.md), F5 free camera (then WASD + right mouse button), [ ] animation, Tab instance, F1-F4 toggles (F4 = culling)
 ./out/woody.exe extract/Data W1A --shot out/s.ppm 3   # screenshot after 3 s and stop
+./out/woody.exe extract/Data W1A --res 1920x1080 --aspect 4:3   # display (port extras, docs/DISPLAY.md): --res WxH, --windowed / --fullscreen, --aspect 4:3|wide; WOODY_VSYNC=0/1, WOODY_FPSCAP=N; F11 = fullscreen; Options > Display saves them in woodyre.cfg
 ./out/woody.exe extract/Data WWS --prev W1A --stats 12 12 25 20 245   # results screen: back from W1A with these stats
 ./out/woody.exe extract/Data W1A --cam 537 -1800 -2450 0 -10   # camera: x y z yaw pitch (degrees)
 python -m ziglang cc -std=c99 -O2 -o out/leveltest.exe src/level.c src/leveltest.c && ./out/leveltest.exe extract/Data   # parser test, 28 levels

@@ -32,6 +32,7 @@ static struct {
     GLuint sheet2; int sheet2_w, sheet2_h;                /* level bank image 2: in House the clock / enemy-face sheet (= image 1 of the hubs), the column heads of page 4 */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
     float iris_kx, iris_ky;                               /* hud_iris: virtual units per round pixel on this window (1, 1 at 4:3) */
+    float vx0, vx1;                                       /* the virtual x range the viewport shows: 0..640 at 4:3, wider on a wide view (docs/DISPLAY.md 3) */
 } H;
 
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -196,7 +197,25 @@ static void font_draw(float x, float y, const uint16_t *s, uint32_t col)        
         x += g->adv * H.k;
     }
 }
-static const uint16_t *hud_string(uint32_t ref) { uint32_t i = ref & 0xffff; return (ref >> 24) == 0 && (int)i < H.nstr && H.str[i] ? H.str[i] : NULL; }
+/* port-only text (docs/DISPLAY.md 4, port extra): ASCII turned into the font's codes (docs/HUD_TEXT.md 1.4; the glyph order is
+ * the same in every bank of this English build), unknown characters become the space glyph 18. Ref = 0x7f000000 | slot. */
+static struct { char a[32]; uint16_t u[32]; } g_pstr[64]; static int g_npstr;
+uint32_t hud_port_str(const char *ascii)
+{
+    static const char k_glyphs[] = "0123456789QuitAre yos?CnYN%=/:+LERD!SUTOKBHIGFagPkwmdlcvWpVXMf.h()\x01q'b,$zJx";   /* codes 1..75 (67 = the registered sign) */
+    int i; for (i = 0; i < g_npstr; i++) if (!strcmp(g_pstr[i].a, ascii)) return 0x7f000000u | (uint32_t)i;
+    if (g_npstr == 64) return 0x7f000000u;
+    snprintf(g_pstr[i].a, sizeof g_pstr[i].a, "%s", ascii);
+    int n = 0; for (const char *c = g_pstr[i].a; *c && n < 31; c++) { const char *f = strchr(k_glyphs, *c); g_pstr[i].u[n++] = f ? (uint16_t)(f - k_glyphs + 1) : 18; }
+    g_pstr[i].u[n] = 0; g_npstr++;
+    return 0x7f000000u | (uint32_t)i;
+}
+static const uint16_t *hud_string(uint32_t ref)
+{
+    uint32_t i = ref & 0xffff;
+    if ((ref >> 24) == 0x7f) return (int)i < g_npstr ? g_pstr[i].u : NULL;
+    return (ref >> 24) == 0 && (int)i < H.nstr && H.str[i] ? H.str[i] : NULL;
+}
 
 static int number_codes(uint16_t *out, int v)                                       /* 0x441820: digits through Common string 0 "0123456789" */
 {
@@ -614,11 +633,17 @@ static void hud_anim_tick(const HudState *s, float dt)
     A.prev_ok = 1; A.prev_lives = s->lives; A.prev_bonus = s->bonus; A.prev_health = s->health; A.prev_charges = s->charges; A.prev_unique = s->unique;
 }
 
-void hud_begin(int win_w, int win_h)
+void hud_begin(int win_w, int win_h) { hud_begin_view(0, 0, win_w, win_h); }
+/* port extra (docs/DISPLAY.md 3): the 480 virtual lines fill the view's height; a view wider than 4:3 shows more virtual x on
+ * both sides of 0..640 instead of stretching it, so the HUD and the menus keep their 4:3 layout, centred. A narrower view
+ * stretches 0..640 as before (the display code hands it a 4:3 box instead). */
+void hud_begin_view(int vx, int vy, int vw, int vh)
 {
-    glViewport(0, 0, win_w, win_h);
-    { float sx = win_w / 640.0f, sy = win_h / 480.0f, s = sx > sy ? sx : sy; H.iris_kx = sx > 0 ? s / sx : 1; H.iris_ky = sy > 0 ? s / sy : 1; }
-    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(0, 640, 480, 0, -1, 1);
+    glViewport(vx, vy, vw, vh);
+    H.vx0 = 0; H.vx1 = 640;
+    if (vh > 0 && vw * 3 >= vh * 4) { float hw = 240.0f * vw / vh; H.vx0 = 320 - hw; H.vx1 = 320 + hw; H.iris_kx = H.iris_ky = 1; }
+    else { float sx = vw / 640.0f, sy = vh / 480.0f, s = sx > sy ? sx : sy; H.iris_kx = sx > 0 ? s / sx : 1; H.iris_ky = sy > 0 ? s / sy : 1; }
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(H.vx0, H.vx1, 480, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
     glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_LIGHTING); glDisable(GL_ALPHA_TEST); glDisable(GL_STENCIL_TEST); glDisable(GL_FOG);
     glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE);
@@ -801,6 +826,7 @@ void hud_menu_items(const MenuItem *it, int n, float yfrac, int sel, int ready)
         font_size(it[i].flags & 0x20 ? S * 0.8f : S);
         row_reset(); row_str(it[i].id);
         if (it[i].flags & 0x10) { row_space(); row_num(it[i].value); row_str(7); }
+        if (it[i].flags & 0x100) { row_space(); row_str((uint32_t)it[i].value); }   /* port extra: a choice, "name value-string" (docs/DISPLAY.md 4) */
         float w = font_measure(g_row);
         float x = (it[i].flags & 4) ? 640.0f - w - 6.4f : (it[i].flags & 8) ? 6.4f : (it[i].flags & 0x80) ? 160.0f - w * 0.5f : 320.0f - w * 0.5f;
         if (!(i == sel && H.menu_t < 0.25f)) font_draw(x, y, g_row, 0xff808080);
@@ -839,7 +865,10 @@ void hud_logo(int grow, float dt)
 void hud_iris(float v)
 {
     if (!H.ok) return;
-    const float r = 0.99f * 480.0f, ri = r * v, kx = H.iris_kx ? H.iris_kx : 1, ky = H.iris_ky ? H.iris_ky : 1;
+    float r = 0.99f * 480.0f, kx = H.iris_kx ? H.iris_kx : 1, ky = H.iris_ky ? H.iris_ky : 1;
+    const float ri = r * v;
+    { float hw = H.vx1 - 320.0f, c = sqrtf(hw * hw + 240.0f * 240.0f) + 2.0f; if (c > r) r = c; }   /* a wide view (port extra): the ring reaches its corners ... */
+    if (v >= 1.0f) return;                                                                            /* ... and v = 1 is open on any view (at 4:3 the ring is then empty anyway) */
     glDisable(GL_TEXTURE_2D); glColor4f(0, 0, 0, 1); glBegin(GL_QUADS);
     for (int k = 0; k < 50; k++) {
         float a0 = k * (6.2831853f / 50), a1 = (k + 1) * (6.2831853f / 50), c0 = cosf(a0), s0 = sinf(a0), c1 = cosf(a1), s1 = sinf(a1);
@@ -850,7 +879,16 @@ void hud_iris(float v)
 }
 
 /* a flat colour over the whole virtual screen: 0x80000000 is the half-black backdrop of a menu page in a level (0x404f1a) */
-void hud_rect(uint32_t argb) { if (H.ok) quad(0, 0, 640, 480, 0, 0, 0, 0, 0, argb, argb, argb, argb); }
+void hud_rect(uint32_t argb) { if (H.ok) quad(H.vx0, 0, H.vx1 - H.vx0, 480, 0, 0, 0, 0, 0, argb, argb, argb, argb); }   /* the whole view, also the sides of a wide one */
+/* port extra (docs/DISPLAY.md 3): black outside the view box vx, vy, vw, vh (GL origin bottom left) - the pillar- or letterbox bars */
+void hud_bars(int win_w, int win_h, int vx, int vy, int vw, int vh)
+{
+    if (vx <= 0 && vy <= 0 && vw >= win_w && vh >= win_h) return;
+    glViewport(0, 0, win_w, win_h); glEnable(GL_SCISSOR_TEST); glClearColor(0, 0, 0, 1);
+    int r[4][4] = { { 0, 0, vx, win_h }, { vx + vw, 0, win_w - vx - vw, win_h }, { 0, 0, win_w, vy }, { 0, vy + vh, win_w, win_h - vy - vh } };
+    for (int i = 0; i < 4; i++) if (r[i][2] > 0 && r[i][3] > 0) { glScissor(r[i][0], r[i][1], r[i][2], r[i][3]); glClear(GL_COLOR_BUFFER_BIT); }
+    glDisable(GL_SCISSOR_TEST);
+}
 
 static void fit_size(const uint16_t *s, float S, float maxw, float minS) { font_size(S); while (S > minS && font_measure(s) > maxw) font_size(S -= 1.0f); }   /* 0x45dc90 */
 static void sheet_quad(float x, float y, float w, float h, float sx, float sy, float sw, float sh, uint32_t c, int additive)

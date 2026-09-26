@@ -15,9 +15,14 @@ typedef struct {
     int mouse_dx, mouse_dy, mouse_right;
     int quit;
     void *hwnd, *hdc, *hglrc;
+    int vx, vy;                               /* port extra (docs/DISPLAY.md 3): rnd_frame draws into the box vx, vy, width, height of the real window */
 } Window;
 
 int  win_open(Window *w, const char *title, int width, int height);
+/* port extras (docs/DISPLAY.md 3): full = borderless on the window's monitor, else a client of width x height (shrunk to the
+ * work area, aspect kept); interval = the swap interval (1 = vsync, 0 = off; returns -1 without WGL_EXT_swap_control) */
+void win_mode(Window *w, int width, int height, int full);
+int  win_vsync(int interval);
 void win_poll(Window *w);                     /* pumps messages, updates keys/mouse */
 void win_swap(Window *w);
 void win_close(Window *w);
