@@ -698,8 +698,7 @@ static int attack_probe(Player *p, Vec3 v)                                      
 {
     Vec3 a = { p->pos.x, p->pos.y + 5.0f, p->pos.z }, b = { a.x + v.x, a.y + v.y, a.z + v.z }, face_n;
     float f = gel_ray_hit(p->gel, a, b, &face_n); if (f > 1.0f) return 0;
-    /* 0x4575b0 fires the impact on ANY hit. It passes no normal (kind 1); the port takes the normal of the face the
-     * same ray just hit, because the hole and the chips have to come out of that face (docs/OBJECTS.md 1.6). */
+    /* 0x4575b0 fires the impact on ANY hit: kind 1, no normal, a 0.05 s flash (docs/PARTICLES.md 4) */
     game_peck_fx(1, (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }, &face_n);
     int found; const Instance *hi; const InsNode *hn;
     float gy = world_ground(p, (Vec3){ p->pos.x, p->pos.y + 1.0f, p->pos.z }, &found, &hi, &hn);
@@ -933,6 +932,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
         p->nograv_t = kind == 1 ? anim_len(p, 0x75, 0) : kind == 2 ? anim_len(p, 0x72, 0) : 0;   /* +0x240 */
         p->dead_T = 0; p->dead_cam_req = 0; p->hit_anim_t = 0; p->script_act = 0; p->ride = NULL; p->race_crouch = 0;
         p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;  /* +0x4d8 = 1, state := 2 */
+        if (kind == 2) game_skeleton();                                  /* 0x44c59d: the skeleton flash 0x477e40 */
         printf("  PLAYER killed in the race (kind %d), lives %d\n", kind, p->lives);
         return;
     }
@@ -948,6 +948,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
     p->look = 0;                                                        /* out of state 3 without +0x268: he stays faded out until Reset (docs/PERSO_LOOK.md 4) */
     p->atk = 0; p->charge = 0; p->health = 0; p->dead_kind = kind;      /* state := 2 */
     if (kind == 1) game_bubble(p->inst, 0, 2.5f, 180.0f, 50.0f, NULL);  /* 0x44c2a9: "?!" over him as he drops into the pit */
+    if (kind == 2 || kind == 9) game_skeleton();                         /* 0x44c41f: the skeleton flash 0x477e40 (docs/PARTICLES.md 6) */
     printf("  PLAYER killed (kind %d), lives %d\n", kind, p->lives);
 }
 int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39] Hit 0x44ca00: returns 1 when health ran out */
@@ -1753,8 +1754,8 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             if (u >= 0 && p->step_u >= 0) {
                 Vec3 f = { sinf(p->yaw), 0, cosf(p->yaw) };                     /* the walk direction is the facing (Mover+0x10) */
                 int kind = p->ground_kind == 2 ? 3 : 2;                         /* 0x464231: dust ground gets kind 3 */
-                if (phase_passed(p->step_u, u, 0.38f)) game_footstep(p->pos, p->ground_n, f, 0, kind);
-                if (phase_passed(p->step_u, u, 0.90f)) game_footstep(p->pos, p->ground_n, f, 1, kind);
+                if (phase_passed(p->step_u, u, 0.38f)) game_footstep(p->pos, p->ground_n, f, 1, kind);   /* 0x464244: the right foot */
+                if (phase_passed(p->step_u, u, 0.90f)) game_footstep(p->pos, p->ground_n, f, 0, kind);   /* 0x464289: the left */
             }
             p->step_u = u;
         }

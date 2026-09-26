@@ -11,7 +11,7 @@
  * Simplified: no actor avoidance; the obstacle sensor runs (enemy.c, docs/OBSTACLE.md 3) but with P+0x2c/0x30 = 15000 it
  * never reports a direction blocked, so it only quantises the wander directions to its 16 slots; the hit star
  * 0x40c2d0 is not drawn; mode 2 (W2D/W3D/WWS) is ported with the same
- * state machine but its dust is the landing dust of the player's footsteps and it is not verified in those levels. */
+ * state machine (its dust is the smoke ring 0x476140(pos - 50 up, up, 0, 1.5, 6.0), docs/PARTICLES.md 3) and it is not verified in those levels. */
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -210,7 +210,7 @@ static void height_tick(Enemy *e, Player *pl, float dt)
     b->on_ground = 0;
     if (!m1(e) && !b->high && b->st != 9) {                          /* mode 2 hops in the low phase */
         float s = dt * e->P.run;
-        if (b->bob_down) { b->bob += s; if (b->bob >= b->bob_max) { game_land_dust((Vec3){ e->pos.x, e->pos.y - 50, e->pos.z }, (Vec3){ 0, 1, 0 }); audio_fx(49, NULL, NULL); b->bob = b->bob_max; b->bob_down = 0; } }
+        if (b->bob_down) { b->bob += s; if (b->bob >= b->bob_max) { game_smoke_ring((Vec3){ e->pos.x, e->pos.y - 50, e->pos.z }, (Vec3){ 0, 1, 0 }, 0, 1.5f, 6.0f); audio_fx(49, NULL, NULL); b->bob = b->bob_max; b->bob_down = 0; } }
         else { b->bob -= s; if (b->bob <= 0) { b->bob = 0; b->bob_down = 1; } }
     } else b->bob = 0;
     if (b->high) e->home.y = b->y_high;
@@ -375,7 +375,7 @@ void boss_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         if (!t) { b->st = 0; break; }
         if (b->on_ground) {
             game_cam_shake(1.5f); b->high = 0; b->t1d8 = B_LAND_T; b->st = 8;
-            if (!m1(e)) game_land_dust((Vec3){ e->pos.x, e->pos.y - 50, e->pos.z }, (Vec3){ 0, 1, 0 });
+            if (!m1(e)) game_smoke_ring((Vec3){ e->pos.x, e->pos.y - 50, e->pos.z }, (Vec3){ 0, 1, 0 }, 0, 1.5f, 6.0f);
             audio_fx(k ? 45 : 40, NULL, NULL);
         }
         e->want_ang = ang_to(e->pos, pl->pos); b->turn = B_TURN_C; h_turn(e, dt);
