@@ -312,7 +312,9 @@ void Sector_ListInstances(Sector *S, int flag)                          /* 0x42a
         }
         if (I->stamp20 == g_instStamp) continue;                        /* 0x42a92f: frustum / distance / message-34 link / already in */
         w->list[w->n++] = I;                                            /* 0x42a931, no bound */
-        if (!(I->flags8 & 0x20)) I->vtbl[2](I, 0x81);                    /* draw (the Perso, enemies and boards have 0x20: drawn elsewhere / below) */
+        if (!(I->flags8 & 0x20)) I->vtbl[2](I, 0x81);                    /* clock (the Perso, enemies and boards have 0x20: drawn elsewhere / below);
+                                                                         * its re-cell puts I in front of this chain unless the pose cache hits
+                                                                         * (MODEL_RENDER.md 9.1: stationary opaque instances keep their place) */
         I->stamp20 = g_instStamp;
     }
 }
@@ -571,7 +573,9 @@ typedef struct {
 2. SetFlags bit 2: no reader found. Bit 1: is the extra pass a shadow or a reflection (table `[0x4c4cac]+4`)? Bit 0x20: nature of the effect pass.
 3. ~~Exact color blending in `0x4388e0` at fade > 0.01 in the extra pass (the shadow)~~: MODEL_RENDER.md §8.1 (AMB + light texture × light colour × k × fade, bucket 2). Drawing the model itself while fading: MODEL_RENDER.md §8.
 4. `+0x88 == 2`: meaning of this state in `0x42e2b0`.
-5. Rounding mode of `0x499580` (ftol) for the texture frame index and the phase mask (truncate or round).
+5. ~~Rounding mode of `0x499580` (ftol) for the texture frame index and the phase mask~~: `_ftol` sets RC = 11 around its
+   `fistp` and so always truncates; the game's control word is `0x007F` (24-bit, nearest-even; verified live,
+   `tools/wverify.py --probe fpu`), which only matters for inline `fistp`s.
 6. Class 20/21 (message 55), type 60 (`0x474a40`, 1503/1506) and enemy message 11 are not worked out here.
 7. `0x40a0c0` (`+0x18`): what exactly this second cell-like field is.
 8. The path follower doesn't use the "closed" bit (16); whether closed paths repeat the first point in the data has not been checked.

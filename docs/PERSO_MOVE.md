@@ -745,9 +745,21 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   climbing path; `Player.crush` = `P+0x2e8`, multiplied into `player_body_height` and into the z scale of the player's
   instance matrix (`player_apply_transform`); `WOODY_CRUSHLOG=1` logs it. Verified: W1A `--pos 258 -1990 -1677` with
   `WOODY_MSGAT="0.5 4 17 0 1 1000"` (message 4 starts a loop on the start saucer, so its `+0xa0` ≠ 0): kind 2, free 106 of 191
-  → scale 0.557, the model drawn squashed; without the message nothing happens. No natural crush spot of the shipped levels
-  was found (riding the W1B shuttle 605 and the W1A lift 186 for 20-40 s gave no hit), so the Kill(4) branch itself has only
-  been checked by reading.
+  → scale 0.557, the model drawn squashed; without the message nothing happens.
+  **A natural crush spot exists and kills in the original** (verified live, `tools/wverify.py --probe crush --level W1A --pos
+  2249 1120 -7577`): W1A objects 186/187 (model 32, at (2249, −7577) and (1453, −7569) on the floor y 1100) are not lifts but
+  **stampers** - the script replays anim 0 once every 2.2 s (`3 [186, 0, 1, 200]` + sounds 1633/1635), and the 1900-high column
+  comes down from 2601 to ~1100. Standing under one, the original logged a single crush frame, squash 0.291 (free 55.6 of 191),
+  and `Kill(4)` in the same frame (`0x462bed`), 2.05 s after the teleport; Perso state 2 follows and the respawn at the level start.
+  The port (`WOODY_POSAT="2 2249 1120 -7577" WOODY_CRUSHLOG=1`, 60 fps) kills him there too, but flattens him over three frames
+  first (0.952, 0.623, 0.295). The original's jump straight to 0.291 (at ~800 fps, where the column moves a few units per
+  frame) presumably comes from the cell registration of the ray `0x4359b0`: it tests
+  only the instances registered in the kd cells the segment visits, and the stamper is registered by its animated root
+  `inst+0x60`, which only enters the cell of Woody's head ray when the column is almost down (the port tests every instance; see
+  the cell-order note below). The static scan `tools/native/crushscan.c` (press nodes of every animated instance posed at 64
+  phases against the world floor under / ceiling over them) lists the other candidates: in W1A only 53/54 (model 12, raised once
+  in a scripted cutscene) besides the stampers; many more in K2A, K3A, S1A, S3A, W2A, W2B, W3A-W3D (mostly lifts and doors
+  whose lower face meets the floor they rest on - whether Woody can stand under them was not checked one by one).
 * **Ledge edge** (`0x44b2e0`) and **fall damage** (`0x44b220`): see PERSO_FRAME §2.2.
 * **"Fell out of the world"**: does not exist as a separate test. If GetHeight finds no floor (`g_raw == 1`), then `ground height = probe point.y`
   (= feet+43): `0x436f00` then reports `onGround` and sets `pos.y += 43` (!), and in the sweep it counts as "on the ground". In practice, levels
@@ -795,7 +807,8 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   instance part vt[5] `0x432ab0` and the crush test `0x462a40` (§6.6). Left over: the instance tests run in the original only for
   the instances registered in the cells the query visits (plus the dynamic list), in that order; the port tests every
   instance (culled by the node boxes) and so cannot reproduce the "last instance wins" order of `0x432ab0`, nor an instance
-  that the original misses because its cell was not visited. The Kill(4) branch of the crush test has not been seen in a level.
+  that the original misses because its cell was not visited. The Kill(4) branch of the crush test is live-verified under the
+  W1A stampers 186/187 (§6.6).
 * **Press nodes, not hulls.** All four instance tests (floor vt[7] `0x432480`, cylinder vt[8] `0x433140`, sphere vt[9] `0x433ff0`,
   ray `0x4359b0`) walk only the press node list `model+0x58/0x5c` (node flag 0x01). The hull list `model+0x38/0x3c` (flag 0x04) is only
   read by the draw function `0x42e2b0` (`0x42e7e8`): hull nodes are the visible meshes of characters and props (Woody: 43 hull nodes,

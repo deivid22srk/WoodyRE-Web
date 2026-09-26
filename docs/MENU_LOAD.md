@@ -228,14 +228,28 @@ letterboxing), so on screen simply **NDC = (P.x / P.z, P.y / P.z)**, `screen = (
 
 Everything lies within the iris hole (r ≈ 176 around (320,240)). The models are z-up (like Perso: row 2 = up);
 with the basis, model-z maps to camera-up and model-y away from the camera, so the front character faces the camera;
-each character rotates along with θ (facing outward), plus 10° tilt. The order and sign of the angles in `0x489780`
-have not been checked bit-exactly (**uncertain**; see §9 for the port alternative).
+each character rotates along with θ (facing outward), plus 10° tilt.
 
-**Port** (`car_place` in `src/main_engine.c`, verified against screenshots): position exactly as above (camera space
-→ world with `R·x − U·(0.75·y) + F·(z / 1.2)`, `R`/`U`/`F` = right/up/forward of the title camera). Orientation as a
-pure rotation, without the non-uniform scale on the rows: model-x → `(cos θ, 0, sin θ)`, model-y → `(−sin θ, 0, cos θ)`,
-model-z → `(0, −1, 0)` (up), then 10° around the camera-x axis so the front of the ring dips (the same tilt
-as the offsets `26.047·cos θ`). Result: characters upright, each looking outward from the ring's center, the front one
+**Verified live** (`tools/wverify.py --probe carousel`, title → Load game → slot → page 3, carousel at rest on positions 1, 2
+and 3; `--sav` points the game's `Woody.sav` at a copy of the port's save): `0x451890` calls `0x489780(a = −10°, b = θ,
+c = 0)` (pushed `0`, `θ` in radians, `0xbe32b8c3` = −0.17453), with θ = (rank − pos)·90 + 7 (−83°, −173°, … for ranks
+before `pos`: no wrap into 0..360). `0x489780` builds, in the row-vector convention of `0x489670` (`out = X·Y`),
+`L = Rx(a) · Ry(b) · Rz(c) · Basis` with `Rx` rows (1,0,0), (0,cos a,sin a), (0,−sin a,cos a), `Ry` rows (cos b,0,−sin b),
+(0,1,0), (sin b,0,cos b), `Rz` rows (cos c,sin c,0), (−sin c,cos c,0), (0,0,1), and stores it at `+0x14c` (θ = 7°:
+rows (0.9925, −0.1219, 0), (−0.0212, −0.1724, −0.9848), (0.1200, 0.9775, −0.1736), identical in the trace). `0x489210` then
+takes the **columns** of `L` (`0x489213..0x48926c` read `+0x14c/+0x158/+0x164` for row 0 …) as the model axes, puts each
+through the scaled inverse camera matrix `[0x5e86ac]+0x154` (rows = world vectors of design x, y, z with lengths 1, 0.75,
+0.833, verified) and **normalises** it. In design space (x right, y down, z ahead) model x = (cos θ, −sin θ·sin 10°,
+sin θ·cos 10°), model y = (−sin θ, −cos θ·sin 10°, cos θ·cos 10°), model z = (0, −cos 10°, −sin 10°): exactly the port's
+axes. Positions `+0xc` = campos + M·(off.x, off.y + 100, off.z + 560) match the table to 0.01.
+
+**Port** (`car_place` in `src/main_engine.c`): position exactly as above (camera space
+→ world with `R·x − U·(0.75·y) + F·(z / 1.2)`, `R`/`U`/`F` = right/up/forward of the title camera). Orientation:
+model-x → `(cos θ, 0, sin θ)`, model-y → `(−sin θ, 0, cos θ)`, model-z → `(0, −1, 0)` (up), then 10° around the camera-x
+axis so the front of the ring dips (the same tilt as the offsets `26.047·cos θ`), then - since 2026-09-26, after the live
+check - through the same scale (y · 0.75, z / 1.2) and normalised per axis like `0x489210`, so the rows are no longer
+exactly orthogonal. Against the traced instance rows the port's axes now agree to 2·10⁻⁴; the earlier pure rotation was
+1.1-1.7° off. Result: characters upright, each looking outward from the ring's center, the front one
 straight into the lens, the pedestals as ellipses seen from above; Woody stands with his feet on his pedestal. The "?" figure and the
 BlackBox crate float noticeably above their pedestal in frame 0 of their anim 0 (that's how the data has it; not
 comparable without footage of the original). The placement runs every frame after the title-camera path and before rendering.
@@ -564,9 +578,9 @@ setters on a change, so at level 0 the port now skips that copy.
    `0x4081c0` returning −1 outside the kd sectors? the visible-sector list?). Port: only show the 8 record
    instances, only on page 3 (done; hidden on result delivery and on every other page).
    Check with `tools/wtrace.py`: breakpoint `0x4077f0` with `ecx` = instance 105, log `inst+0x1c` on page 1.
-2. Order/sign of the three angles in `0x489780` (pitch −10°, yaw θ) and the effect of the non-uniform scale
-   on the orientation rows (`0x4894xx` normalizes afterward). The port's reading (§4.4) looks right; it has not been
-   verified bit-exactly.
+2. ~~Order/sign of the three angles in `0x489780` and the effect of the non-uniform scale on the orientation rows~~:
+   verified live (§4.4): `L = Rx(−10°)·Ry(θ)·Rz(0)·Basis`, its columns are the model axes, scaled and normalised by
+   `0x489210`; the port now does the same.
 3. Which faces belong to which character: the code uses (0,63) for Knothead and (63,0) for Splinter of
    image 61 (both the slot panel and the stats: `+0x58` = 2 resp. 1). HUD_TEXT §4.2 calls sprite 1 "character 1";
    that label may be swapped.
@@ -577,7 +591,7 @@ setters on a change, so at level 0 the port now skips that copy.
 7. `save+0x14a0` ("extra score"): no writer found.
 8. ~~Page 4 (high scores, class `0x45bfb0`) has not been analyzed and is not ported (§4.7)~~ — done, §4.8. "SEE HIGH SCORES" did
    nothing in the port.
-9. The exact rounding of `fistp` at 108.5 (ring source) and 50.5 (ring y): depends on the FPU rounding
-   mode (default: round to even ⇒ 108 resp. 50).
+9. ~~The exact rounding of `fistp` at 108.5 (ring source) and 50.5 (ring y)~~: the game runs with control word `0x007F`
+   (round to nearest-even, 24-bit precision; verified live, `tools/wverify.py --probe fpu`) ⇒ 108 resp. 50.
 10. Everything here is static; recommended check with `tools/wtrace.py`: breakpoints on `0x4051da`, `0x4052db` (slot),
     `0x45ee50` (PLAY) and `0x404b60` during Load game → slot 1 → WOODY → PLAY.

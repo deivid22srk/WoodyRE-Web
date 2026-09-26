@@ -162,6 +162,11 @@ typedef struct Instance {
      * frame of the last clock run inst+0x58 (0x43eeee: once per frame); render_gl.c keeps them (docs/INSTANCE.md 4.1).
      * chain_sec1 = the sector whose chain holds it + 1, 0 = in no chain */
     struct Instance *cell_next; int32_t chain_sec1; uint32_t clock_frame;
+    /* the pose cache +0x7c (0x42f490, stored by the draw 0x42ecf8 while the clock speed is 0, cleared by 0x42f483 when it is not):
+     * position +0xc, animation position +0xac and slot0 +0xb0 of the stored pose. A clock run that finds it valid (0x42f3d0,
+     * only when fade +0x6c < 0.01) copies the cached matrices and returns before its re-cell (0x43f048..0x43f06e) */
+    int pc_ok; Vec3 pc_pos; float pc_ac; int pc_slot;
+    uint32_t link_seq;                          /* > 0: SetTypeInstance 1200 replaced the object and 0x403e7a linked the new one in front (rnd_note_link) */
 } Instance;
 
 typedef struct Model {
