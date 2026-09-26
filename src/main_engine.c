@@ -2827,7 +2827,7 @@ static void launchers_draw(const float *eye, float dt)
  * in over 1 s. Class 21 is the bomb cannon of W2x (ROCKET.md 7, BOMB.md 7): the same machine, but at the end of the ignition it
  * fires a class-40 bomb along its own marker (no gravity, speed vmax, fuse fly_time) and the rider sits on that bomb; no
  * exhaust, no flight of its own, no blink, and after the flight time it turns back to its start in 2 s (state 8). */
-typedef struct { Instance *inst; int type, state, exhaust, has_prev; float t, speed, fly_time, vmax, ex_t, f1, f2, f3, puff_acc; Vec3 start_pos, prev_mk, prev_p1; Quat start_q, q0, q1; Bomb *bomb; } Rocket;
+typedef struct { Instance *inst; int type, state, exhaust, has_prev; float t, speed, fly_time, vmax, ex_t, f1, f2, f3, puff_acc; Vec3 start_pos, prev_p1; Quat start_q, q0, q1; Bomb *bomb; } Rocket;
 static Rocket g_rockets[8]; static int g_nrockets;
 static Rocket *rocket_of(const Instance *in) { for (int i = 0; i < g_nrockets; i++) if (g_rockets[i].inst == in) return &g_rockets[i]; return NULL; }
 static void rocket_place(Rocket *r) { Instance *in = r->inst; mat4_from_trs(&in->world, in->position, in->quat, in->scale); ins_pose(in, in->anim, in->anim_time); }
@@ -2838,7 +2838,9 @@ static void rocket_reset(Rocket *r)                                             
     /* type 21: bom->vtbl[17]() on +0x168. The original resets whatever bomb that pointer holds now, even one a launcher has taken
      * from the pool since (BOMB.md 7); the port only resets it while it is still the ridden one */
     if (r->bomb) { if (r->bomb->ridden) bomb_reset(r->bomb); r->bomb = NULL; }
-    r->has_prev = 0; r->exhaust = 0;                                               /* the original leaves the exhaust state alone (ROCKET.md 10.6) */
+    r->has_prev = 0;                                                               /* 0x452baa: only the exhaust's per-marker "has previous" bytes +0x2c[]; its
+                                                                                    * state (+8) stays, so the next ride burns at full size from mounting on until
+                                                                                    * the ignition sets it back to 1 (ROCKET.md 10.6) */
     rocket_place(r);
 }
 static Quat quat_from_axes(Vec3 X, Vec3 Y, Vec3 Z)                                 /* images of the model axes = columns of the rotation */
@@ -2915,26 +2917,39 @@ static void rockets_update(float dt, Player *pl, int have_player)               
  * smoke; the two flashes of explosion kind 1 (R 1400 and 400) are records like any other, see fx_smoke_draw.
  * Glows and flames as on the race board (exhaust_glow_flames): a camera-facing glow, a glow in the plane across d and three
  * 2:1 flame quads crossed on d at 120 degrees, spinning with f3. d is P1 - P0 of the marker the first frame, after that
- * the PREVIOUS frame's P1 minus this frame's P0 (0x47566e; for size index 6 and 9 the stored point is P1, 0x475c2c), so in
- * flight the flame leans back along the way the rocket came. */
+ * the stored point minus this frame's P0 (0x47566e); for size index 6 and 9 the stored point is P1 (0x475c2c), written only
+ * inside the puff loop (0x475c58), so in flight the flame leans back along the way the rocket came.
+ * The list driver (0x46d0a4, before the pool driver) runs the exhaust in every frame the think step marked it (+0xc = 1 at
+ * 0x452e67: every rocket state but 0, not while paused, 0x452e3b), whatever the rocket's visibility: it burns on at the blast
+ * point in states 7 and 9. The smoke is the race board's (board_fx_draw): 200 puffs a second (0x4aa164, 0x4abd08 = 0.005)
+ * from 100 (the size-6 entry of 0x4abcc8) behind the nozzle back along the trail, pool records FX_BOARD_PUFF (0x475380). */
 static void rockets_draw(float dt)
 {
     for (int i = 0; i < g_nrockets; i++) {
-        Rocket *r = &g_rockets[i]; Vec3 m, d; if (!r->state || !r->exhaust || r->state >= 7 || !inst_vector(r->inst, 9, &m, &d)) continue;
-        float s = 1.0f, ta = r->ex_t;
-        if (r->exhaust == 1) s = ta < 0.15f ? ta * 6.667f : (ta > 0.3f && ta < 0.45f) ? (ta - 0.3f) * 6.667f : (ta > 0.85f && ta < 1.0f) ? (ta - 0.85f) * 6.667f : 0;
+        Rocket *r = &g_rockets[i]; Vec3 m, d; if (!r->state || dt <= 0 || !inst_vector(r->inst, 9, &m, &d)) continue;
         r->f1 += dt * 0.05f; r->f2 += dt * 0.15f; r->f3 += dt * 3.0f;             /* wrapped at 1 (0x475469..0x4754dc) */
         if (r->f1 >= 1.0f) r->f1 -= 1.0f;
         if (r->f2 >= 1.0f) r->f2 -= 1.0f;
         if (r->f3 >= 1.0f) r->f3 -= 1.0f;
-        Vec3 p1 = { m.x + d.x, m.y + d.y, m.z + d.z }, t = r->has_prev ? (Vec3){ r->prev_p1.x - m.x, r->prev_p1.y - m.y, r->prev_p1.z - m.z } : d;
-        float l = sqrtf(t.x * t.x + t.y * t.y + t.z * t.z); if (l > 1e-4f) { t.x /= l; t.y /= l; t.z /= l; }
+        if (r->exhaust) r->puff_acc += dt;                                        /* 0x4754e3: in every exhaust state but 0 */
+        int n = (int)(r->puff_acc * 200.0f); r->puff_acc -= n * 0.005f;
+        if (!r->exhaust) continue;
+        float s = 1.0f, ta = r->ex_t;
+        if (r->exhaust == 1) s = ta < 0.15f ? ta * 6.667f : (ta > 0.3f && ta < 0.45f) ? (ta - 0.3f) * 6.667f : (ta > 0.85f && ta < 1.0f) ? (ta - 0.85f) * 6.667f : 0;
+        Vec3 t = r->has_prev ? (Vec3){ r->prev_p1.x - m.x, r->prev_p1.y - m.y, r->prev_p1.z - m.z } : d;
+        r->has_prev = 1;                                                         /* 0x475669 */
+        float len = sqrtf(t.x * t.x + t.y * t.y + t.z * t.z); if (len > 0) { t.x /= len; t.y /= len; t.z /= len; }
         if (s > 0) {                                                             /* state 1 draws only inside its three ramps */
             const float ph[3] = { r->f1, r->f2, r->f3 };
             exhaust_glow_flames(m, t, 6, r->exhaust == 1 ? 1 : 2, s, ph);
         }
-        if (r->has_prev) exhaust_smoke(r->prev_mk, m, &r->puff_acc, dt);           /* 200 puffs a second over the distance covered, also between the ramps (0x4754e3: +0x20 runs in every state but 0) */
-        r->prev_mk = m; r->prev_p1 = p1; r->has_prev = 1;
+        for (int k = n - 1; k >= 0; k--) {                                       /* 0x475b7a: also between the ramps */
+            float dist = (float)k / (float)n * len + 100.0f;
+            FxRec *pf = fx_new(0.2f, (Vec3){ m.x + t.x * dist, m.y + t.y * dist, m.z + t.z * dist }, FX_BOARD_PUFF); if (!pf) continue;
+            pf->age = k * dt / n;                                                /* 0x475bbf */
+            r->prev_p1 = (Vec3){ m.x + d.x, m.y + d.y, m.z + d.z };              /* 0x475c58 */
+            pf->rot = (int)(fx_rnd() * 512.0f);                                  /* 0x475c79 */
+        }
     }
 }
 /* ---- environment instances, class 90: all three modes (butterflies, motes, rain) are in ambient.c (docs/AMBIENT.md); their
@@ -3249,6 +3264,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
     } break;
     case 11: if (in && m->nargs > 1) enemies_msg11(&g_enemies, in, (int)m->args[1], m->nargs > 2 ? (int)m->args[2] : 0); break;   /* Enemy::HandleMsg 0x41a740 */
+    case 1201: case 1202: if (in) enemies_msg1201(&g_enemies, in, m->args[0], m->id == 1201); break;   /* 0x403440: type-word bit 0x400 (no level sends them) */
     case 50: case 52: case 53: if (in) { Laser *z = laser_of(in); if (z && m->nargs > 1) { if (m->id == 50) z->on = m->args[1] == 1; else if (m->id == 52) z->len = (float)(int)m->args[1]; else z->target = slot_instance(m->args[1]); } } break;
     case 1080: if (m->nargs > 3) { hud_text_open((int)m->args[0], (int)m->args[1], &m->args[3], (int)m->nargs - 3); g_text_var = m->args[2]; printf("  TEXT box at vm t=%d: strings %u %u %u\n", vm->time, m->args[3] & 0xffff, m->nargs > 4 ? m->args[4] & 0xffff : 0, m->nargs > 5 ? m->args[5] & 0xffff : 0); } break;   /* text box 0x456ed0: stays until the script sets var != 0 */
     case 1172: g_hud_ext = 1; break;

@@ -169,6 +169,8 @@ void water_update(float dt, struct Player *pl)
         /* Draw 0x4741d6 advances every phase by ftol((rand 30 + 250) dt) each drawn frame, about half a turn per second;
          * the port keeps the fraction so the speed does not depend on the frame rate */
         for (int k = 0; k < N; k++) { w->ph[k] += (rnd01() * 30.0f + 250.0f) * dt; if (w->ph[k] >= 512.0f) w->ph[k] -= 512.0f; }
+        if (!w->inst->visible || !game_enemy_thinks(w->inst)) continue;   /* the Update vtbl[3] 0x4747f0 runs from 0x42b400 only for the
+                                                                         * instances of this frame's list world+0x64 (INSTANCE.md 4.1) */
         if ((w->wake_t -= dt) < 0) {                               /* 0x4747fb: a wake from a random point of the surface */
             Vec3 v0 = w->v[0], d1 = vsub(w->v[1], v0), d2 = vsub(w->v[w->nc], v0);   /* the first triangle: 0, 1, nc */
             float l1 = vlen(d1), l2 = vlen(d2);

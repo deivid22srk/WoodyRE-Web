@@ -590,7 +590,33 @@ decompiled. Model 47: housing group 108, two press nodes, markers type code 0 an
 | 60 | water volume (message 1506): **WATER.md**, ported in `src/water.c` | vtable `0x4a9194`, handler `0x474a40` (`0x403ca3`) |
 | 80 | lightning rod of the thunderstorm (messages 54, game 1100/1101): **STORM.md**, ported in `src/storm.c` | ctor `0x451a90`, vtable `0x4ab0c4`, Init `0x451b10`, handler `0x451b50`, storm `0x451cc0` |
 | messages 15..19 | texture frame/UV override per instance (INSTANCE.md §2); W1A: 16 12×, 18 10×; **not in `src/instance.c`** | `0x42d9c3`, `0x42da32`, `0x42daae`, `0x42db0f`, `0x42db86`, reader `0x47f290` |
-| 1201 / 1202 | set/clear type-word bit 0x400 (attackable target) | `0x403440` |
+| 1201 / 1202 | set/clear type-word bit 0x400 (attackable target), §3.1; **no level sends them**; ported (`enemies_msg1201`) | `0x403440` |
+
+### 3.1 Messages 1201 / 1202 and the type word
+
+Handler `0x403440` (game messages 0x4b0..0x514 via `0x401a3e`): `in = world->table40[arg0 & 0xffffff]` (as 1200), `tw =
+in->vtbl[4]()` (`0x40348b` / `0x4034d3`), then `if (in && (arg0 & 1))` — **bit 0 of the instance ref** (`0x403496` / `0x4034de`:
+`test byte [msg+8], 1`), so only odd slots are touched — `1202: *tw &= ~0x400` (`0x4034a3`), `1201: *tw |= 0x400` (`0x4034eb`).
+`in` is tested after the virtual call and `tw` never: classes whose vtbl[4] is `0x4078b0` (returns NULL: the base vtable
+`0x4aa31c` of types 41/60/70/90, and 100/110) would crash.
+
+The type word is `inst+0x104` (vtbl[4] `0x403fe0`): bits 0..4 category (`0x40c360`), 5..9 subtype (`0x40c380`), 0x400 =
+attackable. Values: Perso category 1 + subtype = its class (`0x44a336`); enemies 4..16 category 2 (`push 2` before each
+`0x40c360`, e.g. `0x418a12`); bomb 0x23, bonuses 30/34/35/36/37/38 = 0x28/0x88/0x68/0x48/0xa8/0xc8, lasers 0x25/0x45/0x65, 42 0x26,
+20 0x44, 21 0x24, 80 0x27, 120/121 0x29/0x49. Bit 0x400 is set only by the enemy PostLoad `0x419e30` (`0x419fdf`) and Reset `0x41a010`
+(`0x41a17f`) and cleared every frame of the dead state of types 4..13 (`0x4193a2`, `0x417a03`, `0x415f66`, `0x412c92`, `0x4143a7`,
+`0x411743`); bosses 14/15/16 keep it. Its only reader is the target finder `0x4632e0` (`0x463323`).
+
+No `PUSH 1201` / `PUSH 1202` exists in the 28 level scripts (all SEND ids are constants; the only 12xx are 1200, 1250 and 1275),
+and the exe never builds them, so in the shipped game "attackable" = a live enemy (or any boss).
+
+**Target finder** `0x4632e0(pos, r)` (object Perso+0x604): over this frame's list `world+0x64` (at most 16 candidates, `0x463303`),
+every instance with bit 0x400 strictly within `r` (3D, instance origin `+0xc` vs `pos`), bubble-sorted by distance; `0x463420`
+returns the first. Callers, both with the feet `Perso+0x1f4` and r = 500: the charge-run aim `0x4579a0` (substate 9 except its
+first frame, `+0x5fd` set at `0x457499` and cleared at `0x457b6c`; substate 10 every frame; only category 2 targets: turn the Mover
+to it, `+0x5f0 = t`) and the peck dash start (substate 1, `0x457eac..0x457f96`: aim at its origin + 0.8·height for an enemy).
+Port: `nearest_enemy` / `auto_aim` / `attack_update` in `src/player.c` over the enemy set, filtered on `game_enemy_thinks`; no
+16-candidate cap.
 
 ## 4. Recipe for the port
 

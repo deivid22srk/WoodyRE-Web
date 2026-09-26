@@ -817,13 +817,17 @@ static int attack_probe(Player *p, Vec3 v)                                      
     p->atk = n == 0xe ? 7 : 6; p->atk_t = anim_len(p, n, 0); lock_move(p, p->atk_t);
     return 1;
 }
-/* target finder 0x4632e0 / 0x463420: nearest attackable instance (type bit 0x400) within r (3D) */
+/* target finder 0x4632e0 / 0x463420 (finder object Perso+0x604): the instances of this frame's list world+0x64 whose type
+ * word (vtbl[4] 0x403fe0 = inst+0x104) has bit 0x400, strictly within r of the feet (3D, instance origin +0xc), at most the
+ * first 16 in list order, bubble-sorted by distance; the first is taken. Bit 0x400 = Enemy.attackable: set by the enemy
+ * PostLoad 0x419e30 / Reset 0x41a010, cleared in the dead state of types 4..13, never for the bosses 14..16; 1201 / 1202
+ * (enemies_msg1201) are never sent. Port difference: no 16-candidate cap (the enemy array is not in list order) */
 static Enemy *nearest_enemy(Player *p, float r)
 {
     Enemy *best = NULL; float bd = r * r;
     if (!p->enemies) return NULL;
     for (int i = 0; i < p->enemies->n; i++) {
-        Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible) continue;
+        Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible || !game_enemy_thinks(e->inst)) continue;
         Vec3 d = vsub(e->pos, p->pos); float dd = vdot(d, d); if (dd < bd) { bd = dd; best = e; }
     }
     return best;
@@ -945,7 +949,8 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
             return;
         }
         if ((p->atk_t -= dt) <= 0) p->atk = 10;
-        auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
+        if (p->atk9_first) p->atk9_first = 0; else auto_aim(p);            /* 0x457b6c: no aim on the first windup frame (+0x5fd) */
+        dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
         p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return;
     case 10:
         auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
@@ -1019,7 +1024,7 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
     if (p->move_lock > 0 || p->atk != 0) return;
     if (p->on_ground) {
         if (released) {                                                    /* charge run starts on RELEASE */
-            p->atk_t = anim_len(p, 0x10, 0) + anim_len(p, 0x11, 0); p->atk = 9;
+            p->atk_t = anim_len(p, 0x10, 0) + anim_len(p, 0x11, 0); p->atk = 9; p->atk9_first = 1;   /* 0x457499: +0x5fd */
             if (p->charge <= 0.1f) { lock_move(p, p->atk_t); p->charge = 0; }
         } else if (held) { p->charge += 4.0f * dt; if (p->charge > 1.5f) p->charge = 1.5f; }
     } else if (pressed && p->air_win > 0) p->atk = 1;                      /* air: peck dash */
