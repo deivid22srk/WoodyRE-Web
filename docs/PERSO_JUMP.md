@@ -479,33 +479,51 @@ if `atk != 0` or `p+0x694`: nothing; jumper state 2 ⇒ `0x463f40` (loop/idle an
 
 In state 1 (`p+0x21c == 1`) `0x4642f0` uses set 0x6b..0x6f, with argument 1 set 0x47..0x4c.
 
-## 5. Landing ring under the player (port reconstruction, issue #1)
+## 5. Landing ring under the player (`0x44af90`, issue #1)
 
-As soon as Woody is off the ground, in the original there's a **bright ring on the floor beneath him** in the
-spot where he will land. It's not the shadow — that's projected geometry (LIGHTING.md §4), it's also there when
-he just walks and has the shape of the model; the ring belongs to the jump and disappears on landing.
+As soon as Woody is off the ground a ring fades in on the floor straight beneath him. It is not the shadow (that is projected
+geometry, LIGHTING.md §4, also there when he walks); it belongs to the jump and fades out after the landing.
 
-**Not decompiled.** The draw function has not yet been located in `Woody.exe`; the ring below was read off a
-screenshot. Best candidate to read: **`0x44af90(Perso)`**, the only still-unread Perso function that runs every
-frame after rendering (`0x401dbd` → `0x44b4a0`, PERSO_FRAME.md §1 step 24, next to
-`0x44ae60` Perso_UpdateHUD) — exactly the place for a ground decal. The tool is also available: the
-sprite primitive `0x470f10` draws, without flag bit 0, not a billboard but a quad in the plane with the normal from
-`S+0x230` (PERSO_DEATH.md §4.1, PROJECTILES.md §5.3), i.e. a flat quad on the ground normal. The port has had that
-primitive since the footsteps too (`hud_world_decal`, FOOTSTEPS.md §4): once it's known which image and which
-flags the original uses, the ring below can be replaced by it.
+**Decompiled.** `0x44af90(Perso)` is called every frame from the Perso post-render update `0x44b4a0` (`0x44b513`; PERSO_FRAME.md §1
+step 24: not paused and camera `+0x138 ≠ 8`). The listing of `Woody.exe` starts the function one byte late (`0x44af90 push esi` is
+swallowed by the data before it; the code reads correctly from `0x44af91`).
 
-What the port does — `player_landing_ring` (`src/player.c`), `hud_world_ring` (`src/hud.c`), called in
-`src/main_engine.c` between the world and the HUD:
+```c
+void Perso_LandingRing(Perso *p)                         /* 0x44af90 */
+{
+    if (p->state == 5 || p->state == 4 || p->state == 2 || p->state == 8) return;      /* +0x21c: scripted, climbing, dead, rocket */
+    if (0x44f2e0(Game->mode /*[0x5d7afc]+0x64*/)) return;   /* +0x120 in 2..3: cinematic / menu mode */
+    float dt = p->dt;                                        /* +0x2f8 */
+    if (p->onGround /*0x44bcf0 = byte +0x22c*/) { p->groundT += dt; p->airT = 0; }    /* +0x580, +0x584 */
+    else                                      { p->airT += dt; p->groundT = 0; }
+    if (p->groundT > 0)   p->ringA -= dt * 1020.0f;          /* +0x588; [0x4aac70]: 255 -> 0 in 0.25 s */
+    else if (p->airT > 0) p->ringA += dt * 255.0f;           /* [0x4aa308]: 0 -> 255 in 1 s */
+    if (p->ringA > 255) p->ringA = 255;
+    else if (p->ringA < 0) { p->ringA = 0; return; }        /* 0x44b185 */
+    S = [0x5e823c] + 0xb00;                                   /* the sprite primitive's parameter block */
+    S->pos    = (p->pos.x /*+0x1f4*/, p->groundY /*+0x224*/ + 1.0, p->pos.z /*+0x1fc*/);
+    S->rot    = 0x40;                                         /* +0x224: 64/512 turn */
+    S->image  = 0x10003;                                      /* bank 0 image 3 = the splash ripple ring, byte-identical to image 58 (SPLASH.md 6) */
+    S->mode   = 0x12;  S->size = 80.0;                        /* +0x260, +0x264 */
+    S->normal = p->floorNormal;                               /* +0x230 = P+0x458 (Mover+0xd0, the floor query's normal, RACE.md 1) */
+    S->rgb    = (0.6, 0.6, 0.6);                              /* 0x3f19999a */
+    S->alpha  = p->ringA * 0.0031372549;                      /* [0x4aac6c] = 0.8 / 255 */
+    Sprite(S, 6);                                             /* 0x470f10: own colour + rotation, no bit 0 = flat in the plane of S->normal,
+                                                                 no bit 3 = additive: adds texture * 0.6 * alpha */
+}
+```
 
-| | |
-|---|---|
-| when | as long as `on_ground == 0` AND the player is falling under their own weight: not dead, no scripted action (state 5), not on the rocket (state 8), not on a wall (state 4) and not during the climb-over-root movement. Not during cinematics, in the free camera, or outside a playable level |
-| where | `GetHeight` (`world_ground`, `0x435650`) from the feet + 43 (`P+0x00`) straight down, so both world polygons and the press nodes of instances (also on a moving platform). No maximum fall distance: above a pit the bottom lights up; no floor found ⇒ no ring. The ring sits directly under him, there's no forward projection using his horizontal speed |
-| how | a ring in the plane of the found floor normal, 3 units above it (otherwise it z-fights with the floor), radius **69** = the Perso's collision radius (`P+0x04`), band width ±12% of the radius, white, additive, brightness 0.7, 48 segments. Fixed size: the ring doesn't shrink or fade with height. The brightness is in the vertex colors (0 on both edges, full at the radius), so the band has no hard edge and needs no texture |
-| tuning knobs | `WOODY_RING=<radius>` sets the radius, `WOODY_RING=0` disables the ring |
+`0x462990` (ground snap: level start, respawn, teleport) sets `+0x588 = 0` and `+0x580 = 1.0` (PERSO_DEATH.md §1.1).
 
-Uncertain until `0x44af90` is read: radius, thickness, color and brightness, whether the ring pulses or rotates
-along, whether the original places it on the floor normal or horizontally, and whether other actors get one too.
+So: radius from the image (a 64×64 ring on a diamond of half-diagonal 80), grey 0.6 × up to 0.8 = at most 0.48 × the texture, fading in
+over a whole second (a normal jump only reaches about half), out in 0.25 s after the landing while it stays under him. No pulse, no
+spin, no forward projection; only the player has one. The excluded states freeze the timers.
+
+**Port** (`player_landing_ring` in `src/player.c`, drawn in `src/main_engine.c` with `hud_world_spr(0x3a, …, 80, 0x40, 0.6, a, 6, normal)`):
+the above, with `p->floor_y` (the per-frame floor query, `+0x224`) and `p->race_floor_n` (`+0x458`). Not drawn in paused frames, the free
+camera, cinematics, or outside levels 1..24. Port difference: the original submits the sprite after the frame's render, so it shows
+one frame later than the port's. The reconstructed ring of the previous rounds (radius 69, white, 0.7, `hud_world_ring`, `WOODY_RING`) is gone.
+Test: `W1A --jump 1 --shot f.ppm 1.5` (the jump pad throws him high: the ring grows on the pad under him).
 
 ## 6. Open questions
 

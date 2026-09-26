@@ -826,9 +826,9 @@ static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat
     tint_apply(inst, c, base); bt_color(c[0], c[1], c[2]);
 }
 
-/* ---- cast shadows (0x42e651-0x42ec3a, drawn by 0x4385f0): the caster's geometry projected from its light onto the
- * receiving faces, as opaque ambient-coloured polygons between the light pass and the texture pass, so the shadow
- * looks like an unlit face. The original clips against the faces on the CPU; here the stencil buffer does it. */
+/* ---- cast shadows (0x42e651-0x42ec3a, drawn by 0x4385f0, or 0x4388e0 while the caster fades): the caster's geometry
+ * projected from its light onto the receiving faces, as opaque ambient-coloured polygons between the light pass and the
+ * texture pass, so the shadow looks like an unlit face. The original clips against the faces on the CPU; here the stencil buffer does it. */
 static float *g_sh; static uint32_t g_sh_n, g_sh_cap;                       /* caster triangles, world space */
 static void sh_push(Vec3 a, Vec3 b, Vec3 c)
 {
@@ -838,6 +838,7 @@ static void sh_push(Vec3 a, Vec3 b, Vec3 c)
 static int g_shlog;                                                         /* WOODY_SHLOG=1: one line per second per instance that reaches the caster test */
 static void cast_shadow(const Renderer *r, Instance *inst)
 {
+    int fading = inst->fade > 0.01f;                                        /* 0x42e69a/0x42eb7a: [0x4a94f8] = 0.01 -> 0x4388e0, else 0x4385f0 */
     Model *m = inst->model; const LitLight *L = &r->lit->lights[inst->light]; const int32_t *own = model_owner(m);
     g_sh_n = 0;
     for (uint32_t ni = 0; ni < m->nnodes; ni++) {
@@ -897,8 +898,41 @@ static void cast_shadow(const Renderer *r, Instance *inst)
             /* stencil = 1 on the visible part of the receiving face */
             glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
             glBegin(GL_TRIANGLE_FAN); for (uint32_t k = 0; k < gp->nverts; k++) { const GelVert *v = &r->gel->verts[gp->indices[k]]; glVertex3f(v->x, v->y, v->z); } glEnd();
-            glColorMask(1, 1, 1, 1); glStencilFunc(GL_EQUAL, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP); glDisable(GL_DEPTH_TEST);
-            glVertexPointer(3, GL_FLOAT, 0, proj); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
+            glColorMask(1, 1, 1, 1); glDisable(GL_DEPTH_TEST);
+            glVertexPointer(3, GL_FLOAT, 0, proj);
+            if (!fading) { glStencilFunc(GL_EQUAL, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3); }
+            else {
+                /* 0x4388e0 (bucket 2: blend off, z-write off, SPECULAR on): out = light texture x diffuse + specular, with
+                 * specular = AMB ([0x5e86ac]+0x1b0, 0x438c75) and diffuse = (int)(C' * k) per channel (0x438b65..0x438bc5),
+                 * C' = the light's colour (light+0x30) x inst+0x6c (0x42e6b7..0x42e6e2), k = 1 - |n.L + d|/R of the receiving
+                 * plane (0x498830 at 0x42ebaf, 0 outside the sphere), texture [0x5e8678] + 0x74 (15 - round(k * 15.49))
+                 * (0x438ba9..0x438bf3), u/v = the two rows of the sphere projection applied to the projected points
+                 * (0x438a32..0x438a6f). So the shaded area gets back fade x this light's own contribution: at fade 0.01 a
+                 * full shadow, at 0.98 almost none. Port: two passes through the stencil, AMB (1 -> 2) and then the textured
+                 * term added ONE/ONE (2 -> 3), so overlapping caster triangles still write every pixel once, as the
+                 * original's blend-off overwrite does. */
+                glStencilFunc(GL_EQUAL, 1, 3); glStencilOp(GL_KEEP, GL_KEEP, GL_INCR); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
+                float R = L->range, kk = dl < R ? 1.0f - dl / R : 0.0f, col[3];
+                for (int q = 0; q < 3; q++) col[q] = (float)(int)(L->colour[q] * inst->fade * kk) / 255.0f;
+                const GelVert *v2 = &r->gel->verts[gp->indices[2]];                          /* 0x498890: U towards the third vertex */
+                float F[3] = { L->pos.x - pl[0] * dl, L->pos.y - pl[1] * dl, L->pos.z - pl[2] * dl }, U[3] = { v2->x - F[0], v2->y - F[1], v2->z - F[2] };
+                float ul = sqrtf(U[0] * U[0] + U[1] * U[1] + U[2] * U[2]);
+                if (kk > 0 && ul > 1e-4f && (col[0] > 0 || col[1] > 0 || col[2] > 0)) {
+                    int ti = 15 - (int)(kk * 15.49f + 0.5f); if (ti < 0) ti = 0; if (ti > 15) ti = 15;
+                    float sc = 0.5f / sqrtf(R * R - dl * dl);
+                    for (int q = 0; q < 3; q++) U[q] /= ul;
+                    float W[3] = { pl[1] * U[2] - pl[2] * U[1], pl[2] * U[0] - pl[0] * U[2], pl[0] * U[1] - pl[1] * U[0] };
+                    static float *uv; static uint32_t uv_cap; if (uv_cap < np) { uv_cap = np + 1024; uv = (float *)realloc(uv, (size_t)uv_cap * 6 * sizeof(float)); }
+                    for (uint32_t i = 0; i < np * 3; i++) {
+                        float d[3] = { proj[i * 3] - F[0], proj[i * 3 + 1] - F[1], proj[i * 3 + 2] - F[2] };
+                        uv[i * 2] = 0.5f + sc * (d[0] * W[0] + d[1] * W[1] + d[2] * W[2]); uv[i * 2 + 1] = 0.5f + sc * (d[0] * U[0] + d[1] * U[1] + d[2] * U[2]);
+                    }
+                    glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->light_tex[ti]); glEnableClientState(GL_TEXTURE_COORD_ARRAY); glTexCoordPointer(2, GL_FLOAT, 0, uv);
+                    glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE); glColor3f(col[0], col[1], col[2]);
+                    glStencilFunc(GL_EQUAL, 2, 3); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
+                    glDisable(GL_BLEND); glDisable(GL_TEXTURE_2D); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glColor3f(LIT_AMB, LIT_AMB, LIT_AMB);
+                }
+            }
             n_drawn++;
             glEnable(GL_DEPTH_TEST); glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 0, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
             glBegin(GL_TRIANGLE_FAN); for (uint32_t k = 0; k < gp->nverts; k++) { const GelVert *v = &r->gel->verts[gp->indices[k]]; glVertex3f(v->x, v->y, v->z); } glEnd();
@@ -912,10 +946,14 @@ static void draw_cast_shadows(const Renderer *r)
     { static int last = -1; int s = (int)g_tex_now; g_shlog = getenv("WOODY_SHLOG") && (s != last || atoi(getenv("WOODY_SHLOG")) == 2); if (g_shlog) last = s; }
     glDisable(GL_TEXTURE_2D); glDisable(GL_BLEND); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glEnable(GL_STENCIL_TEST); glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -1.0f); glColor3f(LIT_AMB, LIT_AMB, LIT_AMB);
+    /* bucket 2 (fading casters, 0x4388e0) is flushed before bucket 5 (opaque, 0x4385f0) in 0x4293f0 (0x42960e, 0x42966c):
+     * where both overlap, the flat AMB of an opaque caster wins */
+    for (int bucket = 0; bucket < 2; bucket++)
     for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) {
         Model *m = &r->ins->models[mi];
         for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k];
+            if ((inst->fade > 0.01f) != (bucket == 0)) continue;
             int caster = shadow_caster(inst);
             if (g_shlog && (caster || inst->type)) printf("  SH t %.1f model %u inst %u type %d setflags %x caster %d vis %d fade %.2f l_seen %d light %d nodes %d at %.0f %.0f %.0f", g_tex_now, mi, k, inst->type, inst->setflags, caster, inst->visible, inst->fade, inst->l_seen, inst->light, inst->node_world != NULL, inst->world.m[12], inst->world.m[13], inst->world.m[14]), puts("");
             /* 0x42e2c3/0x42e377/0x42e417: no sector, fade >= 0.98 or an empty sector light list drop the shadow. Whether
@@ -1130,10 +1168,9 @@ void rnd_uv_report(const Renderer *r, const Instance *inst)
     }
 }
 
-/* ---- outline (0x43ea30, fed by the two back-face lists 0x43b3f0 collects): the back faces once more, every vertex
- * pushed out along its own normal, flat black, at the same depth as the model. Only for instances that carry SetFlags
- * bit 0x20 (message 45) - the characters and handful of props the level script flags, plus every actor class the port
- * flags itself when the class is assigned (main_engine.c, message 1200) - and only within 1500 units.
+/* ---- outline (0x43ea30, fed by the two back-face lists 0x43b3f0 collects): the back faces once more, their stamped
+ * vertices pushed out along their own normal, flat black, at the same depth as the model. Only for instances that carry
+ * SetFlags bit 0x20 (message 45) - the characters and handful of props the level script flags - and only within 1500 units.
  * w = d/300 up to 2.5, then 5 - d/300 (0x43b4ce..0x43b4f3), so the rim keeps a constant width on screen. Drawn after
  * the model with the ordinary depth test: outside the silhouette the hull is all there is, and where it pokes through
  * a concave fold it beats the model - that is where the creases along a snout or a finger come from. */
@@ -1163,6 +1200,17 @@ static void draw_outline(const Renderer *r, Instance *inst)
     { const char *e = getenv("WOODY_OLW"); if (e) w *= (float)atof(e); }     /* test helper: scale the rim */
     Model *m = inst->model; const int32_t *own = model_owner(m); const Vec3 zero = { 0, 0, 0 };
     g_ol_n = 0;
+    /* Which corners move out: 0x43b3f0 first stamps 0xffff0000 into v+0x40 of the vertex records of every back face -
+     * all three corners of a skin triangle (0x43c3bc), but only the index words +0x18/+0x1a/+0x1c, corners 0/1/2, of a
+     * node polygon (0x43c42d) - then 0x43c49a..0x43c56a rewrites the position of each stamped vertex as
+     * M_node ((p - pivot) + w n) and 0x43ea30 draws every back face from those records. A fourth (or later) corner
+     * that no other back face stamps keeps the plain position the model pass computed, so such a quad's rim tapers
+     * to the surface at that corner. Reproduced: pass 0 stamps, pass 1 emits. */
+    static uint8_t *mark; static uint32_t mark_cap;
+    if (mark_cap < m->npoints) { mark_cap = m->npoints + 256; free(mark); mark = (uint8_t *)malloc(mark_cap); }
+    if (!mark) return;
+    memset(mark, 0, m->npoints);
+    for (int pass = 0; pass < 2; pass++) {
     for (uint32_t ni = 0; ni < m->nnodes; ni++) {
         InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || n->type_code == 2) continue;
         if (n->type_code >= 5 && n->type_code <= 8) continue;                   /* 0x43bf65 throws the eyelid layer's back faces away */
@@ -1172,9 +1220,10 @@ static void draw_outline(const Renderer *r, Instance *inst)
             if (p->nverts < 3 || (p->flags & 2) || (p->flags & 0x60)) continue; /* double sided and blended polygons never outline (0x43c0c2) */
             const float *pl = poly_plane(m, n, p);
             if (pl[0] * cl.x + pl[1] * cl.y + pl[2] * cl.z + pl[3] > 0) continue;   /* front facing: the model pass drew it */
+            if (pass == 0) { for (uint32_t c = 0; c < 3; c++) if (p->indices[c] < m->npoints) mark[p->indices[c]] = 1; continue; }
             Vec3 v[3];
             for (uint32_t c = 0; c < p->nverts; c++) {
-                Vec3 q = ol_vertex(inst, &inst->node_world[ni], &m->points[p->indices[c]], n->pivot, w);
+                Vec3 q = ol_vertex(inst, &inst->node_world[ni], &m->points[p->indices[c]], n->pivot, p->indices[c] < m->npoints && mark[p->indices[c]] ? w : 0.0f);
                 if (c == 0) v[0] = q; else { v[1] = v[2]; v[2] = q; if (c >= 2) ol_push(v[0], v[2], v[1]); }
             }
         }
@@ -1191,9 +1240,11 @@ static void draw_outline(const Renderer *r, Instance *inst)
         float vx = wp[0].x - wp[2].x, vy = wp[0].y - wp[2].y, vz = wp[0].z - wp[2].z;
         float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
         if (nx * (g_cam_pos.x - wp[0].x) + ny * (g_cam_pos.y - wp[0].y) + nz * (g_cam_pos.z - wp[0].z) > 0) continue;   /* front facing */
+        if (pass == 0) { for (int c = 0; c < 3; c++) if (idx[c] < m->npoints) mark[idx[c]] = 1; continue; }
         Vec3 e[3];
-        for (int c = 0; c < 3; c++) e[c] = ol_vertex(inst, MM[c], &m->points[idx[c]], pv[c], w);
+        for (int c = 0; c < 3; c++) e[c] = ol_vertex(inst, MM[c], &m->points[idx[c]], pv[c], idx[c] < m->npoints && mark[idx[c]] ? w : 0.0f);
         ol_push(e[0], e[2], e[1]);
+    }
     }
     if (g_shlog) printf("  OL inst %u setflags %x w %.2f tris %u fade %.2f", inst->index, inst->setflags, w, g_ol_n, inst->fade), puts("");
     if (!g_ol_n) return;

@@ -72,6 +72,7 @@ typedef struct Player {
     int special_st, special_prev; float special_t;   /* special attack 0x458bf0: +0x750 (0 free, 1 charging up to the hit at 1.5 s, 2 after the hit), key state, +0x74c */
     int duck, duck_anim; float duck_t;   /* ducking 0x465b10: sub-state +0x694 (0 up, 1 going down, 2 down, 3 getting up), its logical anim, timer +0x698 */
     float floor_y;                  /* last floor height found under the player */
+    float ring_ground_t, ring_air_t, ring_a;   /* landing ring 0x44af90: +0x580 time on the ground, +0x584 time in the air, +0x588 its alpha 0..255 */
     int floor_is_hull;              /* floor came from an instance press node (kind 1) */
     const Instance *att_inst; uint32_t att_node; Vec3 att_local, att_world;   /* platform attachment (Perso+0x298) */
     uint32_t cur_col;               /* world_collision id currently pressed, 0xffffffff = none (Probe+0x20) */
@@ -141,8 +142,9 @@ void player_race_start(Player *p);                     /* level start (Game ctor
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
 float player_body_height(const Player *p);            /* 0x462490 -> P+0x08: 193 standing / 61 ducked (Woody), race 160 / 81 */
 void player_set_carried(const Instance *owner, const Instance *follower);   /* follower moves with owner: a query that skips owner skips it too */
-/* landing ring (docs/PERSO_JUMP.md 5): the floor point and its normal under an airborne Woody, 0 = draw nothing */
-int  player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal);
+/* landing ring 0x44af90 (docs/PERSO_JUMP.md 5): runs the fade by dt and gives the floor point, its normal and the sprite
+ * alpha; 0 = draw nothing this frame */
+int  player_landing_ring(Player *p, float dt, Vec3 *pos, Vec3 *normal, float *alpha);
 int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34..38: message 10; returns 1 when the instance must disappear */
 void player_script_hold(Player *p, float t);       /* message 1040: scripted action, control taken away for t s */
 void player_place(Player *p, Vec3 pos, float yaw);     /* Perso reset + SetPos + SetFacing (end of a cinematic, hub door) */

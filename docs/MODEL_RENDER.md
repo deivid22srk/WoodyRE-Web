@@ -221,9 +221,12 @@ units **equally thick in screen pixels** (with the port's projection roughly `he
 
 **Geometry** (`0x43c49a..0x43c56a`): for each vertex of a backward-facing primitive,
 `p' = M_node · ((p − pivot) + w · n)` with `n` the **normalized** vertex normal (the loader normalizes on load,
-`0x427c01`; the port doesn't and has to do it itself). Note: the polygon loop only marks index
-0, 1 and 2 (`0x43c42d`), so in the original the fourth corner of a quad stays on the surface unless a
-neighbouring primitive marks it too. The port shifts all corners.
+`0x427c01`; the port doesn't and has to do it itself). Only **stamped** vertices move: `0x43b3f0` first writes `0xffff0000` into `v+0x40` of the
+vertex records of every back face — all three corners of a skin triangle (`0x43c3bc`, index words `+0x18/+0x1a/+0x1c`), but also only the
+index words `+0x18/+0x1a/+0x1c`, i.e. **corners 0, 1 and 2**, of a node polygon (`0x43c42d`) — then the node loop `0x43c49a..0x43c56a`
+rewrites the position of every stamped vertex (and sets `v+0x40 = 0xffffffff`), and `0x43ea30` draws each back face from the records.
+A fourth or later corner that no other back face stamps keeps the plain position of the model pass, so the rim of such a quad tapers to
+the surface at that corner. The port reproduces this quirk (`draw_outline`: pass 0 stamps, pass 1 emits).
 
 **Colour and depth** (`0x43ecd3..0x43ed17`, `0x43edf0`): flat **black**, alpha = `2 × (1 − inst+0x6c)` clamped to
 255 — with z-write on and no blending on the opaque list, that is just black; only the fade list
@@ -267,7 +270,38 @@ until `fade > 0.98` and then vanished in a single frame.
      thus already vanishes below alpha 127, the rest fades to 0.98.
 - The mode-3 batches (`+0x1cc`) go through the same buckets, but with the depth the last fading instance left behind
   in `[0x5ac8d4]` (§9).
-- Not ported: the shadow of a fading caster (`0x42e69a`/`0x42eb7a`, path `0x4388e0`).
+- The shadow of a fading caster (`0x42e69a`/`0x42eb7a`, path `0x4388e0`): see §8.1.
+
+### 8.1 The cast shadow of a fading instance (`0x4388e0`)
+
+`0x42e2b0` picks the shadow drawer per receiving polygon by `inst+0x6c > 0.01` (`[0x4a94f8]`, `0x42eb7a`):
+
+- `≤ 0.01` → `0x4385f0(poly)`: flat AMB (`[0x5e86ac]+0x1b0`), specular 0, blank texture `[0x5e8684]`, `u = v = 0.5`, bucket **5**.
+- `> 0.01` → first `C' = light colour (light+0x30..0x38) · inst+0x6c` (`0x42e6b7..0x42e6e2`, once per instance), then per polygon
+  `0x498830(tmp, receiving poly, &light+0x0c, light+0x2c)` (`0x42ebaf`, the same sphere projection the world light pass uses, LIGHTING.md §1.3)
+  and `0x4388e0(poly, tmp, &C')` (`0x42ebc8`).
+
+`0x4388e0` (`ret 0xc`) clips the projected polygon against the frustum exactly like `0x4385f0` (`0x438cc0/0x438f00/0x439130/0x439340`),
+computes `u/v` per vertex from the two rows of `tmp` applied to the projected world point (`0x438a32..0x438a6f`), and emits:
+
+| field | value | address |
+|---|---|---|
+| diffuse | `(int)(C'·k)` per channel packed as `0x00RRGGBB` (alpha byte 0), `k = tmp+0x20 = 1 − abs(n·L + d)/R` | `0x438b65..0x438bc5` |
+| specular | AMB `[0x5e86ac]+0x1b0` | `0x438c75` |
+| texture | light texture `[0x5e8678] + 0x74·(15 − round(k·15.49))` | `0x438ba9..0x438bf3` |
+| bucket | **2** (`push 2`, `0x438c86` → `0x42b460`) | |
+
+Bucket 2 is flushed after the light polygons (bucket 4) and before the opaque shadows (bucket 5), blend off, z-write off,
+SPECULARENABLE on (LIGHTING.md §1.5), so the shaded pixel becomes `AMB + lighttex · C · k · fade`: the chosen light's own contribution
+comes back in proportion to the fade (fade 0.01 = a full shadow, 0.98 = almost none; above 0.98 the instance is not drawn at all,
+`0x42e374`). Like the opaque variant it overwrites whatever the other lights had added there.
+
+**Port** (`cast_shadow` in `src/render_gl.c`): the fading casters are drawn first (bucket 2 before 5), through the same stencil as the
+opaque ones, in two passes so overlapping caster triangles still write each pixel once (the original's blend-off overwrite): flat AMB
+(stencil 1 → 2), then `light_tex[15 − round(k·15.49)] × C·fade·k` added ONE/ONE (stencil 2 → 3), `u/v` from the sphere projection of the
+receiving face with `U` towards its third vertex (the light textures are radially symmetric, so the choice of `U` does not show).
+Test: W1B, slots 273..277 (type 70, SetFlags 1, the casting platforms at (−6818, 1775, −1359) ff.):
+`--cam -7000 3200 -1100 0 -60`, `WOODY_MSGAT="0.3 57 273 800; 0.3 56 273 50; …"` (same for 274, 275, 277).
 
 ## 9. The additive list `+0x1cc` in `0x428d00`, and the 16-bit texture surfaces
 

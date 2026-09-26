@@ -2316,14 +2316,37 @@ static void board_frame(Vec3 d, Vec3 *X, Vec3 *Y)                          /* 0x
         *Y = (Vec3){ d.y * X->z - d.z * X->y, d.z * X->x - d.x * X->z, d.x * X->y - d.y * X->x };
     }
 }
+/* the glows and flames of one type-9 marker of 0x475440 (0x4756e9..0x475b74), shared by the race board and the rocket: P0 the
+ * marker point, d the unit trail direction, size index i into 0x4abcc8 (A = flame [i], B = glow 1 [i + 1], C = glow 2 [i + 2]),
+ * state 1 (start-up ramp, scale s), 2 (on) or 3 (boost), ph = the three phases +0x10/+0x14/+0x18. */
+static void exhaust_glow_flames(Vec3 P0, Vec3 d, int size_idx, int mode_state, float s, const float ph[3])
+{
+    static const float tA[10] = { 50, 70, 35, 45, 40, 35, 100, 70, 60, 100 }, one[3] = { 1, 1, 1 };   /* 0x4abcc8 + 4 i: A = [i], B = [i + 1], C = [i + 2] */
+    float A = tA[size_idx], B = tA[size_idx + 1], C = tA[size_idx + 2];
+    Vec3 X, Y; board_frame(d, &X, &Y);
+    float p[3] = { P0.x, P0.y, P0.z }, nrm[3] = { d.x, d.y, d.z };
+    float sz = mode_state == 1 ? s * B : mode_state == 3 ? 2 * B : B;
+    hud_world_spr(32, p, sz, 512 - (int)(ph[0] * 512.0f), one, 1.0f - 0.2f * sin512((int)(ph[0] * 256.0f)), 7, NULL, 0);   /* camera facing */
+    sz = mode_state == 1 ? s * C : mode_state == 3 ? 2 * C : C;
+    hud_world_spr(32, p, sz, (int)(ph[1] * 512.0f), one, 1.0f - 0.2f * sin512((int)(ph[1] * 255.0f)), 6, nrm, 0);    /* across the trail */
+    float r = fx_rnd() * 10.0f - 5.0f; int mode = mode_state == 3 ? 0x12 : 0x13;
+    sz = (mode_state == 1 ? s * A : mode_state == 3 ? 1.3f * A : A) + r;     /* 0x4758b8: the ramp scales the table size, the +-5 comes on top */
+    float half = sz * cos512(mode == 0x12 ? 64 : 37) - sz * 0.015625f;  /* [0x5e823c]+0x800[mode]: the flame starts at P0 and trails back along d */
+    float q[3] = { P0.x + d.x * half, P0.y + d.y * half, P0.z + d.z * half };
+    for (int j = 0; j < 0xff; j += 0x55) {
+        int a1 = (int)(ph[2] * 512.0f + (float)j) & 511;                     /* 0x4759cd: ftol(f3 * 512 + k) */
+        float basis[6] = { d.x, d.y, d.z, X.x * cos512(a1) + Y.x * sin512(a1), X.y * cos512(a1) + Y.y * sin512(a1), X.z * cos512(a1) + Y.z * sin512(a1) };   /* R = d, F round d */
+        hud_world_spr_mode(mode, 31, q, sz, 0, one, 0.8f, 0x62, basis, 2);
+    }
+}
 static void board_fx_draw(float dt)
 {
     if (!g_player || !g_player->bfx.inst) return;
     BoardFx *e = &g_player->bfx;
     if (!e->active) return;
     e->active = 0;                                                           /* 0x46d0b0 */
-    static const float tA[10] = { 50, 70, 35, 45, 40, 35, 100, 70, 60, 100 }, one[3] = { 1, 1, 1 };   /* 0x4abcc8 + 4 i: A = [i], B = [i + 1], C = [i + 2] */
-    float A = tA[e->size_idx], B = tA[e->size_idx + 1], C = tA[e->size_idx + 2];
+    static const float tA[10] = { 50, 70, 35, 45, 40, 35, 100, 70, 60, 100 };   /* 0x4abcc8: A = the flame size, also the puffs' start offset */
+    float A = tA[e->size_idx];
     const float rates[3] = { 0.05f, 0.15f, 3.0f };                          /* 0x4aab4c, 0x4aa1c8, 0x4a988c */
     for (int k = 0; k < 3; k++) { e->ph[k] += dt * rates[k]; if (e->ph[k] >= 1.0f) e->ph[k] -= 1.0f; }
     if (e->mode) e->acc += dt;
@@ -2337,21 +2360,7 @@ static void board_fx_draw(float dt)
         Vec3 d = e->has_prev[i] ? (Vec3){ e->prev[i].x - P0.x, e->prev[i].y - P0.y, e->prev[i].z - P0.z } : D;
         e->has_prev[i] = 1;
         float len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (len > 0) { d.x /= len; d.y /= len; d.z /= len; }
-        Vec3 X, Y; board_frame(d, &X, &Y);
-        float p[3] = { P0.x, P0.y, P0.z }, nrm[3] = { d.x, d.y, d.z };
-        float sz = e->mode == 1 ? s * B : e->mode == 3 ? 2 * B : B;
-        hud_world_spr(32, p, sz, 512 - (int)(e->ph[0] * 512.0f), one, 1.0f - 0.2f * sin512((int)(e->ph[0] * 256.0f)), 7, NULL, 0);   /* camera facing */
-        sz = e->mode == 1 ? s * C : e->mode == 3 ? 2 * C : C;
-        hud_world_spr(32, p, sz, (int)(e->ph[1] * 512.0f), one, 1.0f - 0.2f * sin512((int)(e->ph[1] * 255.0f)), 6, nrm, 0);    /* across the trail */
-        float r = fx_rnd() * 10.0f - 5.0f; int mode = e->mode == 3 ? 0x12 : 0x13;
-        sz = (e->mode == 1 ? s * A : e->mode == 3 ? 1.3f * A : A) + r;
-        float half = sz * cos512(mode == 0x12 ? 64 : 37) - sz * 0.015625f;  /* [0x5e823c]+0x800[mode]: the flame starts at P0 and trails back along d */
-        float q[3] = { P0.x + d.x * half, P0.y + d.y * half, P0.z + d.z * half };
-        for (int j = 0; j < 0xff; j += 0x55) {
-            int a1 = (j + (int)(e->ph[2] * 512.0f)) & 511;
-            float basis[6] = { d.x, d.y, d.z, X.x * cos512(a1) + Y.x * sin512(a1), X.y * cos512(a1) + Y.y * sin512(a1), X.z * cos512(a1) + Y.z * sin512(a1) };   /* R = d, F round d */
-            hud_world_spr_mode(mode, 31, q, sz, 0, one, 0.8f, 0x62, basis, 2);
-        }
+        exhaust_glow_flames(P0, d, e->size_idx, e->mode, s, e->ph);
         for (int k = n - 1; k >= 0; k--) {                                   /* the puffs, spread from P0 + 45 d back towards the previous position */
             float f = (float)k / (float)n, dist = f * len + A;
             FxRec *pf = fx_new(0.2f, (Vec3){ P0.x + d.x * dist, P0.y + d.y * dist, P0.z + d.z * dist }, FX_BOARD_PUFF); if (!pf) continue;
@@ -2601,7 +2610,7 @@ static void launchers_draw(const float *eye, float dt)
  * in over 1 s. Class 21 is the bomb cannon of W2x (ROCKET.md 7, BOMB.md 7): the same machine, but at the end of the ignition it
  * fires a class-40 bomb along its own marker (no gravity, speed vmax, fuse fly_time) and the rider sits on that bomb; no
  * exhaust, no flight of its own, no blink, and after the flight time it turns back to its start in 2 s (state 8). */
-typedef struct { Instance *inst; int type, state, exhaust, has_prev; float t, speed, fly_time, vmax, ex_t, f1, f2, f3, puff_acc; Vec3 start_pos, prev_mk; Quat start_q, q0, q1; Bomb *bomb; } Rocket;
+typedef struct { Instance *inst; int type, state, exhaust, has_prev; float t, speed, fly_time, vmax, ex_t, f1, f2, f3, puff_acc; Vec3 start_pos, prev_mk, prev_p1; Quat start_q, q0, q1; Bomb *bomb; } Rocket;
 static Rocket g_rockets[8]; static int g_nrockets;
 static Rocket *rocket_of(const Instance *in) { for (int i = 0; i < g_nrockets; i++) if (g_rockets[i].inst == in) return &g_rockets[i]; return NULL; }
 static void rocket_place(Rocket *r) { Instance *in = r->inst; mat4_from_trs(&in->world, in->position, in->quat, in->scale); ins_pose(in, in->anim, in->anim_time); }
@@ -2687,24 +2696,28 @@ static void rockets_update(float dt, Player *pl, int have_player)               
 }
 /* exhaust 0x475440 on the typecode-9 marker (table 0x4abcc8 index 6: flame 100, glows 70 / 60; start-up sputters) and its
  * smoke; the two flashes of explosion kind 1 (R 1400 and 400) are records like any other, see fx_smoke_draw.
- * The flame is a billboard here, not three crossed quads */
+ * Glows and flames as on the race board (exhaust_glow_flames): a camera-facing glow, a glow in the plane across d and three
+ * 2:1 flame quads crossed on d at 120 degrees, spinning with f3. d is P1 - P0 of the marker the first frame, after that
+ * the PREVIOUS frame's P1 minus this frame's P0 (0x47566e; for size index 6 and 9 the stored point is P1, 0x475c2c), so in
+ * flight the flame leans back along the way the rocket came. */
 static void rockets_draw(float dt)
 {
-    static const float white[3] = { 1, 1, 1 };
     for (int i = 0; i < g_nrockets; i++) {
         Rocket *r = &g_rockets[i]; Vec3 m, d; if (!r->state || !r->exhaust || r->state >= 7 || !inst_vector(r->inst, 9, &m, &d)) continue;
         float s = 1.0f, ta = r->ex_t;
         if (r->exhaust == 1) s = ta < 0.15f ? ta * 6.667f : (ta > 0.3f && ta < 0.45f) ? (ta - 0.3f) * 6.667f : (ta > 0.85f && ta < 1.0f) ? (ta - 0.85f) * 6.667f : 0;
-        r->f1 += dt * 0.05f; r->f2 += dt * 0.15f; r->f3 += dt * 3.0f;
-        float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (l > 1e-4f) { d.x /= l; d.y /= l; d.z /= l; }
-        if (s > 0) {
-            float fl = (100.0f + (float)msvc_rand(NULL) / 32767.0f * 10.0f - 5.0f) * s, fp[3] = { m.x + d.x * fl * 0.4f, m.y + d.y * fl * 0.4f, m.z + d.z * fl * 0.4f };
-            hud_world_fx(32, &m.x, 70.0f * s, 1.0f - r->f1, white, 1.0f - 0.2f * sinf(3.14159265f * r->f1));
-            hud_world_fx(32, &m.x, 60.0f * s, 1.0f - r->f2, white, 1.0f - 0.2f * sinf(3.14159265f * r->f2));
-            hud_world_fx(31, fp, fl, r->f3, white, 0.8f);
-            if (r->has_prev) exhaust_smoke(r->prev_mk, m, &r->puff_acc, dt);       /* 200 puffs a second spread over the distance covered */
+        r->f1 += dt * 0.05f; r->f2 += dt * 0.15f; r->f3 += dt * 3.0f;             /* wrapped at 1 (0x475469..0x4754dc) */
+        if (r->f1 >= 1.0f) r->f1 -= 1.0f;
+        if (r->f2 >= 1.0f) r->f2 -= 1.0f;
+        if (r->f3 >= 1.0f) r->f3 -= 1.0f;
+        Vec3 p1 = { m.x + d.x, m.y + d.y, m.z + d.z }, t = r->has_prev ? (Vec3){ r->prev_p1.x - m.x, r->prev_p1.y - m.y, r->prev_p1.z - m.z } : d;
+        float l = sqrtf(t.x * t.x + t.y * t.y + t.z * t.z); if (l > 1e-4f) { t.x /= l; t.y /= l; t.z /= l; }
+        if (s > 0) {                                                             /* state 1 draws only inside its three ramps */
+            const float ph[3] = { r->f1, r->f2, r->f3 };
+            exhaust_glow_flames(m, t, 6, r->exhaust == 1 ? 1 : 2, s, ph);
         }
-        r->prev_mk = m; r->has_prev = 1;
+        if (r->has_prev) exhaust_smoke(r->prev_mk, m, &r->puff_acc, dt);           /* 200 puffs a second over the distance covered, also between the ramps (0x4754e3: +0x20 runs in every state but 0) */
+        r->prev_mk = m; r->prev_p1 = p1; r->has_prev = 1;
     }
 }
 /* ---- environment instances, class 90 (0x472560), and their butterflies (0x47e050 / 0x47d440) -----------------------
@@ -3524,15 +3537,11 @@ int main(int argc, char **argv)
                     hud_world_sprite(n, p, size);
                 }
                 if (L.have_player && !fly && !cin_running() && g_level >= 1 && g_level <= 24) {
-                    /* landing ring (docs/PERSO_JUMP.md 5): while Woody hangs in the air the floor under him carries a
-                     * bright ring. WOODY_RING overrides its radius, WOODY_RING=0 switches it off. */
-                    static const float white[3] = { 1, 1, 1 };
-                    const char *rv = getenv("WOODY_RING"); float rr = rv ? (float)atof(rv) : 69.0f;   /* default = the Perso collision radius P+0x04 */
-                    Vec3 rp, rn;
-                    if (rr > 0 && player_landing_ring(&L.player, &rp, &rn)) {
-                        float rc[3] = { rp.x + rn.x * 3.0f, rp.y + rn.y * 3.0f, rp.z + rn.z * 3.0f };   /* 3 units clear of the floor, or it z-fights with it */
-                        hud_world_ring(rc, &rn.x, rr, rr * 0.12f, white, 0.7f);
-                    }
+                    /* landing ring 0x44af90 (docs/PERSO_JUMP.md 5): fades in under Woody while he is in the air, out on the
+                     * ground. Run by 0x44b4a0 only when not paused (PERSO_FRAME.md 1 step 24), so a paused frame has none */
+                    static const float grey06[3] = { 0.6f, 0.6f, 0.6f };
+                    Vec3 rp, rn; float ra;
+                    if (!paused && player_landing_ring(&L.player, dt, &rp, &rn, &ra)) hud_world_spr(0x3a, &rp.x, 80.0f, 0x40, grey06, ra, 6, &rn.x, 0);
                 }
                 env_draw(); water_fx_draw(); storm_fx_draw(&cam.pos.x, paused ? 0 : dt);
                 ambient_draw(&cam.pos.x);                                          /* class 90 motes and rain (ambient.c) */

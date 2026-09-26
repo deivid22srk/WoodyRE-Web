@@ -468,8 +468,15 @@ sprite mode 0x13 (corners at ±37/512 turn: a 2:1 quad along d; base angle `trun
 state 1 scales, state 3: `table·1.3 + rand·10 − 5` with mode 0x12), centre `m + d·size·(cos(base) − 1/64)` (`0x4abcf8`), image 31, white, alpha 0.8, UV set 2,
 flags 0x62 (own colour, own axes, UV set). Ported with `hud_world_spr_mode(0x13, …, 0x62)`.
 
-Not yet ported: explosion kinds 0/1 beyond their two flashes; the colour scale of the line primitive `0x471a10` (the vertex colours `S+0x290..0x2ac` go
-into the vertices unchanged; how the submit `0x481560` scales them was not followed), so whether the bolt ribbon is too dark stays open.
+Not yet ported: explosion kinds 0/1 beyond their two flashes.
+
+**Colour scale of the ribbon (followed).** `0x471a10` copies the float RGBA of `S+0x290..0x29c` into corners 0/1 (`+0x124`, `+0x164`) and
+`S+0x2a0..0x2ac` into corners 2/3 (`+0x1a4`, `+0x1e4`) unchanged when flag 0x800 is set (`0x471cf2..0x471da6`; otherwise all four get
+`[0x4b7a84..0x4b7a90]` = (0.5, 0.5, 0.5, 1)), and submits with `0x481560(…, 4, verts, tex, 0x24)` (`0x471e74`, `0x471eb2`). Flag 4 is the
+additive path `0x481d8c`: per corner `byte = ftol(A · C · 128)` (`0x481e5e..0x481f31`, `[0x4a9020]` = 128, no alpha byte), ONE/ONE, and the
+effect lists run under MODULATE2X (LIGHTING.md §1.5 step 6), so a ribbon corner adds `texture · C · A · 256/255`. The port's
+`hud_world_ribbon` sends `C · A` with plain MODULATE and ONE/ONE, i.e. `texture · C · A`: the same to 0.4 %. The bolt ribbon's blue
+(0.25, 0.4, 0.45) × `cos(u·π/2)` is therefore as dim as it looks; nothing to change.
 
 ### 7.2 Original recipe (kind 2)
 
@@ -515,7 +522,7 @@ typedef struct { int active; ProjT t; Vec3 pos, dir, start; float age, dead_t; c
 3. ~~Hit kind 3 of the ray~~: the start point inside a press node (§2.3).
 3b. ~~Does the ray `0x4359b0` hit the launcher's own hulls (§2.3)?~~ It tests press nodes, not hulls, and excludes nothing (the −1 is the start cell); in the port
    no shot of any level stops in its own launcher, so the muzzles lie outside the housings' press nodes (§2.3).
-4. Exact meaning of sprite-flag bits 1 and 2 and mode 0x12/0x13 of `0x470f10`; color scale of the line primitive (0.5 = neutral at the laser default: is 0.45 here "almost full"?).
+4. Exact meaning of sprite-flag bits 1 and 2 and mode 0x12/0x13 of `0x470f10`. ~~Color scale of the line primitive~~: §7.1, additive `texture · C · A` (0.45 is 0.45, the 0.5 default is half).
 5. ~~Visual kind 3 (`0x470420`)~~ (§5.5). Explosion kinds 0/1, and which enemy subtypes get `Pe+0x74 = 0/1` (missile): not worked out.
    The fireball's dark-red ribbon (half width 70, 32 segments over 1000 units) is fully computed but never drawn (no call to `0x471a10`): a leftover in the original.
 6. `P+0xf0..0x100` (bounce plane): no reader found.

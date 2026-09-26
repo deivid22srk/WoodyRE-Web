@@ -1216,38 +1216,6 @@ void hud_world_bubble(int image, const float *pos, float size, int mirror)
 }
 void hud_world_sprites_end(void) { glDisable(GL_ALPHA_TEST); glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDisable(GL_TEXTURE_2D); }
 
-/* ring lying in the plane through c with normal n (the landing marker, docs/PERSO_JUMP.md 5). The band runs from
- * radius-hw to radius+hw and carries its brightness in the vertex colours: 0 at both rims, rgb*alpha at radius, so
- * it has no hard edge and needs no texture. Additive, like the other world effects. */
-#define RING_SEGS 48
-void hud_world_ring(const float *c, const float *n, float radius, float hw, const float *rgb, float alpha)
-{
-    if (!H.ok || radius <= 0 || hw <= 0 || alpha <= 0) return;
-    float up[3] = { n[0], n[1], n[2] }, l = (float)sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
-    if (l < 1e-6f) return;
-    for (int i = 0; i < 3; i++) up[i] /= l;
-    float ax[3] = { 1, 0, 0 }; if (fabs(up[0]) > 0.9f) { ax[0] = 0; ax[2] = 1; }           /* any axis that is not parallel to n */
-    float u[3] = { ax[1] * up[2] - ax[2] * up[1], ax[2] * up[0] - ax[0] * up[2], ax[0] * up[1] - ax[1] * up[0] };
-    l = (float)sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]); if (l < 1e-6f) return;
-    for (int i = 0; i < 3; i++) u[i] /= l;
-    float v[3] = { up[1] * u[2] - up[2] * u[1], up[2] * u[0] - up[0] * u[2], up[0] * u[1] - up[1] * u[0] };
-    glDisable(GL_ALPHA_TEST); glDisable(GL_TEXTURE_2D); glBlendFunc(GL_ONE, GL_ONE);
-    for (int band = 0; band < 2; band++) {                                                 /* inner rim -> core, core -> outer rim */
-        float r0 = band ? radius : radius - hw, r1 = band ? radius + hw : radius;
-        glBegin(GL_TRIANGLE_STRIP);
-        for (int i = 0; i <= RING_SEGS; i++) {
-            float a = 6.2831853f * (float)i / (float)RING_SEGS, ca = (float)cos(a), sa = (float)sin(a);
-            float d[3] = { u[0] * ca + v[0] * sa, u[1] * ca + v[1] * sa, u[2] * ca + v[2] * sa };
-            for (int e = 0; e < 2; e++) {                                                  /* the core edge is bright, the rim edge is black */
-                float r = e ? r1 : r0, w = (e == 0) == (band != 0) ? alpha : 0.0f;
-                glColor3f(rgb[0] * w, rgb[1] * w, rgb[2] * w);
-                glVertex3f(c[0] + d[0] * r, c[1] + d[1] * r, c[2] + d[2] * r);
-            }
-        }
-        glEnd();
-    }
-    glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST); glEnable(GL_TEXTURE_2D);
-}
 
 int hud_sky_images(uint32_t out[5])
 {

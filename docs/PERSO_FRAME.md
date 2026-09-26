@@ -45,7 +45,7 @@ Callers: `0x401615` (main loop) and `0x404e90`. `esi = App`. `bl = 8` = pause bi
 | 21 | `0x401d99` | `0x42b4e0(World)` | render (183 instr, calls `0x42c320`, `0x498830`) |
 | 22 | `0x401da1` | `0x42ac10(World)` | **main render loop** (425 instr, `0x42b6c0`, `0x439540`) |
 | 23 | `0x401da6` | `[0x509b2c]++` | frame counter |
-| 24 | `0x401dbd` | not paused and `cam+0x138 != 8`: `0x44b4a0(Perso)` | Perso post-render update: if state 3 ⇒ `+0x100 = 100.0`, `0x44e7f0(1.0, 1)`; if `+0x268` ⇒ reset, `+0x100 = 100.0`, `0x44e7f0(0, 1)`; `+0x5cc = (0x42f6b0(Perso, 0, &Perso+0x59c, 0) == 1)` (ground test?); `0x44af90(Perso)`; `+0x248 = 0` |
+| 24 | `0x401dbd` | not paused and `cam+0x138 != 8`: `0x44b4a0(Perso)` | Perso post-render update: if state 3 ⇒ `+0x100 = 100.0`, `0x44e7f0(1.0, 1)`; if `+0x268` ⇒ reset, `+0x100 = 100.0`, `0x44e7f0(0, 1)`; `+0x5cc = (0x42f6b0(Perso, 0, &Perso+0x59c, 0) == 1)` (ground test?); `0x44af90(Perso)` (the landing ring, PERSO_JUMP.md §5); `+0x248 = 0` |
 | 25 | `0x401de2` | not paused: `0x42b450(dt)` | |
 | 26 | `0x401def` | not paused: `0x42d2e0()` | 241 instr; calls `0x407790` (find world cell), `0x428ce0`, `0x4359b0` – **collision/cell assignment of moving instances** |
 | 27 | `0x401dfa` | `0x46d040([0x5e823c])` | tick message-1500 subsystem (particles?) |

@@ -108,6 +108,5 @@ void hud_world_streak_flip(int image, const float *a, const float *b, const floa
 /* an additive textured quad in world space, colour per vertex (already times alpha): the fire ring of the special attack (docs/PERSO_SPECIAL.md 3.3) */
 void hud_world_quad(int image, const float v[4][3], const float uv[4][2], const float rgb[4][3]);
 /* additive ring of half width hw around c, lying in the plane with normal n: the landing marker under Woody */
-void hud_world_ring(const float *c, const float *n, float radius, float hw, const float *rgb, float alpha);
 
 #endif

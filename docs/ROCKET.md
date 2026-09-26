@@ -304,6 +304,14 @@ bank 0). Differences for the rocket:
   `0 < τ < 0.15` → `τ·6.667`; `0.3 < τ < 0.45` → `(τ − 0.3)·6.667`; `0.85 < τ < 1.0` → `(τ − 0.85)·6.667`; otherwise 0 (three "sputters"; `0x4aa1c8`, `0x4aab98`, `0x4ab79c`,
   `0x4aa3d8`, `0x4abd04`); at `τ ≥ 1` → state **2 = on** (`0x475542`). Because the ignition only lasts 0.3 s, the second and third sputter already fall within the flight.
 * only drawn on frames where the think step sets `+0xc = 1` (rocket state ≠ 0).
+* trail direction `d` (`0x47563d..0x475694`): the first frame `P1 − P0` of the marker, after that the stored point minus this frame's `P0`;
+  for size index **6** (and 9) the stored point is the marker's own `P1` (`0x475c2c..0x475c75`, written in the puff loop), for the others the
+  last puff position. So the rocket's flame lies along `P1(previous frame) − P0`: in flight it leans back along the way flown.
+* the puffs run in state 1 too, also between the three sputters: `+0x20` (the puff accumulator) grows in every state but 0 (`0x4754e3`).
+* **Port** (`rockets_draw` → `exhaust_glow_flames`, shared with the race board's spray): the camera-facing glow (70), the glow in the plane
+  across `d` (60, flags 6), and the flame as **three 2:1 quads** (image 31, mode 0x13, alpha 0.8, flags 0x62) crossed on `d` at 0/85/170
+  (1/512 turn) + `f3·512`, size `s·100 + rand·10 − 5` (the ramp scales the table size only, `0x4758b8`), centred `d · size · (cos 37 − 1/64)`
+  from the nozzle (`0x475912..0x4759c5`). Until this round it was one billboard of `(100 ± 5)·s` at `0.4·size` and both glows camera facing.
 
 ### 5.2 Flashing red (vtbl[26] `0x4537d0`)
 

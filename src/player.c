@@ -405,18 +405,25 @@ float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *f
     return y;
 }
 
-/* Landing ring (docs/PERSO_JUMP.md 5): while Woody is off the ground the spot he hangs over is marked on the
- * floor. Only the states in which he falls under his own weight get one: not while a script drives him, not on
- * the rocket, not on a wall and not while he is dying. The drop is unlimited, so a pit shows its bottom. */
-int player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal)
+/* Landing ring 0x44af90 (docs/PERSO_JUMP.md 5), run by the Perso post-render update 0x44b4a0 every frame that is not
+ * paused. Not in Perso state 2 (dead), 4 (climbing), 5 (scripted) or 8 (rocket), nor while the game's mode object is in a
+ * cinematic/menu mode (0x44f2e0); then even the timers stand still. Otherwise: on the ground +0x580 counts up and the
+ * alpha +0x588 drops 1020/s (gone in 0.25 s), in the air +0x584 counts up and the alpha climbs 255/s (full after 1 s),
+ * clamped to 0..255. The ring itself is one sprite: bank 0 image 3 (the ripple ring of the splash, byte-identical to
+ * image 58), mode 0x12, size 80, rotation 64/512, rgb 0.6, alpha +0x588 * 0.8/255, flags 6 (own colour and rotation,
+ * flat in the plane of S+0x230 = the floor normal P+0x458, additive), at (x, floor height P+0x224 + 1, z) - straight
+ * under him, also after landing while it fades. */
+int player_landing_ring(Player *p, float dt, Vec3 *pos, Vec3 *normal, float *alpha)
 {
-    if (!p->inst || p->on_ground || p->dead_kind || p->script_act || p->ride || p->climb_sub || p->use_root) return 0;
-    const Instance *hi; const InsNode *hn; int found = 0; Vec3 keep = g_ground_n; int32_t keep_mat = g_ground_mat;
-    float y = world_ground(p, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found, &hi, &hn);
-    Vec3 n = g_ground_n; g_ground_n = keep; g_ground_mat = keep_mat;
-    if (!found) return 0;
-    *pos = (Vec3){ p->pos.x, y, p->pos.z };
-    if (normal) *normal = n;
+    if (!p->inst || p->dead_kind || p->script_act || p->ride || p->climb_sub || p->use_root) return 0;   /* 0x44af93: states 5, 4, 2, 8 */
+    if (p->on_ground) { p->ring_ground_t += dt; p->ring_air_t = 0; } else { p->ring_air_t += dt; p->ring_ground_t = 0; }   /* 0x44afd4, byte +0x22c */
+    if (p->ring_ground_t > 0) p->ring_a -= dt * 1020.0f;                /* [0x4aac70] */
+    else if (p->ring_air_t > 0) p->ring_a += dt * 255.0f;               /* [0x4aa308] */
+    if (p->ring_a > 255.0f) p->ring_a = 255.0f;
+    else if (p->ring_a < 0) { p->ring_a = 0; return 0; }                /* 0x44b185: below 0 it is reset and nothing is drawn */
+    *pos = (Vec3){ p->pos.x, p->floor_y + 1.0f, p->pos.z };             /* P+0x1f4, P+0x224 + 1.0, P+0x1fc */
+    if (normal) *normal = p->race_floor_n;                              /* P+0x458 = Mover+0xd0, the floor query's normal (docs/RACE.md 1) */
+    *alpha = p->ring_a * 0.0031372549f;                                 /* [0x4aac6c] = 0.8 / 255 */
     return 1;
 }
 
@@ -2190,7 +2197,7 @@ void player_ground_snap(Player *p)
     p->pos.y = found ? gy : p->pos.y + P_PROBE_Y;                      /* pos.y = [0x53a568] always: with nothing below it still holds the probe height
                                                                          * (traced: the W2B boss intro ends 53 under the floor, NotFound -> feet + 43,
                                                                          * and the next frame's step-up puts him on the floor 10 higher) */
-    p->floor_y = p->pos.y; jumper_reset(&p->jumper); p->on_ground = 1; player_apply_transform(p);
+    p->floor_y = p->pos.y; jumper_reset(&p->jumper); p->on_ground = 1; p->ring_a = 0; p->ring_ground_t = 1.0f; player_apply_transform(p);   /* +0x588 = 0, +0x580 = 1.0 */
 }
 
 void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir)       /* 0x44ce11 -> 0x44a650: SetPos + ground snap 0x462990, anim controllers reset, camera cut 0x458f90 */

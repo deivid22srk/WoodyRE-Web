@@ -478,7 +478,7 @@ typedef struct {
 ## 12. Open questions
 1. `+0xd9`/`+0xda` (arg1 of 15..18, 0xffff in W1A): no reader found in `0x47f290`; possibly a texture filter elsewhere in `0x43b3f0`.
 2. SetFlags bit 2: no reader found. Bit 1: is the extra pass a shadow or a reflection (table `[0x4c4cac]+4`)? Bit 0x20: nature of the effect pass.
-3. Exact color blending in `0x4388e0` at fade > 0.01 in the extra pass (the shadow). Drawing the model itself while fading is worked out in MODEL_RENDER.md §8.
+3. ~~Exact color blending in `0x4388e0` at fade > 0.01 in the extra pass (the shadow)~~: MODEL_RENDER.md §8.1 (AMB + light texture × light colour × k × fade, bucket 2). Drawing the model itself while fading: MODEL_RENDER.md §8.
 4. `+0x88 == 2`: meaning of this state in `0x42e2b0`.
 5. Rounding mode of `0x499580` (ftol) for the texture frame index and the phase mask (truncate or round).
 6. Class 20/21 (message 55), type 60 (`0x474a40`, 1503/1506) and enemy message 11 are not worked out here.

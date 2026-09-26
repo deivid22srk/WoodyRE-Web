@@ -244,7 +244,7 @@ flash/highlight, not investigated).
 | caster = outline (`0x43aaa0`) of the **hull nodes** (`S+0x3c`, node flag 0x04; Woody 43 of 142), pre-filtered with the outline of the bbox node | all polygons of every mesh node + all skin triangles, projected per triangle |
 | receivers from the **light BSP** (`0x40bb40`/`0x40bda0`), already clipped to convex polygons | lists A and B of the light, clipped with the stencil buffer. A ∪ B is not the same set: a fully shadowed face is in neither |
 | only tests: leaf kind ≠ 2, ≥ 1 vertex in front of the receiving plane, camera in front of that plane | plus made-up bounds (`s > 40`, a sphere-radius `reach` test, `k` outside 1..100). They exist because the port walks A/B instead of the BSP, and can drop valid shadows |
-| `0.01 < transparency ≤ 0.98` → translucent shadow (bucket 2, `C·k·transparency`) | always the opaque AMB variant up to 0.98 |
+| `0.01 < transparency ≤ 0.98` → translucent shadow (bucket 2, `C·k·transparency`) | the same (MODEL_RENDER.md §8.1): AMB, then light texture × `C·k·transparency` added, fading casters before opaque ones |
 | a caster without animation reuses its polygons (`0x42f3d0`/`0x42f460`) | recomputed every frame |
 | the caster is **not** tested for visibility: `0x42b380` calls `0x42e2b0` with bit 2 on for every instance in `world+0x64` | same (issue #29); the port only skips receiving faces that aren't drawn this frame, which is exact |
 
