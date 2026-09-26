@@ -304,7 +304,7 @@ inner edge (black) to the outer edge (white-hot). Inner radius 0 → 4000, outer
 
 ### 3.4 Hit star `0x4750e0(&pt)` (certain; per hit ordinary enemy, at `pt` = Woody's feet)
 
-This is the general hit effect (also used by the peck and by message 1507). Ported as `game_hit_star` (main_engine.c);
+This is the general hit effect (also used by the peck and by message 1507, PARTICLES.md §9.1). Ported as `game_hit_star` (main_engine.c);
 since round 29 the ordinary peck hits get it too (`attack_hit_loop` → `enemy_hit` with the hit point of PERSO_JUMP.md §3:
 the beak vector `p+0x59c` = marker typecode 0 of Woody's mesh, `beak_vector` in player.c).
 

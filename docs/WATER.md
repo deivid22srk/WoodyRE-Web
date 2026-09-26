@@ -10,7 +10,7 @@ port in `src/water.c`. Background: in W2A the water didn't move and Woody didn't
 | [1] | `0x473120` | Init: build the grid over the top (only if `+0x14c` is set, otherwise base `0x42e210`) |
 | [2] | `0x4738c0` | Draw(bits): bit 1 = center/radius for visibility (`+0x88..+0x98`, average of the 8 box points × 0.125), bit 4 = draw the surface |
 | [3] | `0x4747f0` | Update: wake effects and the drowning test |
-| [22] | `0x474a40` | handler: 29, 33, 35 ignored (returns 0), rest to the base `0x42d5e0` |
+| [22] | `0x474a40` | handler: 29, 33, 35 ignored (returns 0), rest to the base `0x42d5e0` (33 is what the scripts send, §1.1) |
 | dtor | `0x474250` | frees the five grid buffers if `nc·nr < 0x190` |
 
 The model (W2A model 25) is a box: node 0 mesh (12 triangles, top and bottom with texture group 56), node 1 child 2
@@ -24,6 +24,18 @@ the short side), `+0x144 = c·0.01` (wave amplitude), `+0x148 = d·0.01` (alpha)
 MESSAGES.md had b as ×0.01; that's wrong (`0x46ce4e`: `mov ecx,[eax+0x10]` pushes it onto the stack unscaled).
 W2A: `[1000000, 2, 3500, 40]` for 183..185 (cell 10000, 2 cells, 35, 0.40), `[130000, 4, 2000, 50]` for 186; the assert text
 of the class cites that same second set as an example.
+
+### 1.1 Message 33 `[inst, n, v]`: sent, but dropped
+
+Every water volume of K3A (185, 186, 304, 372; model 34), S3A (178, 179, 311, 379; model 31) and W3A (216, 217, 364,
+443; model 32) gets, right after `1200 [., 60]` and `1506 [., 130000, 2, 2000, 50]`, the four messages
+`33 [., 4, 200]`, `33 [., 13, 0]`, `33 [., 14, 133]`, `33 [., 15, 0]`; W2B 30 and 47 (model 3) get `33 [., 4, 300]` (50
+sends). They look like "set parameter n to v/100" of a richer water model, but nothing reads them: the class handler
+`0x474a40` (vtable `0x4a9194` slot 22, installed by the SetTypeInstance case `0x403c79..0x403ca3` before the 1506/33
+messages arrive) returns 0 for ids 29 (`0x1d`), 33 (`0x21`) and 35 (`0x23`) without calling the base, and the base
+`0x42d5e0` would drop 33 as well (byte table `0x42df80[32]` = 21 → the default `0x42df1c`). No other class handler
+receives message 33 from a level script, so the four parameters have no meaning left in the exe. The port handles it as
+an explicit no-op (`case 33` in `on_msg`).
 
 ## 2. Init `0x473120`
 

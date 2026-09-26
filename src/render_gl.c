@@ -9,6 +9,7 @@
 #include <string.h>
 #include <math.h>
 #include "render_gl.h"
+#include "player.h"                                   /* volume_contains (0x4300c0) */
 
 static Window *g_win;
 
@@ -505,7 +506,7 @@ void rnd_free(Renderer *r)
 {
     for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->batches[i].idx); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); free(r->litb[i].idx); }
     free(r->batches); free(r->litb); free(r->face_bound);
-    free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev); free(r->model_blend);
+    free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev); free(r->model_blend); free(r->links); r->links = NULL; r->nlinks = r->links_cap = 0;
     for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); free(r->lightb[t].idx); free(r->lightb[t].face); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
     for (uint32_t g = 0; r->tex && g < r->tex->ngroups; g++) {                 /* the level's textures live in the GL context, not in the TexFile */
         TexGroup *tg = &r->tex->groups[g]; if (!tg->gl_frames) continue;
@@ -711,6 +712,52 @@ static int instance_visible(Renderer *r, Instance *inst, float aspect, float fy,
         if (n && n < 64) { for (k = 0; k < n; k++) if (r->sec_vis[sec[k]]) break; if (k == n) return 0; }
     }
     return 1;
+}
+
+/* ---- message 34 [inst, other] (0x42dc21, docs/INSTANCE.md 10.1): a pair {other, next} in the level table +0x50 (count
+ * +0x4c), pushed on inst+0xd4. The one reader is the visibility pass 0x42a980: for every type-1 instance registered in
+ * the camera's kd leaf cell (.col list cell+0x40/+0x44) whose volume node holds the camera position (0x4300c0,
+ * 0x42aa38), each linked instance gets this frame's stamp +0x20 = [0x4c4c08] (0x42aa4b), and the sector walk 0x42a840
+ * skips an instance that already carries it (0x42a92f): not drawn, not updated. A volume instance is listed in every
+ * leaf its volume touches, so "in the camera's leaf and the camera inside the volume" is the volume test alone here. */
+void rnd_link(Renderer *r, Instance *inst, Instance *other)
+{
+    if (!inst || !other) return;
+    if (r->nlinks >= r->links_cap) {
+        uint32_t cap = r->links_cap ? r->links_cap * 2 : 64; Instance **n = (Instance **)realloc(r->links, cap * 2 * sizeof *n);
+        if (!n) return;
+        r->links = n; r->links_cap = cap;
+    }
+    r->links[2 * r->nlinks] = inst; r->links[2 * r->nlinks + 1] = other; r->nlinks++;
+}
+static void links_hide(Renderer *r, Vec3 eye)
+{
+    static int log = -1; if (log < 0) log = getenv("WOODY_LINKLOG") != NULL;
+    const Instance *last = NULL; int inside = 0, hidden = 0;
+    for (uint32_t i = 0; i < r->nlinks; i++) {
+        Instance *v = r->links[2 * i], *o = r->links[2 * i + 1];
+        if (v != last) {                                                     /* the pairs of one volume instance come in a row */
+            last = v; inside = 0;
+            if (log == 1 && v->node_world && v->model->nvolume_nodes) {         /* once: where the volume is */
+                const InsNode *n = &v->model->nodes[v->model->volume_nodes[0] - 1]; float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
+                for (uint32_t q = 0; q < n->npoints; q++) { Vec3 w = ins_point_world(v, n->point_base + q); float a[3] = { w.x, w.y, w.z }; for (int c = 0; c < 3; c++) { if (a[c] < lo[c]) lo[c] = a[c]; if (a[c] > hi[c]) hi[c] = a[c]; } }
+                uint32_t cnt = 0; for (uint32_t j = i; j < r->nlinks && r->links[2 * j] == v; j++) cnt++;
+                printf("link: inst %u hides %u instances while the camera is in its volume, box x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f", v->index, cnt, lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]), puts("");
+                if (i + cnt >= r->nlinks) log = 2;
+            }
+            if (v->visible && v->node_world)                                 /* hidden by message 6 = in no cell list (0x407850) */
+                for (uint32_t k = 0; k < v->model->nvolume_nodes && !inside; k++) {
+                    uint32_t node = v->model->volume_nodes[k] - 1;           /* the node lists in the file are 1-based */
+                    if (node < v->model->nnodes) inside = volume_contains(v, node, eye);
+                }
+            if (log) { static const Instance *was[8]; static int in_was[8]; int s = 0;
+                while (s < 7 && was[s] && was[s] != v) s++;
+                if (was[s] != v) { was[s] = v; in_was[s] = 0; }
+                if (in_was[s] != inside) { in_was[s] = inside; printf("link: camera %s volume of inst %u at %.0f %.0f %.0f", inside ? "entered" : "left", v->index, eye.x, eye.y, eye.z), puts(""); } }
+        }
+        if (inside && o->drawn) { o->drawn = 0; hidden++; }
+    }
+    if (log && hidden) { static int prev = -1; if (hidden != prev) printf("link: %d linked instances hidden", hidden), puts(""); prev = hidden; }
 }
 
 /* ---- dynamic point lights (0x498790, docs/LIGHTING.md 7). The original registers them into a 16-slot table
@@ -1278,6 +1325,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             if (!inst->visible || inst->fade > 0.98f) continue;
             inst->drawn = instance_visible(r, inst, aspect, f, fw, rt, up);
             if ((inst->drawn || shadow_caster(inst)) && r->lit) instance_light(r, inst, dt); } }   /* a caster off screen still needs its light for the shadow */
+        if (r->nlinks) links_hide(r, cam->pos);                                /* message 34: 0x42aa0b runs before the sector walk 0x42a840 */
     }
     glEnable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_GEQUAL, 127.0f / 255.0f);   /* 0x47ec50/0x47ec5c: ALPHAREF 0x7f, GREATEREQUAL. The device stays on CULL_NONE; the culling is per polygon on the CPU */
     glPolygonMode(GL_FRONT_AND_BACK, r->wireframe ? GL_LINE : GL_FILL);

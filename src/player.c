@@ -1262,6 +1262,22 @@ void player_place(Player *p, Vec3 pos, float yaw)
     jumper_reset(&p->jumper); p->on_ground = 1; p->cam_init = 0; player_apply_transform(p);
 }
 
+/* the camera as a volume actor (docs/EVENTS.md 2.1): 0x41f379..0x41f3cf at the end of Camera::Update, only once a script
+ * has named a camera object with message 800 (CamMgr+0x664; K2R, S2R, W2B). The object takes the camera position and is
+ * tested with 0x434740 -> 0x430210, the plain (not "perso") messages 101/102/103 through 0x441c90. Unlike the player's
+ * test there is no cache: "was inside" is the VM's own list (0x443e20 = eko_vol_has_actor_f1), as in the original. */
+void player_volumes_actor(Player *p, EkoVM *vm, Vec3 pt, uint32_t actor)
+{
+    if (!vm) return;
+    for (uint32_t v = 0; v < p->nvol; v++) {
+        Instance *in2 = p->vol_inst[v]; if (!in2->visible) continue;                   /* 0x430210: cell -1 = no test at all */
+        int now = volume_contains(in2, p->vol_node[v], pt), was = eko_vol_has_actor_f1(vm, p->vol_id[v] & 0xffffff, actor);
+        if (!was) { if (now) { eko_vol_enter(vm, p->vol_id[v], actor); if (getenv("WOODY_CAMVOL")) printf("  CAMVOL enter 0x%x (inst %u)\n", p->vol_id[v], in2->index); } }
+        else if (now) eko_vol_in(vm, p->vol_id[v], actor);
+        else { eko_vol_leave(vm, p->vol_id[v], actor); if (getenv("WOODY_CAMVOL")) printf("  CAMVOL leave 0x%x (inst %u)\n", p->vol_id[v], in2->index); }
+    }
+}
+
 /* trigger volumes: enter / in / leave -> script VM (player = "perso" variants); runs in every Perso state */
 static void player_volumes_y(Player *p, EkoVM *vm, float probe_y)
 {

@@ -619,7 +619,8 @@ is correct: 1200 (PostLoad + Reset ⇒ `+0x108 = 1`) before message 59 (0.05 s l
 
 **Smoke plume** `0x475f30(inst, n)` (on hits with hp 4/3/2 before the hit ⇒ marker n = 2/1/0): particle emitter (pool `[0x5e823c]+0xdb8`, max 2000,
 lifetime 100000 s, callback `0x475d90`) at typecode-0 marker no. n of 404, sets `smokeOn[n] = [0x5e857c + n] = 1`. As long as that byte is 1: **300 particles/s**
-(`0x4a986c`) along the marker's path, ±15 jitter in x/z, particle `0x475cd0`: 0.5 s, sprite `0x1000e`, rises 50·t, size ≈ `rand·10 + 20`. The last
+(`0x4a986c`) along the marker's path, ±15 jitter in x/z, particle `0x475cd0`: 0.5 s, sprite `0x1000e`, white, alpha 0.5·(1 − u), rises 50·u
+(u = t/0.5), size `rand·10 + 50u + 20`, flags 7 (exact decompile: PARTICLES.md §10). The last
 hit (hp 1) and Reset set the three bytes to 0 ⇒ the emitters die out. Explosion `0x477060(1, v, 0)` at the same marker (same effect as script message 1509
 mode 4/5).
 

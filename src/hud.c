@@ -70,7 +70,7 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
 /* the bank 0 images the world effects use, loaded into H.fx in this order (the 16 of slot 10 used to be the footstep
  * mark of the reconstruction; 0x47cba0 is decompiled now, docs/PARTICLES.md 2) */
 static const unsigned char k_fx_img[40] = { 0, 4, 6, 5, 10, 11, 12, 14, 31, 32, 16, 0x3a, 18, 24, 57, 7, 8, 9, 33, 30, 13,
-                                            15, 17, 25, 26, 68, 69, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 255, 255, 255 };
+                                            15, 17, 25, 26, 68, 69, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 255, 255, 29 };   /* 29: the motes of class 90 mode 1 (docs/AMBIENT.md) */
 static int fx_slot(int image) { for (int i = 0; i < 40; i++) if (k_fx_img[i] == image) return i; return -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
