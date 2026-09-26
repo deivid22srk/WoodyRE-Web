@@ -308,6 +308,9 @@ Per frame, `u = age/1.5`, eighth-phases:
   (row 0: 0,1,2,0,0,2; row 12: 2,0,3,0,0,2), **flags 0x4d** (non-additive). Right after that the same sprite with
   `size += jit`, image `T[6+i]` = {0x29, 0x26, 0x26, 0x27, 0x28, 0x28} (others: head 0x2b), **flags 0x45** (additive glow).
 * every frame (also in model phases) dynamic light `0x498790([0x4c4cac], 0, &S.pos (last sprite drawn), white (255,255,255), radius 200 + rnd·100)`.
+* **Ported** (`game_skeleton` / `FX_SKELETON` in `src/main_engine.c`, called from `player_kill` kinds 2/9 and the race kind 2). Mode 0x1a is a 1:2
+  upright quad (the ribcage), both sprites use the default colour (flag bit 1 off): details and the sprite-mode table in PARTICLES.md §1 and §6.
+  Test: `WOODY_KILLAT="1.5 2"` (Kill(2) 1.5 s into the level).
 
 ### 4.3 Water splash `0x478660(&C, v, r)` (emitter callback `0x478360`) — kind 7 (also `0x46ce27`)
 Emitter: lifetime **1.0 s**, `C` = center, `h = v · 0.001` (`0x4aa0f4`), `R = r + rnd·50` (death: 50..100),

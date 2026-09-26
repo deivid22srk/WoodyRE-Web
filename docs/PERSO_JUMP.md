@@ -520,6 +520,5 @@ along, whether the original places it on the floor normal or horizontally, and w
   has not been decompiled.
 * `vtbl[37]` (+0x94) and `vtbl[39]` (+0x9c) of the enemy classes (what does a hit do per enemy type, which
   script events follow) have not been traced.
-* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (hard landing) and `0x479c80` (peck impact) have not been read. The port does draw an
-  impact at the call sites of `0x479c80` (a peck hole in the hit surface plus wood chips falling out of it), but that
-  shape is a reconstruction — see OBJECTS.md §1.6.
+* `0x478980(p, 1, 2.0, 180.0, 50.0, 0)` (hard landing) is the speech bubble (PERSO_DEATH.md §4.1); `0x479c80` (peck impact) is
+  decompiled and ported: kind 1 (this attack ray) is a 0.05 s flash, kind 0 (climbing) splinters and a hole (PARTICLES.md §4).

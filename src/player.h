@@ -134,20 +134,25 @@ int  player_ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b,
 float gel_ray_hit(const GelFile *g, Vec3 a, Vec3 b, Vec3 *n_out);   /* the same, and the normal of that polygon, turned towards a */
 int  player_hit(Player *p, float damage, Vec3 dir);    /* Perso vt[39]; returns 1 when the caller should Kill(3) */
 
-/* footstep effects, drawn by the app (main_engine.c) as the pickup effects are (docs/FOOTSTEPS.md)
- * 0x47cba0(pos, ground normal, direction, foot 0/1, kind 2 or 3) twice per walk cycle, and the landing
- * dust 0x476140(pos + (0,30,0), &ground normal, 3, 0.25, 1.5) on ground type 2. */
+/* footstep effects, drawn by the app (main_engine.c) in the effect pool (docs/FOOTSTEPS.md, docs/PARTICLES.md 2/3)
+ * 0x47cba0(pos, ground normal, direction, foot 0 = left / 1 = right, kind 2 or 3) twice per walk cycle, and the landing
+ * dust 0x476140(pos + (0,30,0), &ground normal, 3, 0.25, 1.5) on ground type 2. game_smoke_ring is 0x476140 itself:
+ * kind 0 = the big dark ring (bombs, launcher muzzles, the Buzz boss: 0, 1.5, 6.0), 3 = the white landing dust. */
 void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind);
 void game_land_dust(Vec3 pos, Vec3 normal);
+void game_smoke_ring(Vec3 pos, Vec3 normal, int kind, float t0, float life);
 void game_splash(Vec3 c, float speed, float radius);   /* 0x478660, docs/SPLASH.md */
 void game_special_fx(void);                            /* 0x47ab90: the streaks and fire rings of the special attack (docs/PERSO_SPECIAL.md 3) */
 int  game_enemy_thinks(const Instance *inst);           /* is the actor in a sector drawn last frame, i.e. did its Think run (list 0x4c5258)? */
 /* the comic speech bubble 0x478980(inst, kind, duration, offY, offX, live) (docs/PERSO_DEATH.md 4.1): kind 0 "?!" (Kill 1),
  * 1 curse (hard landing), 2 "$", 3 "...", 4 "zzz"; with `live` it lasts while *live != 0 instead of `duration` */
 void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, const int *live);
-/* and the beak impact 0x479c80(kind, point, normal), on the same primitives (docs/OBJECTS.md 1.6):
- * kind 1 = a hit of the attack probe (no normal), 0 = the wall he is climbing */
+/* and the beak impact 0x479c80(kind, point, normal) (docs/PARTICLES.md 4, docs/OBJECTS.md 1.6):
+ * kind 1 = a hit of the attack probe (a flash; no normal needed), 0 = the wall he is climbing (splinters and a hole) */
 void game_peck_fx(int kind, Vec3 pos, const Vec3 *n);
+/* the skeleton flash 0x477e40 of Kill 2 and 9 (docs/PERSO_DEATH.md 4.2, docs/PARTICLES.md 6): 1.5 s of the model and a
+ * sprite skeleton taking turns, on the current player */
+void game_skeleton(void);
 /* bombs (main_engine.c, docs/BOMB.md): pick one up (0x463430: in use, not ridden, within r of pos in 3D; it is held from now on),
  * hold it in the hand (0x463530 part A), and start its projectile again from where it is (0x44d3a0: the throw and the drop) */
 struct Bomb;
