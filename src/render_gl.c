@@ -902,7 +902,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
         Instance *in = &ins->models[mi].instances[k];
         if (in->listed < 0) { in->listed = 0; if (in->visible) n_link++; continue; }
         if (!in->visible) continue;                                             /* +0x1c == -1: in no sector chain */
-        Vec3 ref = in->cell_dy > 0 ? (Vec3){ in->position.x, in->position.y + in->cell_dy, in->position.z } : ins_anim_centre(in);
+        Vec3 ref = in->cell_dy > 0 ? (Vec3){ in->position.x, in->position.y + in->cell_dy, in->position.z } : in->cell_fixed ? in->position : ins_anim_centre(in);
         if (!in->cell_ok || ref.x != in->cell_ref.x || ref.y != in->cell_ref.y || ref.z != in->cell_ref.z) {   /* 0x407790 / 0x4077f0: re-cell */
             in->cell_ref = ref; in->cell_ok = 1; in->cell_sec = gel_sector(g, ref); in->cell_grp = gel_floor_group(g, ref);
         }

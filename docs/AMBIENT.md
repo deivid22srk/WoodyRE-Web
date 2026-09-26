@@ -222,6 +222,25 @@ frustum test: the only gating is the think (the instance list, §1) for creation
 * Test hooks: `WOODY_AMBLOG=1` (box, scale, direction of each instance on its first think), `WOODY_AMBON=1` (ignore the
   off flag and hiding: shows the W3D arena sparkles without playing to the Boss16 phase).
 
+### 7.1 The W3D arena volumes 823..829 (Boss16 group 3)
+
+They only think while they are in the frame's instance list, and what keeps them there is **how they are celled**:
+* Message 62 group 3 (`0x40d55d`) takes them out of the world (`0x407850`) and sets `+8 |= 0x20`; class 16's Reset
+  `0x40c8f0` then moves each one to `(pad x, C.y − depth, pad z)` and **re-cells it** (`0x40cb41` → `0x4077f0` with
+  `p = NULL` ⇒ the `.ins` position `+0xc`): back in the world, sector and floor group of the deck under the pad.
+* Flag 0x20 stops the clock from re-celling it on its animated root (`0x43f2ed`). That matters here: node 0 of model 28
+  carries a position key `(0, 0, −200)` in local space (×0.32 = 64 below the instance origin), so the animated root lies
+  under the deck, where the floor lookup `0x40a0c0` finds no group of the arena and `0x42a858` would never list it.
+* The script: object 823.. init = `1200 [90]`, `1501 1`, `1502 (255, 255, 0, 1500, 50)`, `1511 1`, `6 [·, 0]` (hidden;
+  object 801 is initialised before it, so this hide comes after 801's `62` and Reset); phase 9 (W3D words 25808..25913): `6 [823..829, 1]`, `11 [801, 4]` (Reset again),
+  `1511 [823..829, 0]` — from then on each pad sends up a column of 50 yellow motes (image 29, 13..19 u/s, 15..17 s).
+
+Port: messages 61/62 set `Instance.cell_fixed` (`boss.c enemies_boss_links`), which makes `rnd_instance_list` cell the
+instance on `position` instead of `ins_anim_centre`; `boss16_reset` shows group 3 again (the Recell). Before this the
+volumes were never listed and the sparkles never appeared. Test (W3D): `WOODY_SETVAR="1 316 433 1.05 315 9" … W3D --pos
+6400 -2400 -19918 --yaw 90 --pickup 35 1.2 --special 2.0` + `--shot out/x.ppm 6` (columns of yellow motes on the pads);
+`WOODY_AMBLOG=1` prints the seven boxes at the pads (world y −2479, the deck is at −2421).
+
 ## 8. Open questions
 
 * The frame stamp `+0x104` is read as "the owner thought this frame" on the assumption that `[[0x509adc]]` is the frame

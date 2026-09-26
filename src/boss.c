@@ -698,7 +698,7 @@ void boss16_reset(Enemy *e)                                          /* vtbl[17]
         if ((g = b->grp[0][i])) link_place(g, (Vec3){ x, b->C.y, z });                 /* the pads */
         if ((g = b->grp[2][i])) { link_place(g, (Vec3){ x, b->C.y + 30.0f, z }); g->visible = 0; b->glow_n[i] = 0; loop_anim0(g, now); }   /* the columns: out of the world */
         if ((g = b->grp[1][i])) { link_place(g, (Vec3){ x, b->C.y + 30.0f, z }); loop_anim0(g, now); }
-        if ((g = b->grp[3][i])) link_place(g, (Vec3){ x, b->C.y - b->depth[i], z });  /* bottom on C.y */
+        if ((g = b->grp[3][i])) { link_place(g, (Vec3){ x, b->C.y - b->depth[i], z }); g->visible = 1; }   /* bottom on C.y; 0x40cb41 Recell 0x4077f0 = back in the world */
     }
     if (b->grp[0][0]) e->pos = pad_top(b, 0);
     for (int k = 0; k < 16; k++) b->wave[k].t = -1;
@@ -813,19 +813,23 @@ void boss16_update(Enemy *e, Player *pl, Vec3 cam, float dt)
 }
 
 /* messages 61 (class 15, 0x40e749) and 62 (class 16, 0x40d55d): every linked instance gets +8 |= 0x20 (no re-cell on
- * animation; the port has no cells), class 15's four crushers also 0x40 (not collidable), class 16's columns and volumes
- * go out of the world (0x407850). Then Reset puts everything in place (class 16: after every group). */
+ * animation: Instance.cell_fixed, the cell point stays the .ins position +0xc), class 15's four crushers also 0x40 (not
+ * collidable), class 16's columns and volumes go out of the world (0x407850). Then Reset puts everything in place (class
+ * 16: after every group), and its Recell 0x40cb41 puts the group-3 volumes back into the world. Without the 0x20 the volumes
+ * would be celled on their animated root, which node 0's track puts 64 below the deck (no floor group: never listed, so
+ * their class-90 think, the rising yellow motes of AMBIENT.md, would never run). */
 void enemies_boss_links(EnemySet *s, Instance *inst, int id, int group, Instance **li, int n)
 {
     Enemy *e = NULL; for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst && (s->e[i].type == 15 || s->e[i].type == 16)) e = &s->e[i];
     if (!e) return;
     BossBState *b = &e->bb;
     if (id == 61 && e->type == 15) {
-        for (int i = 0; i < 8 && i < n; i++) { if (i < 4) { b->crush[i] = li[i]; if (li[i]) li[i]->noncollide = 1; } else b->launch[i - 4] = li[i]; }
+        for (int i = 0; i < 8 && i < n; i++) { if (li[i]) li[i]->cell_fixed = 1; if (i < 4) { b->crush[i] = li[i]; if (li[i]) li[i]->noncollide = 1; } else b->launch[i - 4] = li[i]; }
         boss15_reset(e);
     } else if (id == 62 && e->type == 16 && group >= 0 && group < 4) {
         for (int i = 0; i < 7 && i < n; i++) {
             Instance *g = li[i]; b->grp[group][i] = g; if (!g) continue;
+            g->cell_fixed = 1;                                         /* +8 |= 0x20 */
             if (group == 2 || group == 3) g->visible = 0;
             if (group == 3) {                                          /* 0x40d6be: the lowest point of the model, rotated and scaled */
                 Mat4 w; mat4_from_trs(&w, (Vec3){ 0, 0, 0 }, g->quat, g->scale); const Model *m = g->model; float lo = 0;
