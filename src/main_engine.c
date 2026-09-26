@@ -745,12 +745,11 @@ static void results_action(int act)
 static void results_capture(void)           /* 0x404c21: memcpy(app+0x74, perso+0x710, 20) before the level is unloaded */
 {
     int race = g_player && (g_player->inst->type == 18 || g_player->inst->type == 19);
-    int total = 0, dead = 0;
-    for (int i = 0; i < g_enemies.n; i++) { total++; if (g_enemies.e[i].hp <= 0) dead++; }
     g_stats.have = 1; g_stats.level = g_level;
-    g_stats.stats[0] = total;                                                        /* [0x4c5330]: every enemy counts itself in PostLoad */
+    g_stats.stats[0] = g_enemies.total;                                              /* [0x4c5330] via 0x44a6a0 -> 0x453c80: every enemy of class 4..13 counts itself in PostLoad, bosses 14..16 not */
     g_stats.stats[1] = g_player ? (race ? g_player->race_total : g_player->bonus_total) : 0;   /* [0x5e54f4] / [0x5e54e4] */
-    g_stats.stats[2] = dead;                                                         /* [0x4c532c], which EndLevel copies over stat[2] */
+    g_stats.stats[2] = g_enemies.killed;                                             /* 0x404c34: EndLevel copies [0x4c532c] (enemies REMOVED after their death, vtbl[29] 0x41aff0) over stat[2];
+                                                                                      * perso+0x718 itself is never written. Dying but not yet gone does not count, a boss never does */
     g_stats.stats[3] = g_player ? (race ? g_player->race_bonus : g_player->bonus_got) : 0;     /* [0x5e54e8] */
     g_stats.time = g_player ? g_player->play_time : 0.0f;                            /* the accumulator perso+0x710+0x10 */
     printf("  RESULTS stats of %s: %d/%d enemies, %d/%d bonuses, %.0f s", k_levels[g_level], g_stats.stats[2], g_stats.stats[0], g_stats.stats[3], g_stats.stats[1], g_stats.time), puts("");
@@ -775,8 +774,8 @@ static void results_prop(Instance *pr, Vec3 p0, Vec3 dir)
 }
 static void results_begin(EkoVM *vm, Instance *door, uint32_t var)                    /* 0x453d90 */
 {
-    Vec3 p0, dir; int have = inst_vector(door, 5, &p0, &dir) || inst_vector(door, 0, &p0, &dir);
-    if (!have) { float y = inst_yaw(door) + 3.14159265f; p0 = door->position; dir = (Vec3){ sinf(y), 0, cosf(y) }; }   /* no marker: out of the door */
+    Vec3 p0, dir; int have = inst_vector(door, 5, &p0, &dir) || inst_vector(door, 0, &p0, &dir);   /* 0x444a0a asks typecode 5 only (0x42f6b0(door, 5, buf, 0)): every hub door has one */
+    if (!have) { float y = inst_yaw(door) + 3.14159265f; p0 = door->position; dir = (Vec3){ sinf(y), 0, cosf(y) }; }   /* port fallbacks: the original would use the stale stack buffer */
     memset(&g_res, 0, sizeof g_res);
     g_res.on = 1; g_res.state = 0; g_res.var = var; g_res.door_p = p0; g_res.door_d = dir;
     if (!g_stats.have) { g_stats.level = g_prev_level; g_stats.time = 0; memset(g_stats.stats, 0, sizeof g_stats.stats); }   /* started straight in the hub */
@@ -3135,7 +3134,8 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             if (kind && g_npick < 8) { g_pick[g_npick].kind = kind; g_pick[g_npick].pos = fp; g_npick++; }   /* projected and started in the frame loop, where the camera is */
         }
         break;
-    case 1020:                                                                      /* 0x44516a: Perso->vt[38](1), sent by the pit / water volumes; + 0x459030 unless in the side view */
+    case 1020:                                                                      /* 0x44516a: Perso->vt[38](1) = Kill(1) 0x44c110, sent by the pit / water volumes; + 0x459030 unless CamMgr+0x138 == 5 (the side view).
+                                                                                     * The original calls 0x459030 even when Kill refuses (Boss2 beaten, App closing); the port only with a death running */
         if (g_player) {
             player_kill(g_player, 1);
             if (g_cam.mode != 0x20 && g_player->dead_kind) { g_cam.fix_pos = g_cam.pos; g_cam.fix_target = g_player->inst; g_cam.fix_f = g_cam.look_off.y; g_cam.cut = 1; cam_set_mode(2); g_cam.death_cam = 1; }
@@ -3178,7 +3178,8 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         break;
     case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */
         if (g_player && m->nargs > 1) {
-            plane_release(); Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir);
+            plane_release(); Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir);   /* 0x445250: 0x42f6b0(inst, 5, buf, 0), no fallback; on a miss the
+                                                                                                             * original still passes buf (stale stack), the port keeps him where he is */
             int act = (int)m->args[1];
             /* 0x44de36: actions 17/18 (jump table 0x44dfdc / byte table 0x44dfe8: action - 10 = 7, 8 -> case 1) first take him out
              * of every volume, 0x443ff0 (refused like the rest in state 2); 10..16, 19 and 72..78 skip it (case 0) */
@@ -3192,7 +3193,20 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             script_action_camera();
         }
         break;
-    case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;
+    case 1043:                                                                                              /* 0x4451e4: 0x44dda0(act, vector 5 of inst, inst2) - 1040 with an instance carried along (+0x554).
+                                                                                                             * No shipped script sends it (the 28 code files: 354 x 1040, all with action 17 / 18, no 1041 / 1043) */
+        if (g_player && m->nargs > 2) {
+            plane_release(); Vec3 p0 = { 0, 0, 0 }, dir = { 0, 0, 0 }; int have = in && inst_vector(in, 5, &p0, &dir);
+            int act = (int)m->args[1];
+            if ((act == 17 || act == 18) && !g_player->dead_kind) player_leave_all(g_player, vm);
+            player_script_action(g_player, act, have, p0, dir);
+            if (g_player->script_act == act) g_player->script_carry = slot_instance(m->args[2]);
+            script_action_camera();
+        }
+        break;
+    case 1041:                                                                                              /* 0x445443: 0x44e040(act, &inst.pos): turn to inst, a zero-length action (dead: no script sends it) */
+        if (in && g_player && m->nargs > 1) player_face_action(g_player, (int)m->args[1], in->position);
+        break;
     /* 0x4451a1 / 0x4451c2: Perso state 7 (docs/PERSO_STATE7.md), carried by the type-0 vector marker of inst; 1045 ignores its argument.
      * No shipped level script sends either (every SEND in the 28 code files has an immediate id); WOODY_MSGAT can */
     case 1044: if (g_player) player_follow(g_player, in); break;
@@ -3327,7 +3341,7 @@ static void level_free(Level *L)
     g_nlasers = 0; g_nlaunchers = 0; g_nmissiles = 0; memset(g_shots, 0, sizeof g_shots); memset(g_flashes, 0, sizeof g_flashes); memset(g_sparks, 0, sizeof g_sparks); hud_text_reset(); audio_stop_all(); audio_bank_free(1); audio_rtc(-1);                            /* vt[0x8c] StopAll on leaving a level (0x4049e0); the voices read instance memory */
     if (L->have_player) player_free(&L->player);
     car_forget(); g_nuniq = 0;                                                    /* 0x44f6c6: [0x5e54f0] = 0 */
-    memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); water_reset(NULL); storm_reset(); g_nfx = 0; g_ntorch = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); g_nbplume = 0; memset(g_smoke_on, 0, sizeof g_smoke_on); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
+    memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); water_reset(NULL); storm_reset(); g_nfx = 0; g_ntorch = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; g_enemies.total = g_enemies.killed = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); g_nbplume = 0; memset(g_smoke_on, 0, sizeof g_smoke_on); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     ambient_reset();                                                               /* class 90 (ambient.c); its particles went with g_nfx = 0 */
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
@@ -3909,6 +3923,8 @@ int main(int argc, char **argv)
         frames++;
         if (prof && getenv("WOODY_PROF")) { double pt4 = win_time(); pf[0] += pt1 - pt0; pf[1] += pt2 - pt1; pf[2] += pt3 - pt2; pf[3] += pt4 - pt3; if (++pfn == 60) { printf("PROF ms/frame: player+enemies+camera %.2f  vm+instances %.2f  render+2D %.2f  swap %.2f", pf[0] / 60 * 1000, pf[1] / 60 * 1000, pf[2] / 60 * 1000, pf[3] / 60 * 1000); puts(""); pf[0] = pf[1] = pf[2] = pf[3] = 0; pfn = 0; } }
         if (g_next_level >= 0 && g_switch_fade <= 0) {
+            if (g_stats.have && g_stats.level == g_level) g_stats.stats[2] = g_enemies.killed;   /* 0x40177c: App::Frame copies [0x4c532c] to app+0x7c again right before the unload 0x4049a0,
+                                                                                    * so an enemy that finishes dying during the 0.5 s EndLevel fade still counts */
             const char *name = k_levels[g_next_level]; g_prev_level = g_level; g_level = g_next_level; g_next_level = -1;
             level_free(&L);
             if (level_load(&L, dir, name)) { fprintf(stderr, "level %s failed to load\n", name); return 1; }
