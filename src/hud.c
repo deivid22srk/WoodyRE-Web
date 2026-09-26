@@ -29,6 +29,7 @@ static struct {
     GLuint bub[9];                                        /* bank 0 images 44..52: the speech bubble and its contents (0x478980); 46 is bonus[3] */
     GLuint logo; int logo_w, logo_h; float logo_v, menu_t;   /* level bank image 1 (the title logo in House.rck); fade value 0..5 */
     GLuint sheet; int sheet_w, sheet_h;                   /* level bank image 0 (House and the three hubs carry the same one): the save-slot panel, ring and cross */
+    GLuint sheet2; int sheet2_w, sheet2_h;                /* level bank image 2: in House the clock / enemy-face sheet (= image 1 of the hubs), the column heads of page 4 */
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
     float iris_kx, iris_ky;                               /* hud_iris: virtual units per round pixel on this window (1, 1 at 4:3) */
 } H;
@@ -70,7 +71,7 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
 /* the bank 0 images the world effects use, loaded into H.fx in this order (the 16 of slot 10 used to be the footstep
  * mark of the reconstruction; 0x47cba0 is decompiled now, docs/PARTICLES.md 2) */
 static const unsigned char k_fx_img[40] = { 0, 4, 6, 5, 10, 11, 12, 14, 31, 32, 16, 0x3a, 18, 24, 57, 7, 8, 9, 33, 30, 13,
-                                            15, 17, 25, 26, 68, 69, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 255, 255, 255 };
+                                            15, 17, 25, 26, 68, 69, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 255, 255, 29 };   /* 29: the motes of class 90 mode 1 (docs/AMBIENT.md) */
 static int fx_slot(int image) { for (int i = 0; i < 40; i++) if (k_fx_img[i] == image) return i; return -1; }
 static void common_item(int type, int index, const uint8_t *d, uint32_t size)
 {
@@ -111,6 +112,7 @@ static void level_item(int type, int index, const uint8_t *d, uint32_t size)
     }
     if (type == 1 && index == 0) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.sheet = H.img[0]; H.sheet_w = H.img_w[0]; H.sheet_h = H.img_h[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; }
     if (type == 1 && index == 1) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.logo = H.img[0]; H.logo_w = H.img_w[0]; H.logo_h = H.img_h[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; return; }
+    if (type == 1 && index == 2) { GLuint keep = H.img[0]; int kw = H.img_w[0], kh = H.img_h[0]; H.img[0] = 0; common_item(1, 61, d, size); H.sheet2 = H.img[0]; H.sheet2_w = H.img_w[0]; H.sheet2_h = H.img_h[0]; H.img[0] = keep; H.img_w[0] = kw; H.img_h[0] = kh; }
     if (type != 3 || index != 0 || size < 0x1c) return;              /* font 0x01030000 (0x43f9a0) */
     H.nglyphs = rd32(d); H.npages = rd32(d + 4); H.psize = rd32(d + 8);
     memcpy(&H.H, d + 0xc, 4); memcpy(&H.B, d + 0x14, 4); memcpy(&H.M, d + 0x18, 4);
@@ -133,7 +135,7 @@ void hud_free(void)
 {
     for (int i = 0; i < 4; i++) if (H.img[i]) glDeleteTextures(1, &H.img[i]);
     for (int i = 0; i < 8; i++) if (H.page[i]) glDeleteTextures(1, &H.page[i]);
-    if (H.logo) glDeleteTextures(1, &H.logo); if (H.sheet) glDeleteTextures(1, &H.sheet);
+    if (H.logo) glDeleteTextures(1, &H.logo); if (H.sheet) glDeleteTextures(1, &H.sheet); if (H.sheet2) glDeleteTextures(1, &H.sheet2);
     for (int i = 0; i < 5; i++) if (H.sky[i]) glDeleteTextures(1, &H.sky[i]);
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
     for (int i = 0; i < 4; i++) if (H.env[i]) glDeleteTextures(1, &H.env[i]);
@@ -235,7 +237,10 @@ static struct {
     int latch;                                                                /* hud+0x10: the reward waits until the W pickup flight has landed */
     int mlives;                                                               /* hud+0x40: a life was lost (0x4622e0) */
     int mcharge; float mcharge_t;                                             /* hud+0x41: a charge was spent (0x462380 / 0x462020), its phase and hold timer */
-    int prev_ok, prev_lives, prev_bonus, prev_charges; float prev_health;
+    int prev_ok, prev_lives, prev_bonus, prev_charges, prev_unique; float prev_health;
+    int state, c;                                                             /* hud+0 (0 game, 1 pause, 2 hidden) and hud+0xc (1172 keeps it at 2) */
+    int f3b, f3c, f3d, f3e, f3f;                                              /* hud+0x3b..0x3f: $ counter in / out, pause HUD in / out, $ minus 1 */
+    int f76, f77, f79, f7a, f7b, f7c, f7d, f7e, m54;                          /* animator +0x76..0x7e: the steps of those five, +0x54 the phase of the minus */
 } A;
 
 void hud_anim_reset(void) { memset(&A, 0, sizeof A); }
@@ -351,8 +356,10 @@ static void ghosts_draw(float dt)                                      /* 0x47bb
 }
 
 /* ---- the plate and the sliding icon, both linear over 0.2 s (0x47bff0 / 0x47c1e0) -------------------------- */
-static void plate_start(int k, float cx, float cy, float w0, float h0, float w1, float h1)
-{ A.plate[k].on = 1; A.plate[k].sprite = 8; A.plate[k].cx = cx; A.plate[k].cy = cy; A.plate[k].w0 = w0; A.plate[k].h0 = h0; A.plate[k].dw = w1 - w0; A.plate[k].dh = h1 - h0; A.plate[k].t = 0; }
+/* 0x47bf90(x, y, w0, h0, w1, h1): (x, y) is the slot, the top left of the full-size plate; the object keeps its
+ * centre (x + 17, y + 17) = slot + half of sprite 8, so the grown plate lands exactly on the static one */
+static void plate_start(int k, float x, float y, float w0, float h0, float w1, float h1)
+{ A.plate[k].on = 1; A.plate[k].sprite = 8; A.plate[k].cx = x + k_spr[8].w * 0.5f; A.plate[k].cy = y + k_spr[8].h * 0.5f; A.plate[k].w0 = w0; A.plate[k].h0 = h0; A.plate[k].dw = w1 - w0; A.plate[k].dh = h1 - h0; A.plate[k].t = 0; }
 static int plate_tick(int k, float dt)
 {
     float u = A.plate[k].t / 0.2f, w, h;
@@ -370,6 +377,85 @@ static int slide_tick(int k, float dt)
     sprite_rect(A.slide[k].sprite, A.slide[k].x0 + u * A.slide[k].dx, A.slide[k].y0 + u * A.slide[k].dy, k_spr[A.slide[k].sprite].w, k_spr[A.slide[k].sprite].h);
     return A.slide[k].on = u < 1.0f;
 }
+
+/* ---- the $ counter in place of the bonus counter (message 1172: hud+0x3b in, +0x3c out, docs/HUD_TEXT.md 4.5) and
+ * the extended HUD of the pause pages (+0x3d in, +0x3e out). Slide 0 / plate 0 are the W icon and its plate, slide,
+ * plate and pop 1 the $, 2 the charge: the same objects the pickup sequences use. Each step flag is the return value
+ * of its own tick, exactly as the animator keeps them (+0x76..+0x7e). */
+#define SL(n) k_slot[n][0], k_slot[n][1]
+static void dollar_in_start(void)                                       /* 0x4618d0 */
+{
+    plate_start(0, SL(1), 34.0f, 34.0f, 0, 0); slide_start(0, 4, SL(0), -k_spr[4].w, k_slot[0][1]);   /* the bonus plate shrinks, then the W leaves to the left */
+    A.f7c = A.f79 = 1;
+    slide_start(1, 3, -k_spr[3].w, k_slot[2][1], SL(2)); plate_start(1, SL(3), 0, 0, 34.0f, 34.0f);   /* the $ comes in from the left, its plate grows */
+    pop_start(1, 2, 17.0f, 37.0f, 0.2f);
+    A.f7a = A.f7d = A.f76 = 1;
+}
+static int dollar_in_tick(int value, float dt)                          /* 0x461820 */
+{
+    if (A.f7c) { sprite(4, SL(0)); A.f7c = plate_tick(0, dt); }
+    else if (A.f79) A.f79 = slide_tick(0, dt);
+    if (A.f7a) { A.f7a = slide_tick(1, dt); return 1; }
+    if (A.f7d) { sprite(3, SL(2)); A.f7d = plate_tick(1, dt); return 1; }
+    if (A.f76) { sprite(3, SL(2)); sprite(8, SL(3)); return pop_tick(1, value, dt); }   /* +0x76 is not cleared here */
+    return 1;
+}
+static void dollar_out_start(void)                                      /* 0x461a70 */
+{
+    plate_start(0, SL(1), 0, 0, 34.0f, 34.0f); slide_start(0, 4, -k_spr[4].w, k_slot[0][1], SL(0));
+    A.f7c = A.f79 = 1;
+    slide_start(1, 3, SL(2), -k_spr[3].w, k_slot[2][1]); plate_start(1, SL(3), 34.0f, 34.0f, 0, 0);
+    A.f7a = A.f7d = 1;
+}
+static int dollar_out_tick(float dt)                                    /* 0x461a00: the W slides back and its plate grows; the $ plate shrinks, then the $ leaves */
+{
+    if (A.f79) A.f79 = slide_tick(0, dt);
+    else if (A.f7c) { sprite(4, SL(0)); A.f7c = plate_tick(0, dt); }
+    if (A.f7d) { sprite(3, SL(2)); A.f7d = plate_tick(1, dt); return 1; }
+    if (A.f7a) return slide_tick(1, dt);
+    return 1;
+}
+static void pause_in_start(void)                                        /* 0x461c40: $ and charge come in together */
+{
+    slide_start(1, 3, -k_spr[3].w, k_slot[2][1], SL(2)); plate_start(1, SL(3), 0, 0, 34.0f, 34.0f); pop_start(1, 2, 17.0f, 37.0f, 0.2f);
+    A.f76 = A.f7a = A.f7d = 1;
+    slide_start(2, 6, -k_spr[6].w, k_slot[4][1], SL(4)); plate_start(2, SL(5), 0, 0, 34.0f, 34.0f); pop_start(2, 2, 17.0f, 37.0f, 0.2f);
+    A.f77 = A.f7b = A.f7e = 1;
+}
+static int pause_in_tick(int dollars, int charges, float dt)            /* 0x461b60 */
+{
+    if (A.f7a) { A.f7a = slide_tick(1, dt); A.f7b = slide_tick(2, dt); return 1; }
+    if (A.f7d) { sprite(3, SL(2)); sprite(6, SL(4)); A.f7d = plate_tick(1, dt); A.f7e = plate_tick(2, dt); return 1; }
+    if (A.f76) { sprite(3, SL(2)); sprite(8, SL(3)); sprite(6, SL(4)); sprite(8, SL(5)); int r = pop_tick(1, dollars, dt); pop_tick(2, charges, dt); return r; }
+    return 1;
+}
+static void pause_out_start(void)                                       /* 0x461e10: no pop, the plates shrink and then both icons leave */
+{
+    slide_start(1, 3, SL(2), -k_spr[3].w, k_slot[2][1]); plate_start(1, SL(3), 34.0f, 34.0f, 0, 0);
+    A.f76 = A.f7a = A.f7d = 1;
+    slide_start(2, 6, SL(4), -k_spr[6].w, k_slot[4][1]); plate_start(2, SL(5), 34.0f, 34.0f, 0, 0);
+    A.f77 = A.f7b = A.f7e = 1;
+}
+static int pause_out_tick(float dt)                                     /* 0x461da0 */
+{
+    if (A.f7d) { sprite(3, SL(2)); sprite(6, SL(4)); A.f7d = plate_tick(1, dt); A.f7e = plate_tick(2, dt); return 1; }
+    if (A.f7a) { int r = slide_tick(1, dt); slide_tick(2, dt); return r; }
+    return 1;
+}
+/* 0x462330 / 0x461f70: a $ was spent (message 1171): the icon and plate appear at once, the OLD value pops
+ * 17 -> 37 -> 17 and then shrinks to nothing (17 -> 0 in 0.2 s); nothing slides */
+static void dollar_minus_start(void) { pop_start(1, 2, 17.0f, 37.0f, 0.2f); A.f76 = 1; A.m54 = 1; }
+static int dollar_minus_tick(int value, float dt)
+{
+    if (A.m54 == 1) {
+        sprite(3, SL(2)); sprite(8, SL(3));
+        if (!(A.f76 = pop_tick(1, value + 1, dt))) { A.m54 = 2; pop_start(1, 1, 17.0f, 0.0f, 0.2f); }
+        return 1;
+    }
+    if (A.m54 == 2) { sprite(3, SL(2)); sprite(8, SL(3)); return pop_tick(1, value + 1, dt); }
+    return 1;
+}
+#undef SL
 
 /* ---- the swarm of W's: 25 bonuses being paid out as a heart or as an extra life (0x47c5b0) ----------------- */
 static void swarm_start(int to_life, float relx)
@@ -473,7 +559,7 @@ static void hud_anim_tick(const HudState *s, float dt)
     } else if (A.pop[3].on && !A.sw.on) pop_tick(3, lives_hud, dt);
     for (int k = 1; k <= 2; k++) {                                     /* 0x460db0 / 0x460fb0: the $ and charge counters appear, hold 1.5 s and leave */
         int icon = k == 1 ? 3 : 6, slot_i = k == 1 ? 2 : 4, slot_p = k == 1 ? 3 : 5, value = k == 1 ? s->unique : s->charges;
-        if (!A.stage[k]) continue;                                     /* 0x447b18: outside the pause page 0x447660 draws no $ / charge row at all, so this sequence is the only thing showing them */
+        if (!A.stage[k] || (k == 1 && A.f3f)) continue;               /* 0x448174: the $ sequence waits while the "minus 1" runs; 0x447b18: outside the pause page 0x447660 draws no $ / charge row at all, so this sequence is the only thing showing them */
         if (A.stage[k] == 1) {
             if (A.fly[k + 1].on) fly_tick(k + 1, dt);
             if (A.plate[k].on) { plate_tick(k, dt); continue; }
@@ -490,6 +576,14 @@ static void hud_anim_tick(const HudState *s, float dt)
             if (!slide_tick(k, dt)) A.stage[k] = 0;
         }
     }
+    if (A.f3b) {                                                       /* 0x4481bd: the $ counter comes in (1172); if 1172 stopped meanwhile it goes straight out again */
+        if (!A.f3c) { A.f3b = dollar_in_tick(s->unique, dt); if (A.c < 2 && !A.f3b) { dollar_out_start(); A.f3c = 1; } }
+    } else if (A.f3c) {                                                /* ... and leaves; 1172 again meanwhile brings it back in */
+        A.f3c = dollar_out_tick(dt); if (A.c == 2 && !A.f3c) { dollar_in_start(); A.f3b = 1; }
+    }
+    if (A.f3d) A.f3d = pause_in_tick(s->unique, s->charges, dt);       /* 0x44821f: the pause page's extended HUD */
+    if (A.f3e) A.f3e = pause_out_tick(dt);
+    if (A.f3f && !A.stage[1]) A.f3f = dollar_minus_tick(s->unique, dt);   /* 0x448261, not while the $ pickup sequence (+0x38) runs */
     if (A.mcharge && !A.stage[2] && !A.fly[3].on) {                   /* 0x462020: only while the pickup sequence of the charge does not run; shows the OLD value */
         int old = s->charges + 1; const float *si = k_slot[4], *sp = k_slot[5];
         switch (A.mcharge) {
@@ -511,12 +605,13 @@ static void hud_anim_tick(const HudState *s, float dt)
     if (A.prev_ok && !s->race) {
         if (s->bonus < A.prev_bonus && !A.sw.on) hud_anim_reward(!(A.prev_health < 5.0f), A.prev_health);
         if (s->lives < A.prev_lives && !A.mlives) { A.mlives = 1; pop_start(3, 2, 17.0f, 37.0f, 0.2f); }
+        if (s->unique < A.prev_unique) { dollar_minus_start(); A.f3f = 1; }   /* 0x448340 -> 0x462330 */
         if (s->charges < A.prev_charges && !A.mcharge) {               /* 0x448300 -> 0x462380 */
             slide_start(2, 6, -k_spr[6].w, k_slot[4][1], k_slot[4][0], k_slot[4][1]); plate_start(2, k_slot[5][0], k_slot[5][1], 0, 0, 34.0f, 34.0f);
             pop_start(2, 2, 17.0f, 37.0f, 0.2f); A.mcharge = 1;
         }
     }
-    A.prev_ok = 1; A.prev_lives = s->lives; A.prev_bonus = s->bonus; A.prev_health = s->health; A.prev_charges = s->charges;
+    A.prev_ok = 1; A.prev_lives = s->lives; A.prev_bonus = s->bonus; A.prev_health = s->health; A.prev_charges = s->charges; A.prev_unique = s->unique;
 }
 
 void hud_begin(int win_w, int win_h)
@@ -536,9 +631,26 @@ void hud_end(void)
 }
 
 /* ---------------------------------------------------------------- HUD 0x447210 (docs/HUD_TEXT.md 4.4, draw order as there) */
+static void hud_static(const HudState *s, float dt);
+void hud_state(int st, int race)                                        /* 0x448450 */
+{
+    if (st == A.state) return;
+    if (!race) {
+        if (st == 1) { pause_in_start(); A.f3d = 1; A.f3e = 0; }
+        else if (A.state == 1) { pause_out_start(); A.f3e = 1; A.f3d = 0; }
+    }
+    A.state = st;
+}
 void hud_draw(const HudState *s, float dt)
 {
     if (!H.ok) return;
+    if (s->dollar) { if (A.c == 0 && !A.f3c) { dollar_in_start(); A.f3b = 1; } A.c = 2; }   /* 0x4484a0, before the HUD (0x401e28) */
+    if (A.state != 2) hud_static(s, dt);
+    if (A.c > 0 && --A.c == 0 && !A.f3b) { dollar_out_start(); A.f3c = 1; }                /* 0x447232: no 1172 this frame -> out */
+}
+/* 0x447210: the bars, 0x447660 the sprites and numbers, 0x447d70 the power meter, 0x4480d0 the animations */
+static void hud_static(const HudState *s, float dt)
+{
     const float Y = 51, BH = 23;
     quad(0, Y, 256, BH, 0, 0, 0, 0, 0, 0x800000ff, 0x800000ff, 0x000000ff, 0x000000ff);                   /* blue bar (0x4472d8) */
     if (!s->race) {
@@ -552,21 +664,25 @@ void hud_draw(const HudState *s, float dt)
     sprite(s->face >= 0 && s->face < 3 ? s->face : 0, 544, 30);                                             /* slot 6 */
     sprite(8, 584, 70);                                                                                     /* slot 7, anchor A3 */
     if (!A.fly[1].on && !A.mlives && !(A.sw.on && A.sw.to_life && !A.latch)) number_centred(600, 86, s->lives > 0 ? s->lives - 1 : 0);   /* 0x44771e */
-    sprite(s->race ? 5 : 4, 16, 16);                                                                        /* slot 0 */
-    sprite(8, 16, 66);                                                                                      /* slot 1, A0: the icon and the plate stay, only the number moves out of the way */
-    if (!A.sw.on && !A.fly[4].on && !A.fly[5].on) number_centred(32, 82, s->bonus);                          /* 0x44792e, 0x44794f */
-    if (s->show_total && !A.sw.on) {                                                                        /* the "taken / total" line goes too while the reward is paid out */
-        uint16_t t[40]; int n = number_codes(t, s->got); const uint16_t *sl = hud_string(9);                /* "/" */
-        for (; sl && *sl && n < 20; sl++) t[n++] = *sl;
-        number_codes(t + n, s->total);
-        font_size(17.0f); font_draw(110, Y + 12 - font_cell() * 0.5f, t, 0xfe808080);
+    if (A.c == 0 && (s->race || (!A.f3b && !A.f3c))) {                                                      /* 0x447794: while 1172 holds the $ counter up there is no bonus row at all */
+        sprite(s->race ? 5 : 4, 16, 16);                                                                        /* slot 0 */
+        sprite(8, 16, 66);                                                                                      /* slot 1, A0: the icon and the plate stay, only the number moves out of the way */
+        if (!A.sw.on && !A.fly[4].on && !A.fly[5].on) number_centred(32, 82, s->bonus);                          /* 0x44792e, 0x44794f */
+        if (s->show_total && !A.sw.on) {                                                                        /* the "taken / total" line goes too while the reward is paid out */
+            uint16_t t[40]; int n = number_codes(t, s->got); const uint16_t *sl = hud_string(9);                /* "/" */
+            for (; sl && *sl && n < 20; sl++) t[n++] = *sl;
+            number_codes(t + n, s->total);
+            font_size(17.0f); font_draw(110, Y + 12 - font_cell() * 0.5f, t, 0xfe808080);
+        }
     }
-    if (!s->race) for (int i = 1; i <= (int)s->health && i <= 5; i++) {
+    if (!s->race || A.c > 0) for (int i = 1; i <= (int)s->health && i <= 5; i++) {
         if (A.sw.on && !A.sw.to_life && i == (int)s->health) continue;                                       /* 0x447ad5: the heart the W's are bringing in is left out until they land */
         sprite(7, 559.0f - 29.0f * i, Y);
     }
-    if (s->extended) {
+    if (A.c > 0 ? !A.f3b && !A.f3c && !A.f3f : A.state == 1 && !A.f3d && !A.f3e && !s->race) {           /* 0x447c63 / 0x447b15 */
         sprite(3, 16, 136); sprite(8, 50, 181); number_centred(66, 197, s->unique);                         /* slots 2/3, A1 */
+    }
+    if (A.state == 1 && !A.f3d && !A.f3e && (A.c > 0 || !s->race)) {                                        /* the charge row only on the pause page */
         sprite(6, 16, 221); sprite(8, 50, 266); number_centred(66, 282, s->charges);                        /* slots 4/5, A2 */
     }
     if (s->power > 0) {                                                                                     /* power gauge 0x447d70 */
@@ -984,6 +1100,68 @@ int hud_results_draw(const HudResults *r, float dt)
     return RS.counting;
 }
 
+/* ---------------------------------------------------------------- page 4, the high scores of one character (docs/MENU_LOAD.md 4.8)
+ * vt[17] 0x45bff0: a = the slide (600 -> 0), b = the backdrop scale (0 -> 1), both over the panel's 0.5 s. First the
+ * title logo as a dark, half transparent plate growing out of the centre (0x45c090(b)), then the three column heads and
+ * the rows sliding in from the left (0x45c3d0(-a)), last "HIGH SCORES" with the character's face on either side
+ * coming down from above (0x45c150(a)). The page itself is black: its iris target +0x30 is 0, so the panel base
+ * 0x45b990 lays a full black rect instead of the ring. */
+static void score_row(float off, const HudScoreRow *r, float row)                   /* 0x45c510 */
+{
+    const uint32_t wh = 0xfeffffff;
+    float y = 105.0f + 37.0f * row;                                                 /* 0x4ab35c + 0x4ab3dc * row */
+    quad(off, y, 256, 22, 0, 0, 0, 0, 0, 0x800000ff, 0x800000ff, 0x000000ff, 0x000000ff);   /* 0x45d1a0: the HUD's blue bar, 22 high */
+    font_size(18.0f);
+    const uint16_t *s40 = hud_string(40); uint16_t sp[2] = { s40 && s40[0] ? s40[1] : 0, 0 };   /* word [str40 + 2]: the space */
+    float wsp = font_measure(sp), ty = y + (22.0f - font_cell()) * 0.5f;
+    row_reset(); row_str(r->world); row_space(); row_str(r->part);                  /* "Space Part A" at x 20 */
+    float x = 20.0f + off; font_draw(x, ty, g_row, wh); x += font_measure(g_row);  /* Font::Draw moves the pen */
+    x += 3.0f * wsp; if (x < 220.0f + off) x = 220.0f + off;                        /* three spaces on, but at least x 220 */
+    row_reset(); row_num(r->best); row_space(); row_str(46);                        /* "1234 points" */
+    font_draw(x, ty, g_row, wh);
+    if (!r->race) {                                                                 /* K1R K2R K3R S1R S2R S3R: no time and no enemies */
+        int t = (int)r->time;                                                       /* _ftol */
+        row_reset(); row_num(t / 60); row_str(10); if (t % 60 < 10) row_num(0); row_num(t % 60);
+        font_draw(off + 580.0f - font_measure(g_row) * 0.5f, ty, g_row, wh);        /* x * font VW / 640 = x */
+        row_reset(); row_num(r->en_got); row_str(9); row_num(r->en_tot);
+        font_draw(off + 520.0f - font_measure(g_row) * 0.5f, ty, g_row, wh);
+    }
+    row_reset(); row_num(r->w_got); row_str(9); row_num(r->w_tot);
+    font_draw(off + 440.0f - font_measure(g_row) * 0.5f, ty, g_row, wh);
+}
+void hud_scores(const HudScores *s)
+{
+    if (!H.ok) return;
+    const float a = s->slide, b = s->grow; const uint32_t g = 0xfe808080;
+    if (H.logo && b > 0) {                                                          /* 0x45c090: House image 1 (0, 0, 209, 247) into 315 x 372, colour 0x80202020, flag 8 */
+        const uint32_t c = 0x80202020;
+        quad(320.0f - 157.5f * b, 240.0f - 186.0f * b, 315.0f * b, 372.0f * b, H.logo, 0, 0, 209.0f / H.logo_w, 247.0f / H.logo_h, c, c, c, c);
+    }
+    /* 0x45c3d0(-a): 24 x 24 heads at y 80 over the columns 580 / 520 / 440: the clock and the enemy face from House
+     * image 2 (additive, the sheet has alpha 0) and the W ball from Common image 64 (0, 89, 24, 24, alpha) */
+    if (H.sheet2) {
+        const float W = (float)H.sheet2_w, Hh = (float)H.sheet2_h;
+        glBlendFunc(GL_ONE, GL_ONE);
+        quad(568.0f - a, 80, 24, 24, H.sheet2, 52 / W, 0, 88 / W, 36 / Hh, g, g, g, g);
+        quad(508.0f - a, 80, 24, 24, H.sheet2, 0, 0, 51 / W, 51 / Hh, g, g, g, g);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+    if (H.img[3]) { const float W = (float)H.img_w[3], Hh = (float)H.img_h[3]; quad(428.0f - a, 80, 24, 24, H.img[3], 0, 89 / Hh, 24 / W, 113 / Hh, g, g, g, g); }
+    for (int i = 0; i < s->nrows && i < 9; i++) score_row(-a, &s->row[i], (float)i);   /* 0x45ca40 / 0x45cd80 / 0x45cf90 */
+    {   /* 0x45c150(a): 45 "HIGH SCORES" size 28 orange-red at (320 - w/2, 30 - a); 0x45c230: the face 10 left of it and mirrored 10 right of it, y 16 - a */
+        font_size(28.0f); row_reset(); row_str(45);
+        float w = font_measure(g_row);
+        font_draw(320.0f - w * 0.5f, 30.0f - a, g_row, 0xfeff1400);
+        int f = s->face >= 0 && s->face < 3 ? s->face : 0, i = k_spr[f].img;
+        sprite(f, 320.0f - w * 0.5f - k_spr[f].w - 10.0f, 16.0f - a);
+        if (H.img[i]) {
+            const float W = (float)H.img_w[i], Hh = (float)H.img_h[i];
+            quad(320.0f + w * 0.5f + 10.0f, 16.0f - a, k_spr[f].w, k_spr[f].h, H.img[i], (k_spr[f].x + k_spr[f].w) / W, k_spr[f].y / Hh, k_spr[f].x / W, (k_spr[f].y + k_spr[f].h) / Hh, g, g, g, g);
+        }
+    }
+    font_size(17.0f);
+}
+
 /* ---------------------------------------------------------------- pickup sprites in the world (0x479530 -> DrawSprite 0x470f10) */
 void hud_world_sprites_begin(const float *right, const float *up)
 {
@@ -1214,7 +1392,7 @@ void hud_world_spr_mode(int mode, int image, const float *pos, float size, int r
     else if (flags & 0x20) { if (!basis) return; memcpy(X, basis, sizeof X); memcpy(Y, basis + 3, sizeof Y); }
     else { if (!basis) return; plane_axes(basis, X, Y); }
     int m = (flags & 0x40) && mirror >= 0 && mirror <= 6 ? mirror : 0, r = (flags & 4) ? rot : 0;
-    int base = mode == 0x1a ? 90 : 64;                                                 /* [0x5e823c]+0x800[mode] (0x4024bb): atan(2^(mode/8 - mode%8)) in 1/512 turn */
+    int base = mode == 0x1a ? 90 : mode == 0x13 ? 37 : 64;                             /* [0x5e823c]+0x800[mode] (0x4024bb): atan(2^(mode/8 - mode%8)) in 1/512 turn; 0x13 = 2:1 wide (the race board's flames) */
     glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[k]);
     if (!(flags & 1)) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -4.0f); }   /* a print on the floor or a hole in a wall is coplanar with it */
     if (flags & 8) {

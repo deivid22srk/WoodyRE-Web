@@ -161,6 +161,13 @@ case 3: if (hit_inst == T.carried && T.carried) break;
 default: P->active = 0;                                                     /* 0x449e82 */
 }
 ```
+**Hit kind 3** (read this round): the instance ray `0x432ab0` (vtbl[5] of every instance, called by `0x497ed0`) counts, per press node, the polygons
+whose plane has the segment's START behind it (`[esp+0x18]`); when that count equals the node's polygon count (`0x4330c0`: the start lies inside the
+convex node) it sets `[0x4c4bd0] = 2`, `[0x53a554] = 3`, `[0x53a560] = the instance`, t = 0, unconditionally (no nearer hit can beat t = 0).
+`0x4359b0` turns answer 2 into hit kind 3 and leaves `[0x53a560]` set. So kind 3 = **the projectile starts inside a press node** (an instance that moved
+onto it, or a muzzle inside its housing): an ordinary projectile is gone, a bomb too unless the node is its own. Ported (`inst_point_in_press`,
+instance.c; port tolerance: at least 1 unit deep, so that a bomb lying on a press node is not "in" it).
+`0x437040` on probe `P+0x24` (the "platform" step for a carried instance) does nothing: its sphere queries `0x435b60` are a stub, the push is always 0.
 `Bounce` `0x449eb0`: hit point `h = old + normalize(disp)·max(|disp|·t − 0.01, 0)`; end point mirrored in the plane `pos += −2·(n·pos + d)·n` (`0x4a9504`);
 `dir = normalize(pos − h)`, `vel = dir · P->speed`; `pos = h` (flag 1). No energy loss besides the damping `T+0x24/0x28`.
 
@@ -171,10 +178,11 @@ Note: the ray starts at the marker's beginning; if that lies inside a hull of th
 **Ported (instance part of the ray).** `0x449daf` is the same `0x4359b0(old, pos, −1)` as the class-51 laser (OBJECTS.md §2.1: world polygons plus
 the press nodes of the instances in the visited cells and the dynamic list; −1 is the start cell, nothing is skipped, the actors have no press nodes). The port's
 shot update (`launchers_update`, main_engine.c, for launcher and enemy shots alike) now tests `gel_ray_frac` and `inst_ray_press` (instance.c) and ends
-the shot at the nearer of the two; `WOODY_FXLOG=1` prints `shot N (owner …) stops on instance …`. Seen (first 12 s of each level): W1B launchers
+the shot at the nearer of the two; `WOODY_FXLOG=1` prints `shot N (owner …) stops on instance …`, `… bounces …`, `… starts inside instance … (hit kind 3)`. Seen (first 12 s of each level): W1B launchers
 99/388 (model 16) stop on scenery instances 100/101/36 (model 6) and 79 (model 8) after 0.5..1.4 s of flight, W3B launchers 56/69 on instances 286/281
 (model 28), K1A launcher 371 on instances 233/368 (models 1/2), S1A launchers 502/503 on instances 106/141/142 (model 20); W1A, W2A and W3A shots
-reach no instance. No shot died in its own launcher (the muzzle is outside the housing's press node). Not ported: bouncing (`max_bounce ≠ 0`) and kind 3.
+reach no instance. No shot died in its own launcher (the muzzle is outside the housing's press node). Bouncing (`max_bounce ≠ 0`, mirrored end point, the
+point put on the hit, speed kept) and kind 3 are ported as well; no level script sends 1002 `[3, n]`, so only thrown bombs bounce in the shipped levels.
 
 ### 2.4 Carried instance (`T+0x5c`, bombs only; BONUS.md §7)
 
@@ -418,17 +426,23 @@ and the 400-radius star-shaped flash of explosion kind 2 where it ends. No impac
 
 ### 7.1 What is in `src/main_engine.c`
 
-Ported: the launcher (§4), the projectile (§2, without gravity/bouncing/seeking except for xz steering), the energy orb of kind 2 (§5.1-5.2), **the missile
-of kind 0/1 (§5.3-5.4)** and **the fireball of kind 3 (§5.5)**. The missile side consists of:
+Ported: the launcher (§4) with the full parameter block (`ProjT`: the four templates of `0x448c70` = `PROJ_T[4]`, message 1001 copies one, 1002 writes all
+twenty parameters of §3), the projectile (§2: gravity with the −800 floor, damping per 1/60 s, seeking of `T.target` in xz and vertically with both clamps,
+Move with HitActors — the Perso's cylinder, and the bomb thrower / Boss2 of actor list 1 through `enemies_bomb_contact` —, the ray with bounces and hit
+kind 3, lifetime), the energy orb of kind 2 (§5.1-5.2), **the missile of kind 0/1 (§5.3-5.4)** and **the fireball of kind 3 (§5.5)**. Enemy shots
+(`game_enemy_shot`) are template 1 with the enemy's speed, damage, xz steering, visual and target = the Perso, aim height and vertical steering 0 (P+0x70).
+Scripts that use more than the lifetime: races (K3R/S1R/S3R: templates 2/3 aimed at the rider, 1003 target = the type-18 slot, so the missiles home —
+without input the rider is hit within a few seconds), W2D/W3D (gravity 2/10, speeds 500..3000), W3A/K3A/S3A (`[12, 50]`: xz steering 0.05), W3D (clamps
+`[16, 90/95]`, `[17, 95]`). The missile side consists of:
 
 | original | port |
 |---|---|
 | `0x403b5d` (SetTypeInstance 41) + `0x4723f0` | `missile_add`: every type-41 instance goes into `g_missiles[50]`, invisible, with the number of typecode-9 nozzles alongside it |
 | `0x4722f0` / `0x472370` | `missile_take` / `missile_release`. Deviation: the original swaps the taken entry to the front of the pool, the port leaves the records in place and sets a flag, because the projectile holds a pointer to it |
 | `0x4724e0` + `0x46d320` | `missile_place`: position = the projectile point, rotation = the rows (X, Y, Z) as a quaternion, so **model +Z = flight direction** |
-| `0x46fb30` ribbon + head | `launchers_draw`: 20 segments of 25 (half-width 7, image 0, `rgb = 1 − u`, `alpha = cos(u·π/2)`), head image 4 in (1, 0.58, 0) at `pos + dir·55` |
+| `0x46fb30` ribbon + head | `launchers_draw`: 20 segments (half-width 7, image 0, `rgb = 1 − u`, `alpha = cos(u·π/2)`) sampled along the path flown, head image 4 in (1, 0.58, 0) at `pos + dir·55` |
 | `0x46fa40` muzzle flash | `flash_add(pos, 1)`: image 32, `size = 200·cos(u·π/2)`, `alpha = 0.5 − 0.5u`, 0.4 s |
-| `0x475440` exhaust | `missile_exhaust`: per nozzle two glows (image 32, 40 and 35) and a flame (image 31, `45 + rand·10 − 5`), plus `exhaust_smoke`: 200 puffs/s along the distance travelled. State always 2 (on): no startup ramp, that belongs to class 20/21 |
+| `0x475440` exhaust | `missile_exhaust`: per nozzle two glows (image 32, 40 and 35) and the flame = three crossed quads (below), plus `exhaust_smoke`: 200 puffs/s along the distance travelled. State always 2 (on): no startup ramp, that belongs to class 20/21 |
 | `0x477060(2, …)` → `0x4762e0` | `blast_add(pos, 400)`; `fx_smoke_draw` draws the nine flat quads with `hud_world_fx_plane` |
 | ribbon shrinks `dt·3·0.05` | `shot_fade_len` = 0.167 s (the orb: 0.133 s) |
 
@@ -443,9 +457,19 @@ The fireball (kind 3):
 | `0x4704d7` explosion kind 2 | `blast_add(pre-step position, 400)` |
 | record lives on 0.333 s | `shot_fade_len` = 0.333 s (nothing is drawn in that time) |
 
-Not yet ported: explosion kinds 0/1 beyond their two flashes, the bomb thrower (template 0), bouncing,
-gravity and target-seeking via `T+0x38`. The ribbon trails straight behind the current direction instead of along the actually flown path, so for the only
-target-seeking shooter (type 7, `T+0x40 = 0.2`) it drags along instead of curving.
+**Ribbon along the path flown** (`0x47d090` push / `0x46d0d0` sample): every `fx+0x3c = span / ((N−1)·speed)` s the projectile position and its age go
+into the ribbon (port: a ring of 24 per shot, `shot_hist_push`); segment j is drawn between the positions the projectile had `j·fx+0x10` and
+`(j+1)·fx+0x10` s ago (`fx+0x10 = span / (speed·(N−1))`, shrinking to 0 once the projectile is gone), interpolated between the pushed points and the
+head, and clamped to the first point (all N points start on the muzzle, `0x47d160`). A homing or bouncing shot's trail therefore curves with it.
+
+**Flame quads** (`0x4759cd`, read this round): frame `M = 0x46d320(d)` of the nozzle direction d; for `k = 0, 85, 170` (1/512 turn):
+`a = (int)(f3·512 + k) & 511`, quad axes `S+0x23c = d` and `S+0x248 = M.row0·cos a + M.row1·sin a` (`S+0x254` = the same at a + 128, the normal),
+sprite mode 0x13 (corners at ±37/512 turn: a 2:1 quad along d; base angle `trunc(atan(0.5)·512/2π)`), size `table[3] + rand·10 − 5` = 40..50 (state 2;
+state 1 scales, state 3: `table·1.3 + rand·10 − 5` with mode 0x12), centre `m + d·size·(cos(base) − 1/64)` (`0x4abcf8`), image 31, white, alpha 0.8, UV set 2,
+flags 0x62 (own colour, own axes, UV set). Ported with `hud_world_spr_mode(0x13, …, 0x62)`.
+
+Not yet ported: explosion kinds 0/1 beyond their two flashes; the colour scale of the line primitive `0x471a10` (the vertex colours `S+0x290..0x2ac` go
+into the vertices unchanged; how the submit `0x481560` scales them was not followed), so whether the bolt ribbon is too dark stays open.
 
 ### 7.2 Original recipe (kind 2)
 
@@ -488,7 +512,8 @@ typedef struct { int active; ProjT t; Vec3 pos, dir, start; float age, dead_t; c
 ## 8. Open questions
 1. `L+0x184` (copy of parameter 2) and `L+0x188` (parameter 6): no reader found.
 2. Does `Think` also run for launchers in non-visible sectors (§4.2)?
-3. ~~Does the ray `0x4359b0` hit the launcher's own hulls (§2.3)?~~ It tests press nodes, not hulls, and excludes nothing (the −1 is the start cell); in the port
+3. ~~Hit kind 3 of the ray~~: the start point inside a press node (§2.3).
+3b. ~~Does the ray `0x4359b0` hit the launcher's own hulls (§2.3)?~~ It tests press nodes, not hulls, and excludes nothing (the −1 is the start cell); in the port
    no shot of any level stops in its own launcher, so the muzzles lie outside the housings' press nodes (§2.3).
 4. Exact meaning of sprite-flag bits 1 and 2 and mode 0x12/0x13 of `0x470f10`; color scale of the line primitive (0.5 = neutral at the laser default: is 0.45 here "almost full"?).
 5. ~~Visual kind 3 (`0x470420`)~~ (§5.5). Explosion kinds 0/1, and which enemy subtypes get `Pe+0x74 = 0/1` (missile): not worked out.

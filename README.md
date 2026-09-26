@@ -50,14 +50,15 @@ times, once per enemy added. `src/geltest.c` checks those queries on synthetic d
 `F4` disables the culling step by step if something disappears that should be there, `WOODY_PROF=1` shows per frame how many triangles
 and sectors remain, and `WOODY_NOKD=1` makes the queries walk the whole level again.
 ```bash
-python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c src/main_engine.c src/player.c src/instance.c src/enemy.c src/boss.c src/water.c src/storm.c src/ekovm.c src/audio.c src/hud.c -lopengl32 -lgdi32 -luser32 -lwinmm
-./out/woody.exe extract/Data                     # without a level: the title screen (House, level 0); Enter starts, then the hub
+python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c src/main_engine.c src/player.c src/instance.c src/enemy.c src/boss.c src/water.c src/storm.c src/ekovm.c src/audio.c src/hud.c src/hnm.c src/ambient.c -lopengl32 -lgdi32 -luser32 -lwinmm
+./out/woody.exe extract/Data                     # without a level: the three logo films (Esc skips, --nologo), then the title screen (House, level 0); Enter starts, then the hub
 ./out/woody.exe extract/Data W1A                 # arrow keys/WASD walk (relative to camera), space jumps, Enter (or V) looks around (release toggles; arrows turn the view, mouse with the right button; docs/PERSO_LOOK.md), F5 free camera (then WASD + right mouse button), [ ] animation, Tab instance, F1-F4 toggles (F4 = culling)
 ./out/woody.exe extract/Data W1A --shot out/s.ppm 3   # screenshot after 3 s and stop
 ./out/woody.exe extract/Data WWS --prev W1A --stats 12 12 25 20 245   # results screen: back from W1A with these stats
 ./out/woody.exe extract/Data W1A --cam 537 -1800 -2450 0 -10   # camera: x y z yaw pitch (degrees)
 python -m ziglang cc -std=c99 -O2 -o out/leveltest.exe src/level.c src/leveltest.c && ./out/leveltest.exe extract/Data   # parser test, 28 levels
 python -m ziglang cc -std=c99 -O2 -o out/geltest.exe src/level.c src/geltest.c && ./out/geltest.exe    # kd-tree / .vis queries against brute force, no game data needed
+python -m ziglang cc -std=c99 -O2 -o out/hnmtest.exe src/hnm.c src/hnmtest.c && ./out/hnmtest.exe extract/Logo/Eko.hnm out/eko 50 100   # HNM6 film decoder: frames as PPM + sound as WAV (docs/HNM.md)
 cc -std=c99 -O1 -Isrc -Iout -o out/switchtest tools/native/switchtest.c src/level.c -lm   # peck switch (message 1042 + rem 0x458e40), no game data needed; see the header of switchtest.c
 ```
 

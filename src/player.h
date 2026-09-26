@@ -6,8 +6,8 @@
  * events (trigger volumes, world_collision press nodes, msgmask 0x200).
  * Attacks (0x457a50): peck dash, rebounds, charge run and brake; logical animation chains (table 0x4b6180).
  * Ducking (action 5, 0x465b10, docs/PERSO_DUCK.md) is ported, and so is the follow camera's breadcrumb trail (0x423ab0).
- * Look-around (action 7, Perso state 3 + camera mode 0x200, docs/PERSO_LOOK.md) is ported. Not ported yet: cfg key mapping. The ground type of the floor (Perso+0x308) is read, but only the
- * footstep effect uses it: the slippery turn ramp of type 1 is not ported. */
+ * Look-around (action 7, Perso state 3 + camera mode 0x200, docs/PERSO_LOOK.md) is ported. Not ported yet: cfg key mapping. The ground type of the floor (Perso+0x308) drives the footstep effect
+ * and the slippery turn ramp of type 1 (0x45a850). */
 #ifndef WOODY_PLAYER_H
 #define WOODY_PLAYER_H
 #include "level.h"
@@ -32,6 +32,11 @@ typedef struct {
     int open_window;                /* set when the air attack window opens (0x457560 from the tick) */
 } Jumper;
 
+/* the race board's spray emitter Perso+0x4b8 (0x34 B, docs/RACE.md 2.2): +0 inst, +4 n type-9 markers, +8 mode (0 off, 1 envelope,
+ * 2 normal, 3 boost), +0xc active this frame, +0x10..0x18 phases, +0x1c mode-1 timer, +0x20 emission accumulator, +0x24 prev[n],
+ * +0x28 size index, +0x2c has_prev[n] */
+typedef struct { Instance *inst; int n, mode, active, size_idx, has_prev[4]; float ph[3], t1c, acc; Vec3 prev[4]; } BoardFx;
+
 typedef struct Player {
     Instance *inst;                 /* the Woody instance (model 0, instance 0) */
     const GelFile *gel;
@@ -54,6 +59,8 @@ typedef struct Player {
     int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus, race_total;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264, [0x5e54f4] */
     Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
     int ground_kind;                /* Perso+0x308 (0x4628e0): 0 normal, 1 slippery, 2 dust/sand/snow (docs/PERSO_MOVE.md 6.4) */
+    int wall_contact;               /* Perso+0x2e0: the last sweep touched a wall (0x437180); speeds up the Mover's braking (0x45ae50) */
+    Vec3 move_dir;                  /* Mover RampA.dir (M+0x34): the walking direction; the facing except on slippery ground (0x45a850) */
     float step_u;                   /* footsteps (docs/FOOTSTEPS.md): the fraction of the walk cycle at the previous frame, -1 = not walking */
     /* attack controller (Perso+0x5b4..): sub-state, timer, displacement, air window, charge; move lock = Perso+0x238 */
     /* peck climbing, Perso state 4 (0x4651d0, docs/OBJECTS.md 1.3): sub 1 grab, 2 climbing, 3 over the top, 4 let go */
@@ -88,8 +95,16 @@ typedef struct Player {
      * start-anim timer +0x4e4, boost +0x4c4.., stuck counter +0x4ac, lean +0x4bc/+0x4c0, crouch +0x694, up filter +0x210 */
     int race_char, race_sub, race_stuck, race_lean, race_crouch, has_ckpt;
     float race_start_t, race_lean_t, race_crouch_t, race_crash_t, boost_t, boost_speed;
-    Vec3 race_dir, boost_target, race_upf;
+    Vec3 race_dir, boost_target, race_upf, race_floor_n;              /* race_floor_n = M+0xd0 as the up filter reads it: the floor normal under him, also in the air */
     int race_cam_req;                                                   /* sub-state 0: hard cut to the follow camera (consumed by the app) */
+    int board_lanim, board_lanim_sub;                                   /* the board's own anim controller +0x498 (-1 = reset, nothing requested) */
+    int race_bonus_ckpt;                                                /* +0x4e0: the race bonus count at the last checkpoint, restored by SurfEnter */
+    int race_snd;                                                       /* +0x4a4: sound source of the ride loop SoundFx 60 (bit 0 marked this frame, bit 1 playing) */
+    /* board spray emitter +0x4b8 (0x34 B, docs/RACE.md 2.2), created by 1120, ticked and drawn by the app (0x46d040) in the frames
+     * the ride marked it active; mode 2 normal, 3 boost; has_prev cleared by 1120 and SurfEnter */
+    BoardFx bfx;
+    /* white blinking of the invulnerability bonus (vt[26] 0x44cf50): +0x704 time left, +0x708 accumulator, +0x70c frame counter */
+    float bonus_inv, bonus_inv_acc; int bonus_inv_cnt;
     float cam_dist, cam_height, cam_zoom;                               /* follow camera C+0x7e0 (400), C+0x7d8 (180), zoom cam+0x678 (1.2) */
     /* Perso state 6, carrying a bomb (docs/BOMB_CARRY.md 1): +0x590 the bomb, +0x594 in his hands, +0x58c sub-state, +0x598 its
      * timer; carry_pressed = attack just pressed this frame (read by the sub-states), throw_hold = port: the throw animation
@@ -120,7 +135,8 @@ void player_lock(Player *p, float t);                  /* message 30 (0x44cde9):
 int  volume_contains(const Instance *inst, uint32_t node, Vec3 p);   /* 0x4300c0: is the point inside this volume node of the instance? */
 void player_free(Player *p);
 void player_boost(Player *p, Vec3 p0, Vec3 dir, float speed, float dur);   /* message 1121 StartBoostSurf 0x456000 */
-void player_sync_board(Player *p);                    /* 0x44bf10 tail + 0x463e60: the race board takes the Perso's placement and animation */
+void player_sync_board(Player *p);
+void player_race_start(Player *p);                     /* level start (Game ctor 0x445850): the race's SurfEnter after the init messages */                    /* 0x44bf10 tail + 0x463e60: the race board takes the Perso's placement and animation */
 /* GetHeight for other actors: ground under pt, ignoring the instance `skip` */
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found);
 float player_body_height(const Player *p);            /* 0x462490 -> P+0x08: 193 standing / 61 ducked (Woody), race 160 / 81 */
@@ -130,6 +146,7 @@ int  player_landing_ring(const Player *p, Vec3 *pos, Vec3 *normal);
 int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34..38: message 10; returns 1 when the instance must disappear */
 void player_script_hold(Player *p, float t);       /* message 1040: scripted action, control taken away for t s */
 void player_place(Player *p, Vec3 pos, float yaw);     /* Perso reset + SetPos + SetFacing (end of a cinematic, hub door) */
+void player_volumes_actor(Player *p, EkoVM *vm, Vec3 pt, uint32_t actor);   /* a non-Perso volume actor at pt (the camera of message 800): plain enter/in/leave */
 void player_ground_snap(Player *p);                    /* 0x462990: onto the floor under feet + 43, on the ground, Jumper reset */
 void player_kill(Player *p, int kind);
 Quat q_slerp(Quat a, Quat b, float u);
@@ -167,6 +184,8 @@ void game_peck_fx(int kind, Vec3 pos, const Vec3 *n);
 /* the skeleton flash 0x477e40 of Kill 2 and 9 (docs/PERSO_DEATH.md 4.2, docs/PARTICLES.md 6): 1.5 s of the model and a
  * sprite skeleton taking turns, on the current player */
 void game_skeleton(void);
+/* 0x44f8a0 (SurfEnter): every race bonus (type 37) comes back, Respawn 0x44f8f0 = 0x407790 re-cells it */
+void game_race_bonus_reset(void);
 /* bombs (main_engine.c, docs/BOMB.md): pick one up (0x463430: in use, not ridden, within r of pos in 3D; it is held from now on),
  * hold it in the hand (0x463530 part A), and start its projectile again from where it is (0x44d3a0: the throw and the drop) */
 struct Bomb;

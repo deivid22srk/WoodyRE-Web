@@ -53,14 +53,19 @@ typedef struct {
      * where the water surfaces of class 60 go (water.c) */
     void (*post_models)(const TexFile *tex, Vec3 eye);
     uint8_t *model_blend;                              /* per .ins model: 1 = a drawn mesh node has a polygon of a blended group (list +0x1cc), built on the first frame */
+    Instance **links; uint32_t nlinks, links_cap;     /* message 34 pairs (volume instance, hidden instance), level+0x50 / +0x4c (docs/INSTANCE.md 10.1) */
 } Renderer;
 
 int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis);   /* lit / vis may be NULL */
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s);
 void rnd_fade(float brightness);             /* darken the finished frame: 1 = normal, 0 = black */
 void rnd_free(Renderer *r);
+/* message 34 [inst, other] (0x42dc21): while the camera is inside one of inst's volume nodes, `other` is not drawn (0x42aa0b) */
+void rnd_link(Renderer *r, Instance *inst, Instance *other);
 void rnd_set_sky(Renderer *r, const uint32_t tex[5]);   /* level bank images 3,0,1,2,4 replace the group's own frames when the bank has >= 5 images (0x5e8670) */
 int  rnd_screenshot(const Window *w, const char *path);   /* binary PPM of the current back buffer */
+/* an HNM film frame (RGB565, docs/HNM.md) over the whole window, 4:3 kept with black bars; px NULL frees the texture */
+void rnd_film_frame(const Window *w, const uint16_t *px, int width, int height);
 void rnd_uv_report(const Renderer *r, const Instance *inst);   /* WOODY_UVLOG: texture group + generated UV range per mesh node and material */
 Vec3 cam_forward(const FreeCamera *c);
 Vec3 cam_right(const FreeCamera *c);

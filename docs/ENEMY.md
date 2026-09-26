@@ -322,7 +322,7 @@ So enemies **don't walk off edges** higher than `P+0x2c` = 10 (subtypes 9/10: 10
 * Hook `[2]` (`0x41bdf0`): if the sweep displacement < 0.01 (`0x4a94f8`) ⇒ result ± random (−16..15) in x and z
   (wriggle loose). OnBlocked `[3]` (`0x41be90`): target angle = free sensor direction, timer 0.
 
-### 5.4 Wander (`0x41bf30(enemy, leash, &home)`, vtable `0x4aa118`)
+### 5.4 Wander (`0x41bf30(enemy, leash, &home)`, vtable `0x4aa118`) — **ported** (`wander_*` in `src/enemy.c`; see the decompilation after the summary)
 `+0x30..0x4c` = 8 actions `(kind<<16)|weight`: actions 0..5 weight **10**, 6 and 7 weight **25**, kind 1
 (= duration from `enemy->vtbl[53](action)`; kind 0 would be `2.0 + (rand()&0x1fff)/4096` s). `+0x50` current action, `+0x54`
 remaining duration, `+0x58/+0x5c` avoidance cooldown/object, `+0x60/+0x69` homecoming state, `+0x64` &home point, `+0x68` leash on.
@@ -339,6 +339,58 @@ remaining duration, `+0x58/+0x5c` avoidance cooldown/object, `+0x60/+0x69` homec
 * OnBlocked `0x41c420`: target angle = `Sensor.0x41d390()` (if ≥ 0), action 5 (turning).
 * Type 4 with TRAJ sets `P+0x1c = 10` in Reset ⇒ after a chase it walks back (leash on via `0x41c140(1,&home)`) to
   the point where it left the path and resumes the path once it's within 10 units (state 8 → 0).
+  **No enemy of the 28 levels has a TRAJ** (checked with `tools/insparse.py` against every `1200` of types 4..9/13): state 0 (patrol) and the
+  path follower §5.5 never run in the shipped game.
+
+Decompiled in full (this round):
+```c
+/* ctor 0x41bf30: +0x30..+0x4c = (1 << 16) | weight: 0..5 -> 10, 6 and 7 -> 25 (0x41c0f0 keeps the high word and keeps +0x2c = total);
+   +0x50 = -1; 0x41c140(leash, &home): +0x68 = leash, +0x64 = &home (the PostLoads pass 1 and &enemy+0x134) */
+void Wander_Choose(W *w, int a) {                     /* 0x41c180 */
+    if (a == -1) {
+        idle = w[0..5], walk = w[6..7]  (sums of the low words);
+        if (w->act > 5) { r = rand() % idle; a = 0; last = 4; }   /* after a walk: an idle, action 5's weight falls to 4 */
+        else            { r = rand() % walk; a = 6; last = 7; }   /* after an idle / turn / at the start (-1): a walk */
+        while (a < last && r - acc >= w[a]) { acc += w[a]; a++; }  /* rand() % 0 = a divide fault in the original if all weights are 0 */
+    }
+    if (a == 5 || a == 7) { f = Sensor_RandomFree(); if (f >= 0) H_SetTarget(f, 0); else H_RandomTarget(); }   /* 0x41d2c0, 0x41ba10 */
+    else H_SetTarget(H.angle, 1);                     /* stop turning */
+    Wander_Set(w, a);
+}
+void Wander_Set(W *w, int a) {                        /* 0x41c2a0 */
+    w->act = a;
+    if (a == 9) w->dur = enemy->vtbl[53](9);
+    else if (a == 10) w->dur = arc(H.angle, H.target) / H.turnspeed;   /* 0x4401c0 / 0x440320 */
+    else if ((w[a] >> 16) == 0) w->dur = 2.0 + (rand() & 0x1fff) / 4096.0;   /* never: the ctor gives every action kind 1 */
+    else if ((w[a] >> 16) == 1) w->dur = enemy->vtbl[53](a);
+}
+void Wander_Tick(W *w) {                              /* 0x41c640 */
+    Homecoming(w);                                    /* 0x41c500, below */
+    w->dur -= dt; if (w->dur <= 0 && !w->homing) Wander_Choose(w, -1);   /* 0x41c370 */
+    H.turnspeed = P+0x10;
+    if (w->act < 0 || w->act > 4) H_Tick(dt);         /* the idles do not turn */
+    Move(w);                                          /* 0x41b2c0 with step [0] 0x41c3a0: actions 6, 7, 9, 10 (byte table 0x41c40c) -> H target speed
+                                                         P+0x08 with acceleration, step dt * H.speed; every other action 0 */
+    other = enemy->vtbl[31](0, 0);                    /* 0x41c470: Touch of ANY actor (list 2, the Perso included) */
+    w->avoid_t -= dt;
+    if (other && (other != w->avoid || w->avoid_t < 0)) { H_TurnTo(other->pos -> own pos, 0); Wander_Set(w, 7); w->avoid = other; w->avoid_t = w->dur; }
+}
+void Homecoming(W *w) {                               /* 0x41c500, only with the leash (+0x68) */
+    if (w->home_t > 0) { w->home_t -= dt; if (w->home_t > 0) return; }
+    if (w->homing) { Wander_Set(w, 9); w->home_t = w->dur; w->dur += dt; w->homing = 0; return; }   /* turned: now walk back one walk cycle */
+    d = subtype >= 9 ? |pos - home| : |pos - home|_xz;
+    if (P+0x1c < d) { H_TurnTo(pos -> home, 0); Wander_Set(w, 10); w->homing = 1; w->home_t = w->dur; }
+}
+void Wander_OnBlocked(W *w) { a = Sensor_WidestFree(); if (a >= 0) H_SetTarget(a, 0); Wander_Set(w, 5); }   /* 0x41c420 */
+/* vtbl[6] 0x41c090 = restart: act -1, dur 0, home_t 0, homing 0, avoid 0 -> Choose(-1) (a walk); 0x41c0c0(a) the same with Choose(a) (dodge end: 0) */
+```
+Action durations `vtbl[53]` in the wander states (type 4 `0x419980` table `0x419c4c`, type 7 `0x4184f0` table `0x4187f0`, ghost `0x414a00` table `0x414c98`):
+0..4 ⇒ `AnimLen(14 + a)` (one idle variation), 5 ⇒ `AnimLen` of the turn record (type 4: 22 / 23, type 7: 26 / 27, ghost: 24 / 25; by the sign of
+`H+0x0c`), 6 ⇒ `ΣAnimLen(4, 0..2)`, 7 ⇒ `ΣAnimLen(5, 0..2)` (start + one loop + stop of the walk chain 3,4,5), 9 ⇒ `ΣAnimLen(6, 0..2) − inst+0xac / inst+0xa0`.
+The animation of a wander action is that same record (`vtbl[45]`: 0..4 ⇒ 14..18, 5 ⇒ the turn record, 6 ⇒ 4, 7 ⇒ 5, 9 ⇒ 6, 10 ⇒ 7), played as a chain
+(records 0x1c B: `{sub[4], prio, speed, restart}`; the three tables are listed in `src/enemy.c` `g_r4` / `g_r7` / `g_r13`), so a walk is exactly
+start → loop → stop and an idle exactly one variation. Weights: message 11/19 sets all eight, 20..24 the idles, 25 the turn, 26/27 the walks — no script sends
+them. Port: `wander_*` + `er_request` (chain rules of `anim_request` in `player.c`); Touch uses the player (radius 69) and the other enemies, 3D; log `WOODY_WANDERLOG=1`.
 
 ### 5.5 Follow path (`0x41c6a0(enemy, traj)`, vtable `0x4aa13c`; patrol along TRAJ)
 TRAJ (`inst+0x78`): `traj[0]` low16 = number of points, bit `0x10000` = **closed loop**; `traj+0x10` → records of 16 bytes with the
@@ -430,10 +482,23 @@ FadeInst/Instance handler `0x44e8f0` (incl. message 56 = fade `+0x6c`, MESSAGES.
 | 11 | 20..24 | w | weight wander action 0..4 (idles) | `0x41a856`… |
 | 11 | 25 | w | weight action 5 (turning) | `0x41a928` |
 | 11 | 26, 27 | w | weight action 6, 7 (walking) | `0x41a8ec`, `0x41a90a` |
-| 11 | 30 | 0/1 | flag 0x20 of `+0x174` | `0x41a7b2` |
+| 11 | 30 | 0/1 | flag 0x20 of `+0x174` (no reader) | `0x41a7b2` |
 | 11 | 31..36 | v | `P+0x40, +0x48, +0x4c, +0x50, +0x54, +0x58` (class-specific, type 7+) | `0x41ab52`… |
 | 11 | 37 | v | `P+0xc0` activation distance to the camera | `0x41a79e` |
 | 11 | 11, 16, 17, 28, 29 | | ignored | `0x41ac2a` |
+
+Read again this round (`0x41a740..0x41ac3c`, table `0x41ac40` = 38 entries): the table above is complete; 32 and 34 write `P+0x48` / `P+0x50`, which none
+of the classes 4..9, 12, 13 reads (only type 10 reads `P+0x50`). 5 and 6 require the Wander / Chase behaviour (`+0x160` / `+0x164`); the bomb thrower has
+neither, so there the handler only logs the French warning. **Ported completely** (`enemies_msg11`, log `WOODY_MSG11LOG=1`); which sub-codes the scripts
+use: MESSAGES.md row 11.
+
+`vtbl[17]` Reset (message 11/4): `Enemy::Reset 0x41a010` = position and home point back to the start `+0x128`, re-entered into the world if it was out
+(`0x407790` ⇒ a hidden or dead enemy is visible again), animation reset `0x42e250`, remove flag cleared `0x40bf00`, dt 0, H reset `0x41b840` (angular speed 0,
+angle snapped to the start angle `+0x1c`), fall reset, hp = `P+0x34`, `+0x14c/+0x154/+0x158/+0x15c` = 0, flag 8 cleared, both probes reset, **ground snap
+`0x41a1a0` for subtypes < 9** (feet onto the ground under pos + h/2; outside the world ⇒ the log "An ennemy (Id=%x) is outside of the world"), probe test,
+flags `&= ~0x10 | 4`, msgmask 0x10 cleared, `+0x84 = −1`, type word `|= 0x400` (attackable). Then the class part (types 4/5/6 `0x418c20` ⇒ 8, 7/8/9
+`0x416ed0` ⇒ 3, ghost `0x4139b0` ⇒ 5, all with a restarted Wander; the thrower `0x411020` ⇒ 0). The port also does the ground snap at level start
+(the factory Reset), which lets the first wander step of an enemy placed a few units above the floor pass the ±10 test.
 
 There are **no acknowledge variables** in this handler; the SetVar pairs `+0x230/+0x294/+0x24c` from EVENTS §4.2 belong to the
 boss classes (`0x40c730`, `0x40d850`, `0x40eb50`, own handlers `0x40d530`, `0x40e7e3`, `0x410052`, which then
@@ -788,8 +853,10 @@ bool enemy_take_damage(Enemy *e, void *att, float dmg, vec3 *dir, vec3 *pt, int 
 * Flag 0x20 of `+0x174` (set by PostLoad, toggled by message 11/30) and flag 8: no reader/setter found in the code read so far.
 * `0x437580` (sweep) has since been read: a **sphere** of radius `P+4`, center `r + up + 1` above the feet, substeps of 30, pushed out against
   world + press nodes of instances (BOSS14.md §5.1). `[0x4b310c]` is not a fraction but the ground-normal y from GetHeight (≥ 0.8 = flat enough).
-  `0x437040` (push-out relative to other actors?) has only been examined from the
-  caller side; `0x436d20/0x436d80` (platform) likewise.
+  `0x437040` (called by the common move as "Probe2_PushOut", by projectile Move `0x449cc0` and by the Perso `0x4624f0`) is **dead code**: its two sphere
+  queries `0x435b60` are a stub (`mov [0x53a554], 0; ret`), so it always returns a zero push and resets its probe. `0x436d80` attaches the ground probe
+  to an instance press node (from `0x436dc0`), `0x436d20` returns that node's displacement since the attach (platform carry); its readers are only the
+  enemy common move `0x41b2c0`, the path follower `0x41ce37` and the Perso `0x4624f0`.
 * The obstacle sensor (§5.6) is decompiled in OBSTACLE.md §3. Type 7/8/9: `vtbl[42]` (`0x417ff0`) has no caller found; `P+0x48` and `P+0x6c`
   have no reader in the class; animation record 22 (sub 20) is never requested (§8).
 * Parameter `P+0x44` (600) is proven to be the knockback factor; `P+0x48, +0x50, +0x58, +0x84..0xbc` belong to types 10..13 (not read).

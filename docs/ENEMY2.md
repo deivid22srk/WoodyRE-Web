@@ -294,6 +294,9 @@ at the player's feet), `T.damage (+0x30) = P+0x40 = 2`, `T.target (+0x38) = targ
 | 11 | **13** | 12 | 3 (prio 2000) | dead; `vtbl[51]` = AnimLen(13) + 1.0 |
 
 Then always `AnimCtrl->Tick(dt)`. Records 19/20 (sub 20/21) exist in the table but the model only has 20 animations and the class does not use them.
+The **patrol animations** of state 0 (records 21..23 = walk start/loop/stop `3,4,4,4` / `4×4` / `5`, 24/25 = sub 0 for turning, 14..18 for the pauses)
+never play in the shipped game: state 0 needs a TRAJ and **no ghost (and no other enemy) of the 28 levels has one** (`.ins` check, ENEMY.md §5.4). The
+wander animations (states 4/5) are ported with the Wander behaviour (ENEMY.md §5.4: idles 14..18 = .ins 6..10 at speed 2, turn 24/25 = .ins 0, walk chains 4..7).
 Duration function `vtbl[53]` `0x414a00` (table `0x414c98`): state 6 ⇒ 0.25; 3 ⇒ AnimLen(10); 7 ⇒ AnimLen(8); 8/13 ⇒ AnimLen(9); 9/10 ⇒ AnimLen(11); 11 ⇒ AnimLen(13);
 4/5 ⇒ per wander action (0..4 ⇒ AnimLen(14..18), 5 ⇒ turn animation, 6 ⇒ ΣAnimLen(4,0..2), 7 ⇒ ΣAnimLen(5,0..2), 9 ⇒ ΣAnimLen(6,0..2) − `inst+0xac/inst+0xa0`).
 W3B model 39, duration in s of animation 0..19: 5.7, 0.7, 1.5, 1.1, 6.5, 1.2, 17.9, 16.4, 11.4, 11.4, 5.6, 1.8, 5.7, 1.1, 0.8, 2.9, 8.9, 36, 36, 36 (AnimLen = duration / speed).
@@ -430,6 +433,11 @@ W2B model 52, duration in s of animation 0..16: 5.8, 1.6, 1.6, 0.7, 1.1, 1.1, 0.
 ### 4.6 Sound, messages, events
 SoundFx (all 2D, `inst = 0`; SOUND.md §5 refs 86..90): **50** throw (`0x41132a`), **51** melee start (`0x4113fb`), **52** hit by explosion (`0x411a56`),
 **53** dead (`0x41178f`), **54** pecked (`0x411af2`). Messages: only 6/11. Events: **set msgmask 0x10 when removed** (`0x411729`), cleared in Reset;
+`flags10c |= 1` is the ordinary remove flag: `0x40bf60` (start of the next frame) calls `vtbl[29]` = the base `0x41aff0` = `[0x4c532c]++` (killed-enemies
+counter) and `0x407850` = out of the world, so **he disappears**, after fading out over the second half of `AnimLen(8) + 1.0` (`Enemy::Update 0x41a3e0`).
+The flag is set again every frame of state 13 once the time is up, but an instance that is out of the world gets no more Think (it is not in the visible
+list world+0x64 walked by `0x42b400`). **He has no boss bar**: the only callers of the HUD bar setter `0x4484d0` are `0x40cbf1` (class 16), `0x40dd80`
+(Boss2) and `0x40fd82` (Buzz). Ported (`bomber_update` state 13: fade, then msgmask 0x10 and removed).
 0x200 via the base class's ground following (it just falls with gravity).
 
 ## 5. Type 11 – ground bomber (unused; high level)

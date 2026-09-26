@@ -311,10 +311,57 @@ drawn when NN < 100). Full list: W1A 47+51, W1B 47+52, W2A 48+51, W2B 48+52, W2D
   `+0x1c = 0`, `+0x20 = 1`, `page1+0x38 = 0`. After 0.5 s `vt[18]` = `0x45e870`: deliver the result **and hide the 8
   instances** (`0x4891d0(0)` → `0x407850`).
 - **SEE HIGH SCORES** (item 1): unlocked, not closing, not slot 4: same but `+0x14 = 4` and `[0x5e5a8c]+0x3c = k`
-  (page 4 = high scores of character k, class `0x45bfb0`, not analyzed further; back → page 3, `0x405749`).
-  **Port**: not ported — the item does nothing (only a console line). Page 4 is not a small class: vtable
-  `0x4ab368`, enter `0x45bfd0`, draw `0x45bff0` → `0x45c090` … `0x45cd50` (~1500 instructions, one table per level).
+  (page 4 = high scores of character k, §4.8; back → page 3, `0x405749`). Unlike PLAY it leaves `page1+0x38` alone.
+  **Port**: ported (`carousel_update`, result 4 → `menu_enter(4)`).
 - Locked character: nothing (no sound).
+
+### 4.8 Page 4 — high scores (class `0x45bfb0`, 0x40 B, vtable `0x4ab368`, global `[0x5e5a8c]`)
+
+A panel page (base `0x45b830`) with only a few slots of its own:
+
+| vt | address | what |
+|---|---|---|
+| [2] | `0x45cd60` | item table `0x4b5e20`: one item `{string 1 "", flag 1, result 5}`; never drawn (vt[17] does not call `0x446640`) |
+| [3] / [4] | `0x46c320` / `0x45cd50` | count 1 / page id 4 |
+| [7] | `0x45cd70` | y fraction 0.8 (`0x4a987c`, unused) |
+| [9] → [19] | `0x45bad0` → `0x462c60` | confirm = `ret`: **Enter does nothing** |
+| [14] → [20] | `0x45bb30` → `0x45bb40` | back: SoundFx 0x3f, iris `+0x30` → 0, result 24 after 0.5 s |
+| [15] | `0x45bfd0` | enter: panel enter `0x45b8c0` (SoundFx 0x3f, input after 0.5 s), then **`+0x30 = 0`** |
+| [17] | `0x45bff0` | content |
+
+Because the iris target `+0x30` is 0, the panel base `0x45b990` never animates the ring but lays a **full black
+rect** (`0x45ba29`: `RectVirtual(0, 0, 640, 480, 4× 0xfe000000, flag 8)`); the 3D title scene is gone for the whole page.
+Handler `0x405749`: result 24 → page 3 (carousel enter again: iris 0 → 0.37, the figure's animation restarts), any
+other result → nothing. `+0x3c` = the character k, written by page 3 (`0x45eec1..0x45ef01`).
+
+Content `0x45bff0`: with `t = +0x28`, `T = +0x34 = 0.5`: while `t ≤ T`, `a = (closing ? t : T − t)·600/T` and
+`b = (closing ? T − t : t)/T`, else `a = 0`, `b = 1`. Then:
+
+1. `0x45c090(b)`: `RectVirtual(320 − 157.5b, 240 − 186b, 315b, 372b)` of **House image 1 (the title logo)**, source
+   (0, 0, 209, 247), 4× **`0x80202020`** (a quarter bright, half transparent), flag 8: a dim logo growing out of
+   the centre as backdrop.
+2. `0x45c3d0(−a)`: three 24×24 column heads at y 80: House image 2 (the clock / enemy-face sheet) (52, 0, 36, 36) at
+   x `580 − 12 − a` and (0, 0, 51, 51) at `520 − 12 − a`, both additive (flag 4); Common image 64 (0, 89, 24, 24) (the
+   W ball of the health row) at `440 − 12 − a`, flag 8. Then per character (`k` 0/1/2) `0x45ca40` / `0x45cd80` /
+   `0x45cf90`: the levels W1A..W3D / K1A..K3R / S1A..S3R in play order, each only if done (`0x4509e0(k, L)`), **stopping at
+   the first one not done**, row r = 0, 1, 2 … → `0x45c510(−a, world, part, best, r, k, L)` with the pairs of the
+   location table (§4.6).
+3. `0x45c150(a)`: string 45 "HIGH SCORES", size 28, `0xfeff1400`, at (320 − w/2, 30 − a); `0x45c230`: the HUD face
+   sprite (k 0 → 0, 1 → **2**, 2 → **1**, the same faces as the carousel records) at (320 − w/2 − 64 − 10, 16 − a) and
+   mirrored (negative source width) at (320 + w/2 + 10, 16 − a).
+
+A row `0x45c510` (y = 105 + 37r, font of the level bank, size 18, white `0xfeffffff`):
+- `0x45d1a0(off, y, 22)`: blue bar (off, y, 256, 22), left `0x800000ff` → right `0x000000ff` (the HUD bar).
+- text y = y + (22 − cell)/2; label "world" + space (word 1 of string 40) + "part" at x = 20 + off; the pen moves on;
+  score "best" + space + string 46 "points" at `max(pen + 3·w(space), 220 + off)`.
+- not for the races (L = 13, 15, 17, 20, 22, 24): time `m:ss` (`_ftol`, string 10, a 0 below 10 s) centred on
+  `off + 580`, enemies "rec+0x2c / rec+0x28" (`0x4502c0` / `0x450290`) centred on `off + 520`;
+- always W's "rec+0x34 / rec+0x30" (`0x450320` / `0x4502f0`) centred on `off + 440`. (The centring multiplies by
+  `font+0x2c / 640` = 1.)
+
+So texts and rows slide in from the left over 0.5 s, the title and faces come down from above, and the logo
+grows; closing runs the same backwards. **Port**: `scores_draw` (`src/main_engine.c`) → `hud_scores` (`src/hud.c`);
+House image 2 is loaded as `H.sheet2`.
 
 ## 5. Page 5 (slot selection for saving) and 0x17 — briefly
 
@@ -330,6 +377,9 @@ Class `0x45e1f0` (0x68 B, vtable `0x4ab4c0`), same slot list as page 2 with thes
   (61 "Are you sure you want to overwrite this save?" / 5 Yes / 6 No, handler `0x405586`: Yes → write, **No and
   back → page 6**); empty → volumes `0x456e40(music, sfx, s)` + vibration `0x456e90`, `0x456dc0(save → slot s)`,
   page 0xc with `app+0x5c = 2` → after 2 frames `vt[4]` writes → 8 "Game Saved" / 9 "Save failed."
+  (the handler `0x405662` counts `app+0x5c` down once per frame, `0x4052a4`, and acts on the frame after it hit 0; the
+  read pages 0xb (`0x405276`) and 0xe (`0x405483`) start at 0, so they stand for one frame; all three are empty pages
+  over the dim layer. Port: `menu_wait`).
 - Page 6 "Yes" → `vt[3]`: file doesn't exist ⇒ `0x456e20` (clear 4 slots) → page 5; exists ⇒ page 0xe
   (1 frame) → read: succeeded → page 5, failed → page 6. Music object `[0x5e61a4]->vt[0x50](0.5)` when opening
   page 5 and `vt[0x54](0.5)` after a successful write (meaning **uncertain**, presumably ducking/restoring).
@@ -365,7 +415,7 @@ Slot / save struct (0x14a4 B):
 | block+0x10 + L·0x3c | record | L = level index 0..28 |
 | rec+0x00 | i32 | best score |
 | rec+0x04 | u8 | done |
-| rec+0x05 | u8[32] | "unique item n of this level collected" (`0x450730`/`0x450760`) |
+| rec+0x05 | u8[32] | "unique item n of this level collected" (`0x450730`/`0x450760`; n = the type-36 sequence number, BONUS.md §2.5; the writer does not check n < 32). Port: `uniq_flag` / `uniq_update` |
 | rec+0x25 | u8[3] | padding |
 | rec+0x28 | i32 | stat[0] (`app+0x74`, total enemies) |
 | rec+0x2c | i32 | **stat[2]** (`app+0x7c`, enemies defeated) |
@@ -525,7 +575,7 @@ setters on a change, so at level 0 the port now skips that copy.
 5. `vt[6]` of page 3 (`0x45fff0`: 2 if the selected record is unlocked, else 1): no reader found.
 6. Music object `[0x5e61a4]->vt[0x50]/vt[0x54](0.5)` in the save chain (ducking?); `[0x5e618c]` (vibration) on PC.
 7. `save+0x14a0` ("extra score"): no writer found.
-8. Page 4 (high scores, class `0x45bfb0`) has not been analyzed and is not ported (§4.7); "SEE HIGH SCORES" does
+8. ~~Page 4 (high scores, class `0x45bfb0`) has not been analyzed and is not ported (§4.7)~~ — done, §4.8. "SEE HIGH SCORES" did
    nothing in the port.
 9. The exact rounding of `fistp` at 108.5 (ring source) and 50.5 (ring y): depends on the FPU rounding
    mode (default: round to even ⇒ 108 resp. 50).

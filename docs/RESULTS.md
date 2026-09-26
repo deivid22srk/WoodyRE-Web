@@ -207,6 +207,15 @@ logo `0x446b00` is at (216, 16) and has already faded out on this page (`[0x5d7b
 of the W line on the left (x 9..80, y 275..346). **Uncertain**: an additive 3D object that falls in the same depth
 bucket as the 2D layer would be drawn after the (alpha) iris (§2, `0x428ee0`); not verified.
 
+Second pass (static): every other 2D drawer that uses a W was checked and excluded. The HUD animator `0x4480d0`
+(W swarm `0x47c7c0`, the W flight `0x4611b0`, the 1172 slide `0x461820`/`0x461a00` that draws sprite 4 at slot 0) runs
+only inside `0x447210`, which draws nothing in HUD state 2 (`0x447213`, set by `0x404eba` for page 0x1e). The
+high-score page 4 (MENU_LOAD §4.8) has the W ball as a column head, but it is not reachable from page 0x1e (its only
+entry is page 3's result 4). The pickup trail particles (`0x47bba0`/`0x47bca0`) are bank-0 image 4 glows, not W's. So
+the W is still unexplained; the most likely candidates remain a 3D sprite of the hub (a type-34 bonus halo, bank 0
+image 20, `0x479530`) that is drawn in the 2D bucket, or a frame of the page 0x1e → 6 transition. The screenshot of
+issue #7 itself was not inspected (downloading the attachment needs the user's permission).
+
 ## 3. The iris
 
 | | value | address |

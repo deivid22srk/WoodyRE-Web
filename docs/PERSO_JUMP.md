@@ -426,6 +426,10 @@ For each actor `t` in `0x4c5258[0x4c5324]` (actor list from the previous frame, 
   `0x433de0(&a, &b, &c, radius, height)` – segment against a **vertical cylinder** (xz quadratic,
   y within `c.y ± (height − 0.1)`); returns 0.5 on hit, −1.0 on miss. Hit: `dir = normalize(tp.xz − pos.xz)`,
   `hitpoint = lerp(a, b, 0.5)`; in state 10 also `Mover_SetDir(M, dir)`.
+  (Port, round 29: the hit point is computed from the real beak vector - the first kind-0x20 marker with typecode 0 of the
+  player's model, posed as last drawn, `beak_vector` in player.c; e.g. 124 above the feet in a W1A charge run - and passed
+  to `enemy_hit`, whose Enemy_TakeDamage puts the hit star on it. The hit tests themselves are still the port's
+  approximations of `0x433920` / `0x433de0`.)
 
 On a hit:
 1. substate 2 ⇒ **`p+0x5b4 = 3`**, `isPeck = 1` (otherwise 0).

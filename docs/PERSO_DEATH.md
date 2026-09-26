@@ -229,9 +229,15 @@ Between the first frame and `L`, nothing is requested (the chain runs on into lo
 
 All records restart = 1 except 9 (0).
 
-Race variant (`0x44c4c0` → `+0x4d8 = 1`, `0x464a00`, table `0x464b48`, requests on **both** controllers): kind 1 → 0x75 (A)
-and 0x76 (B) + the same camera action when `T` crosses `L(0x75)`; 2 → 0x72; 3 → 0x74; 4/5 → nothing; 6 → 0x73; 7 → 0x77 + `0x462c90(J)`;
-8 → 0x71. Kill side: `+0x240 = L(0x72)` resp. `L(0x75)`, kind 7 `+0x288 = 4.0`. Not worked out further.
+Race variant (`0x44c4c0` → `+0x4d8 = 1`, `0x464a00`, table `0x464b48`, read in full in round 29): `T += dt` first, then per
+kind (table index kind − 1, 8 entries) a request on **both** controllers every frame: 1 → 0x75 on A (39 → 40 loop) and
+**0x76 on B** (39, one-shot: the board plays the fall once and stays); 2 → 0x72; 3 → 0x74; 4, 5 → nothing; 6 → 0x73;
+7 → 0x77 + `0x462c90(J)`; 8 → 0x71; 9 and above → nothing. Kind 1 also calls the camera `0x41fb50(cam, inst.pos + (0,100,0),
+P)` on **every** frame while `T − dt ≤ L(0x75)` (`0x464ad4`: `fcomp` + `test ah, 0x41`), i.e. from the first frame of the
+hang, not only in the frame the hang ends as `0x464915` does for Woody. Kill side (RACE.md §4.9): `+0x240 = L(0x72)` resp.
+`L(0x75)`, kind 7 `+0x288 = 4.0`. Ported (`player.c`, the race branch of the death anims; the board's controller is
+`board_request`): the port asks for that camera on the first frame and again when the hang ends - the rider hangs still, so
+it is the same travel, while a request every frame would restart the port's camera transition with t = 0 each time.
 
 ### 3.4 Respawn `0x445930` — checkpoint, facing, side-view and camera
 
@@ -283,7 +289,7 @@ sprite(img 0x2c, pos, size, mode 0x12, flags 0x49, mirror = side ? 2 : 0);      
 img = images[(int)(u * 8) % count];
 if (img) sprite(img, pos, size = 55*s + 10, flags 0x49, mirror 0);               /* content */
 ```
-Verified against the disassembly (2026-09-24): constants 0.04/0.96/25/90/30/0.5/55/10/8 check out, `0x46d320` for `d = (dx,0,dz)` gives `R = (dz, 0, −dx)` (= screen right) and `U = (0,1,0)`; mirror value 2 (`0x470d80` case 2) flips u. `size` is `S+0x264`, the half-diagonal. Camera-space x ≥ 0 = right half of the screen ⇒ bubble to the left of the instance, mirrored, tail pointing at him. Images (bank 0): 0x2c bubble, 0x2d "?!", 0x2e "$", 0x2f..0x31 z/zz/zzz, 0x32 "...", 0x33/0x34 black/red curse. Callers: Kill(1) `0x44c2a9` (kind 0), race Kill(1) `0x44c5d8`, hard landing `0x464470` (kind 1, 2.0 s), sleeping `0x464601` (kind 4, 2.5 s, 130/50, alive = `P+0x52c`), message 1500 `0x46ccf6` `[inst, kind, duration·100, offY, offX]` (only K2R and S2R). Port: `game_bubble` / `bubbles_draw` in main_engine.c, `hud_world_bubble` in hud.c; test `WOODY_KILLAT=2` (death), 12 s standing still (zzz), `WOODY_POSAT="1 537 200 -2148"` in W1A (hard landing), log `WOODY_BUBLOG=1`.
+Verified against the disassembly (2026-09-24): constants 0.04/0.96/25/90/30/0.5/55/10/8 check out, `0x46d320` for `d = (dx,0,dz)` gives `R = (dz, 0, −dx)` (= screen right) and `U = (0,1,0)`; mirror value 2 (`0x470d80` case 2) flips u. `size` is `S+0x264`, the half-diagonal. Camera-space x ≥ 0 = right half of the screen ⇒ bubble to the left of the instance, mirrored, tail pointing at him. Images (bank 0): 0x2c bubble, 0x2d "?!", 0x2e "$", 0x2f..0x31 z/zz/zzz, 0x32 "...", 0x33/0x34 black/red curse. Callers: Kill(1) `0x44c2a9` (kind 0), race Kill(1) `0x44c5d8`, hard landing `0x464470` (kind 1, 2.0 s), sleeping `0x464601` (kind 4, 2.5 s, 130/50, alive = `P+0x52c`), message 1500 `0x46ccf6` `[inst, kind, duration·100, offY, offX]` (only K2R and S2R). Port: `game_bubble` / `bubbles_draw` in main_engine.c, `hud_world_bubble` in hud.c; test `WOODY_KILLAT=2` (death), 12 s standing still (zzz), `WOODY_POSAT="1 537 200 -2148"` in W1A (hard landing), log `WOODY_BUBLOG=1`. The race's hard landing (the air set of `0x4642f0` with state 1, RACE.md §4.6) has it too since round 29: `WOODY_POSAT="2.5 -78440 3500 3120"` in K1R.
 
 ### 4.2 Skeleton effect `0x477e40(&pos)` (callback `0x477980`) — kind 2/9
 Creation: lifetime **1.5 s**; `+8 = &player.pos (inst+0xc)`; `+0x10 =` old `player+0x6c`; `+0x14 =` image table
@@ -359,7 +365,17 @@ actually sets `+0x238 = 0` (`0x44cce0(0,1)`). Control is only blocked during the
   color `[0x5ac854..c] = (255,255,255)`:
   * `+0x704 ≥ 5.0` (`0x4a9884`): `acc (+0x708) += dt`; `acc ≥ 0.5` ⇒ `acc −= 0.5` and white; otherwise white while `acc ≤ 0.1`
     ⇒ **0.1 s white per 0.5 s**.
-  * `+0x704 < 5.0` (nearly expired): counter `+0x70c` ⇒ **white every other frame**.
+  * `+0x704 < 5.0` (nearly expired): counter `+0x70c` ⇒ **white every other frame**. (Exactly: both limits are 0 there, and
+    `0 + 0 < dt` selects the counter path `0x44cfb2`: `+0x70c++`, white and back to 0 when it reaches 2.)
+  * `+0x704` counts down in `0x44b1b0` next to `+0x270`/`+0x280` (`0x44b1fa`); Reset `0x44ab20` zeroes `+0x700..+0x70c`
+    (`0x44ad46..0x44ad58`), so a death or respawn ends the blinking.
+  * What "white" does (`0x43bdce`, the lit-vertex loop of the model draw): mode 1 multiplies the lit colour `v+0x24..0x2c`
+    (0..255) by `[0x5ac854..]`, mode 2 **adds** it, and both are clamped at 255 (`0x43be20..0x43be5e`). Adding 255 therefore
+    puts every vertex at 255 = the texture at full MODULATE2X brightness (not a flat white).
+  * Ported (round 29): `bonus_blink` in `player.c` sets the player instance's `tint_mode` 2 with rgb 1.0 (the render hook of
+    BOMB.md §3.4); type 38 (`player_collect`) sets `bonus_inv`. The per-frame alternation of the last 5 s is normalised
+    to 60 fps (at the port's uncapped ~300 fps it would read as a grey half-brightness). Test: `W1A --pickup 38 1.0`
+    (arg 300 = 3 s, so only the every-other-frame phase) with `WOODY_FPS=60 WOODY_SHOTSEQ="inv 1.6 0.0167 8"`.
 
 ---
 
@@ -393,4 +409,4 @@ The stars end as soon as the enemy is removed from the world (i.e. after min(2.5
    left/right depends on the view-matrix convention (not verified live).
 2. `0x44bf10(P, 0)` in the ground snap and `CamMgr+0x45c = +0x348` have not been investigated.
 3. Image content of bank-0 images 0x22..0x34, 0x39, 0x3a is inferred from usage, not viewed.
-4. `[0x5ac850] = 2`: how the renderer blends "white" (replace or add) has not been traced.
+4. ~~`[0x5ac850] = 2`: how the renderer blends "white"~~: add, clamped at 255 (§6).

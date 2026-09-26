@@ -14,7 +14,8 @@ All addresses are from `Woody.exe` (image base 0x400000). Disassembly: `out/disa
   y down, z forward; right-handed world, no mirroring; look-at with up = (0,−1,0) ≡ `gluLookAt(..., up=+y)`.
 - **Transitions (§6)**: linear interpolation (position + look offset) from the frozen old camera to the moving
   new one, duration 2.0 s default / message 570 (s) / 560 (distance÷speed); 580 selects smooth or cut. Mode 8 (TRAJ) is a
-  **rail camera** at a fixed distance from the player, not a time-based path. `0x41fbd0` is camera shake (±5·min(t,3) units).
+  **rail camera** that rides a polyline to the point at distance d from the player or, usually, the point abeam of him (§6.2),
+  not a time-based path. `0x41fbd0` is camera shake (±5·min(t,3) units).
 
 ### 0.1 Recipe: follow camera in C (per frame; P = camera position, persistent; `pos`, `look` = player position/look direction)
 
@@ -27,11 +28,11 @@ else {
     if (d < 300)      { s = (400/d)*dt*k*66.6667f; if (d + s > 300) s = 300 - d;  mv = -vn*s; catchUp = 0; }
     else if (d > 400) { s = (d/400)*dt*433.333f;   if (d - s < 400) s = d - 400;  mv =  vn*s; catchUp = 1; }
 }
+if (behind) behind_arc(&mv);                                     /* 0x423ed0: no overshoot, stay on the circle (3.5b) */
 if (rising && P.y - T.y < 300) mv.y = T.y - Tprev.y;  else if (rising) mv.y = 0;
 else                           mv.y = (T.y + 180 - P.y) * 6 * dt;
-N = P + mv;  hit = sweep_sphere(P, N, r=40, step=35, &N2);     /* push out of walls; corr = N2 - N */
-if (hit) N = N2;
-if (!in_world(N) || ray_blocked(N, T)) N = P;                    /* line-of-sight veto */
+N = P + mv;  if (sweep_sphere(P, N, r=40, step=35, &N2)) N = N2; /* 0x439c50: world + press nodes, all three axes (3.6) */
+if (ray_blocked(N, T)) N = sweep_sphere(P, P, 40, 35, &N2) ? N2 : P;   /* veto 0x423a40, then SubCenter 0x422f10 */
 if (ray_blocked(P, T) /*start of the frame*/) follow_breadcrumbs(); /* path {P, Tprev, T,...}, u += 0.04/frame */
 P = N;
 drop = (rising||falling) ? min(drop + 450*dt, 150) : drop*0.94f;   Lk = L - (0,drop,0);
@@ -73,7 +74,7 @@ translation `T' = T·R_B + T_B`. When building the view matrix (`0x41ef3d..0x41e
 
 | offset | type | meaning | source |
 |---|---|---|---|
-| +0x00 | u32 | "race info active" (0/1); +4, +8 = saved distance/height of the follow camera (150.0, 50.0 default) | `0x41dd67`, `0x41fab0` |
+| +0x00 | u32 | "follow parameters saved" (0/1, set once by message 650, never cleared within a level); +4, +8 = saved distance/height of the follow camera (ctor 120.0, 50.0) | `0x41dd67`, `0x41fab0` |
 | +0x0c | u32 | flag: transition parameters set this frame | `0x41f9b0`, `0x41f9d0` |
 | +0x10 | u32 | flag: transition mode set this frame | `0x41f9f0` |
 | +0x14 | u32 | flag: camera mode switched this frame | `0x41f49a` |
@@ -300,6 +301,14 @@ void Center_Step(C, vec3 *pos, int cell, M) {    // 0x422790
 }
 ```
 
+**The out-of-world tests are dead.** `0x40aba0` is `0x40ab60` on the node array `[level+0x14]` (`0x428cc0` / `0x428ce0` are
+the same call): it descends `child = (p[axis] + d <= 0) ? +8 : +0xc` while the child is `>= 0` and returns `-1 - child`
+(`or eax, -1; sub eax, ecx` at `0x40ab91`) for the first negative one - always `>= 0`. A kd tree covers all of space, so there is
+no point without a leaf, and the result can never be `-1`: 'Target Out of world' (the early return above), `P = Pstart`, the
+`'Center (ColSphere/Point) Out of world Move'` branches of `0x4231e0`/`0x422f10`, the "outside the world → previous camera
+position" of modes 2/4/0x20 and the "if the cell is valid" of the rail camera never fire. (28/28 levels also have every leaf
+`~child < ncells`, `tools/gelparse.py`.) The port leaves them out.
+
 ### 3.4 Normal state `0x4231e0` (CENTER)
 
 ```c
@@ -348,6 +357,9 @@ if (d < dMin) {                                              // too close: back 
 move.y = (T.y − P.y + C->height) · 0.02f;                    // 0x4aa1c0; overwritten in 0x4231e0 (3.4)
 ```
 
+`dMax` and `dStop` are both written by message 680 (`0x41fa80`, together with the behind distance `+0x280`), so the
+hysteresis on `C->catchUp` never matters and the dead zone is always `[d680 − 100, d680]` (port: `p->cam_dist`, §4).
+
 Speeds: backing off ≈ 66.7·(400/d) units/s (×10 if the player looks toward/walks toward the camera), catching up ≈
 433·(d/400) units/s (player walks at 600/s → the camera falls slightly behind while running and d grows to
 ≈ 554 where 433·d/400 = 600). Everything is dt-scaled (linear, no exponential damping) except y.
@@ -361,6 +373,13 @@ Speeds: backing off ≈ 66.7·(400/d) units/s (×10 if the player looks toward/w
   `dist+5` or the reverse): solve `|P + s·move − T|xz = dist` (A = |move|xz², B = 2·(P−T)·move, C = |P−T|xz² − dist²,
   `s = (−B ± √(B²−4AC))/2A`, the root with the smallest |s|) and `move *= s` – the camera stays on the circle.
 
+Checked instruction by instruction (`0x423ed0..0x4241f1`): `F` is `C+0x920` (the facing, since `p->dir` is `−look` in behind
+mode), both cross products are taken with y zeroed, so the test is on `az·F.x − ax·F.z` for `a = T − P` and `a = T − (P + move)`,
+and both must be strictly non-zero with opposite signs; `+0x9c8` is the flag of the 100-step pre-simulation `0x424200`. The circle
+test uses `d0 = |T − P|xz`, `d1 = |T − (P + move)|xz`: `(d0 < dist−5 && d1 > dist+5) || (d0 > dist+5 && d1 < dist−5)`; on a tie
+`|s2| <= |s1|` takes `s2 = (−B + √D)/2A`. `move.y` is scaled too but overwritten right after. Port: `camera_behind_arc()`
+(`src/player.c`).
+
 ### 3.6 Collision and line of sight
 
 Three mechanisms, all inside `0x4231e0`/`0x422790`:
@@ -370,12 +389,26 @@ Three mechanisms, all inside `0x4231e0`/`0x422790`:
    after every step `0x407340(out, 40.0, -1)` (static sphere test); on contact (`[0x4c4bd0] != 0`)
    the push-out vector `[0x4c4bb4..0x4c4bbc]` is added to `out`. Non-zero result → `C->corr (+0x2e4) = out − (P+move)`
    and return value 2; otherwise 0. The camera is thus a **sphere with radius 40** that slides along walls.
+   Details (`0x439c50`, `0x407340`): the step count is `floor(|N−P|/35) + 1`, but it is converted with an **inline `fistp` of
+   `n + 0.5`** into `[0x5ac8ac]`, not with `_ftol` `0x499580` (which the actor sweep `0x437580` uses and which truncates). Under
+   the FPU's default round-to-nearest-even an odd `n` becomes `n + 1` while the step stays `(N−P)/n`, so the sweep takes one
+   step **past** `N`: a normal per-frame move (< 35 units) is swept twice, to `P + 2·move`. That only matters on contact
+   (`corr = out − (P+move)` then carries the extra step); without contact the result is not used. The push-out of `0x407340`
+   is the per-axis maximum of the positive plus the minimum of the negative pushes of every world polygon (`0x409ad0`) and
+   every instance press node (`vt[9]` = `0x433ff0`) the sphere touches, and it is added on **all three axes** (the actor sweep
+   `0x437580` uses only x/z). Whether any step touched is the returned flag (`[0x4c4bd0]` kept in `edi`). The rounding
+   assumes the default FPU control word (no `fldcw` outside the CRT; Direct3D leaves the rounding mode alone) – not traced
+   live. Port: `camera_sweep()` with `nearbyintf(n + 0.5)`, the sphere test is `player_sphere_push()` (world + press nodes).
 2. **Line-of-sight veto** `0x423a40(newP, T)`: ray `0x4359b0(newP, T, -1)`; allowed if nothing is hit
    (`[0x53a554] == 0`) or if the object hit has category 7 (`0x422140`: `[0x53a554] == 2` and
    `([0x53a560]->vtable[4]()[0] & 0x1f) == 7`). Otherwise (`'Center ... Blind Move'`): `move = 0` and
    `0x422f10` ("SubCenter": computes an alternative step `(T−P)·dt·0.1` but doesn't actually use it;
    net effect: `corr = 0` unless the camera is currently touching a wall at its current spot). Also `move = corr = 0` if
-   `P+move(+corr)` falls outside the world (`0x40aba0` = −1). **So the camera refuses any step after which it can no longer see T.**
+   `P+move(+corr)` falls outside the world (`0x40aba0` = −1; dead, see 3.3). **So the camera refuses any step after which it can no longer see T.**
+   Exactly (`0x423682..0x4239b5`, jump table `0x4239d4`: `0x422e30` returns 0 or 2): the veto point is `Q = P + move + corr`
+   (corr is still 0 without contact); refused → `move = 0` and SubCenter calls `0x422e30` again with that zero move, which
+   sweeps `P → P` (two steps, see 1) and leaves `corr` = the push-out of the spot the camera stands on, or 0 (its own veto
+   only zeroes the unused alternative step). Then `P += move + corr`.
 3. **Target disappears behind geometry** (ray P → T blocked at the start of the frame, `0x4229b8`):
    state 2 "FIND" (`0x423ab0`). Breadcrumb trail `pad[]` (`C+0x2f0`, max 100 points): start `pad = {P, Tprev, T}`, n = 2.
    Every frame: if `pad[n]` → T is blocked: (if Tprev → T is also blocked: give up, `state = 0`,
@@ -408,6 +441,9 @@ Three mechanisms, all inside `0x4231e0`/`0x422790`:
    around the corner and returns to state 0 as soon as it sees T. Category 7 = type word `0x27` = class 80 only
    (`0x451b28`, the storm with shelter zones, PERSO_FRAME §4.2).
    Port: `camera_breadcrumbs()` in `src/player.c` (0.04 per frame normalised to 60 fps; `WOODY_CAMLOG=1` logs the trail).
+   The side effect `dir2b4` (`C+0x2b4`) is **write-only**: within the follow camera only `0x423d2e..0x423e7c` touch it (the
+   `+0x2b4` accesses at `0x4203xx` and `0x424ff7` belong to the sub-cameras of modes 0x10 and 0x20), and the ctor clears only
+   `+0x2b0`. Not ported (dead).
 
 There is **no** "slide the camera forward along the ray player→camera" in the normal update. That only happens
 during the **reset** `0x424940` (`p->flags & 2`): `D = T − F̂·dist + (0, height, 0)`; ray `0x4359b0(T, D, cell)`;
@@ -470,7 +506,7 @@ At `SetMode(0, arg)`: `p->flags &= ~1`; `C->prev = CamMgr state`; `state = 0` (`
 
 | question | answer |
 |---|---|
-| distance | xz distance to T is kept between 300 and 400 (`+0x7e0` = 400, dead zone 100); message 680 sets it |
+| distance | xz distance to T is kept between `+0x7e0` − 100 and `+0x7e0` (300..400; `0x4243a3`, `0x424516`; catching up stops at `+0x7e4`, always the same value); message 680 sets both together with the behind distance `+0x280`. `+0x7e0`/`+0x7e4` are written only by the ctor, 680 (`0x41fa80`) and 660 (`0x41fb00`); every other writer of the distance also goes through `0x41fa80` (`0x404dbd`, `0x405824`, `0x405858`, `0x44c513`, `0x45630e`, `0x456bd9`: race start, race pause menu, race crash) |
 | height | `P.y → player.y + 120 + 180` at `6·dt` per frame; message 670 sets the 180 |
 | look target | player + (0,140,0), unlagged |
 | smoothing | xz: linear speed ∝ distance (433·d/400 /s catching up; 66.7·400/d /s backing off, ×10 if the player looks at the camera); y: exponential 6/s |
@@ -499,14 +535,14 @@ Byte tables `0x498e84` (500–580) and `0x498f00` (600–800).
 | 580 | cam, mode | transition mode: 1 = smooth (`+0x10a=0`), 2 = hard cut (`+0x10a=1`) | `0x498d4e` → `0x41f9f0` |
 | 590 | cam | `+0x690 = 1` | `0x498d63` → `0x41f630` |
 | 600 | cam | `+0x690 = 0` | `0x498db8` → `0x41f640` |
-| 650 | cam | race info on: saves follow-camera distance/height (+0x280, +0x7d8 of sub118) in `CamMgr+4/+8`, resets follow camera (`0x422350`, `0x4247f0(0)`) | `0x498df9` → `0x41fab0` |
-| 660 | cam | race info off: restores distance/height | `0x498e0a` → `0x41fb00` |
+| 650 | cam | **remember** the follow-camera distance/height (+0x280, +0x7d8 of sub118) in `CamMgr+4/+8` – only the first time: `CamMgr+0` is set to 1 and never cleared again (not even by the reset `0x41df70`) – and re-seat the follow camera behind the player (`0x422350`, `0x4247f0(0)`). Not a race message: W1A object 0 sends it 10 frames after the start, 14 levels in all | `0x498df9` → `0x41fab0` |
+| 660 | cam | if `CamMgr+0`: put the remembered distance (all three fields of 680) and height back. The levels wrap it around volumes: W1A volume 52 (foot of the first climb shaft) `670 150; 680 300` on entry, `660` on leaving; W3B volume 67 `680 200; 670 600` | `0x498e0a` → `0x41fb00` |
 | 670 | cam, h | follow-camera **height**: `sub118+0x7d8 = (float)h` | `0x498dc9` → `0x41fa60` |
 | 680 | cam, d | follow-camera **distance**: `sub118+0x7e0 = +0x7e4 = +0x280 = (float)d` | `0x498de1` → `0x41fa80` |
 | 690 | cam, z | zoom factor `+0x678 = z·0.01` (only if > 0) | `0x498e1b` → `0x41f660` |
 | 700 | cam | zoom factor back to 1.2 | `0x498e39` → `0x41f680` |
-| 710 | cam | auto-zoom on (`+0x66c |= 4`) | `0x498e4a` → `0x41f650` |
-| 800 | cam, inst | `CamMgr+0x664 = inst[inst]` (camera instance that follows the position) | `0x498d93` |
+| 710 | cam | auto-zoom on (`+0x66c |= 4`); sent with the boss rail cameras only (W1B 403, W2B 534, W2D 747/766, W3D 830, WWS 365). Nothing but the reset `0x41df70` (teleport / respawn `0x458f90`) clears the bit, 700 does not | `0x498e4a` → `0x41f650` |
+| 800 | cam | `CamMgr+0x664 = inst[arg 0]` = **this camera object itself**: from now on it takes the camera position every frame and is a volume actor (EVENTS.md §2.1, §6); K2R 483, S2R 328, W2B 395 | `0x498d93` |
 
 `SetMode(bitIndex, arg)` = **`0x41f410`** (`mode = 1 << bitIndex`): warns if no
 transition mode (+0x10) or parameters (+0xc) have been set; saves `prevMode/prevArg/prevState`
@@ -517,6 +553,10 @@ mode-specific init (`0x41e450` mode 1, `0x41e520` mode 2, `0x41e560` mode 4, `0x
 `0x41e630` mode 0x10, `0x41e4e0` mode 0x20 (+ letterbox off), `0x41e5f0` mode 0x40,
 `0x41e670` mode 0x100 (+ cut), `0x41e6c0` mode 0x200 (+ cut), mode 0x80: letterbox on if
 `+0x618 & 2`). Finally `+0x134 = mode`, `+0x138 = bitIndex` (the 2nd argument only goes to the mode-1 init `0x41e450`).
+
+Port (`cam_msg`, `src/main_engine.c`): 500..580 and 650..710; the zoom is `Player.cam_zoom` and applies to every mode
+(`tan(vfov/2) = zoom·sy`). `0x458f90` (teleport 26, respawn) starts with the CamMgr reset `0x41df70`: zoom 1.2, letterbox
+off, shake 0, auto-zoom bit cleared; the follow camera's distance/height and the 650 memory survive it (`cam_hard_reset`).
 
 The frame function `0x4019c0` (message dispatch) clears +0xc/+0x10/+0x14 before processing the
 script messages and warns afterwards if transition parameters/mode were set without a mode switch.
@@ -626,14 +666,31 @@ Message 540 `(cam, d)` sets `p3b0.traj (+0x4c)`, `p3b0.+0x44 = (float)d`, `SetMo
 * TRAJ points: `traj+0` low16 = count, `traj+0x10` = array with stride 0x10, xyz at `+4/+8/+0xc`; `traj+0xc` = total length (`0x437ca0`).
 * Player y is filtered: `y = (1−k)·y + k·y_prev`, `k = 0.95^(30·dt)` (`0x4aa190` double, `0x4aa18c`, pow = `0x4995c0`);
   while rising/falling (`flags & 0xc`), y stays frozen at the previous value (`0x4215ad..0x421602`).
-* Per segment `0x421c00(A, B, player, d²…)`: intersections of the segment with the **sphere of radius `d` around the player**
-  (quadratic equation, discriminant < 0 → none); one candidate is chosen from the results (closest to the previous
-  camera position `C+0x94`; details not fully read). No candidate → `0x420e40`: **closest point on the
-  polyline** to the player (projection onto each segment, clamped to the endpoints, smallest distance²).
+* Only `count − 1` segments are walked (`0x421665`): the closed flag of the TRAJ is not read.
+* Per segment `0x421c00(c, d, A, B, &o1, &o2)`: intersections of the segment with the **sphere of radius `d` around the player**
+  `c` (`a = |B−A|²`, `b = 2(A−c)·(B−A)`, `C = |A−c|² − d²`; discriminant < 0 → none). With `s1 <= s2`: `s1 < 0` → `s1 = s2`
+  (both < 0 → none); `s1 > 1` → `s1 = s2` (both > 1 → none); a single root in range serves as both. `o = A + (B−A)·s`.
+* Choice (`0x4216f0..0x4217dd`): the **first** segment that meets the sphere gives its entry point `o1` (only `o1`), and so
+  does every meeting segment on the first frame (`+0x50` bit 0 clear), so there the last one wins. Afterwards `o1` and then
+  `o2` of each further segment replace the candidate when nearer (squared) to `Q = C+0x94`, the camera position of the previous
+  frame (on the first frame the current CamMgr camera, copied in by the init `0x420e10`).
+* No candidate → the filtered y is dropped (`p+0x24` = the unfiltered y of this frame, `0x42181e`; the filter state `p+0x48` keeps
+  the filtered value) and `0x420e40` runs: per segment the point `q` nearest to the player (projection clamped to the ends); a
+  segment is considered when it is the first or its `|q − c|²` is below the running best; then, when the segment passes within
+  **100 units in xz** (`0x421e80`: `0x421c00` with the y of both vectors zeroed = a vertical cylinder, points still `A + (B−A)s` in
+  3D), the candidate is whichever of its two crossings is nearer to the current rail point `p+0x38` and the running best becomes
+  that distance², else `q` with `|q − c|²` (the two measures are compared with each other – an original quirk). `d` is usually
+  smaller than the rail's distance to the player (50 for 10 of the 23 uses, 300 for 3, 0..8 for the boss cameras and W2B 252), so in practice the
+  camera sits at the point of the rail **abeam of the player**, kept 100 away when the rail passes right by him.
 * The rail point `p3b0+0x38` moves toward the chosen point at max. `1000·dt` per frame (`0x4aa188`); on the first
-  frame (`+0x50` bit 0 = 0) it jumps there directly. If `0x428ce0` (world cell) succeeds: `C->pos = p+0x38`.
-* Orientation: look-at from the camera position toward `p+0x20` (player, filtered y) using `0x41af10` cross products
-  (`0x421985..0x421afb`).
+  frame (`+0x50` bit 0 = 0) it jumps there directly. `0x428ce0` (world cell) always succeeds (3.3): `C->pos = p+0x38`.
+* Orientation: look-at from the camera position **straight at `p+0x20`** = the player's feet (vt[34]) with the filtered y
+  (`0x421985..0x421afb`, up (0,1,0) and `0x41af10`). Both exits write `p+0x1c = 0` (`0x42182f`, `0x421bd6`), and that is the look
+  offset `CamMgr+0xc4 = (0, +0x3cc, 0)` the transition blends – there is no +140 as in the follow camera.
+* Port: `rail_pick` / `rail_seg_sphere` / `rail_nearest` + the mode-8 branch of `cam_update` (`src/main_engine.c`). Tested on
+  W1A 295 (the first climb shaft: a vertical rail 564 units beside the wall, `d` 300 → never met, so the camera rides the rail at
+  Woody's height and films the climb from the side; `--pos 500 -990 1780 --yaw 0 --peck 1.0 0.15` with `WOODY_TAP=1`), W1A 284
+  (the fan ledge, `--pos 2063 -892 -578 --yaw 90`) and the W1B boss (403, with 710).
 
 The TRAJ is thus a **rail along which the camera follows the player at a fixed distance**, not a path played back over time.
 (A time-driven TRAJ player for cameras has not been found in the CamMgr.)
@@ -703,7 +760,7 @@ Constants: `0x4a9004`=0, `0x4a900c`=1, `0x4a9010`=100, `0x4a9014`=0.5, `0x4a9030
 4. `0x4359b0`/`0x497ed0` (ray) and `0x407340` (sphere test, push-out vector `[0x4c4bb4]`) have only been treated as a black box:
    `[0x53a554]` 0 = free, 1 = world geometry, 2 = instance (`[0x53a560]`); category-7 instances do not block
    the camera (which class is 7?).
-5. Mode 8 (rail): the choice between multiple sphere intersections (`0x4216f0..0x4217dd`) has not been fully worked out.
+5. ~~Mode 8 (rail): the choice between multiple sphere intersections~~ – worked out in §6.2, including the fallback `0x420e40`.
 6. Modes 2, 4, 0x10, 0x20, 0x40, 0x100, 0x200 (updates `0x4254c0`, `0x425810`, `0x4203c0`, `0x424bf0`, `0x420cf0`,
    `0x420010`, `0x425b80`) have not been read in detail; only their parameters (§1.2) and input (3.1). Exception: 0x200 (`0x425b80`) is
    decompiled in PERSO_LOOK.md §3.
@@ -711,3 +768,15 @@ Constants: `0x4a9004`=0, `0x4a900c`=1, `0x4a9010`=100, `0x4a9014`=0.5, `0x4a9030
 8. Action 0xa: which key/button this is by default is in the input table (`[0x5e6188]`), not checked.
 9. `0x41fb50(m, &pos, f)` (callers `0x459030`, `0x46496a`, `0x464aab`): helper routine "look from point `pos` toward the
    player" (mode 2, speed 100, smooth) – used by the engine itself, context not investigated.
+
+## Port notes (messages 650..800, 2026-09-26)
+
+`src/main_engine.c` `cam_msg`: 650/660/670/680/690/700/710/800 as in §4 (650 saves once per level in `g_cam.fsaved` and
+clears `cam_init`, which re-seats the follow camera through `player_camera_reset`; 670/680 write `Player.cam_height` /
+`cam_dist`, and `camera_step` in player.c now takes the distance band from `cam_dist` instead of the constants 300/400).
+Auto-zoom (710) is evaluated in `cam_update` after the mode update with the mode's target point T (`+0x278`; for mode 1 the
+player position, for the others the port's T, which may differ by the +50 of `0x41f960`), `zoom = (1−t)·1.1 + t·0.2`,
+`t = clamp((d − 300)/2700)`; the resulting zoom (`Player.cam_zoom` = `+0x678`) now applies in every mode except 0x80/0x200,
+with 0.5625 instead of 0.75 in the letterboxed mode 4. The camera reset `0x41df70` (level start `0x402b0d` and `0x458f90`,
+i.e. teleport 26 and respawn) is `cam_reset()`: shake off, zoom 1.2, auto-zoom off. Messages 530, 550, 590, 600 are sent
+by no level and stay unported (logged by `WOODY_MSGUNK`).

@@ -71,7 +71,16 @@ typedef struct Enemy {
     Vec3 knock_dir;
     int attackable, removed, chasing;
     int list1;                                   /* registered in actor list 1 (RegisterActor 0x40c080) by this frame's Update: types 12 and 15 only */
-    int wander_walk; float wander_t, want_ang;   /* wander: alternating idle / walk actions */
+    float want_ang;                              /* H target angle (+0x04) */
+    /* behaviour Wander (0x41bf30, docs/ENEMY.md 5.4): +0x50 action, +0x54 its remaining time, +0x30.. the 8 weights (message 11/19..27),
+     * +0x60 homing timer, +0x69 "turned toward home, walk next", +0x68 leash on (message 11/5), +0x58/+0x5c avoidance timer / last actor */
+    int w_act, w_homing, w_leash; float w_dur, w_home_t, w_avoid_t; const void *w_avoid; unsigned short w_weight[8];
+    int guard;                                   /* +0x174 flag 2 (message 11/6): FindTarget measures from the home point */
+    int lanim, lsub;                             /* AnimCtrl +0x1c4 for the wander actions: running record and place in its chain (-1 = a plain state anim) */
+    Vec3 start; float start_ang;                 /* +0x128 start position and H start angle (Reset, message 11/4) */
+    float p154, p48, p50;                        /* message 11/18 (+0x154, x 0.01), 32 / 34 (P+0x48 / +0x50): stored, no reader in the classes 4..9 / 12 / 13 */
+    int flag20;                                  /* +0x174 flag 0x20 (message 11/30): no reader */
+    int need_snap;                               /* Reset's ground snap 0x41a1a0 still to do (needs the level geometry, so on the next update) */
     uint32_t path_to; int path_dir;              /* patrol along the instance TRAJ */
     EnemySensor sens;                            /* +0x124 */
 } Enemy;

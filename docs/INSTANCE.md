@@ -227,7 +227,7 @@ path length (`0x437ca0`, sum of the npoints−1 segments; that function also cle
 | 42 | a, f | `0x42dcb2` → `0x437d10(a≠1, f·0.01)` | one-shot pass over the path in f/100 s; start = now; afterward `inst.pos` = the first point (a == 1) or last point (a ≠ 1) and `0x4077f0(0)` (re-determine cell) |
 | 43 | a, f, c | `0x42dcdd` → `0x437d50(a≠1, f·0.01, c==1)` | like 42 but in a loop (loop time f/100 s), c == 1 = back-and-forth |
 | 44 | – | `0x42dd9a` → `0x437d90` | stop (clears bit 17); position stays put |
-| 46 | a, b | `0x42dc7d` → `0x4381e0` | orientation flags |
+| 46 | a, b | `0x42dc7d` → `0x4381e0` | orientation flags: bit 21 = (a == 1), bit 22 = (b == 1); 42 (`0x437d10`, clears bits 18-19) and 43 (`0x437d50`, clears 18 and 20) keep them. Sent only to the flying launchers (type 42) of S1R (172, 175, 178, 179, 181) and S3R (152, 156), always `[., 1, 1]`, followed by 42 `[., 0, 1]` (to the path end at once) and 42 `[., 1, T]` (fly the path). Ported (instance.c) |
 All four do nothing if `inst+0x78 == NULL`.
 
 Update `0x437da0(T, inst)`, called at the start of the animation clock (`0x43ef05`), so once per frame the instance
@@ -378,7 +378,7 @@ The clock (and thus the path follower) only runs for instances with a cell (`+0x
 | +0xc0 | slot0 == slot1 |
 | +0xc4 / +0xc8 / +0xcc | frame number / animation / frame position of the previous event scan (`0x42f5e0`: events between previous and current frame position → `0x43a880` → `0x4695f0`) |
 | +0xd0 | phase mask `(1<<round(phase·15))<<16`; renderer and collision (`inst+0xd0 & hull-id & 0xffff0000`, see PERSO_MOVE) use it to enable/disable nodes per animation phase |
-| +0xd4 | head of the link list (message 34) |
+| +0xd4 | head of the link list (message 34): instances not drawn while the camera is in this one's volume (§10.1) |
 | +0xd8..0xec | texture override (§2) |
 | +0xf0 | SetFlags bits (§6) |
 | +0xf4 | runtime state per mesh node |
@@ -401,11 +401,50 @@ The clock (and thus the path follower) only runs for instances with a cell (`+0x
 | 15 / 17 | x, mode, f, t2 | `0x42d9c3` / `0x42daae` | UV scroll finite / endless (§2) |
 | 16 / 18 | x, mode, f | `0x42da32` / `0x42db0f` | texture frames one-shot / loop (§2) |
 | 19 | – | `0x42db86` | texture overrides off |
-| 34 | other | `0x42dc21` | add a link pair (table `[0x50944c]+0x50`, counter +0x4c), `+0xd4` = new head |
+| 34 | other | `0x42dc21` | add a link pair (table `[0x50944c]+0x50`, counter +0x4c), `+0xd4` = new head; read by `0x42aa0b`: `other` is not drawn while the camera is inside a volume node of this instance (§10.1) |
 | 42 / 43 / 44 / 46 | see §3 | | path follower |
 | 45 | bits | `0x42ddb4` | `+0xf0` gets the bits `& 0x23` added |
 | 56 | v | `0x42de00` / `0x44e91b` | base: `+0x6c = v/100`; derived: fade target `+0xfc = v/100` |
 | 57 | v | `0x44e907` | derived only: fade speed `+0x100 = v/100` per s |
+
+### 10.1 Message 34 `[inst, other]`: hide `other` while the camera is inside `inst`'s volume
+
+`0x42dc21` (base handler, so every class that falls through to `0x42d5e0`):
+```c
+Level *L = [0x50944c];
+L->pairs[L->npairs] = (Pair){ L->inst[other & 0xffffff] /*+0x6c*/, inst->links /*+0xd4*/ };   /* table +0x50, 8 B a pair */
+inst->links = &L->pairs[L->npairs++];                                                          /* counter +0x4c */
+```
+The ctor sets `+0xd4 = 0` (`0x42e243`), the copy at `0x42e140` passes it on, and the **only reader** is the visibility
+pass `0x42a980` (`0x42aa0b..0x42aa5a`), which runs every frame before the sector walk:
+```c
+cell = World->cells[0x408180(camera_pos)];                  /* the kd leaf the camera is in */
+for (k = 0; k < cell->n /*+0x40*/; k++) {                   /* .col list: every instance whose geometry touches the leaf */
+    I = World->obj[cell->ids[k] & 0xffff];
+    if ((I->flags8 & 0x1f) != 1) continue;                  /* plain instances */
+    I->vtbl[2](I, 1);                                        /* clock / pose */
+    if (0x4300c0(I, camera_pos))                            /* the point is inside one of I's volume nodes (model +0x48/+0x4c) */
+        for (p = I->links; p; p = p->next) p->inst->stamp20 = [0x4c4c08];
+}
+```
+`0x42a840` (the per-sector instance walk that fills the draw list `+0x60/+0x64` and calls `vtbl[2](0x81)`) skips an
+instance whose `+0x20` already equals this frame's stamp (`0x42a925..0x42a92f`). So a linked instance is **neither drawn
+nor updated** while the camera stands inside the volume; nothing else changes (collision queries use their own stamps:
+`0x407171`/`0x4074ca` bump `[0x4c4c08]` per query). `0x4300c0` transforms the point into each volume node's space
+(`0x440fc0`) and requires `plane·p ≤ 0` for all its planes, the same convex test as the trigger volumes (`0x430210`).
+
+Use: an occlusion hint of the level designers. 340 sends, all in init code: K1R object 346 → slot 346 (model 15, one volume
+box scaled ×38/×17.6/×10.6, world box x −44070..−29970, y 3273..7525, z −11273..5318) hides 57 instances; K2R 499/500 → 53
+and 30, S2R 482/483 → 94 and 41 (K2R and S2R share the track geometry and the two volume boxes); W2D 709 (model 41, box
+x −12512..−7202) hides 65 and **holds the level start**: 31 instances that the camera would otherwise draw at the start are
+dropped. The linked instances are decor behind walls/rock seen from inside the volume, so the picture does not change (a
+W2D start frame with and without: only the bobbing tyres differ); it only saves drawing. The volume instances are listed
+in every leaf their box touches (`.col`: K1R 346 in 1592 of 7381 leaves), so the leaf condition adds nothing to the
+volume test.
+
+Port: `rnd_link` / `links_hide` in `src/render_gl.c` (pairs kept in the Renderer, test with `volume_contains`, a
+linked instance's `drawn` is cleared after the frustum pass; a volume instance hidden by message 6 hides nothing, as
+it is in no cell list then). `WOODY_LINKLOG=1` prints each volume box, and every entry/exit of the camera.
 
 ## 11. Recipe for reimplementation in C
 

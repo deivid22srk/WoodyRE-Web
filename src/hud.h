@@ -7,7 +7,7 @@ typedef struct {
     int face;                   /* 0 Woody, 1 Knothead, 2 Splinter (hud+8) */
     int race;                   /* hud+4: race levels have no health row */
     int lives, bonus, got, total, show_total, unique, charges;
-    int extended;               /* pause menu / message 1172: also the $ and charge counters */
+    int dollar;                 /* message 1172 this frame (app+0x70 -> 0x4484a0): the $ counter takes the place of the bonus counter */
     float health, power;        /* power = charge time * 2/3, 1 = full */
 } HudState;
 
@@ -16,6 +16,10 @@ void hud_free(void);
 void hud_begin(int win_w, int win_h);                           /* 640x480 virtual, origin top left; after the 3D frame */
 void hud_end(void);
 void hud_draw(const HudState *s, float dt);
+/* 0x448450: hud+0 = 0 game, 1 the pause pages 0x18 / 0x19 (the extended HUD: $ and charge counters slide in),
+ * 2 hidden (every other menu page); call it every frame before hud_draw. A race level (race = hud+4) changes the
+ * state without the slide animations. */
+void hud_state(int state, int race);
 void hud_boss_bar(int cur, int max, float t);                   /* 0x47b0b0: the boss health row, t = seconds since 0x4484d0 switched it on */
 void hud_text_open(int halign, int valign, const uint32_t *ids, int n);   /* message 1080; ids = string refs, 0x20001 = spacer */
 void hud_text_draw(int closed, float dt);                       /* closed = the script variable went non-zero */
@@ -67,7 +71,13 @@ void hud_results_show(void);                                    /* 0x454560: iri
 void hud_results_hide(void);                                    /* 0x454580: everything gone at once, iris opens (state 2/3) */
 int  hud_results_confirm(void);                                 /* 0x4545a0: 1 = all counted (OK); while counting it skips to the end */
 int  hud_results_draw(const HudResults *r, float dt);           /* 1 while a number is counting (tick loop SoundFx 0x3d) */
-int  hud_sky_images(uint32_t out[5]);                           /* level bank images in cube order 3,0,1,2,4 when the bank has >= 5 images, else 0 */
+/* menu page 4, the high scores of one character (docs/MENU_LOAD.md 4.8, class 0x45bfb0, draw 0x45bff0): one row per
+ * finished level in play order, up to the first unfinished one. slide = the texts' offset (600 -> 0 while opening,
+ * 0 -> 600 while closing), grow = the backdrop's scale (0 -> 1, 1 -> 0). */
+typedef struct { uint32_t world, part; int best, race; float time; int en_got, en_tot, w_got, w_tot; } HudScoreRow;
+typedef struct { int face; float slide, grow; int nrows; HudScoreRow row[9]; } HudScores;
+void hud_scores(const HudScores *s);
+int  hud_sky_images(uint32_t out[5]);                          /* level bank images in cube order 3,0,1,2,4 when the bank has >= 5 images, else 0 */
 /* pickups are sprites, not meshes (docs/BONUS.md 3.1, 0x479530): n = 0 life, 1 charge, 2 W, 3 $, 4 flag. Call between the 3D frame and hud_begin. */
 void hud_world_sprites_begin(const float *right, const float *up);
 void hud_world_sprite(int n, const float *pos, float size);

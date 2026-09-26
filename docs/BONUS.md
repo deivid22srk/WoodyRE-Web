@@ -203,6 +203,10 @@ called three times per particle in the order x, y, z.
   along with that `Perso+0x264 = Perso+0x71c = Perso+0x4e0`.
 - **Type 36**: permanent. Update `0x44f770` tests the save flag (`0x450730`) every frame; if set →
   `0x407850` (the object disappears immediately after loading a level in which it was already collected).
+  The flag is `rec+0x05+n` of the current level in the save block of the Perso's character (`[0x5e5814]+0x380`),
+  n = `+0x108`, the order in which the level script made its type-36 objects (message 1200). Port: `g_uniq` /
+  `uniq_flag` / `uniq_update` in `src/main_engine.c` (registered next to the 1200 handler, set in the Collect of
+  message 10, tested every frame); verified on W1A (slot 0x124 = item 0).
 - Types 30/35/38: no respawn code.
 
 ## 3. Per-frame behavior

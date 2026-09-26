@@ -41,4 +41,10 @@ void audio_music_pause(int paused, float fade);
 int  audio_music_track(void);                                       /* -1 = none */
 void audio_rtc(int track);                                          /* one-shot cinematic stream; -1 = stop */
 
+/* The sound of an HNM film (hnm.c, logos_play in main_engine.c): a queue of interleaved s16 PCM, mixed at full gain beside the
+ * rest (the original hands it to its own DirectSound buffer, docs/HNM.md 3). push returns the frames taken (up to ~4 s queued). */
+int  audio_pcm_open(int rate, int channels);
+int  audio_pcm_push(const int16_t *pcm, int frames);
+void audio_pcm_close(void);
+
 #endif
