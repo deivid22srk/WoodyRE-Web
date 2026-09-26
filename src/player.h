@@ -119,6 +119,9 @@ typedef struct Player {
      * before every update. Mode 0x200 block CamMgr+0x540: facing at the start (+0x54), yaw +0x78, pitch +0x7c, deltas +0x28/+0x2c */
     int look, look_prev6, look_key, look_show, cam_mode, look_dx, look_dy; float look_yaw0, look_yaw, look_pitch;   /* look_show = +0x268 */
     Instance *ride; int ride_state; Vec3 ride_seat, ride_p0; Quat ride_q, ride_q0, ride_cur; float ride_t; int ride_jprev, ride_aprev;
+    /* Perso state 7 (docs/PERSO_STATE7.md): +0x55c, the object whose first type-0 vector marker carries him (message 1044 -> 0x44e140,
+     * every frame 0x44e1c0, message 1045 -> 0x44e1a0); non-NULL = state 7. No shipped level script sends 1044 */
+    const Instance *follow; int follow_nomark;
     /* statistics */
     float play_time;                /* Perso+0x710 accumulator (0x453ca0): seconds played in this level, one of the five result stats */
     uint32_t events_sent;
@@ -163,6 +166,8 @@ void player_teleport(Player *p, Vec3 pos, int have_dir, Vec3 dir);   /* message 
 /* message 1040 / 1140 (0x44dda0): the action number IS the raw .ins animation. 17 = into a door, 18 = out of it;
  * 10..16, 19 and 72..78 (the results animations) run with the root motion of 0x44e290. */
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);
+void player_follow(Player *p, const Instance *obj);   /* message 1044 (0x44e140): Perso state 7, carried by obj's type-0 vector marker */
+void player_follow_end(Player *p);                     /* message 1045 (0x44e1a0): +0x55c = 0, SetState(0) */
 int  player_segment_blocked(const Player *p, Vec3 a, Vec3 b);   /* world polygons only */
 Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r);   /* 0x407340: world + instance press nodes */
 float gel_ray_frac(const GelFile *g, Vec3 a, Vec3 b);   /* first world polygon hit on a->b as a fraction 0..1, or 2 when nothing is hit */                 /* Perso vt[38] */
@@ -184,6 +189,8 @@ int  game_enemy_thinks(const Instance *inst);           /* is the instance in th
 /* the comic speech bubble 0x478980(inst, kind, duration, offY, offX, live) (docs/PERSO_DEATH.md 4.1): kind 0 "?!" (Kill 1),
  * 1 curse (hard landing), 2 "$", 3 "...", 4 "zzz"; with `live` it lasts while *live != 0 instead of `duration` */
 void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, const int *live);
+/* 0x42f6b0(inst, typecode, out, 0): the first vector marker with that typecode in world space, posed; P0 and dir = P1 - P0 */
+int  game_inst_vector(const Instance *inst, uint32_t tc, Vec3 *p0, Vec3 *dir);
 /* and the beak impact 0x479c80(kind, point, normal) (docs/PARTICLES.md 4, docs/OBJECTS.md 1.6):
  * kind 1 = a hit of the attack probe (a flash; no normal needed), 0 = the wall he is climbing (splinters and a hole) */
 void game_peck_fx(int kind, Vec3 pos, const Vec3 *n);

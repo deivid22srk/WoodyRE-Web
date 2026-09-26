@@ -584,6 +584,8 @@ static int inst_vector_at(const Instance *in, uint32_t tc, uint32_t n, Vec3 *p0,
     return 0;
 }
 static int inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir) { return inst_vector_at(in, tc, 0, p0, dir); }
+/* for player.c (Perso state 7, 0x44e1c0): 0x42f6b0 poses the instance (vtbl[2](1)) before it reads the marker */
+int game_inst_vector(const Instance *in, uint32_t tc, Vec3 *p0, Vec3 *dir) { ins_pose((Instance *)in, in->anim, in->anim_time); return inst_vector(in, tc, p0, dir); }
 /* ---- results screen (docs/GAMEFLOW.md 5.1 and 10.1): the hub script ends a level with 1140 [door, var], the engine
  * puts the Perso on the door vector with scripted action 0x4a (he comes down at the door with his parasol, animation
  * 74 with its own camera track) and runs the state machine perso+0x724 while menu page 0x1e is up:
@@ -3142,6 +3144,10 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
         break;
     case 1043: if (g_player) player_script_hold(g_player, 2.0f); break;
+    /* 0x4451a1 / 0x4451c2: Perso state 7 (docs/PERSO_STATE7.md), carried by the type-0 vector marker of inst; 1045 ignores its argument.
+     * No shipped level script sends either (every SEND in the 28 code files has an immediate id); WOODY_MSGAT can */
+    case 1044: if (g_player) player_follow(g_player, in); break;
+    case 1045: if (g_player) player_follow_end(g_player); break;
     case 30: if (g_player && in == g_player->inst && m->nargs > 1) player_lock(g_player, (float)(int32_t)m->args[1] * 0.01f); break;   /* Perso LockMove 0x44cde9 [_, cs] (docs/PERSO_LOOK.md 6) */
     case 26:                                                                                                /* Perso teleport 0x44ce11 [_, inst, mode]: 1 = position, 2 = position + direction of the vector marker */
         if (g_player && m->nargs > 2) {
@@ -3614,7 +3620,7 @@ int main(int argc, char **argv)
             }
             L.player.dead_cam_req = 0;
             if (!cin_running()) enemies_update(&g_enemies, &L.player, cam.pos, dt);
-            if (g_cam.plane_on) {                                                   /* 0x459eb0: the player stays on the vertical plane through the marker */
+            if (g_cam.plane_on && !L.player.follow) {                               /* 0x459eb0: the player stays on the vertical plane through the marker (Perso_Move only: not in state 7) */
                 Vec3 n = { -g_cam.plane_d.z, 0, g_cam.plane_d.x }; float off = (L.player.pos.x - g_cam.plane_a.x) * n.x + (L.player.pos.z - g_cam.plane_a.z) * n.z;
                 L.player.pos.x -= n.x * off; L.player.pos.z -= n.z * off;
             }

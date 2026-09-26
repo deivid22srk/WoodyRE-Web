@@ -990,7 +990,7 @@ static void attack_trigger(Player *p, const PlayerInput *in, float dt)
  * The port keeps that state in the fields that stand for it - 2 = dead, 4 = hanging in a peckable wall, 5 = a
  * scripted action, 8 = riding a class-20 rocket, 6 = state6, 3 = look - so the messages that only answer "when the Perso is free"
  * (1042, and 0x465740 when he steps onto a rocket) ask here. */
-int player_state_free(const Player *p) { return !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride && !p->state6 && !p->look; }
+int player_state_free(const Player *p) { return !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride && !p->state6 && !p->look && !p->follow; }
 
 /* 0x458e40 Perso_BrakeCharge, the one brake that is called from outside the attack controller: the game code calls it
  * at 0x44542f, in the handler of message 1042, when the player is standing at a peck switch. Releasing the attack
@@ -1071,6 +1071,7 @@ static void player_reset(Player *p)                                     /* vt[17
     p->duck = 0; p->duck_t = 0;                                          /* 0x44ad28 */
     p->look = 0; p->look_show = 0; p->inst->fade = p->inst->fade_target = 0; p->inst->fade_rate = 100.0f;   /* 0x44ac15 +0x268 = 0; 0x44ad6a: 0x44e7f0(0, 1), visible again after a death in state 3 */
     p->special_st = 0; p->special_t = 0;                                 /* 0x44ad5e / 0x44ad64 */
+    p->follow = NULL;                                                    /* 0x44ac84: +0x55c = 0; Reset's SetState(0) (0x44ac3f) ends state 7 */
     if (p->race_char) race_enter(p, 1);                                /* 0x44ac33: SurfEnter + state 1 */
     player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
     /* 0x445930 -> 0x44a810 -> Reset 0x44ab20 clears Perso+0x4ec (0x44ad22): the side view's plane lock ends with the death,
@@ -1575,7 +1576,7 @@ static void look_update(Player *p, const PlayerInput *in)
         if (getenv("WOODY_LOOKLOG")) printf("  LOOK off (%s), back to state %d, facing %.0f\n", forced ? "camera left mode 0x200" : "key", p->state6 ? 6 : 0, p->yaw * 57.2958f);
         return;
     }
-    int ok = !p->race_char && !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride && (p->state6 ? p->bsub == 2 : !p->atk);
+    int ok = !p->race_char && !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride && !p->follow && (p->state6 ? p->bsub == 2 : !p->atk);
     if (ok && p->on_ground && p->cam_mode == 1) {                           /* 0x44ba11: +0x22c, CamMgr+0x138 == 0 */
         idle_reset(p);                                                      /* 0x464620 */
         p->look_prev6 = p->state6; bomb_drop(p);                            /* SetState(3): 0x44c9ad lets go of the bomb, +0x220 = 6 */
@@ -1756,6 +1757,50 @@ static void move_collide(Player *p, Vec3 *dispp, float dt, int racing, const Ins
     *hit_inst_out = hit_inst; *hit_node_out = hit_node;
 }
 
+/* ---- Perso state 7: carried by an object's vector marker (docs/PERSO_STATE7.md) -------------------------------------
+ * Message 1044 [inst] (0x4451a1 -> 0x44e140): SnapToGround 0x462990, +0x55c = inst, SetState(7), then the anim controller
+ * A: Reset, Request(1), Tick(dt), Reset - logical anim 1 = .ins 0 (the idle pose) at speed 3, prio 6500, restarted.
+ * Every frame 0x44e1c0 (also while +0x690 freezes the Perso): 0x42f6b0(inst, typecode 0, out, n 0) gives the marker's
+ * two points A, B in world space; position +0x1f4 = A, Mover_SetDir(M, xz-normalize(B - A)) 0x459ff0 = facing (zero
+ * -> (1,0,0)) and all three ramps reset (no walking, sliding or knockback). No MoveCollide, no volume test, no 0x462a40,
+ * and 0x463e60 neither requests an animation nor ticks the controller in state 7 (table 0x463f14 slot 6 = 0x463f11), so
+ * nothing replaces anim 1. Message 1045 (0x44e1a0) = +0x55c = 0 + SetState(0). No shipped level sends 1044 or 1045. */
+static void follow_update(Player *p)                                       /* 0x44e1c0 */
+{
+    Vec3 a, d;
+    if (game_inst_vector(p->follow, 0, &a, &d)) {
+        float l = sqrtf(d.x * d.x + d.z * d.z);
+        p->pos = a;                                                        /* +0x1f4 = A: the feet on the marker's first point */
+        p->yaw = l > 0.01f ? atan2f(d.x, d.z) : atan2f(1.0f, 0.0f);        /* 0x459ff0: |dir| < 0.01 -> x = 1 */
+        p->follow_nomark = 0;
+    } else if (!p->follow_nomark) {                                        /* the original does not test the result and copies an uninitialised stack buffer */
+        p->follow_nomark = 1; printf("  state 7: instance %u has no vector marker (typecode 0), position kept\n", p->follow->index);
+    }
+    p->move_dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };                 /* RampA.dir = M+0x1c = M+0x10 */
+    p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->sliding = 0; p->push_t = 0; p->push_speed = 0;   /* 0x467110 on RampB, RampC, RampA */
+    p->vel = (Vec3){ 0, 0, 0 };                                            /* +0x204 stays 0: no displacement of his own */
+    player_apply_transform(p);                                             /* Perso_Orient 0x44bd00 */
+    if (getenv("WOODY_FOLLOWLOG")) printf("  state 7: pos %.0f %.0f %.0f facing %.0f\n", p->pos.x, p->pos.y, p->pos.z, p->yaw * 57.2958f);
+}
+void player_follow(Player *p, const Instance *obj)                         /* 0x44e140 */
+{
+    if (!obj || p->dead_kind) { puts("  1044 refused (no instance, or dead)"); return; }   /* port: the original has no test (NULL crashes in 0x42f6b0) */
+    player_ground_snap(p);                                                 /* 0x462990: floor under feet + 43, onGround = 1, Jumper reset */
+    p->ground_22c = 1;
+    bomb_drop(p); p->throw_hold = 0; p->look = 0;                          /* SetState(7) 0x44c980: drops a carried bomb; out of state 3 without +0x268 */
+    p->script_act = 0; p->use_root = 0; p->climb_sub = 0; p->ride = NULL;  /* whatever state he was in ends (0x44e140 tests none) */
+    p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->target = NULL; p->has_target = 0;   /* SetState clears +0x50c, +0x5b4, +0x5cd, +0x5f0 */
+    p->follow = obj; p->follow_nomark = 0;
+    p->lanim = -1; anim_request(p, 1, 1.0f); p->inst->anim_time = 0; p->lanim = -1;   /* A->Reset (next start restarts), Request(1), Tick, Reset */
+    printf("  PLAYER state 7: follows instance %u\n", obj->index);         /* the marker places him from the next Perso update on (0x44b8b4) */
+}
+void player_follow_end(Player *p)                                          /* 0x44e1a0 */
+{
+    if (!p->follow) return;                                                /* port: the original's SetState(0) would also end any other state */
+    p->follow = NULL; p->lanim = -1;
+    printf("  PLAYER state 7 ends at %.0f %.0f %.0f\n", p->pos.x, p->pos.y, p->pos.z);
+}
+
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw)
 {
     if (dt <= 0) return;
@@ -1768,7 +1813,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->bonus_inv > 0) p->bonus_inv -= dt;                             /* 0x44b1fa */
     bonus_blink(p, dt);
     if (p->game_state == 0) return;                                      /* waiting for the respawn */
-    if (!p->dead_kind && !p->race_char && (p->script_act || p->ride || p->climb_sub)) duck_update(p, in, dt, 1, p->ride ? 1 : p->on_ground);   /* 0x465b10 also in the states 5 / 8 / 4, which return early below; before 0x44b980 as in 0x44b797 */
+    if (!p->dead_kind && !p->race_char && (p->script_act || p->ride || p->climb_sub || p->follow)) duck_update(p, in, dt, 1, p->ride ? 1 : p->on_ground);   /* 0x465b10 also in the states 5 / 8 / 4, which return early below; before 0x44b980 as in 0x44b797 */
     look_update(p, in);                                                 /* 0x44b980 runs in every Perso state too (the original calls it after the attack controller) */
     special_update(p, in, dt);                                            /* 0x458bf0 runs in every Perso state */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
@@ -1780,6 +1825,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->regrab > 0) p->regrab -= dt;
     if (p->hit_anim_t > 0) p->hit_anim_t -= dt;
     if (p->dead_kind) p->dead_T += dt;
+    if (p->follow && (p->dead_kind || p->script_act || p->ride || p->climb_sub)) p->follow = NULL;   /* SetState(2 / 5 / 8 / 4) left state 7 (+0x55c itself stays in the original) */
     if (!p->dead_kind && p->script_act) {                                  /* state 5, 0x44db50: the Perso stands still, the movement is in the root track of the animation */
         int door = p->script_act == 17 || p->script_act == 18;
         anim_request(p, p->script_log, 1.0f);
@@ -1830,6 +1876,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
         player_volumes_y(p, vm, 20.0f);                                    /* 0x462760(p, 20.0) */
         perso_mask200(p, vm, 1); return;                                   /* state 8 skips 0x4624f0: +0x22c keeps the value from before the ride */
     }
+    if (!p->dead_kind && p->follow) { follow_update(p); perso_mask200(p, vm, 1); return; }   /* state 7, 0x44e1c0: no 0x4624f0, no volumes, +0x22c kept */
     if (!p->dead_kind && p->climb_sub) {                                   /* state 4: 0x4651d0, then Perso_MoveCollide 0x4624f0 (0x44b834) */
         Vec3 d = climb_update(p, in, dt); const Instance *hi; const InsNode *hn;
         p->vel = (Vec3){ d.x / dt, d.y / dt, d.z / dt };

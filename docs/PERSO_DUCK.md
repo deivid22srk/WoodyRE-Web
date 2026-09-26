@@ -150,7 +150,7 @@ Minimum (a tap on the key): 36 frames = 0.6 s blocked. Height 61 applies from fr
   state's own requests, and the state wins by priority: climbing 0x14..0x17 (5001/5000/5000/5002), a scripted action (6000: 0x18..0x1e,
   0x25..0x30, 0x51..0x58), the rocket 0x3b..0x3e (1800); state 9 plays scripted actions too (`0x454090` calls `0x44db50`). Table
   `0x4b6180`, dumped from the exe. State 7
-  (`0x44e1c0`) does not even tick the controller (`0x463f14` slot 7 = `0x463f11` = return); state 3's `0x463e77` asks for anim 0 (1100),
+  (`0x44e1c0`) does not even tick the controller (table `0x463f14` is indexed by state − 1; the entry for state 7 = `0x463f11` = return); state 3's `0x463e77` asks for anim 0 (1100),
   which the duck set does beat (state 3 fades Woody out anyway, PERSO_LOOK.md).
 * **The state handlers ignore it:** `0x4651d0` (4), `0x44db50` (5), `0x44e1c0` (7), `0x4657f0` (8) and `0x454090` (9) read neither `+0x694`
   nor `+0x238` nor `+0x22c`. The only readers of `+0x694` are `0x45656d`, `0x457388`, `0x462490`, `0x462520`, `0x463963`, `0x46463d`,
@@ -164,7 +164,8 @@ Minimum (a tap on the key): 36 frames = 0.6 s blocked. Height 61 applies from fr
 * **Coming out of the state still ducking:** nothing clears `+0x694` on a state switch. Holding the key through a door action (1040) he comes
   out lying (0x32 from the first frame of state 0 on), and gets up only when the key is released and the segment above him is clear.
 * State 9 (results): the port blanks the Perso's input while the results screen runs (`g_res.on`, port simplification, GAMEFLOW.md §5.2), so it
-  never ducks there; state 7 is not ported at all (PERSO_FRAME.md §2.1).
+  never ducks there. State 7 (carried by a marker, never reached by a shipped level, PERSO_STATE7.md) is ported and calls `duck_update`
+  like the states 4/5/8 (anim_owned: the controller is not ticked there, so the duck set is never seen).
 
 Port (`src/player.c`): `duck_update(p, in, dt, anim_owned)` is also called at the top of `player_update` for the port's states 5
 (`script_act`), 8 (`ride`) and 4 (`climb_sub`), which return early, before `look_update` (the original's order duck → look → special);

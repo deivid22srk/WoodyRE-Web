@@ -190,8 +190,9 @@ mode 1 it disappears on the first frame of the new mode (even if the transition 
 
 `p43c.pos = *pos; p43c.target = inst; SetSpeed(100.0)` (`0x41f9b0`: duration = distance/100 s); `SetTransition(1)` (smooth);
 `p43c.f = CamMgr+0x348` (= y of the follow camera's look offset, ≈ 140 − drop); `SetMode(1, 0)`. Only caller:
-`0x459030(ctl, &pos)` = `0x41fb50(ctl->CamMgr, pos, ctl->Perso)`, used by Perso state 7 "disappearing"
-(water/pit, PERSO_MOVE `0x44c308`): the camera stays fixed at a point and watches the falling player.
+`0x459030(ctl, &pos)` = `0x41fb50(ctl->CamMgr, pos, ctl->Perso)`, called by message 1020 (`0x445197`, the pit) and by the
+**death kind 7** "disappearing" (water, `Kill(7)` `0x44c308` → `0x44c35f`; race variant `0x44c67f`; PERSO_DEATH.md §3.1) - not by
+Perso **state** 7, which never touches the camera (PERSO_STATE7.md §3.4): the camera stays fixed at a point and watches the falling player.
 (The `0x46496a`/`0x464aab` mentioned in CAMERA.md §8.9 are not callers but coincidental address hits.)
 
 ## 3. Input and control during a script camera (`0x459090`, table `0x459934`)
