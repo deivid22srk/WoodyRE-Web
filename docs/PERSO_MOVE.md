@@ -63,7 +63,7 @@ Vtable `0x4aabc0` (relevant slots):
 | +0x308 | u32 | 0 | **ground type** from the texture byte `tex+0x47` (1 = slick, 2 = dust), §6.4 | `0x462962` |
 | +0x278 | s32 | -1 | countdown timer; at 0 → message 0x10 to the script (`0x443e90`) | |
 | +0x288 | f32 | | duration/parameter of the death animation (3.5, 3.0, 2.5, 1.5, 0) | `0x44c110` |
-| +0x2e8 | f32 | 1.0 | z scale | |
+| +0x2e8 | f32 | 1.0 | squash scale of the crush test (→ inst z scale +0x54 every frame, `0x44bd00`) | `0x462a40`, §6.6 |
 | +0x2ec | ptr | | `[0x50944c]` level table | `0x44ae20` |
 | +0x2f0 | ptr | | `[0x509adc]` time object: `[+0x38]` = dt | `0x44ae30` |
 | +0x2f4 | ptr | | **controller** `[0x5e6188]` (see §3) | `0x44ae40` |
@@ -433,8 +433,18 @@ void SweepCylinder(vec3 *out, vec3 *old, vec3 target, float H, float step /*40*/
         if (mode == 2) { if (cur.y - half < gy) cur.y = gy + half; }                 /* landing: don't go through the floor */
         else if (mode == 1) { float f = cur.y - half;
                               if (f - gy < step /*40*/ && f > gy) cur.y = gy + half; }   /* **stick to the ground** while descending (≤ 40 per substep) */
-        if (step - half + d.y > 0) { /* only possible while crouching (half < 40): sweep 0x4359b0 from prev to (cur.x, feet+40, cur.z);
-                                        on a hit, cur.y is set to the hit point but never below gy + half (0x437464..0x43753d) */ }
+        /* the head ray 0x43744f..0x43753d. [esp+0x60] = H - half and [esp+0x10] = (H - half) + d.y (0x4372ed: [esp+0x64] is
+           the argument H - the same one the band top feet + H uses at 0x437358 - not the step, which is [esp+0x68]); with
+           |d| <= 10 that is positive for every substep, standing or crouched, so the ray runs every substep. */
+        if ((H - half) + d.y > 0) {
+            vec3 head = (cur.x, cur.y + (H - half), cur.z);         /* the top of the head after the clamps above */
+            vec3 from = prev;                                        /* the centre before this substep ([esp+0x38..0x40]) */
+            int k = Ray(from, head);                                 /* 0x4359b0(&prev, &head, -1), §6.6; k = [0x53a554] */
+            if (k == 3) { from = (cur.x, gy + 0.1f, cur.z);          /* prev inside a press node: 0x4374d1, 0.1 = 0x4a9008 */
+                          k = Ray(from, head); }
+            if (k != 0) { cur.y = from.y + (head.y - from.y) * t - (H - half);   /* the head at the hit point, 0x4374a6 / 0x43750c */
+                          if (cur.y - half < gy) cur.y = gy + half; }        /* ... but never below the floor, 0x4374c4 / 0x437535 */
+        }
         *out = (cur.x, cur.y - half, cur.z);
     }
     [0x53a554] = g_hitType; [0x53a560] = g_hitInst;          /* return 0 → P+0x200 = 0 */
@@ -451,8 +461,12 @@ Consequences for a reimplementation:
 * Against a wall, `[0x53a554] = 3` (`0x4373a7`) whenever `0x407000` reported a hit, even with a zero vector; that is `P+0x2e0`, read by
   `0x45ae50` next frame: `0x4672d0(RampA, 0.25)`: only in the braking phase (`+0x2c == 3`) the phase timer moves a quarter of the
   way to T_dec (`t += (T − t)·0.25`), i.e. he stops faster against a wall.
-  The vertical displacement is never blocked by walls/ceilings (only the floor via GetHeight); there is no ceiling collision
-  except the crush test §6.6.
+  The wall test never blocks the vertical displacement; **ceilings** are the head ray's job: every substep the segment from the
+  previous body centre to the new top of the head (`feet + H`) is cast with `0x4359b0`, and a world polygon or press-node polygon
+  facing the centre on it (or the centre starting inside a press node) puts the head at the hit point - never lower than
+  `floor + half`. So a jump into a ceiling stops there (the head stays under it); on the ground it changes nothing, because of the
+  floor clamp. `0x437180` does not tell the jump controller J: the rise goes on against the ceiling until the arc turns.
+  The squeeze from above on the ground is the crush test §6.6.
 * Stepping up to 40–43 units happens "for free": the wall test ignores the bottom 41, and `0x436f00` sets `pos.y = ground`
   as soon as `pos.y − ground < 1` (the probe starts 43 above the feet, so higher floors up to +43 are found).
 * Descending: sticks up to 40 per substep; if the floor is further than 1.0 after the sweep ⇒ `onGround = 0` ⇒ J goes to
@@ -461,7 +475,10 @@ Consequences for a reimplementation:
   towards T_dec (stops faster).
 * **Port** (`src/player.c` `move_collide`, `body_push`, `cyl_poly`): the sweep, `0x408600` for world polygons and instance press nodes,
   the body-centre GetHeight, the wall-contact braking and the actor push (normalised to 60 fps, §6.6) follow the code above; test hook
-  `WOODY_PUSHLOG=1` logs every contact of the sweep. The crouched sub-ray (`step − half + d.y > 0`, `0x437464`) is not ported.
+  `WOODY_PUSHLOG=1` logs every contact of the sweep. The head ray is ported as above (`ray_4359b0`, §6.6; `WOODY_PUSHLOG=1` also
+  logs its hits as `sweep: head ray`). Port difference: when the port finds no floor at all in a substep it skips the floor clamps
+  and the head ray (the original then uses `gy = cur.y`, §6.6 "Fell out of the world"). Test: W1A `--pos 258 -1990 -1677
+  --jump 0.5` (under the start saucer, inst 17): he stays on the floor instead of jumping up through the saucer onto it.
 
 ### 6.3 Finding the floor: `0x435650` GetHeight → `0x498440` → `0x498520`
 
@@ -487,14 +504,74 @@ void GetHeight(vec3 *p)                                   /* 0x435650(p, cell=-1
         else if (link != 0x80000000) cell = -1 - link;
         else { g_raw = 1; break; }                        /* no more cell beneath us */
     }
-    /* afterwards (0x498475): all instances in the visited cells (cell+0x40/+0x44, id & 0xffff → world+0x40[]) and all dynamic
-       instances 0x4c3bb4[0x4c4bec]: inst->vt[7](p, id) = 0x432480 (floor test over the PRESS nodes S+0x58/0x5c; sets g_raw = 4 if closer) */
+    /* g_dist ([0x4c4bd4]) starts at 0 (0x49852e), not at +inf, and is only written on a hit (0x4986e8).
+       afterwards (0x498475): all instances in the visited cells (cell+0x40/+0x44, id & 0xffff → world+0x40[]) and all dynamic
+       instances 0x4c3bb4[0x4c4bec]: inst->vt[7](p, id) = 0x432480 (floor ray over the PRESS nodes S+0x58/0x5c; sets g_raw = 4 if
+       nearer than g_dist - so never when no world floor was found, see below) */
     if (g_raw == 1) { g_groundY = p->y; g_type = 0; g_plane = (0,1,0,0); }   /* log 'GetHeight return : NotFound !!!!!!' */
     if (g_raw == 3) { g_type = 1; g_groundY = p->y - g_dist; }
     if (g_raw == 4) { g_type = 2; g_groundY = p->y - g_dist; g_hitInst = world->inst[g_instIdx]; g_node = [0x4c4be0];
                       g_local = WorldToNode(inst, node, p - (0,g_dist,0)); /* 0x431700 → [0x53a57c..84] */ }
 }
 ```
+
+**The instance floor test `inst->vt[7]` = `0x432480(p, id)`** (`ret 8`, `this` = instance; the same entry in all 37 vtables
+of the instance classes, next to vt[5] `0x432ab0` and vt[8] `0x433140`). A ray from `p` straight down against the polygons of
+the press nodes, done in node space:
+
+```c
+void Inst_FloorRay(Instance *I, vec3 *p, uint32 id)                       /* 0x432480 */
+{
+    if (I->cell == -1 || I->stamp == g_stamp || (I->flags8 & 0x40) || !I->model->npress) return;   /* +0x1c, +0x20, +8, S+0x58 */
+    if (I->poseFrame != *g_frame) I->vt[2](1);                             /* skeleton up to date, 0x4324dc */
+    if (!(I->mask & id & 0xffff0000)) return;                              /* +0xd0 */
+    I->stamp = g_stamp;
+    vec3 q = *p - (0, 1.0f, 0);                                            /* 0x4a900c: the ray is one unit long */
+    for (i = 0; i < model->npress; i++) {                                  /* S+0x5c[i] = node index */
+        Mat34 *M = &g_nodeMats[I->matBase + node - 1];                     /* [0x509adc]+0xa0, 0x30 bytes: 3x3 + translation */
+        Node *N = &model->nodes[node - 1];                                 /* S+0x68, 0x90 bytes */
+        if (sx == sy && sx == sz) {                                        /* +0x4c/+0x50/+0x54: the cull only for a uniform scale */
+            float R = sx * N->radius;                                      /* N+0x2c */
+            if (R*R < (p.x - M.t.x)² + (p.z - M.t.z)²) continue;           /* 0x4325e8 */
+            if (M.t.y - p.y > 0 && M.t.y - p.y > R) continue;              /* node origin more than R above p, 0x43260a */
+        }
+        Mat34 Mi = Inverse(M, sx, sy, sz);                                 /* 0x440fc0: M^T / s² when uniform, else the cofactor inverse */
+        vec3 lp = Mi * p, dir = Mi * q - lp;                               /* 0x43262e..0x43274f */
+        for (j = 0; j < N->npolys; j++) {                                  /* N+0x10, records of align4(0x1a + 2 nv) */
+            Poly *P = ...;  float f = dot(P->n, lp) + P->d;                /* the loader's plane in node space, poly+8..+0x14 */
+            if (f < 0) continue;                                           /* 0x43279f: lp behind the polygon */
+            for (each edge a = v[k-1] - lp, b = v[k] - lp, starting with the last vertex)   /* model+0x20, 0x28-byte points */
+                if (!(dot(dir, cross(a, b)) > 0)) goto next;               /* 0x432886: strictly inside, winding-sensitive */
+            float den = dot(dir, P->n);  if (|den| <= 1e-5f) continue;     /* 0x4aa398 */
+            float t = -f / den;                                            /* p - (0, t, 0) is the hit: t is in world units */
+            if (!(t < g_dist)) continue;                                   /* 0x432941, [0x4c4bd4] */
+            vec3 n = normalize(M3x3 * P->n);                               /* 0x432952..0x4329c5 (M includes the scale) */
+            g_n = n;  g_d = -dot(n, M * v_last);  g_dist = t;  g_raw = 4;  /* [0x4c4bc0..cc], [0x4c4bd4], [0x4c4bd0] */
+            g_node = i;  g_poly = j;  g_instIdx = id & 0xffff;             /* [0x4c4be0], [0x4c4bd8], [0x4c4bdc] */
+        next:;
+        }
+    }
+}
+```
+
+* **One-sided.** `dir` points down, so `dot(dir, (v_k-1 − p) × (v_k − p)) > 0` for every edge means the polygon's winding normal
+  points down, i.e. its loader normal (`(R − Q) × (R − P)`, the opposite of the winding normal) points up; with `f ≥ 0` the
+  point is above it. On the outward-wound press nodes (§6.5) only the top faces count: a point **inside** a node finds neither
+  its top (behind it) nor its bottom (wrong side), so the floor there is whatever lies below the node. Any slope with
+  `|n.y| > 1e-5` counts, as for world polygons.
+* **Never without a world floor.** `g_dist` enters at the world floor's distance, or at 0 when `0x498520` found none (`0x49852e`),
+  and `t ≥ 0`: an instance is the floor only if it is strictly nearer than a world floor that was found. A platform over a void
+  with no world polygon anywhere below it would not carry the player.
+* The ray is transformed with the true inverse node matrix, so the geometry is exact under a non-uniform scale; only the
+  reported normal is `M·n` normalised (the same formula as in `0x433140`, §6.5), which is not the true normal of a
+  non-uniformly scaled polygon. It becomes the ground normal `[0x4b3108]` (sliding, the race tilt).
+* The uniform-scale cull only uses the node radius `N+0x2c` around the node origin; a non-uniformly scaled instance is tested
+  without a cull.
+* **Port** (`src/player.c` `ins_floor_below`, `loader_plane`, `press_normal`): the same test in world space (the loader plane
+  of the world-space vertices has the same side as the node-space one, since no instance of the 28 levels has a negative scale -
+  checked for all 5586 press-node instances), `t < g_dist` against the world floor's distance or 0, the node box as the cull,
+  and the reported normal `normalize(M·n)`. Before, the port took any face with `|n.y| ≥ 0.5` of either winding, so the underside
+  of a hovering press node (the W1A start saucer, inst 17) could become the floor of a point inside or just above it.
 
 The `0x40a0c0`/`0x407790`/`0x4077f0` mentioned in the task are **not used by player collision**: `0x4077f0(&center)` is only
 called in `0x44bf10` to hang the player's instance in the correct world cell (for rendering/visibility and the cell lists),
@@ -570,8 +647,27 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
    space** with the node matrix (`0x433329`), the polygon's plane normal (the loader's plane, `0x4280c2`: n = (R − Q) × (R − P) of the
    longest consecutive vertex triple) is rotated, `d = −n·v0`, and `0x435b90` - the same code as `0x408600` with the vertices
    passed as an array (cdecl) - runs against the world-space centre; result type 4 with `[0x4c4bdc]` = instance, `[0x4c4be0]` = node.
-   The non-uniform branch (`0x4335d7`) was not read. On every press node of the shipped levels the loader's winding normal points
-   away from the node (checked for all 17 play levels), so the front-face rule `dist ≥ 0` means "outside the node".
+   On every press node of the shipped levels the loader's winding normal points away from the node (checked for all 17 play
+   levels), so the front-face rule `dist ≥ 0` means "outside the node".
+   **Uniform vs. non-uniform scale** (`0x43320a`: `sx == sy` and `sx == sz`, else `0x4335d7`). Both branches transform the node's
+   vertices with the node matrix `M` (3x3 with the instance scale in it, plus translation; `0x433329` / `0x433639`, the same
+   sums in another order), gather each polygon's world vertices, build the plane `n' = M3x3·n`, `d = −n'·v0` (`v0` = the
+   polygon's first world vertex) and call `0x435b90` with identical arguments and the identical merge into `pos`/`neg`
+   (`0x4334c6..0x433583` / `0x433804..0x4338c1`). They differ only in:
+   * the cull: the uniform branch first skips a node whose origin is farther than `(radius·s + r)` from the centre in xz, or
+     whose origin lies more than `radius·s + up` above / `radius·s + down` below it (`0x433285..0x43330f`, radius = `N+0x2c`);
+     the non-uniform branch tests every press node;
+   * the length of `n'`: times `1/s` (`[esp+0x4c]`, `0x43322c`) in the uniform branch, divided by `|n'|` (when > 0,
+     `0x433762..0x43378f`) in the non-uniform one.
+   So under a non-uniform scale the plane normal is `normalize(M·n)`, not the transformed polygon's true normal
+   `normalize(M^−T·n)`: the front-face test, the band test and the push direction use a skewed normal while the clipped
+   outline uses the true vertices. **It matters**: 276 of the 5586 press-node instances of the 28 levels have a non-uniform
+   scale (none a negative one); on axis-aligned faces the two normals agree, but in K2A and S2A 136 polygons are off by more
+   than 5° (worst 57.5°, K2A inst 468 / S2A inst 453), in W2D 154 (worst 48.4°, inst 65, scale 2.75 × 1.04 × 1), in W3C 316
+   (worst 31.9°, inst 501), in W3D 6 (26.1°), in W2B 10 (9.1°); all other levels ≤ 3.1°.
+   **Port** (`body_push`, `press_normal`): the plane is `normalize(M·n_local)` with `n_local` the loader normal of the
+   node-space points and `d = −n'·v0`, for both scales (for a uniform scale it equals the true normal); the cull is the node's
+   world box.
 4. Result: `push.x = max⁺.x + min⁻.x`, `push.z = max⁺.z + min⁻.z`, `push.y = 0` → `[0x4c4bb4..bc]`.
 
 ### 6.6 Other
@@ -589,9 +685,69 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   or `1/[0x4b3a8c]` when `[0x5d7b89]` is set; stored in `World+0x38`, initialised to 1/30 at `0x42a474`), with no frame cap, so this
   push is frame-rate dependent there. Port: the recurrence `s ← s·(2 − s/R)` is run `60·dt` times per frame (identical at 60 fps,
   no overshoot at low rates).
-* **Crushing** (`0x462a40`, after the dispatch): ray `0x4359b0` from feet+1 upward to feet+H−1; a hit (t < 1) while the player is on the ground
-  and either the touching instance is animating (`inst+0xa0 ≠ 0`) or the player is standing on a platform (`att298 ≠ 0`) ⇒ `P+0x2e8` (z scale of the model)
-  `= clamp(max(free height, 2.0) / H, …, 1)`; **< 0.3 (`0x4aab98`) ⇒ `Kill(4)`**.
+* **The segment ray `0x4359b0(a, b, cell)`** (the sweep's head ray §6.2, the crush test below, the stand-up test of ducking
+  PERSO_DUCK.md, shots and bombs): it zeroes `[0x53a554]`, `[0x53a560]`, `[0x53a55c]` (not the fraction `[0x53a558]`) and calls
+  `0x497ed0` = the world part `0x497fb0` plus vt[5] `0x432ab0` of every instance in the visited cells and of the dynamic list.
+  * World (`0x497fb0`): the cells along a→b through their exit faces; a polygon counts when `f(a) ≥ 0`, `n·(b − a) ≤ 0` and
+    `f(a) < −n·(b − a)` (b strictly behind it; `0x4981ac..0x4981f8`) and the hit point is inside it (`0x408430`); the nearest
+    such polygon of the first cell that has one. `g_raw = 3`, `g_dist` = the fraction.
+  * Instances (`0x432ab0`, `ret 0xc`; same skips, skeleton update, mask and uniform-scale radius cull as vt[7]): a and b in
+    node space (`0x440fc0`); per press-node polygon: `f(a) < 0` → counted as "behind" and skipped (`0x432d8c`); `f(b) > 0` →
+    skipped (`0x432dc3`); every edge `(v_k − a) × (v_k+1 − a) · (b − a) > 0` (`0x432ee2`; the ray must enter the front face);
+    `t = −f(a) / n·(b − a)`. It is recorded when `t < g_dist` **or when `[0x53a554]` is still 0** (`0x432f7a..0x432f8e`) -
+    and `0x4359b0` has just zeroed it, so any instance polygon on the segment replaces the world hit and, among instances,
+    the last one tested wins, not the nearest. After a node: if every one of its polygons had `f(a) < 0` (`0x4330c0`: the
+    count equals `N+4`), `a` is **inside** the press node: `[0x53a554] = 3`, `[0x53a558] = 0`, `[0x53a560]` = the instance,
+    `g_raw = 2`, `g_dist = 0`; from then on nothing overrides it (`t < 0` is impossible and `[0x53a554] ≠ 0`).
+  * Result (`0x4359db..0x435b5f`): `g_raw 3` → kind 1 (world polygon; `[0x53a558]` = t, the normal to `[0x4b3108]`),
+    `g_raw 4` → kind 2 (instance polygon; t, the instance `[0x53a560]`, the node `[0x53a58c]`, the local hit point `0x431700`
+    → `[0x53a57c..84]`), `g_raw 2` → kind 3 (a inside a press node, t = 0), otherwise 0.
+  * **Port** `ray_4359b0` (player.c): `gel_ray_front` for the world, then the press nodes one-sided as above with the world-space
+    loader planes; an instance polygon replaces the world hit, and among instances the nearest one is taken (the original's cell
+    order is not reproduced); a start inside a press node gives kind 3. Used by the head ray, the crush test and, now, the
+    stand-up test of ducking (which used two-sided rays before).
+* **Crushing** `0x462a40` (`this` = Perso; one caller, Perso_Update `0x44b87c`, followed by the no-op `0x462c60`). It runs after
+  MoveCollide `0x4624f0` (and after `0x4567f0` in state 1) whenever that ran: the dispatch `0x44b7f9` (table `0x44b950`) keeps the
+  flag `bl` = 1 for the states 0, 1, 2, 3, 4 and 6 and clears it for 5 (`0x44db50`), 7 (`0x44e1c0`), 8 (`0x4657f0`) and 9
+  (`0x454090`), which skip MoveCollide.
+  ```c
+  void Perso_Crush(Perso *P)                                               /* 0x462a40 */
+  {
+      if (P->deathKind) return;                                            /* +0x26c: dead - the scale stays as it is */
+      float h = BodyHeight(P) / P->inst.sz;                                /* 0x4624c0 / +0x54 = P+0x118: the unsquashed height */
+      vec3 a = P->pos + (0, 1, 0), b = P->pos + (0, h - 1, 0);             /* 0x4a900c = 1.0 */
+      if (World_FindCell(&a) < 0) return;                                  /* 0x428ce0 (kd descent 0x40ab60); also leaves the scale */
+      Ray(&a, &b, cell);                                                   /* 0x4359b0 */
+      if ([0x53a558] < 1.0f && P->onGround /* +0x22c, 0x44bcf0 */ && [0x53a554] != 0
+          && ([0x53a554] == 2 ? [0x53a560]->animSpeed != 0                 /* inst+0xa0: the instance's animation is running */
+                              : P->platform != 0)) {                        /* +0x298: world polygon or inside a node, standing on an instance */
+          float free = max((b.y - a.y) * t, 2.0f);                         /* 0x4a9870 */
+          P->squash = min(free / (h - 2.0f), 1.0f);                        /* +0x2e8, 0x462bb7 */
+          if (P->squash < 0.3f) {                                          /* 0x4aab98 */
+              P->vt[38](4);                                                /* Kill(4), 0x462bed */
+              if (P->squash < 0.01f) P->squash = 0.01f;                    /* 0x4a94f8 / 0x3c23d70a */
+          }
+          return;
+      }
+      if (!P->deathKind) P->squash = 1.0f;                                 /* 0x462c20 */
+  }
+  ```
+  `P+0x2e8` is copied to the instance's z scale `+0x54` by Orient `0x44bd00` every frame, and Reset `0x44ab20` sets the scale
+  and `+0x2e8` to 1 (`0x44ab32..0x44ab3b`). The Perso model's z axis is its up axis, so the squash **flattens the model** to
+  the free height; and since `0x4624c0 = P+0x118 · inst+0x54`, every body height of the next frame shrinks with it (the
+  sweep's band and head ray, shots, the camera eye). Consequences: pressed from above by an **animating** instance
+  (a lift or stamper coming down) or carried by a platform into a ceiling, he is squeezed to the gap and dies (kind 4, the
+  death animations 0x25/0x26/0x2c, PERSO_DEATH.md) once it is below 30 % of `h − 2` (57 units standing, 18 ducked); as
+  soon as the ray is free again he is back to full height at once. A **static** instance over him does nothing unless he
+  stands on a platform (the hovering W1A start saucer: no squash, he just cannot stand under it, §6.5). The ray is cast
+  from the feet, so kind 3 means the feet are inside a press node.
+  **Port** `crush_test` (player.c), called after `move_collide` in the main path (after the race crash test) and in the
+  climbing path; `Player.crush` = `P+0x2e8`, multiplied into `player_body_height` and into the z scale of the player's
+  instance matrix (`player_apply_transform`); `WOODY_CRUSHLOG=1` logs it. Verified: W1A `--pos 258 -1990 -1677` with
+  `WOODY_MSGAT="0.5 4 17 0 1 1000"` (message 4 starts a loop on the start saucer, so its `+0xa0` ≠ 0): kind 2, free 106 of 191
+  → scale 0.557, the model drawn squashed; without the message nothing happens. No natural crush spot of the shipped levels
+  was found (riding the W1B shuttle 605 and the W1A lift 186 for 20-40 s gave no hit), so the Kill(4) branch itself has only
+  been checked by reading.
 * **Ledge edge** (`0x44b2e0`) and **fall damage** (`0x44b220`): see PERSO_FRAME §2.2.
 * **"Fell out of the world"**: does not exist as a separate test. If GetHeight finds no floor (`g_raw == 1`), then `ground height = probe point.y`
   (= feet+43): `0x436f00` then reports `onGround` and sets `pos.y += 43` (!), and in the sweep it counts as "on the ground". In practice, levels
@@ -634,7 +790,12 @@ called in `0x44bf10` to hang the player's instance in the correct world cell (fo
   plain Sutherland-Hodgman with the y = 0 crossings added), not instruction by instruction. `0x435b90` was only compared at its
   start (same rejection tests, same layout).
 * Behavior without a floor (GetHeight "NotFound", §6.6) is derived from the code but not seen in the game.
-* `0x432480` (press-node floor test, vt[7]) and the non-uniform-scale branch of `0x433140` (`0x4335d7`) have not been read in detail.
+* Read and ported since: the floor test vt[7] `0x432480` (§6.3), the non-uniform branch `0x4335d7` of `0x433140` (§6.5), the
+  head ray of the sweep (§6.2, which is not a crouch-only sub-ray: it runs every substep), the segment ray `0x4359b0` with its
+  instance part vt[5] `0x432ab0` and the crush test `0x462a40` (§6.6). Left over: the instance tests run in the original only for
+  the instances registered in the cells the query visits (plus the dynamic list), in that order; the port tests every
+  instance (culled by the node boxes) and so cannot reproduce the "last instance wins" order of `0x432ab0`, nor an instance
+  that the original misses because its cell was not visited. The Kill(4) branch of the crush test has not been seen in a level.
 * **Press nodes, not hulls.** All four instance tests (floor vt[7] `0x432480`, cylinder vt[8] `0x433140`, sphere vt[9] `0x433ff0`,
   ray `0x4359b0`) walk only the press node list `model+0x58/0x5c` (node flag 0x01). The hull list `model+0x38/0x3c` (flag 0x04) is only
   read by the draw function `0x42e2b0` (`0x42e7e8`): hull nodes are the visible meshes of characters and props (Woody: 43 hull nodes,
