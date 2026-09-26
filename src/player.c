@@ -39,7 +39,7 @@
 #define P_EDGE_T       3.0f       /* 0x4a988c: the sensor fires when the ray's first hit lies beyond 3 x its aim */
 #define P_VOL_PROBE_Y  71.0f     /* volume test point above the feet: 0x462760(perso, 71.0), docs/EVENTS.md 2.1 */
 /* follow camera (docs/CAMERA.md 3) */
-#define CAM_DIST_MIN   300.0f     /* xz distance to T is kept inside 300..400 */
+#define CAM_DIST_MIN   300.0f     /* xz distance to T is kept inside 300..400 = p->cam_dist - 100 .. p->cam_dist (message 680) */
 #define CAM_DIST_MAX   400.0f
 #define CAM_HEIGHT     180.0f     /* camera y approaches T.y + 180 with 6*dt */
 #define CAM_TARGET_Y   120.0f     /* position target T = player + (0,120,0) */
@@ -1212,6 +1212,22 @@ void player_place(Player *p, Vec3 pos, float yaw)
     jumper_reset(&p->jumper); p->on_ground = 1; p->cam_init = 0; player_apply_transform(p);
 }
 
+/* the camera as a volume actor (docs/EVENTS.md 2.1): 0x41f379..0x41f3cf at the end of Camera::Update, only once a script
+ * has named a camera object with message 800 (CamMgr+0x664; K2R, S2R, W2B). The object takes the camera position and is
+ * tested with 0x434740 -> 0x430210, the plain (not "perso") messages 101/102/103 through 0x441c90. Unlike the player's
+ * test there is no cache: "was inside" is the VM's own list (0x443e20 = eko_vol_has_actor_f1), as in the original. */
+void player_volumes_actor(Player *p, EkoVM *vm, Vec3 pt, uint32_t actor)
+{
+    if (!vm) return;
+    for (uint32_t v = 0; v < p->nvol; v++) {
+        Instance *in2 = p->vol_inst[v]; if (!in2->visible) continue;                   /* 0x430210: cell -1 = no test at all */
+        int now = volume_contains(in2, p->vol_node[v], pt), was = eko_vol_has_actor_f1(vm, p->vol_id[v] & 0xffffff, actor);
+        if (!was) { if (now) { eko_vol_enter(vm, p->vol_id[v], actor); if (getenv("WOODY_CAMVOL")) printf("  CAMVOL enter 0x%x (inst %u)\n", p->vol_id[v], in2->index); } }
+        else if (now) eko_vol_in(vm, p->vol_id[v], actor);
+        else { eko_vol_leave(vm, p->vol_id[v], actor); if (getenv("WOODY_CAMVOL")) printf("  CAMVOL leave 0x%x (inst %u)\n", p->vol_id[v], in2->index); }
+    }
+}
+
 /* trigger volumes: enter / in / leave -> script VM (player = "perso" variants); runs in every Perso state */
 static void player_volumes_y(Player *p, EkoVM *vm, float probe_y)
 {
@@ -1845,8 +1861,11 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
             vx /= d; vz /= d;
             float lx = L.x - P.x, lz = L.z - P.z, ll = sqrtf(lx * lx + lz * lz);
             float k = (ll > 1e-3f && (lx * -look.x + lz * -look.z) / ll > 0.7f) ? 10.0f : 1.0f;   /* player walks toward the camera */
-            if (d < CAM_DIST_MIN) { float st = (CAM_DIST_MAX / d) * dt * k * 66.6667f; if (d + st > CAM_DIST_MIN) st = CAM_DIST_MIN - d; mv.x = -vx * st; mv.z = -vz * st; }
-            else if (d > CAM_DIST_MAX) { float st = (d / CAM_DIST_MAX) * dt * 433.333f; if (d - st < CAM_DIST_MAX) st = d - CAM_DIST_MAX; mv.x = vx * st; mv.z = vz * st; }
+            /* the band is C+0x7e0 - 100 .. C+0x7e0 (0x4243a3 / 0x424516; +0x7e4, how far it catches up, is always the same value):
+             * message 680 (0x41fa80) moves it together with the behind distance +0x280, so both read p->cam_dist (400) */
+            float bmax = p->cam_dist, bmin = bmax - 100.0f;
+            if (d < bmin) { float st = (bmax / d) * dt * k * 66.6667f; if (d + st > bmin) st = bmin - d; mv.x = -vx * st; mv.z = -vz * st; }
+            else if (d > bmax) { float st = (d / bmax) * dt * 433.333f; if (d - st < bmax) st = d - bmax; mv.x = vx * st; mv.z = vz * st; }
         }
     }
     if (rising) mv.y = (P.y - T.y < 300.0f) ? T.y - p->cam_tprev.y : 0;

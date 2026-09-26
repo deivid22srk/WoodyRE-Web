@@ -1,7 +1,7 @@
 /* instance.c - generic instance behaviour of the base class (docs/INSTANCE.md): animation clock 0x43eee0,
  * PlayAnim messages 1..5/12/13, path follower 42/43/44/46, transparency fade 56/57, show/hide 6.
  * texture frame override 16/18/19, UV scroll override 15/17, the instance half of the ray 0x4359b0 (inst_ray_press).
- * Not ported: SetFlags 45 (stored only), orientation along the path (46). */
+ * Not ported: SetFlags 45 (stored only). */
 #include <math.h>
 #include "instance.h"
 
@@ -9,6 +9,8 @@
 #define T_REVERSE  0x40000u
 #define T_LOOP     0x80000u
 #define T_PINGPONG 0x100000u
+#define T_ORIENT   0x200000u                                            /* message 46 a == 1 (0x4381e0) */
+#define T_ORIENT_REV 0x400000u                                          /* message 46 b == 1 */
 
 static float anim_L(const Instance *I, int a) { const Model *m = I->model; return (a >= 0 && (uint32_t)a < m->nanims && m->anims[a].duration_s > 0) ? m->anims[a].duration_s : 1.0f; }
 static void set_speed(Instance *I, float v) { I->a_speed = I->a_base_speed = v; }               /* 0x42e290 */
@@ -68,10 +70,11 @@ int inst_msg(Instance *I, uint32_t id, const uint32_t *arg, uint32_t nargs, floa
     case 6: I->visible = a1 != 0; return 0;                       /* 0x407850 / 0x407790: hidden = not drawn, no collision, no volumes */
     case 42: case 43:                                             /* path follower: a (1 = forward), f = time in 1/100 s, c = ping-pong */
         if (I->traj.npoints < 2 || a2 <= 0) return 0;
-        I->traj_flags = T_ACTIVE | (a1 != 1 ? T_REVERSE : 0) | (id == 43 ? T_LOOP | (a3 == 1 ? T_PINGPONG : 0) : (I->traj_flags & T_PINGPONG));
+        I->traj_flags = T_ACTIVE | (a1 != 1 ? T_REVERSE : 0) | (id == 43 ? T_LOOP | (a3 == 1 ? T_PINGPONG : 0) : (I->traj_flags & T_PINGPONG)) | (I->traj_flags & (T_ORIENT | T_ORIENT_REV));   /* 0x437d10 / 0x437d50 keep bits 21-22 */
         I->traj_dur = a2 * 0.01f; I->traj_start = now;
         I->position = I->traj.points[a1 == 1 ? 0 : I->traj.npoints - 1]; return 0;
     case 44: I->traj_flags &= ~T_ACTIVE; return 0;
+    case 46: if (I->traj.npoints) I->traj_flags = (I->traj_flags & ~(T_ORIENT | T_ORIENT_REV)) | (a1 == 1 ? T_ORIENT : 0) | (a2 == 1 ? T_ORIENT_REV : 0); return 0;   /* 0x42dc7d -> 0x4381e0 (S1R / S3R launchers) */
     case 16: case 18:                                             /* texture frame override B (docs/INSTANCE.md 2): 16 = one shot, 18 = loop; a2 = 1 forward, 0 backward,
                                                                    * 2 there and back; a3 x 0.01 = factor on the texture duration, a1 (0xffff) is stored but never read.
                                                                    * 0x42da32 / 0x42db0f: any other a2 leaves the mode bits alone, the clock and factor are still set */
@@ -102,13 +105,26 @@ static void traj_update(Instance *I, float now)                                 
     else frac = modff(t / I->traj_dur, &ip);
     int fwd = !(I->traj_flags & T_REVERSE); if ((I->traj_flags & T_PINGPONG) && ((int)ip & 1)) fwd = !fwd;
     float total = 0; for (uint32_t i = 0; i + 1 < n; i++) { Vec3 a = T->points[i], b = T->points[i + 1]; total += sqrtf((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) + (b.z - a.z) * (b.z - a.z)); }
-    float d = frac * total, acc = 0, rem = d;
+    float d = frac * total, acc = 0, rem = d; int i0 = -1, i1 = -1;
     for (uint32_t s = 0; s + 1 < n; s++) {
         uint32_t i = fwd ? s : n - 1 - s, j = fwd ? i + 1 : i - 1;
         Vec3 a = T->points[i], b = T->points[j]; float len = sqrtf((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) + (b.z - a.z) * (b.z - a.z));
         acc += len;
-        if (d <= acc) { float k = len > 1e-6f ? rem / len : 0; I->position = (Vec3){ a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, a.z + (b.z - a.z) * k }; break; }
+        if (d <= acc) { float k = len > 1e-6f ? rem / len : 0; I->position = (Vec3){ a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, a.z + (b.z - a.z) * k }; i0 = (int)i; i1 = (int)j; break; }
         rem -= len;
+    }
+    if ((I->traj_flags & T_ORIENT) && i0 >= 0) {                /* 0x437eee..0x4381bf: rows (F x up, F, up), F = the horizontal P[i0] - P[i1] (against the */
+        Vec3 A = T->points[i0], B = T->points[i1];              /* travel direction), or P[i1] - P[i0] with bit 22; the model's local y lies along F, local z up */
+        float fx = (I->traj_flags & T_ORIENT_REV) ? B.x - A.x : A.x - B.x, fz = (I->traj_flags & T_ORIENT_REV) ? B.z - A.z : A.z - B.z, l = sqrtf(fx * fx + fz * fz);
+        if (l > 0) {                                            /* [0x4a9004]: a zero-length step leaves F unnormalised (0) = a degenerate matrix; the port keeps the old one */
+            fx /= l; fz /= l;
+            float m00 = -fz, m10 = 0, m20 = fx, m01 = fx, m11 = 0, m21 = fz, m02 = 0, m12 = 1, m22 = 0, t = m00 + m11 + m22; Quat q;   /* columns = R, F, U */
+            if (t > 0) { float r = sqrtf(t + 1) * 2; q = (Quat){ (m21 - m12) / r, (m02 - m20) / r, (m10 - m01) / r, r * 0.25f }; }
+            else if (m00 > m11 && m00 > m22) { float r = sqrtf(1 + m00 - m11 - m22) * 2; q = (Quat){ r * 0.25f, (m01 + m10) / r, (m02 + m20) / r, (m21 - m12) / r }; }
+            else if (m11 > m22) { float r = sqrtf(1 + m11 - m00 - m22) * 2; q = (Quat){ (m01 + m10) / r, r * 0.25f, (m12 + m21) / r, (m02 - m20) / r }; }
+            else { float r = sqrtf(1 + m22 - m00 - m11) * 2; q = (Quat){ (m02 + m20) / r, (m12 + m21) / r, r * 0.25f, (m10 - m01) / r }; }
+            I->quat = q;
+        }
     }
     mat4_from_trs(&I->world, I->position, I->quat, I->scale);
 }
