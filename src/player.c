@@ -195,18 +195,6 @@ static int ins_floor_below(const GelFile *g, const InsFile *ins, Vec3 p, float *
     return won;
 }
 
-/* is q (on the plane of the convex polygon v[0..n), normal nrm) inside it? */
-static int point_in_poly3(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 q)
-{
-    int sign = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        Vec3 e = vsub(v[(i + 1) % n], v[i]), w = vsub(q, v[i]); float c = vdot(vcross(e, w), nrm);
-        int sg = c > 1e-3f ? 1 : (c < -1e-3f ? -1 : 0);
-        if (!sg) continue;
-        if (!sign) sign = sg; else if (sg != sign) return 0;
-    }
-    return 1;
-}
 /* ---- the player's body against one polygon: 0x408600 (world) / 0x435b90 (instance press nodes, the same code) -------------
  * docs/PERSO_MOVE.md 6.5. The body is a vertical cylinder of radius r around the centre c whose lower part is a cone: the
  * band runs from c.y - down to c.y + up, above c.y the radius is r, below it r(y) = r (down + y) / down (y relative to c),
@@ -349,31 +337,65 @@ static void actor_push(const Player *p, float r, float h, float dt, Vec3 *disp)
     }
 }
 
-/* Sphere push-out 0x407340(c, r, cell -1), used by the actors' sweep 0x437580: every world polygon the sphere touches
- * (0x409ad0) and the PRESS nodes (S+0x58/0x5c, kind 1) of every instance (inst->vt[9] = 0x433ff0: skipped without a
- * cell, when flag +8 & 0x40 is set or the collision mask does not match). Each polygon adds (r - dist) along the
- * direction from its closest point to the centre, front side only; per axis the positive maximum plus the negative
- * minimum is the result, of which the sweep uses x and z. The closest-point form is the port's reading of 0x409ad0 /
- * 0x433ff0 (plane distance 0.001 < d < r, then edge tests), not a line-by-line port. */
-static int g_sphere_contact;               /* [0x4c4bd0]: the last player_sphere_push touched something */
-static void sphere_accum(const Vec3 *v, uint32_t n, Vec3 nrm, Vec3 c, float r, float acc[6])
+/* Sphere push-out 0x407340(c, r, cell -1), used by the actors' sweep 0x437580 (Boss14) and the camera sweep 0x439c50:
+ * [0x4c4bd0] = 0, then every world polygon of the cells the sphere touches (0x40a700; poly stamp 0x4c4c24) through
+ * 0x409ad0, merged on x, y AND z (0x407405..0x407495), then the instances of those cells and the dynamic list through
+ * inst->vt[9] = 0x433ff0 (the PRESS nodes, S+0x58/0x5c; skipped without a cell, when flag +8 & 0x40 is set or the
+ * collision mask does not match; uniform scale: node sphere cull |o - c| > N+0x2c * s + r), merged on x and z ONLY
+ * (0x407536..0x40758e, 0x4075e4..0x40763c: vt[9] writes its first hit with y = 0, 0x4342ff, and never merges y). The
+ * result [0x4c4bb4..bc] = per axis the positive maximum plus the negative minimum (0x407651). So an instance never pushes
+ * the camera up or down, only a world polygon does. */
+static int g_sphere_contact;               /* [0x4c4bd0]: the last player_sphere_push touched something (3 world, 4 instance) */
+/* One polygon against the sphere (c, r): 0x409ad0 (world, `this` = the polygon) and 0x439d60 (instance press polygon from
+ * 0x433ff0 / 0x4343e7, cdecl, world-space vertices and plane) - the same code. dist = n.c + d must be in (0.001, r]
+ * (0x439d93 / 0x439db1). Per edge prev -> cur (starting with the last vertex; e = cur - prev, w = c - cur) the edge normal
+ * m in the polygon's plane pointing into it: s = m.w >= 0 counts the centre as inside that edge (0x439eea); outside it,
+ * s^2 > |m|^2 r^2 (the centre more than r beyond the edge's line, 0x439f28) ends the test with no contact, otherwise the edge
+ * is kept. The instance code takes m = e x n (0x439e61..0x439ea2) with the loader normal, which points against the
+ * polygon's winding (press_normal); 0x409ad0 takes e' = prev - cur (0x409bf1) and so m = n x e with the .gel plane, which
+ * points along the winding (every world polygon of W1A/W1B/K2A/W3D/House: the centroid is inside all its edges that way):
+ * both are the inward edge normal, so here it is taken from `inward` = +1 (e x n) / -1 (n x e).
+ *  all edges inside (0x439f59): the push is (r - dist) n, written as the polygon's result (positive part / negative part);
+ *  else every kept edge (0x439ffa..0x43a290): a = |e|^2 (the instance code skips a <= 0.001, 0x43a040; the world code has no
+ *  such test, but a zero edge fails the root tests there); the roots s1 <= s2 of |w - s e|^2 = r^2 (B = -2 w.e, 0x4a9504;
+ *  D = B^2 - 4a(|w|^2 - r^2), none if D < 0); the sphere meets the segment s in [-1, 0] when s1 <= 0 and s2 >= -1; then the
+ *  chord's midpoint m = (s1 + s2)/2 clamped to [-1, 0] (the closest point of the segment, q = cur + m e) and the push
+ *  (c - q) (r - |c - q|) / |c - q| (0x43a171..0x43a1ed), merged per axis into the positive maximum / negative minimum.
+ * So near a corner every edge the sphere cuts pushes, not only the nearest point. Returns 1 on contact. `axes` = 7 merges
+ * x, y, z (world), 5 only x and z (instances, see above). The port skips |c - q| < 1e-4 (the original divides by 0 there). */
+static float sphere_dist(const float pl[4], Vec3 c, int inst)            /* n.c + d in the original's summation order */
 {
-    float d = vdot(nrm, vsub(c, v[0])); if (d <= 0.001f || d >= r) return;
-    Vec3 cp = { c.x - nrm.x * d, c.y - nrm.y * d, c.z - nrm.z * d };
-    if (!point_in_poly3(v, n, nrm, cp)) {
-        float best = 1e30f; Vec3 bc = cp;
-        for (uint32_t i = 0; i < n; i++) {
-            Vec3 a = v[i], e = vsub(v[(i + 1) % n], a); float el = vdot(e, e), t = el > 1e-9f ? vdot(vsub(c, a), e) / el : 0;
-            if (t < 0) t = 0; if (t > 1) t = 1;
-            Vec3 q = { a.x + e.x * t, a.y + e.y * t, a.z + e.z * t }, w = vsub(c, q); float dd = vdot(w, w);
-            if (dd < best) { best = dd; bc = q; }
-        }
-        cp = bc;
+    return inst ? (pl[1] * c.y + pl[0] * c.x) + pl[2] * c.z + pl[3]        /* 0x439d78..0x439d8c */
+                : (pl[1] * c.y + pl[2] * c.z) + pl[0] * c.x + pl[3];       /* 0x409ade..0x409af6 */
+}
+static int sphere_poly(const Vec3 *v, uint32_t n, const float pl[4], Vec3 c, float r, float inward, int inst, int axes, float acc[6])
+{
+    float dist = sphere_dist(pl, c, inst); if (!(dist > 0.001f) || !(dist <= r)) return 0;
+    Vec3 nn = { pl[0] * inward, pl[1] * inward, pl[2] * inward }, E[32], W[32]; uint32_t inside = 0, ne = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        Vec3 cur = v[i], e = vsub(cur, v[i ? i - 1 : n - 1]), w = vsub(c, cur), m = vcross(e, nn); float s = vdot(m, w);
+        if (s >= 0) { inside++; continue; }
+        if (vdot(m, m) * r * r < s * s) return 0;                                /* 0x439f28: wholly beyond this edge */
+        E[ne] = e; W[ne] = w; ne++;
     }
-    Vec3 w = vsub(c, cp); float dist = sqrtf(vdot(w, w)); if (dist >= r || dist < 1e-4f) return;
-    g_sphere_contact = 1;
-    float k = (r - dist) / dist, px[3] = { w.x * k, w.y * k, w.z * k };
-    for (int a = 0; a < 3; a++) { if (px[a] > acc[a]) acc[a] = px[a]; if (px[a] < acc[3 + a]) acc[3 + a] = px[a]; }
+    float px[3]; int hit = 0;
+    if (inside == n) {                                                          /* 0x439f63: over the face */
+        px[0] = (r - dist) * pl[0]; px[1] = (r - dist) * pl[1]; px[2] = (r - dist) * pl[2];
+        for (int a = 0; a < 3; a++) if (axes >> a & 1) { if (px[a] < 0) { if (px[a] < acc[3 + a]) acc[3 + a] = px[a]; } else if (px[a] > acc[a]) acc[a] = px[a]; }
+        return 1;
+    }
+    for (uint32_t k = 0; k < ne; k++) {
+        Vec3 e = E[k], w = W[k]; float a = vdot(e, e); if (inst && !(a > 0.001f)) continue;
+        float B = -2.0f * vdot(w, e), D = B * B - (vdot(w, w) - r * r) * a * 4.0f; if (!(D >= 0)) continue;
+        float sD = sqrtf(D), h = 0.5f / a, s1 = (-B - sD) * h, s2 = (sD - B) * h;
+        if (s1 > s2) { float t = s1; s1 = s2; s2 = t; }
+        if (s1 > 0 || !(s2 >= -1.0f)) continue;                                  /* 0x43a0f4 / 0x43a109 */
+        float mm = (s1 + s2) * 0.5f; if (mm > 0) mm = 0; else if (mm < -1.0f) mm = -1.0f;
+        Vec3 q = { w.x - mm * e.x, w.y - mm * e.y, w.z - mm * e.z }; float l = sqrtf(vdot(q, q)); if (l < 1e-4f) continue;
+        float k2 = (r - l) / l; px[0] = q.x * k2; px[1] = q.y * k2; px[2] = q.z * k2; hit = 1;
+        for (int a2 = 0; a2 < 3; a2++) if (axes >> a2 & 1) { if (px[a2] < 0) { if (px[a2] < acc[3 + a2]) acc[3 + a2] = px[a2]; } else if (px[a2] > acc[a2]) acc[a2] = px[a2]; }
+    }
+    return hit;
 }
 Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r)
 {
@@ -383,9 +405,9 @@ Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r)
     GelPolySet ps = gel_polys_in_box(g, box);
     for (uint32_t k = 0; k < ps.n; k++) {
         const GelPoly *pl = &g->polys[ps.polys[k]]; if (pl->nverts < 3 || pl->nverts > 32) continue;
-        float d0 = pl->plane[0] * c.x + pl->plane[1] * c.y + pl->plane[2] * c.z + pl->plane[3]; if (d0 <= 0.001f || d0 >= r) continue;
+        float d0 = sphere_dist(pl->plane, c, 0); if (!(d0 > 0.001f) || !(d0 <= r)) continue;
         for (uint32_t t = 0; t < pl->nverts; t++) { const GelVert *gv = &g->verts[pl->indices[t]]; v[t] = (Vec3){ gv->x, gv->y, gv->z }; }
-        sphere_accum(v, pl->nverts, (Vec3){ pl->plane[0], pl->plane[1], pl->plane[2] }, c, r, acc);
+        if (sphere_poly(v, pl->nverts, pl->plane, c, r, -1.0f, 0, 7, acc)) g_sphere_contact = 3;
     }
     /* the instances of the cells the sphere touches (0x40a700), then the dynamic list (0x4074ca..0x407640); vt[9] 0x433ff0 */
     const InsFile *ins = p->ins; const GelColRef *cr; uint32_t ncr = 0;
@@ -396,19 +418,17 @@ Vec3 player_sphere_push(const Player *p, const Instance *skip, Vec3 c, float r)
         {
             uint32_t ncn; const uint32_t *cn = ins_collision_nodes(m, &ncn);
             for (uint32_t ci = 0; ci < ncn; ci++) {
-                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1 || !nd->npoints) continue;
-                float nb[6];
+                uint32_t ni = cn[ci]; const InsNode *nd = &m->nodes[ni]; if (nd->kind != 1) continue;
+                float nb[6];                                              /* the node's box: as conservative as the sphere cull 0x434116 */
                 if (ins_node_world_box(in, ni, nb) && (nb[0] > c.x + r || nb[1] < c.x - r || nb[2] > c.y + r || nb[3] < c.y - r || nb[4] > c.z + r || nb[5] < c.z - r)) continue;
-                Vec3 cen = { 0, 0, 0 };
-                for (uint32_t t = 0; t < nd->npoints; t++) { Vec3 w = ins_point_world(in, nd->point_base + t); cen.x += w.x; cen.y += w.y; cen.z += w.z; }
-                cen.x /= nd->npoints; cen.y /= nd->npoints; cen.z /= nd->npoints;
                 for (uint32_t f = 0; f < nd->npolys; f++) {
                     const InsPoly *pl = &nd->polys[f]; if (pl->nverts < 3 || pl->nverts > 32) continue;
                     for (uint32_t t = 0; t < pl->nverts; t++) v[t] = ins_point_world(in, pl->indices[t]);
-                    Vec3 nrm = vcross(vsub(v[1], v[0]), vsub(v[2], v[0])); float nl = sqrtf(vdot(nrm, nrm)); if (nl < 1e-6f) continue;
-                    nrm.x /= nl; nrm.y /= nl; nrm.z /= nl;
-                    if (vdot(nrm, vsub(cen, v[0])) > 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }   /* outward = away from the node's centroid (as ins_push) */
-                    sphere_accum(v, pl->nverts, nrm, c, r, acc);
+                    /* the plane: the loader normal times the node matrix (0x434216..0x4342a1: times 1/s, uniform; normalised in the
+                     * non-uniform branch 0x434543), d = -n . (first world vertex) - as for the cylinder, press_normal() */
+                    Vec3 nw; if (!press_normal(in, pl, &nw)) continue;
+                    float P4[4] = { nw.x, nw.y, nw.z, -(nw.x * v[0].x + nw.y * v[0].y + nw.z * v[0].z) };
+                    if (sphere_poly(v, pl->nverts, P4, c, r, 1.0f, 1, 5, acc)) g_sphere_contact = 4;   /* 0x434323: [0x4c4bd0] = 4 */
                 }
             }
         }
@@ -2113,6 +2133,12 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (!p->dead_kind && p->script_act) {                                  /* state 5, 0x44db50: the Perso stands still, the movement is in the root track of the animation */
         int door = p->script_act == 17 || p->script_act == 18;
         anim_request(p, p->script_log, 1.0f);
+        if (p->script_carry) {                                             /* 0x44db76 (message 1043 only; no shipped script sends it): the instance sits on the camera-track point of
+                                                                            * the running animation (0x42fa40, like the carried bomb) with the Perso's rotation (+0x28..+0x48 copied) */
+            const Model *m = p->inst->model; int a = p->inst->anim; Vec3 at, tg;
+            float ph = (uint32_t)a < m->nanims && m->anims[a].duration_s > 0 ? p->inst->anim_time / m->anims[a].duration_s : 0;
+            if (ins_camera_eval(p->inst, a, ph, &at, &tg)) { Instance *c = p->script_carry; c->position = at; c->quat = p->inst->quat; mat4_from_trs(&c->world, c->position, c->quat, c->scale); }
+        }
         if (p->script_act == 17 && !p->script_faded && p->script_t < 0.6f) { p->script_faded = 1; p->fade_req = 1; }
         p->script_t -= dt;
         if (!door) {                                                       /* 0x44e290 (docs/OBJECTS.md 1.5): pos stays put, the root track of the action carries the model */
@@ -2127,7 +2153,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
             if (p->script_act == 18) {                                     /* he came out backwards: facing flips, ground snap, idle, follow camera */
                 p->yaw += 3.14159265f; int found; float gy = player_ground_query(p, p->inst, (Vec3){ p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, &found);
                 if (found) { p->pos.y = gy; p->floor_y = gy; } p->lanim = -1; anim_request(p, 0, 1.0f);
-                p->cam_end_req = 1;                                        /* 0x44e5a0: follow camera behind the NEW facing, 0.5 s travelling */
+                if (!p->side_on) p->cam_end_req = 1;                       /* 0x44dce9: 0x44e5a0 (follow camera behind the NEW facing, 0.5 s travelling) only outside the side view +0x4ec */
             } else if (!door) {                                            /* last frame of 0x44e290: he ends where the root track left him, facing -E.row2 */
                 Vec3 q, fw;
                 if (ins_root_at(p->inst, p->script_act, 1.0f, 1, &q, &fw)) { p->pos = q; if (fw.x * fw.x + fw.z * fw.z > 1e-6f) p->yaw = atan2f(fw.x, fw.z); }
@@ -2135,7 +2161,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
                 if (found) { p->pos.y = gy; p->floor_y = gy; }             /* SnapToGround 0x462990 */
                 p->use_root = 0; p->lanim = -1; anim_request(p, 0, 1.0f); p->cam_end_req = 1;
             } else lock_move(p, 0.3f);                                     /* 17: the pose is held until the teleport (message 26) resets the controller */
-            p->script_act = 0;
+            p->script_act = 0; p->script_carry = NULL;
         }
         player_apply_transform(p); perso_mask200(p, vm, 1); return;       /* state 5: no 0x4624f0, +0x22c kept */
     }
@@ -2589,11 +2615,28 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
     if (have) p->ground_22c = 1;                                    /* 0x44dede: onGround = 1 only with a vector (msgmask 0x200) */
-    p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = anim_len(p, lg, 0); p->script_faded = 0;
+    p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = anim_len(p, lg, 0); p->script_faded = 0; p->script_carry = NULL;   /* +0x554 = arg 3 (0x44dde1) */
     if (act == 18) p->fade_req = 2;   /* fade in 0.5 s on the first frame (0x44dc2b). The camera is NOT cut here: the tail of 0x44dda0
                                        * puts it on the animation's own camera track (message 1040 in main_engine.c) and a cut back to the
                                        * follow camera would undo that one frame later. Coming out of the door ends with 0x44e5a0, a 0.5 s
                                        * blend back to it - that is cam_end_req, raised when the action runs out. */
+    player_apply_transform(p);
+}
+/* message 1041 [inst, act] (0x445481 -> 0x44e040(act, &inst.pos)); no shipped script sends it. Facing = the xz direction to `at`
+ * (Mover_SetDir 0x459ff0, left alone when the distance is 0), ground snap 0x462990, the action's record requested after a Reset,
+ * +0x53c = +0x538 = 0 (length 0), +0x554 = 0, +0x540 = act, SetState(5). Unlike 0x44dda0 it neither moves him, nor drops the side
+ * view, nor leaves the volumes, nor cuts to a camera track. With the length 0 the next state-5 frame (0x44db50) ends it at once:
+ * idle, and for anything but 17/18 the end of 0x44e290 = he stands where the action's root motion ends, facing -E.row2 */
+void player_face_action(Player *p, int act, Vec3 at)
+{
+    if (p->dead_kind) return;
+    int lg = log_from_raw(act); if (lg < 0) { printf("  1041: action %d has no logical record", act), puts(""); return; }
+    float dx = at.x - p->pos.x, dz = at.z - p->pos.z;
+    if (dx * dx + dz * dz > 0) p->yaw = atan2f(dx, dz);
+    bomb_drop(p); p->throw_hold = 0; p->look = 0;                       /* SetState(5) */
+    p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
+    player_ground_snap(p);
+    p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = 0; p->script_faded = 0; p->script_carry = NULL;
     player_apply_transform(p);
 }
 /* 0x462990: the floor under feet + 43 (GetHeight 0x435650) becomes his height, onGround = 1, Jumper reset. The level start

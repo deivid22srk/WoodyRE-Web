@@ -59,6 +59,7 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     if (s->n >= MAX_ENEMIES) return;
     for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst) return;
     Enemy *e = &s->e[s->n++]; Enemy z = { 0 }; *e = z;
+    if (type >= 4 && type <= 13) s->total++;                                    /* [0x4c5330]++ in the class PostLoad (vtbl[1]); the bosses 14..16 do not count */
     e->col_cur = 0xffffffffu;                                                   /* the probes' ctor 0x436cf0 */
     e->inst = inst; e->type = type; e->pos = e->home = inst->position; e->P = params_for(type); e->hp = e->P.hp;
     enemy_sensor_init(e); e->need_snap = type < 13 || type == 14;              /* subtypes < 9: types 4..12 and Buzz */
@@ -574,7 +575,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     case 12: {                                                    /* dead: animation 13, fades out during the second half, then removed */
         anim = EA_DEAD; e->dead_t += dt; float L = ea_len(e, EA_DEAD) + 1.0f;
         if (e->dead_t > L * 0.5f) { in->fade = (e->dead_t - L * 0.5f) / (L * 0.5f); if (in->fade > 1) in->fade = 1; }
-        if (e->dead_t >= L) { e->removed = 1; in->visible = 0; return; }
+        if (e->dead_t >= L) { e->removed = 1; in->visible = 0; g_eset->killed++; return; }   /* +0x10c |= 1 -> 0x40bf60 -> vtbl[29] 0x41aff0: [0x4c532c]++ (the defeated-enemies stat) */
         break; }
     }
     enemy_move(e, pl, step, dt);                                  /* the behaviour tick's common move 0x41b2c0, every frame (knockback: v = 600 * t_rest for 0.25 s) */
@@ -708,7 +709,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     case S_DEAD: {
         anim = SA_DEAD; e->dead_t += dt; float L = sa_len(e, SA_DEAD) + 1.0f;
         if (e->dead_t > L * 0.5f) { in->fade = (e->dead_t - L * 0.5f) / (L * 0.5f); if (in->fade > 1) in->fade = 1; }
-        if (e->dead_t >= L) { e->removed = 1; in->visible = 0; return; }
+        if (e->dead_t >= L) { e->removed = 1; in->visible = 0; g_eset->killed++; return; }   /* +0x10c |= 1 -> 0x40bf60 -> vtbl[29] 0x41aff0: [0x4c532c]++ (the defeated-enemies stat) */
         break; }
     case S_DODGE0: {                                              /* 0x417a63: 300 away along the dive, else sideways, else back */
         float l = sqrtf(e->warn.x * e->warn.x + e->warn.z * e->warn.z); Vec3 d = l > 1e-3f ? (Vec3){ e->warn.x / l * e->P.dodge, 0, e->warn.z / l * e->P.dodge } : (Vec3){ e->P.dodge, 0, 0 };
@@ -948,7 +949,7 @@ static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         { float L = ba_len(e, BA_DEAD) + 1.0f;                            /* vtbl[51] 0x411d30 = AnimLen(8) + 1.0 */
           if (e->dead_t > L * 0.5f) { in->fade = (e->dead_t - L * 0.5f) / (L * 0.5f); if (in->fade > 1) in->fade = 1; }   /* Enemy::Update 0x41a3e0: fades out in the second half */
           if (e->dead_t >= L && !e->done) {                              /* flags10c |= 1 -> 0x40bf60 -> vtbl[29] 0x41aff0: [0x4c532c]++, 0x407850 = out of the world */
-              e->done = 1; game_msgmask(in, 0x10, 1); e->removed = 1; in->visible = 0;
+              e->done = 1; game_msgmask(in, 0x10, 1); e->removed = 1; in->visible = 0; g_eset->killed++;
               if (getenv("WOODY_BOSSLOG")) printf("  THROWER %u dead: msgmask 0x10, removed", in->index), puts(""); } }
         break;
     case 14:                                                            /* hit by a blast 0x411759 */

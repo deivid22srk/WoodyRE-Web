@@ -89,7 +89,11 @@ typedef struct Enemy {
 } Enemy;
 
 #define MAX_ENEMIES 256
-typedef struct EnemySet { Enemy e[MAX_ENEMIES]; int n; } EnemySet;
+typedef struct EnemySet { Enemy e[MAX_ENEMIES]; int n;
+    int total, killed;                           /* [0x4c5330]: ++ in the PostLoad of every class 4..13 (0x418c09, 0x416eb9, 0x4153a9, 0x4122f9, 0x411002, 0x413999; not the bosses 14..16);
+                                                  * [0x4c532c]: ++ in vtbl[29] 0x41aff0 when 0x40bf60 removes an enemy whose +0x10c bit 0 its death set
+                                                  * (0x419391, 0x4179f2, 0x41171f, 0x414396, 0x415f55, 0x412c81); both zeroed per level by 0x40bf30 (from the load, 0x40439e) */
+} EnemySet;
 
 void enemies_add(EnemySet *s, Instance *inst, int type);                      /* on SetTypeInstance 4..9, 12..16 */
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt);

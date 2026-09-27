@@ -317,7 +317,7 @@ iris opens (0 → 0.85, 0.5 s) when you come back to page 1 from the load/world-
 | 0x1d | game over (`0x45bbd0`: black panel + string 56 "GAME OVER", S = 35, centered, color 0xfeffffff; result 5 after 5 s) | | |
 | 0x1e | results (panel page `0x45b830`, iris 0 → 0.37) | | GAMEFLOW §5.1 |
 | 0x1f | intro running (empty) | 0.6 | §4.1 |
-| 0x20 | credits (`0x45bd90`: black panel, level bank image from table `0x4b5df8` (3 per set, set chosen by `app+0x6c`) 256×256 at (32,112), swaps every 10 s with alpha fade, string 131 "THE END" S = 35; details **uncertain**) | | |
+| 0x20 | credits (vtable `0x4aa474`, draw `0x45bd90` + roll `0x453930`): black panel, Credits.rck picture 256×256 at (32,112) from table `0x4b5df8` (set by `app+0x6c`), new one every 10 s with 1 s fades, string 131 "THE END" S = 35, and the 253-record roll `0x4b3d28` at 50 u/s; confirm after 5 s → title. See **CREDITS.md** | | |
 | 0x21 | language/memory card (console leftover) | 0.6 | |
 
 ## 6. Port recipe

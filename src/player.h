@@ -87,6 +87,7 @@ typedef struct Player {
     /* death / hit animations, scripted door actions (docs/PERSO_DEATH.md) */
     float dead_T, nograv_t, hit_anim_t; int dead_ground, hit_anim, dead_cam_req;
     int script_act, script_log; float script_t, script_total; int script_faded, fade_req, cam_end_req;   /* fade_req: 1 = fade out 0.5 s, 2 = fade in 0.5 s; cam_end_req: 0x44e5a0, back to the follow camera (both consumed by the app) */
+    Instance *script_carry;                                             /* +0x554: the third argument of 0x44dda0 (message 1043), carried on the action's camera-track point (0x44db76) */
     /* idle 0x464500: +0x230 seconds standing still, +0x530 which idle variation, +0x52c the zzz bubble is up (its live flag);
      * idle_hold = Perso state != 0 (results, title, frozen by a cinematic camera): the timer neither runs nor resets (set by the app) */
     float idle_t; int idle_var, sleep_bubble, idle_hold;
@@ -182,6 +183,7 @@ void player_side_start(Player *p, Vec3 a, Vec3 d, int v);   /* the Perso half of
 /* message 1040 / 1140 (0x44dda0): the action number IS the raw .ins animation. 17 = into a door, 18 = out of it;
  * 10..16, 19 and 72..78 (the results animations) run with the root motion of 0x44e290. */
 void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir);
+void player_face_action(Player *p, int act, Vec3 at);   /* message 1041 (0x44e040): face `at`, ground snap, action `act` with length 0 (ends the next frame) */
 void player_follow(Player *p, const Instance *obj);   /* message 1044 (0x44e140): Perso state 7, carried by obj's type-0 vector marker */
 void player_follow_end(Player *p);                     /* message 1045 (0x44e1a0): +0x55c = 0, SetState(0) */
 int  player_segment_blocked(const Player *p, Vec3 a, Vec3 b);   /* world polygons only */

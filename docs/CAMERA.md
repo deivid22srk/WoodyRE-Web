@@ -31,7 +31,7 @@ else {
 if (behind) behind_arc(&mv);                                     /* 0x423ed0: no overshoot, stay on the circle (3.5b) */
 if (rising && P.y - T.y < 300) mv.y = T.y - Tprev.y;  else if (rising) mv.y = 0;
 else                           mv.y = (T.y + 180 - P.y) * 6 * dt;
-N = P + mv;  if (sweep_sphere(P, N, r=40, step=35, &N2)) N = N2; /* 0x439c50: world + press nodes, all three axes (3.6) */
+N = P + mv;  if (sweep_sphere(P, N, r=40, step=35, &N2)) N = N2; /* 0x439c50: world (x, y, z) + press nodes (x, z only), PERSO_MOVE 6.8 */
 if (ray_blocked(N, T)) N = sweep_sphere(P, P, 40, 35, &N2) ? N2 : P;   /* veto 0x423a40, then SubCenter 0x422f10 */
 if (ray_blocked(P, T) /*start of the frame*/) follow_breadcrumbs(); /* path {P, Tprev, T,...}, u += 0.04/frame */
 P = N;
@@ -395,7 +395,8 @@ Three mechanisms, all inside `0x4231e0`/`0x422790`:
    step **past** `N`: a normal per-frame move (< 35 units) is swept twice, to `P + 2·move`. That only matters on contact
    (`corr = out − (P+move)` then carries the extra step); without contact the result is not used. The push-out of `0x407340`
    is the per-axis maximum of the positive plus the minimum of the negative pushes of every world polygon (`0x409ad0`) and
-   every instance press node (`vt[9]` = `0x433ff0`) the sphere touches, and it is added on **all three axes** (the actor sweep
+   every instance press node (`vt[9]` = `0x433ff0`) the sphere touches, and it is added on **all three axes** (but an instance
+   only ever contributes x and z, `0x407536..0x40763c`: PERSO_MOVE.md §6.8 has the polygon test `0x409ad0`/`0x439d60`; the actor sweep
    `0x437580` uses only x/z). Whether any step touched is the returned flag (`[0x4c4bd0]` kept in `edi`). **Verified live**
    (`tools/wverify.py --probe fpu`, W1A): the x87 control word at the `fistp` `0x439cb3` (and at every VM tick) is **`0x007F`** =
    all exceptions masked, **precision 24 bit** (Direct3D's single-precision setup; the game has no `fldcw` outside the CRT),

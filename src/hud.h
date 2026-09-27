@@ -50,6 +50,8 @@ void hud_logo_off(void);
 void hud_title_reset(void);
 void hud_iris(float v);                                         /* black ring, hole radius v * 475 (0 = black, 0.85 = open) */
 void hud_rect(uint32_t argb);                                   /* flat colour over the virtual screen */
+void hud_credits_enter(void);                                   /* menu page 0x20 entered (0x45bd60): picture 0, the roll from the bottom */
+void hud_credits(int prev_level, float dt);                     /* the credits page (0x45bd90): black panel, picture set of app+0x6c, THE END, the roll */
 /* the save-slot list of pages 2 (load) and 5 (save), docs/MENU_LOAD.md 2.2: sel 1..4, pct 0 = free slot,
  * open bit 0 Knothead / bit 1 Splinter unlocked, slide = the panels' offset while they move in or out,
  * cross = draw the red cross over free slots (page 2), title = Common string (25 / 24) */
