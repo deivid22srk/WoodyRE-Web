@@ -323,8 +323,8 @@ void Sector_ListInstances(Sector *S, int flag)                          /* 0x42a
   `0x407790` together with the sector `+0x1c` = `0x4081c0(p)` when the instance enters the world (loader `0x4288cf`: `p` = `inst.pos`)
   and by every re-cell `0x4077f0` - the clock after each pose (`0x43f2ed`: the animated root `+0x60`, unless flag 0x20), an enemy after a
   move (its collision centre `pos + (0, h/2, 0)`, ENEMY.md §3.3/§5.1; PostLoad `0x419e4d` sets flag 0x20 on enemies). An instance with
-  **no floor under that point** (`+0x18 = −1`) is **never listed**: in the data mostly invisible volume/collision objects, the bomb pool
-  parked under the floor (W3D) and a few decor pieces whose root node lies below the floor.
+  **no floor under that point** (`+0x18 = −1`) is **never listed**. See §4.2 for when which point is used and the instances concerned.
+
 * **Sphere test** `0x437b00(repere, c, r)`: camera-space `x', y', z'` of the rows of `Repere+0x30..0x5c` (x/sx, y/sy, z·zoom,
   CAMERA.md §5.2), visible ⇔ `|x'| ≤ z' + 1.4142·r/sx` and `|y'| ≤ z' + 1.4142·r/sy` (`0x4aa3d4`); no near/far plane. It only
   concerns **stationary** instances: `+0x88 = 1` is set by the draw `0x42eec9..0x42f008` when the clock speed `+0xa0` is 0,
@@ -345,20 +345,78 @@ void Sector_ListInstances(Sector *S, int flag)                          /* 0x42a
 
 **Port** (`rnd_instance_list`, `src/render_gl.c`; called at the start of the frame from `main_engine.c` with the current camera,
 race list `Renderer.race` while `race_char`): sectors and groups from `vis_entry` (`0x408210`), per instance the sector and
-floor group (`gel_floor_group` = `0x40a0c0`) of its cell point, cached in `Instance.cell_*` and recomputed when the point moves;
-cell point = `position + (0, cell_dy, 0)` for the enemies (`enemy_place` sets `cell_dy = h/2`), the `.ins` position for the
-flag-0x20 links of messages 61/62 (`Instance.cell_fixed`, never re-celled by their clock), else the animated root
-(`ins_anim_centre` = `+0x60`); the list ORDER of the original (sector chains walked in `.vis` pair order, every clock run
-re-links the instance in front of its chain, the camera leaf's `.col` objects clocked first; MODEL_RENDER.md §9.1); message-34 links (`link_inside`); the stationary sphere test on the port's frustum (aspect of the
+floor group (`gel_floor_group` = `0x40a0c0`) of its cell point (`Instance.cell_*`), celled exactly as §4.2: the `.ins` position
+at load, on a show and on a 1200 relink (`load_point`), the animated root `ins_anim_centre` (`+0x60`) on each clock run that
+misses the pose cache (`chain_clock`), and for the actors (`ins_flag20`: the Perso, enemies with `cell_dy = h/2` from
+`enemy_place`, bosses, the race board, rocket, cannon and bombs) their mover's point whenever it moved; the flag-0x20 links of
+messages 61/62 (`Instance.cell_fixed`) keep the `.ins` position. The clock runs for every listed instance, the camera leaf's
+`.col` objects, and every instance a collision query tests (`gel_col_clock`, installed by `rnd_instance_list`, called from
+`level.c` `col_candidate` before the phase-mask test); the pose cache is stored only by the list's draw. The list ORDER of the
+original (sector chains walked in `.vis` pair order, every clock run re-links the instance in front of its chain; MODEL_RENDER.md
+§9.1); message-34 links (`link_inside`); the stationary sphere test on the port's frustum (aspect of the
 window, not 4:3) and the race 11000 test. Results: `Instance.listed` (Think / sound) and `Instance.in_zone` (sector + group + link:
 the draw gate of base-class instances and enemies in `rnd_frame`, whose own cone test stays on this frame's camera).
 Readers switched: enemy / boss Updates and the actor list 1 (`game_enemy_thinks`), `snd_owner_active`, `ambient_update`, the
-bonus halos, the Perso's special attack target list. Port simplifications: an instance whose cell point moved to another
-sector is re-celled at once, even when no clock ran (the original leaves it in its old sector's chain until one does), counts a sphere as cached from the first
-stationary frame, and when there is no `.vis` (or the camera is outside every sector) lists everything. `WOODY_VISLOG=1`: once a
-second camera sector / floor group / `.vis` entry, list size and max, and why the others are out (sector, group, no floor,
-link, frustum, race distance); `=2` also the ids and every actor; `=3` the instances without a floor group; `=4` also the first 24 ids of the list every frame.
+bonus halos, the Perso's special attack target list. Port simplifications: counts a sphere as cached from the first
+stationary frame, when there is no `.vis` (or the camera is outside every sector) lists everything, and a show (message 6 on)
+of an instance that is still visible in the port's terms but out of the world (its clock found no sector) does not re-cell it.
+`WOODY_VISLOG=1`: once a second camera sector / floor group / `.vis` entry, list size and max, and why the others are out
+(sector, group, no floor, link, frustum, race distance); `=2` also the ids and every actor; `=3` the instances without a floor
+group; `=4` also the whole list every frame; `=5` once per level the instances whose `.ins` position or root has no floor
+group (§4.2).
 
+### 4.2 Which point an instance is celled at, and the instances without a floor group
+
+`0x40a0c0(p)` (`0x40a0fc..0x40a233`): in the kd leaf of `p`, every face with `n.y ≥ 0` (`0x40a141`), `d = n·p + D > 0` strictly
+(`0x40a16a`: a point exactly on the plane is not above it), `d ≤ n.y·(p.y − cell.y0) + 0.001` (`0x40a17b`, `0x4a94c4`) and `p`
+inside the face in xz (all edge cross products ≥ 0, `0x40a1b3..0x40a1f8`); the LAST such face of the leaf wins (`0x40a202`); none →
+the leaf below (`+0x18`, `0x40ab60`), none left (`0x80000000`) → −1. Then `0x40a26a` maps the face to its group.
+
+The cell point, by writer (all ten callers of `0x407790` and the 29 of `0x4077f0` were checked):
+* **`inst.pos` (`+0xc`)**: `0x407790(NULL)` / `0x4077f0(NULL)` (`0x4077a2`, `0x40780d`): the loader `0x4288cf` (in file order;
+  the `.ins` cameras `0x428a4a`), a show (message 6 on, `0x42d99b`, only when `+0x1c == −1`), the delayed shows of `0x42d2e0` (`0x42d5a0`),
+  SetTypeInstance 1200 (`0x403e7a`, `ebx` = 0 from `0x403524`), the loop `0x4048d0` over the records of `[0x4c4cac]`, the bonus respawns `0x44f595` / `0x44f8f5`, the
+  enemy PostLoad `0x41a074`.
+* **The animated root `+0x60`**: the clock `0x43eee0` at its end (`0x43f2f1..0x43f351`), unless flag 0x20 or the pose cache hit
+  (MODEL_RENDER.md §9.1: then it returns before, `0x43f06e`). This is the ONLY later re-cell of a non-actor. The clock runs:
+  (a) for every instance the list build appends (`0x42a94b`, `vtbl[2](0x81)`), (b) for the `.col` objects of the camera's kd
+  leaf (`0x42aa0b`, `vtbl[2](1)`), (c) in every collision query, for each instance it tests before the phase-mask test
+  (`0x4324c9..0x4324dc` in vt[7]; the same prologue in vt[5], vt[6], vt[8], vt[9]; PERSO_MOVE.md §6.7), (d) in the draw
+  `0x42b380` (already clocked by (a)). All of them only when `+0x1c ≠ −1` (`0x42e2c3`, `0x43248e`).
+* **An actor's own point** (flag 0x20: `0x41abf6`/`0x41b2c0` enemies, `0x44d55c` bombs, `0x452b6f`/`0x452dee` rocket and cannon,
+  `0x449bac` launcher shots, the bosses `0x40cb41..0x40e496`, the Perso `0x428ce0`).
+
+So an instance is celled at its `.ins` position until its clock first runs, and at its animated root as of its last clock run
+afterwards. `0x4077f0` always re-links (`0x4077f3..0x407802`: unlink, then cell even when it was out of the world); a point in
+no sector leaves `+0x1c = −1`, and such an instance is never clocked, listed or tested again until a show or its own mover.
+
+Consequences for an instance whose position and root disagree (`WOODY_VISLOG=5` lists them per level):
+* **Position has a floor group, root not** (the common case: a volume box whose root node sits at the bottom of the box, below
+  the floor): listed while its load group is marked, drawn and clocked in that frame, and from then on `+0x18 = −1`: at most
+  ONE frame in the list, then never again. The camera-leaf clock (b) or a query (c) can end it before it was ever listed.
+* **Position without a floor group, root with one**: not listed until something clocks it through (b) or (c); after that it is
+  listed like any other instance.
+* **Neither**: never listed (Think never runs, never drawn through the list).
+
+The instances concerned (shown at level start; the hidden missile pools of W1A 496-503 and W2B 539-543, W2B 216 and W3D 809-822
+(models 50/51) are hidden anyway):
+
+| level | instances | model | what | position / root group | original |
+|---|---|---|---|---|---|
+| W1A | 163, 281, 283, 385 | 29 | volume box (one kind-8 node, no mesh, no press node) | yes / −1 | ≤ 1 frame listed; nothing to draw |
+| W1A | 317 | 29 | volume box | −1 / −1 | never listed |
+| W3D | 200, 206, 234, 236, 239, 240, 241, 243, 295, 298, 302, 333, 365, 370, 372-374, 425, 426, 522, 525, 561, 583, 774, 843, 845 | 28 | volume boxes | yes / −1 | ≤ 1 frame; nothing to draw |
+| W3D | 242, 244 | 28 | volume boxes | −1 / −1 | never |
+| W3D | 148, 149 | 3 | decor mesh (194 polygons, 1 press node), root 25 units off the position (x), over no floor | 3 / −1 | drawn for ONE frame when first listed, then gone |
+| W3D | 125 | 22 | mesh (246 polygons, 2 press nodes, 62 `.col` refs), position just below the floor | −1 / 10 | not drawn until the camera leaf or a query clocks it, then normal |
+| W3D | 791-798, 879-886 | 48 | the bomb pool (type 40, flag 0x20), parked where no floor is below | −1 / −1 | never listed until the bomb class moves one (`0x44d55c`) |
+| W2B | 215, 235, 298, 308, 310, 311, 317, 321, 341, 344, 394, 425, 438, 480, 501 | 29 | volume boxes | yes / −1 | ≤ 1 frame; nothing to draw |
+| W2B | 398, 408-412, 447-455 | 45 | the node layout of the W3D bomb model 48 (80 polygons, 1 press node), a plain type-0 instance at y 342 / 1152 in sector 52 | −1 / −1 | never listed, never drawn |
+| W2B | 526 | 51 | collision-only object (3 press nodes, no mesh) at (57, 1, 17) | −1 / 1 | listed once a query clocks it; nothing to draw |
+| W2B | 229 | 38 | enemy (type 8, flag 0x20) | −1 / 0 | celled by its mover |
+
+(The Perso's `.ins` position lies on the floor, `d ≤ 0`, so it has no group there either (0.5 higher it has); it is an actor.) So the
+only visible effects in these three levels are W3D 148/149 (one frame) and W3D 125 (appears once clocked).
 ## 5. Messages 56 / 57: transparency fade (`+0x6c`)
 
 `+0x6c` = **transparency** (0 = normal, 1 = gone). Readers:

@@ -1807,8 +1807,9 @@ static void bombs_fly(float dt, const GelFile *gel)
 }
 /* per frame for every bomb in use: its colour, and in fuse states 2/3 the fuse (0x478b70): a line along the bomb's own marker
  * that burns from its tip towards the bomb, a spark (bank 0 image 18) on the burning end, and once the muzzle smoke of the
- * launcher that fired it. Explosion kind 0: a yellow flash (image 4, 500 sin^3) and a smoke ring on the ground (image 24,
- * 1300 u in 0.3 s), both alpha blended (sprite flags 0xa / 0xb). */
+ * launcher that fired it. Explosion kind 0: a yellow flash (image 4, 500 sin^3; 0x4766b3, sprite flags 3 = additive) and a smoke
+ * ring on the ground (image 24, 1300 u in 0.3 s; 0x4767d3, flags 0xa = alpha blended, texture x 2c); the muzzle puff (image 24,
+ * 0x478b58) has flags 0xb, alpha blended too. */
 static void bombs_draw(const float *eye, float dt)
 {
     static const float yellow[3] = { 1, 1, 0 }, white[3] = { 1, 1, 1 }, grey[3] = { 0.8f, 0.8f, 0.8f }, g0[3] = { 0.5f, 0.5f, 0.5f };
@@ -2163,7 +2164,7 @@ void game_enemy_stars(Enemy *e)
 }
 static void stars_draw(float dt)
 {
-    static const float white[3] = { 1, 1, 1 }, glow[3] = { 1, 1, 0.5f };
+    static const float grey[3] = { 0.5f, 0.5f, 0.5f }, glow[3] = { 1, 1, 0.5f };   /* 0x4775e7: rgb 0.5 with flags 0x4f (alpha blended, x2 = the plain texture); the glow 0x477562: (1, 1, 0.5) with flags 3 (additive) */
     for (int s = 0; s < 16; s++) {
         Enemy *e = g_stars[s].e; if (!e) continue;
         float u = (g_stars[s].age += dt) / 2.5f;
@@ -2175,7 +2176,7 @@ static void stars_draw(float dt)
             int ang = (i * 512 / 5 + (int)(512 * u)) % 512; float f = ang * 6 / 256.0f; int k = (int)f; float w = (k & 1) ? f - k : 1 - (f - k), r = ang * 6.2831853f / 512.0f;
             float pos[3] = { p0.x + 80 * cosf(r), p0.y + len + (4 * w) * (4 * w), p0.z + 80 * sinf(r) };
             if (g_stars[s].img == 10) { float gp[3] = { pos[0], pos[1] + 15, pos[2] }; hud_world_fx(5, gp, 40, 0, glow, 0.8f * a); }
-            hud_world_fx(g_stars[s].img, pos, 40, (float)(int)((w - 0.5f) * 56) / 512.0f, white, a);
+            hud_world_fx(g_stars[s].img, pos, 40, (float)(int)((w - 0.5f) * 56) / 512.0f, grey, a);
         }
     }
 }
@@ -2350,7 +2351,6 @@ static void fx_update(float dt, const float *eye)
     static const float grey05[3] = { 0.5f, 0.5f, 0.5f }, blue[3] = { 0.65f, 0.65f, 0.8f }, up[3] = { 0, 1, 0 }, one[3] = { 1, 1, 1 };   /* additive: rgb x alpha, no x2 (docs/SPLASH.md 7) */
     if (eye) g_fx_eye = (Vec3){ eye[0], eye[1], eye[2] };
     Vec3 feet = g_player ? g_player->pos : (Vec3){ 0, 0, 0 };
-    static const float white[3] = { 1, 1, 1 };                               /* rgb 0.5 with the engine's x2 = full white; alpha is a constant 1 */
     for (int i = 0; i < g_nfx; i++) {                                        /* 0x470c70 re-reads the bound, so a particle born this frame also draws this frame */
         FxRec *e = &g_fx[i];
         if (e->kind == FX_AMB) { if (ambient_fx_run(&e->amb, dt, eye)) continue; g_fx[i] = g_fx[--g_nfx]; i--; continue; }   /* the callback moves, draws and ages the record itself */
@@ -2416,7 +2416,7 @@ static void fx_update(float dt, const float *eye)
                 fx_particle(e, u, dt);
             } else if (e->kind == 2) {                                              /* 0x4791f0: the only thing that draws. The fade in and out is the size, not the alpha */
                 float size = 30.0f * sinf(3.14159265f * (int)(255.0f * u) / 256.0f);
-                hud_world_fx(4, &e->pos.x, size, (float)(int)(45.0f * u) / 512.0f, white, 1.0f);
+                hud_world_fx(4, &e->pos.x, size, (float)(int)(45.0f * u) / 512.0f, grey05, 1.0f);   /* rgb 0.5, alpha 1, flags 7 = additive (0x479249..0x479295): byte a*c*128 = 64 under MODULATE2X = texture x 0.5 (SPLASH.md 7) */
             } else if (e->kind == 0) {                                       /* 0x478f70: a rotating cage of spark sources that shrinks onto the point */
                 float M[9]; fx_rotmat((int)(u * 255.5f), (int)(u * 408.8f), (int)(u * 511.0f), M);
                 int first = e->shape ? 8 : 0, cnt = e->shape ? 4 : 8, reps;

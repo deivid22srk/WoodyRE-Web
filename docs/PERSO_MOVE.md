@@ -843,9 +843,10 @@ changes, `WOODY_CELLCHECK=1` recomputes every floor, push-out and ray with every
 each difference, `WOODY_COLALL=1` runs the old selection. Checked: the four walks equal brute force over the cell boxes
 (4000 random queries each, W1A, W3D, K1R, WWS, House); `WOODY_CELLCHECK` over walks in 17 levels, the W1A climb, saucer
 and door, the W1B shuttles and boss, W2D/W3D bosses and the W2A cannon found differences only for the W3D boss-16 pad
-805 (see above). Not ported: the clock side effect of a test on an instance that was not clocked this frame (the re-cell
-moves it to the front of its sector chain, which changes the next frame's draw order; the port's chains are only
-changed by the renderer).
+805 (see above). The clock side effect of a test on an instance that was not clocked this frame is ported too
+(`gel_col_clock` in `col_candidate`, before the phase test like `0x4324c9..0x4324dc`; render_gl.c `query_clock`): the
+re-cell moves it to the front of its sector chain and to the cell of its animated root, which changes the next frame's
+list (INSTANCE.md §4.2: an instance whose `.ins` position has no floor group is listed only once a clock ran).
 
 ## 7. Open questions and contradictions
 

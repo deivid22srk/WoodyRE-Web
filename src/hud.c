@@ -1319,6 +1319,32 @@ void hud_world_quad(int image, const float v[4][3], const float uv[4][2], const 
 void hud_world_streak(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b) { int k = fx_slot(image); if (k >= 0 && H.fx[k]) world_line(a, b, eye, hw, rgb, alpha_a, alpha_b, H.fx[k]); }
 void hud_world_streak_flip(int image, const float *a, const float *b, const float *eye, float hw, const float *rgb, float alpha_a, float alpha_b, int flip) { int k = fx_slot(image); if (k >= 0 && H.fx[k]) world_line_uv(a, b, eye, hw, rgb, alpha_a, alpha_b, H.fx[k], flip); }
 
+#ifndef GL_COMBINE_ARB
+#define GL_COMBINE_ARB 0x8570
+#define GL_COMBINE_RGB_ARB 0x8571
+#define GL_COMBINE_ALPHA_ARB 0x8572
+#define GL_RGB_SCALE_ARB 0x8573
+#endif
+static int gl_combine(void)
+{
+    static int c = -1;
+    if (c < 0) { const char *ext = (const char *)glGetString(GL_EXTENSIONS), *ver = (const char *)glGetString(GL_VERSION);
+                 c = (ext && strstr(ext, "GL_ARB_texture_env_combine")) || (ver && (ver[0] > '1' || (ver[0] == '1' && ver[2] >= '3'))); }
+    return c;
+}
+/* sprite flag 8 (0x4719bc: submit flag 8, 0x481a05): the colour byte is c*255 and the alpha byte a*255, drawn under COLOROP
+ * MODULATE2X (0x429758, LIGHTING.md 1.5 step 6), so the texture is scaled by 2c (clamped): c = 0.5 is neutral. Without a
+ * MODULATE2X device 0x471224 doubles c and clamps it to 1 instead (same result up to the clamp). */
+static void blend2x_begin(const float *c, float a)
+{
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (gl_combine()) {
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE_ARB); glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB_ARB, GL_MODULATE);
+        glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA_ARB, GL_MODULATE); glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE_ARB, 2.0f);
+        glColor4f(c[0] > 1 ? 1 : c[0], c[1] > 1 ? 1 : c[1], c[2] > 1 ? 1 : c[2], a);
+    } else glColor4f(c[0] * 2 > 1 ? 1 : c[0] * 2, c[1] * 2 > 1 ? 1 : c[1] * 2, c[2] * 2 > 1 ? 1 : c[2] * 2, a);
+}
+static void blend2x_end(void) { glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); if (gl_combine()) glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE_ARB, 1.0f); }
 /* S+0x208, the position field of the one shared sprite object [0x5e823c]+0xb00: every effect writes it before it calls
  * 0x470f10, drawn or not, and it keeps the last value. The skeleton flash registers its light there (0x477db3). */
 static float g_spr_pos[3];
@@ -1332,14 +1358,15 @@ void hud_world_fx(int image, const float *pos, float size, float turns, const fl
     float h = size * 0.70710678f, c = (float)cos(turns * 6.2831853f) * h, s = (float)sin(turns * 6.2831853f) * h, r[3], u[3];
     for (int i = 0; i < 3; i++) { r[i] = H.sr[i] * c + H.su[i] * s; u[i] = H.su[i] * c - H.sr[i] * s; }
     glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[n]);
-    if (blend) { glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glColor4f(rgb[0], rgb[1], rgb[2], alpha); }
-    else { glBlendFunc(GL_ONE, GL_ONE); glColor3f(rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha); }
+    if (blend) blend2x_begin(rgb, alpha);                                     /* flag 8: texture x 2c, alpha a */
+    else { glBlendFunc(GL_ONE, GL_ONE); glColor3f(rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha); }   /* additive: texture x c x a (0x481e5e: byte a*c*128 under MODULATE2X) */
     glBegin(GL_QUADS);
     glTexCoord2f(0, 0); glVertex3f(pos[0] - r[0] + u[0], pos[1] - r[1] + u[1], pos[2] - r[2] + u[2]);
     glTexCoord2f(0, 1); glVertex3f(pos[0] - r[0] - u[0], pos[1] - r[1] - u[1], pos[2] - r[2] - u[2]);
     glTexCoord2f(1, 1); glVertex3f(pos[0] + r[0] - u[0], pos[1] + r[1] - u[1], pos[2] + r[2] - u[2]);
     glTexCoord2f(1, 0); glVertex3f(pos[0] + r[0] + u[0], pos[1] + r[1] + u[1], pos[2] + r[2] + u[2]);
     glEnd();
+    if (blend) blend2x_end();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }
 /* the same quad, but lying in the plane with normal `n` (0x4717d7 builds it on S+0x230..0x238 when sprite flag bit 0
@@ -1359,7 +1386,7 @@ void hud_world_fx_plane(int image, const float *pos, const float *n, float size,
     for (int i = 0; i < 3; i++) u[i] *= h / l;
     float v[3] = { (N[1] * u[2] - N[2] * u[1]), (N[2] * u[0] - N[0] * u[2]), (N[0] * u[1] - N[1] * u[0]) };
     glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[k]);
-    if (image == 24) { glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glColor4f(rgb[0], rgb[1], rgb[2], alpha); }   /* the smoke ring of a bomb (flag 0xa: not additive) */
+    if (image == 24) blend2x_begin(rgb, alpha);                               /* the smoke ring of a bomb (0x4767d3, flag 0xa: alpha blended, texture x 2c) */
     else { glBlendFunc(GL_ONE, GL_ONE); glColor3f(rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha); }
     glBegin(GL_QUADS);
     glTexCoord2f(0, 0); glVertex3f(pos[0] - u[0] + v[0], pos[1] - u[1] + v[1], pos[2] - u[2] + v[2]);
@@ -1367,6 +1394,7 @@ void hud_world_fx_plane(int image, const float *pos, const float *n, float size,
     glTexCoord2f(1, 1); glVertex3f(pos[0] + u[0] - v[0], pos[1] + u[1] - v[1], pos[2] + u[2] - v[2]);
     glTexCoord2f(1, 0); glVertex3f(pos[0] + u[0] + v[0], pos[1] + u[1] + v[1], pos[2] + u[2] + v[2]);
     glEnd();
+    if (image == 24) blend2x_end();
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }
 /* ---- the sprite primitive 0x470f10(S = [0x5e823c]+0xb00, flags) itself (docs/PARTICLES.md 1) -----------------------
@@ -1381,19 +1409,6 @@ void hud_world_fx_plane(int image, const float *pos, const float *n, float size,
  *   bit 6 (0x40) UV set `mirror` of 0x470d80: 0 plain, 1 v flipped, 2 u flipped, 3 both, 4 and 6 turned a quarter
  * `size` is the half DIAGONAL (0x470fee: corner k at size * (cos t, sin t), t = rot + 64 + 128k for the square mode 0x12;
  * mode 0x1a is a 1:2 upright quad, t = rot +- 90); a negative size turns the quad half a turn, as the original's does. */
-#ifndef GL_COMBINE_ARB
-#define GL_COMBINE_ARB 0x8570
-#define GL_COMBINE_RGB_ARB 0x8571
-#define GL_COMBINE_ALPHA_ARB 0x8572
-#define GL_RGB_SCALE_ARB 0x8573
-#endif
-static int gl_combine(void)
-{
-    static int c = -1;
-    if (c < 0) { const char *ext = (const char *)glGetString(GL_EXTENSIONS), *ver = (const char *)glGetString(GL_VERSION);
-                 c = (ext && strstr(ext, "GL_ARB_texture_env_combine")) || (ver && (ver[0] > '1' || (ver[0] == '1' && ver[2] >= '3'))); }
-    return c;
-}
 static void plane_axes(const float *n, float *u, float *v)          /* 0x471ee0: column 0 = u, column 1 = v, column 2 = n */
 {
     if (fabs(n[0]) < 0.001f && 1.0f - fabs(n[1]) < 0.001f && fabs(n[2]) < 0.001f) {   /* (almost) straight up or down */
@@ -1422,14 +1437,8 @@ void hud_world_spr_mode(int mode, int image, const float *pos, float size, int r
     int base = mode == 0x1a ? 90 : mode == 0x13 ? 37 : 64;                             /* [0x5e823c]+0x800[mode] (0x4024bb): atan(2^(mode/8 - mode%8)) in 1/512 turn; 0x13 = 2:1 wide (the race board's flames) */
     glDisable(GL_ALPHA_TEST); glBindTexture(GL_TEXTURE_2D, H.fx[k]);
     if (!(flags & 1)) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -4.0f); }   /* a print on the floor or a hole in a wall is coplanar with it */
-    if (flags & 8) {
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        if (gl_combine()) {
-            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE_ARB); glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB_ARB, GL_MODULATE);
-            glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA_ARB, GL_MODULATE); glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE_ARB, 2.0f);
-            glColor4f(c[0] > 1 ? 1 : c[0], c[1] > 1 ? 1 : c[1], c[2] > 1 ? 1 : c[2], a);
-        } else glColor4f(c[0] * 2 > 1 ? 1 : c[0] * 2, c[1] * 2 > 1 ? 1 : c[1] * 2, c[2] * 2 > 1 ? 1 : c[2] * 2, a);   /* 0x471224 doubles and clamps too */
-    } else { glBlendFunc(GL_ONE, GL_ONE); glColor3f(c[0] * a, c[1] * a, c[2] * a); }
+    if (flags & 8) blend2x_begin(c, a);
+    else { glBlendFunc(GL_ONE, GL_ONE); glColor3f(c[0] * a, c[1] * a, c[2] * a); }
     glBegin(GL_QUADS);
     for (int i = 0; i < 4; i++) {                                                      /* corners at r + base, r - base + 256, r + base + 256, r - base + 512 */
         int ang = (i & 1) ? r - base + 256 * (i == 1 ? 1 : 2) : r + base + 256 * (i >> 1);
@@ -1438,7 +1447,7 @@ void hud_world_spr_mode(int mode, int image, const float *pos, float size, int r
         glVertex3f(pos[0] + X[0] * cx + Y[0] * cy, pos[1] + X[1] * cx + Y[1] * cy, pos[2] + X[2] * cx + Y[2] * cy);
     }
     glEnd();
-    if (flags & 8) { glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); if (gl_combine()) glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE_ARB, 1.0f); }
+    if (flags & 8) blend2x_end();
     if (!(flags & 1)) glDisable(GL_POLYGON_OFFSET_FILL);
     glColor4f(1, 1, 1, 1); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glEnable(GL_ALPHA_TEST);
 }
