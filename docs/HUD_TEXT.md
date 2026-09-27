@@ -587,8 +587,8 @@ flag 8. Texture filter: not read (**uncertain**; the soft alpha edges call for b
   as **4 blocks of 0x30000 = 196 608 bytes** (`obj+0x20`, `+0x30020`, `+0x60020`, `+0x90020`; pointers at
   `obj+0xc0020..`). The same object holds 8 image refs from the **level bank** `0x01010000..7` and draws 256×256
   tiles (`0x4888db` ff.); `0x488610` tests positions against the rectangle 64..576 × 40..460. It thus belongs to
-  the minigame **Blackbox** (72 images in Blackbox.rck), not to the HUD. 196 608 = 512×384 → presumably 4
-  masks of 512×384 × 1 byte for that play field (**uncertain**). Not needed for the HUD/text port.
+  the minigame **Blackbox** (72 images in Blackbox.rck), not to the HUD. Each block is **256×256 RGB** (3 bytes per pixel, only the
+  first read): the collision map of the play area 65..576 × −15..496 (BLACKBOX.md §3). Not needed for the HUD/text port.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -654,6 +654,6 @@ Level banks: one string "TOTO" (test leftover). Full dump: `python tools/fontren
 6. Sprite 15 (0,96,31,31 in image 63) appears empty; no user found. Sprite 12 (63,0,64,64 in
    image 64) is also not drawn by the HUD; the port uses it as the enemy icon on the
    results screen (**uncertain**).
-7. Role of the level `Lang` in language selection; mask.bin layout (4 × 512×384?).
+7. Role of the level `Lang` in language selection; mask.bin layout: done, BLACKBOX.md §3.
 8. Power meter: that sprite 11 is also clipped is right there in the code, but the intended look hasn't been
    checked against the original.

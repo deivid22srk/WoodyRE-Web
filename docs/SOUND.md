@@ -344,7 +344,7 @@ Table (emulation of `0x4661a0..0x4670c4`; ref = index in `Common/<character>.rck
 | 3 | 1 | 50 | | `0x44f616` bonus type 34 (regular bonus) |
 | 4 | 108 | 50 | | `0x44b6e4` 25 bonuses collected |
 | 5 | 106 | 50 | | `0x44f95c` bonus type 37 (race) |
-| 6 | 4 | 50 | | `0x44d730` object/enemy destroyed (3D, inst); `0x45352c` class 20/21; menus `0x484ca1..0x484df5`, `0x4856f3` (2D, confirm) |
+| 6 | 4 | 50 | | `0x44d730` object/enemy destroyed (3D, inst); `0x45352c` class 20/21; BlackBox `0x484ca1..0x484df5` (the cage blast), `0x4856f3` (dynamite), 2D (BLACKBOX.md §9) |
 | 7 | 11 | 100 | | `0x451e53`, `0x451ebb` lightning strike (3D) |
 | 8 | 109 | 100 | | `0x451d2d` thunder announcement |
 | 9 | 107 | 50 | | "not allowed": `0x44ba61`, `0x458cd5`, `0x45917b`, `0x4597b7` |
@@ -355,15 +355,15 @@ Table (emulation of `0x4661a0..0x4670c4`; ref = index in `Common/<character>.rck
 | 14 | 9 | 52 | | `0x4526f6` thrower fires; `0x45344a` |
 | 15 | 7 | 50 | ∞ | `0x4536e8` class 20/21, source `+0x191` |
 | 16 | 8 | 50 | | `0x45321a` class 20/21 |
-| 17, 18 | 69, 70 | 50 | | `0x449263` projectile (`0x449130`, 2 variants); 18 also `0x487854` (menu) |
+| 17, 18 | 69, 70 | 50 | | `0x449263` projectile (`0x449130`, 2 variants); 18 also `0x487854` (BlackBox: Buzz's shot) |
 | 19, 20 | 74, 75 | 25 | | `0x449283`, `0x4492a3` projectile |
-| 21..24 | 17..20 | 50 | | 23/24: `0x48676b` menu (cursor?) – uncertain |
-| 25→26→27→28→25 | 13, 14, 15, 16 | 50 | chain, delay 0.3 s | `0x4866c6` (source `+0x84` in the menu/HUD class `0x486560`): footstep cycle – uncertain what for |
-| 29..31 | 21..23 | 50 | | `0x486a2a/45/60` |
-| 32, 33 | 32, 34 | 50 | | `0x48671d`, `0x4867cb` |
-| 34, 35 | 55, 56 | 50 | | `0x4867b5` |
+| 21..24 | 17..20 | 50 | | 21..24: `0x48676b` BlackBox jump, random |
+| 25→26→27→28→25 | 13, 14, 15, 16 | 50 | chain, delay 0.3 s | `0x4866c6` (source `+0x84` of BlackBox Woody, `0x486560`): his footsteps while walking; `0x468b40(25, 4)` shuffles the `next` fields of 25..28 every walking frame |
+| 29..31 | 21..23 | 50 | | `0x486a2a/45/60` BlackBox landing |
+| 32, 33 | 32, 34 | 50 | | `0x48671d` BlackBox duck, `0x4867cb` BlackBox death |
+| 34, 35 | 55, 56 | 50 | | `0x4867b5` BlackBox hit (34..36 random) |
 | 36 | 57 | 50 | | – |
-| 37 | 12 | 50 | | `0x4855f7` |
+| 37 | 12 | 50 | | `0x4855f7` BlackBox stone breaks |
 | 38 | 9 | 50 | | `0x40e4db` Boss2 |
 | 39 | 76 | 50 | ∞ (1e17) | `0x410553` (source), stopped `0x40fc9d`/`0x40fcde` – boss type 14 |
 | 40..43 | 77, 78, 80, 79 | 50 | | `0x40f9e5` (40), `0x40f291`/`0x40fb78` (41), `0x40fef1` (42), `0x40fcc6` (43) – boss type 14, mode `+0x228 == 1` |

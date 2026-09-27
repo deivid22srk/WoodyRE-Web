@@ -880,6 +880,17 @@ void hud_iris(float v)
 
 /* a flat colour over the whole virtual screen: 0x80000000 is the half-black backdrop of a menu page in a level (0x404f1a) */
 void hud_rect(uint32_t argb) { if (H.ok) quad(H.vx0, 0, H.vx1 - H.vx0, 480, 0, 0, 0, 0, 0, argb, argb, argb, argb); }   /* the whole view, also the sides of a wide one */
+/* the BlackBox texts (docs/BLACKBOX.md 6): SetSize 0x441a60(size), font+0x60 = col, Font_Draw 0x43f890 with the pen at x, y (top of
+ * the cell); ref = a Common string, or 0 for the digits of num (0x441820). Returns the pen x after the text. */
+float hud_pen_text(float x, float y, float size, uint32_t col, uint32_t ref, int num)
+{
+    uint16_t buf[16]; const uint16_t *s = buf;
+    if (!H.ok) return x;
+    if (ref) s = hud_string(ref); else number_codes(buf, num);
+    if (!s) return x;
+    font_size(size); font_draw(x, y, s, col); x += font_measure(s); font_size(17.0f);
+    return x;
+}
 /* port extra (docs/DISPLAY.md 3): black outside the view box vx, vy, vw, vh (GL origin bottom left) - the pillar- or letterbox bars */
 void hud_bars(int win_w, int win_h, int vx, int vy, int vw, int vh)
 {

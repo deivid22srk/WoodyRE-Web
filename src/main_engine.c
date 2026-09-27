@@ -27,6 +27,7 @@
 #include "storm.h"
 #include "hnm.h"
 #include "ambient.h"
+#include "blackbox.h"
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
@@ -3322,6 +3323,7 @@ static void level_free(Level *L)
     car_forget(); g_nuniq = 0;                                                    /* 0x44f6c6: [0x5e54f0] = 0 */
     memset(g_stars, 0, sizeof g_stars); memset(g_bubbles, 0, sizeof g_bubbles); g_nrockets = 0; g_nbombs = 0; g_nchests = 0; memset(g_bombfx, 0, sizeof g_bombfx); water_reset(NULL); storm_reset(); g_nfx = 0; g_ntorch = 0; g_npick = 0; hud_anim_reset(); memset(g_puffs, 0, sizeof g_puffs); memset(g_blasts, 0, sizeof g_blasts); g_player = NULL; g_prop = NULL; g_pose = NULL; g_have_intro = 0; memset(&g_res, 0, sizeof g_res); g_enemies.n = 0; memset(&g_bossbar, 0, sizeof g_bossbar); memset(g_bplume, 0, sizeof g_bplume); g_nbplume = 0; memset(g_smoke_on, 0, sizeof g_smoke_on); memset(g_bsmoke, 0, sizeof g_bsmoke); player_set_carried(NULL, NULL); g_nretry = 0; memset(&g_cam, 0, sizeof g_cam); g_cam.mode = 1; memset(&g_sfade, 0, sizeof g_sfade); g_black_frame = 0; memset(&g_cin, 0, sizeof g_cin);
     ambient_reset();                                                               /* class 90 (ambient.c); its particles went with g_nfx = 0 */
+    bb_free();                                                                     /* 0x4049a0: the BlackBox object goes with the level */
     rnd_free(&L->rnd); eko_free(&L->vm); free(L->code); ins_free(&g_ins); if (L->have_lit) lit_free(&L->lit); if (L->have_vis) vis_free(&L->vis); gel_free(&L->gel); tex_free(&L->tex);
     memset(L, 0, sizeof *L);
 }
@@ -3365,6 +3367,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
                           L->player.unique_items = sc->unique; L->player.special_charges = sc->charges;
                           player_race_start(&L->player);     /* 0x44ab20 -> 0x456150 SurfEnter with the board of 1120 (docs/RACE.md 3.1) */
                           player_ground_snap(&L->player); }   /* 0x44a6a0 / 0x44a759; 0x44a7ee: he starts standing on the floor, not falling onto it */
+    if (g_level == 25 && bb_init(dir)) printf("BlackBox: not available, the level runs as a plain set\n");   /* 0x4042c1: level 0x19 -> new 0x484420, App state 3 */
     L->t0 = win_time();
     return 0;
 }
@@ -3553,7 +3556,7 @@ int main(int argc, char **argv)
             f_prev[3] = down;
         }
         if (win.keys['P'] && !p_prev) dbg_paused ^= 1; p_prev = win.keys['P'];
-        paused = dbg_paused || menu_pauses_world();                                   /* the pause menu and its pages stop the world (table 0x405af8) */
+        paused = dbg_paused || menu_pauses_world() || bb_active();                    /* the pause menu and its pages stop the world (table 0x405af8); App state 3 (BlackBox) runs 0x401ab0 with app+0xf4 |= 8, the world paused (0x40166e) */
         in_frame(&win, fly, now, now - t0);                                          /* the 14 actions of this frame (0x402940, docs/INPUT.md) */
         /* menu keys (docs/MENU_NEWGAME.md 1.3): confirm = Enter RELEASED or the jump key (action 4 + 0xc) pressed; back = Esc released
          * or the duck key (action 5) pressed (or Backspace); Esc (action 9) released also leaves page 0 and skips the intro, like the attack key released */
@@ -3727,7 +3730,7 @@ int main(int argc, char **argv)
         if (L.have_player && !fly) { menu_update(&L.vm, &mk, dt); carousel_frame(&cam, dt); }   /* the carousel sits in front of the final title camera */
         uniq_update();                                                                 /* 0x44f770 */
         if (M.quitting && (M.quit_t -= dt) <= 0) win.quit = 1;                       /* 0x404cb0 -> app+4 */
-        { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(paused); }   /* the listener is the camera (mgr+0x28) */
+        { Vec3 cr = cam_right(&cam); audio_listener(&cam.pos.x, &cr.x); audio_pause(bb_active() ? dbg_paused || M.page >= 0 : paused); }   /* the listener is the camera (mgr+0x28); the SoundFx queue runs in BlackBox mode (0x401eb1: app+0xe4) */
         int vx, vy, vw, vh; disp_view(&win, &vx, &vy, &vw, &vh);                     /* port extra (docs/DISPLAY.md 3): the 3D view box, 4:3 or the whole window */
         Window view = win; view.vx = vx; view.vy = vy; view.width = vw; view.height = vh;
         rnd_frame(&L.rnd, &view, &cam, g_now);                 /* the same game clock as the instances: a texture override (message 16) starts on it */
@@ -3804,6 +3807,10 @@ int main(int argc, char **argv)
             g_npick = 0;
             hud_begin_view(vx, vy, vw, vh);                              /* port extra: 640x480 kept 4:3 and centred (docs/DISPLAY.md 3) */
             storm_overlay_draw(paused, dt);                              /* 0x46e0d0: after the effects (0x46d040), before the HUD */
+            if (bb_active()) {                                           /* 0x401d1b: the BlackBox object (app+0xe4) every frame, frozen while a menu page is open (App state 0) */
+                int held[7]; for (int k = 0; k < 7; k++) held[k] = in_held(k);
+                if (bb_frame(M.page >= 0, dt, held) && g_next_level < 0) request_level(26, 0.5f);   /* 0x401d35: done -> RequestLevel(0.5, 0x1a, 0, 0x20), the credits (as message 1180) */
+            }
             if (L.have_player && !fly)                                   /* 0x448450: 1 on the pause pages (extended HUD), 2 hidden on every other page and the results (0x404e9d) */
                 hud_state(g_res.on ? 2 : M.page < 0 ? 0 : (M.page == 0x18 || M.page == 0x19) ? 1 : 2, L.player.inst->type == 18 || L.player.inst->type == 19);
             if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && !g_res.on && (M.page < 0 || M.page == 0x18 || M.page == 0x19) && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
