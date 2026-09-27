@@ -1,7 +1,8 @@
 /* enemy.c - enemy types 4/5/6 after docs/ENEMY.md (state machine 0x418cf0, behaviours 0x41b2c0..0x41cf00).
  * The obstacle sensor (16 directions, docs/OBSTACLE.md 3) steers Chase and Wander; Wander (0x41bf30) is the original's
- * weighted action machine with its animation chains. Simplification: movement is a straight step that is refused at
- * ledges / steps over 10 units (as the original's sweep does) instead of the full swept sphere. */
+ * weighted action machine with its animation chains. Every behaviour but the path runs the common move 0x41b2c0 each frame:
+ * the swept sphere 0x437580 against the world and the instance press nodes, the platform carry of the ground probe and the
+ * free test (floor normal, drop) that calls OnBlocked (enemy_common_move, shared with the bosses in boss.c). */
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -66,8 +67,9 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     { Vec3 f = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); e->ang = e->want_ang = e->start_ang = atan2f(f.z - inst->position.z, f.x - inst->position.x); }   /* PostLoad 0x419ec1: angle0 = pos -> pos - row(+0x34) */
     e->start = inst->position; e->lanim = -1; wander_init(e);
     e->st = inst->traj.npoints > 1 ? 0 : (type >= 7 && type <= 9 ? 3 : 8); e->hand = rand() & 1;
-    if (e->st == 0) { Vec3 a = inst->traj.points[0], b = inst->traj.points[1]; e->ang = atan2f(b.z - a.z, b.x - a.x); }
-    else if (type >= 4 && type <= 13 && type != 12) wander_restart(e, -1);       /* Reset: behaviour Wander, vtbl[6]() */
+    e->behav = 2;                                                                /* Stand: the thrower (PostLoad 0x410f80 makes only that one), bosses 15 / 16 */
+    if (e->st == 0) { Vec3 a = inst->traj.points[0], b = inst->traj.points[1]; e->ang = atan2f(b.z - a.z, b.x - a.x); e->behav = 3; }
+    else if (type >= 4 && type <= 13 && type != 12) { wander_restart(e, -1); e->behav = 0; }   /* Reset: behaviour Wander, vtbl[6]() */
     if (type == 12) { e->st = 0; e->nlong = 4; e->idle_a = 9; e->idle_t = 0; game_msgmask(inst, 0x10, 0); if (getenv("WOODY_BOSSHP")) e->hp = (float)atof(getenv("WOODY_BOSSHP"));   /* testing */ Vec3 f = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); e->ang = atan2f(f.z - inst->position.z, f.x - inst->position.x); }   /* Reset 0x411020: Stilstaan, timers 0, idle 9, state 0 (it clears msgmask 0x10); he keeps his .ins facing */
     inst->scripted = 0;
     if (type == 14) boss_init(e);
@@ -248,6 +250,9 @@ static void er_request(Enemy *e, int n)                                        /
  * in a new free direction; the choice alternates idle and walking. Two more are set by the leash: 10 turning toward home and 9
  * walking back. Every action lasts as long as its animation chain (vtbl[53] of the class). */
 static EnemySet *g_eset;                                                        /* for Touch(0, 0) */
+/* the Perso's position pointer vtbl[34] 0x44c030, which FindTarget 0x40c0d0 and Touch 0x40c1e0 / 0x411840 measure from: the feet +0x1f4,
+ * or the root position +0x544 while +0x550 is set (the climb-over and the scripted actions with root motion, 0x44e290) */
+static Vec3 perso_pos(const struct Player *pl) { return pl->use_root ? pl->root_pos : pl->pos; }
 static struct Player *g_epl;
 static int wander_rec(const Enemy *e, int a)                                     /* the wander branch of vtbl[45] (0x4194f0 / 0x418000 / 0x414540) */
 {
@@ -323,7 +328,7 @@ static float wander_tick(Enemy *e, float dt)
 static void wander_avoid(Enemy *e, float dt)
 {
     const void *o = NULL; Vec3 op = { 0, 0, 0 };
-    if (g_epl && !g_epl->dead_kind) { Vec3 p = g_epl->pos; float dx = p.x - e->pos.x, dy = p.y - e->pos.y, dz = p.z - e->pos.z, R = e->P.radius + 69.0f;
+    if (g_epl && !g_epl->dead_kind) { Vec3 p = perso_pos(g_epl); float dx = p.x - e->pos.x, dy = p.y - e->pos.y, dz = p.z - e->pos.z, R = e->P.radius + 69.0f;
         if (dx * dx + dy * dy + dz * dz < R * R) { o = g_epl; op = p; } }
     for (int i = 0; !o && g_eset && i < g_eset->n; i++) {
         Enemy *f = &g_eset->e[i]; if (f == e || f->removed || !f->inst->visible || !f->attackable) continue;
@@ -337,27 +342,85 @@ static void wander_avoid(Enemy *e, float dt)
 }
 
 /* OnBlocked, behaviour vtbl[3], when the common move 0x41b2c0 refuses the step: Wander 0x41c420 turns to the widest free
- * direction (action 5, turning); Chase 0x41be90 to the free direction nearest its current angle, the turn timer to 0.
- * With nothing free Wander keeps its target and still turns (action 5). */
-static void enemy_blocked(Enemy *e, int wander, int chase)
+ * direction (action 5, turning); Chase 0x41be90 to the free direction nearest its current angle, the turn timer to 0; Stand's
+ * slot is 0x445840 = ret. With nothing free Wander keeps its target and still turns (action 5). */
+static void enemy_blocked(Enemy *e)
 {
-    if (wander) wander_blocked(e);
-    else if (chase) { e->want_ang = enemy_sensor_nearest_free(e, e->ang); e->turn_t = 0; }
-    if (getenv("WOODY_SENSLOG") && (wander || chase)) printf("  SENS %u blocked at %.0f %.0f %.0f ang %.0f -> %.0f (%s)", e->inst->index, e->pos.x, e->pos.y, e->pos.z, e->ang * 57.2958f, e->want_ang * 57.2958f, wander ? "wander" : "chase"), puts("");
+    if (e->behav == 0) wander_blocked(e);
+    else if (e->behav == 1) { e->want_ang = enemy_sensor_nearest_free(e, e->ang); e->turn_t = 0; }
+    if (getenv("WOODY_SENSLOG") && e->behav < 2) printf("  SENS %u blocked at %.0f %.0f %.0f ang %.0f -> %.0f (%s)", e->inst->index, e->pos.x, e->pos.y, e->pos.z, e->ang * 57.2958f, e->want_ang * 57.2958f, e->behav ? "chase" : "wander"), puts("");
 }
 
-/* common move 0x41b2c0: a step is only taken when the ground there is within [-10, +10] of the feet */
-static int enemy_move(Enemy *e, struct Player *pl, Vec3 delta)
+/* platform delta 0x436d20 of the probe +0x178: where the attached point (node space) is now, minus where it was attached */
+static Vec3 plat_delta(const Enemy *e)
 {
-    Vec3 to = { e->pos.x + delta.x, e->pos.y, e->pos.z + delta.z }; int found;
-    if (e->type == 13) {                                          /* 0x41b2c0 for subtype >= 9: y is kept, no ledge / step test (P+0x2c/0x30 = 10000), walls still stop it */
-        float l = sqrtf(delta.x * delta.x + delta.z * delta.z), k = l > 1e-4f ? (l + e->P.radius) / l : 1; Vec3 c = { e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z };
-        if (player_segment_blocked(pl, c, (Vec3){ c.x + delta.x * k, c.y, c.z + delta.z * k })) return 0;
-        e->pos.x = to.x; e->pos.z = to.z; return 1;
+    const Instance *in = e->plat_inst;
+    if (!in || !in->node_world || e->plat_node >= in->model->nnodes) return (Vec3){ 0, 0, 0 };
+    Vec3 w = mat4_apply(&in->node_world[e->plat_node], e->plat_local);
+    return (Vec3){ w.x - e->plat_world.x, w.y - e->plat_world.y, w.z - e->plat_world.z };
+}
+/* the sweep 0x437580(res, from, to, up, 30.0) (docs/BOSS14.md 5.1): a SPHERE of radius P+4 ([0x4b3118], 0x41b489) whose centre sits
+ * r + up + 1 above the feet moves in floor(|to - from| / 30) + 1 equal substeps; after each one the push-out 0x407340 (world
+ * polygons + instance press nodes, vt[9] 0x433ff0) moves it in x and z only when it touched something ([0x4c4bd0]), and
+ * GetHeight 0x435650(&c, -1, 1) under the centre lifts it so the feet never end below the floor (nothing found: y = c.y, normal
+ * (0, 1, 0), which lifts the sphere by h). *gy / *ny = [0x53a568] / [0x4b310c] of the LAST substep. With up = min(P+0x30, h/2)
+ * the ordinary enemies (30 / 10) sweep a sphere spanning feet + 11 .. feet + 71, the thrower (60 / 10) + 11 .. + 131. */
+static Vec3 enemy_sweep(Enemy *e, struct Player *pl, Vec3 from, Vec3 to, float up, float *gy, float *ny)
+{
+    float r = e->P.radius, h = r + up + 1.0f;                                  /* 0x437583..0x437598 */
+    Vec3 d = { to.x - from.x, to.y - from.y, to.z - from.z };
+    float k = floorf(sqrtf(d.x * d.x + d.y * d.y + d.z * d.z) / 30.0f) + 1.0f; int n = (int)(k + 0.5f);   /* 0x4375fb floor, 0x437611 _ftol; d /= k (the float) */
+    d.x /= k; d.y /= k; d.z /= k;
+    Vec3 c = { from.x, from.y + h, from.z }, res = from;
+    for (; n > 0; n--) {
+        c.x += d.x; c.y += d.y; c.z += d.z;
+        Vec3 push = player_sphere_push(pl, e->inst, c, r); c.x += push.x; c.z += push.z;   /* 0x437679, 0x43768a: x and z of the push */
+        int found; Vec3 gn; float g = player_ground_query_n(pl, e->inst, c, &found, &gn);
+        if (c.y - h < g) c.y = g + h;                                           /* 0x4376bf */
+        res = (Vec3){ c.x, c.y - h, c.z }; *gy = g; *ny = gn.y;
     }
-    float gy = player_ground_query(pl, e->inst, (Vec3){ to.x, to.y + e->P.height * 0.5f, to.z }, &found);
-    if (!found || gy - e->pos.y > E_STEP || e->pos.y - gy > E_STEP) return 0;
-    e->pos.x = to.x; e->pos.z = to.z; return 1;
+    return res;
+}
+/* the common move 0x41b2c0, the Tick of Stand (0x41bed0 = jmp) and the tail of the Wander / Chase Ticks, so it runs EVERY frame under
+ * those three behaviours, with a zero step too (only the path follower 0x41cf00 slides without it):
+ *   from = pos; up = min(P+0x30, h/2) (0x41b33b); knockT (Behav+0x1c) > 0 ? knockT = max(0, knockT - dt), to = from + knockDir
+ *   * dt * P+0x44 * knockT : to = from + vtbl[1]() * vtbl[0]() (direction * step); to += the platform delta 0x436d20; the
+ *   Probe2 push-out 0x437040 (dead: its sphere queries 0x435b60 are a stub, zero); Sweep; hook vtbl[2](res, from, step) (only
+ *   Chase has one, 0x41bdf0: moved less than 0.01 (3D) with a step > 0 => res.xz += (rand() & 31) - 16 each and the target angle
+ *   from res back to from); subtype >= 9 (types 13..16) res.y = from.y; 0x436d10 clears the probe's platform; free when the
+ *   floor normal y >= 0.8 (0x4a987c, NaN = blocked) and res.y - floor < P+0x2c (NaN = free): pos = res, collision centre, re-cell
+ *   (with a drop < 1 on an instance floor it attaches the probe to it, 0x41b566 - overwritten by the ground follower's probe
+ *   0x436dc0 of the same Update, which attaches or clears every frame; not ported); blocked: pos += platform delta, re-attach
+ *   when the probe still has a platform (never: 0x436d10 just cleared it), re-cell, OnBlocked vtbl[3]. */
+int enemy_common_move(Enemy *e, struct Player *pl, Vec3 delta, float *knock_t, Vec3 kd, int behav, float dt)
+{
+    Vec3 from = e->pos, to = from; float h2 = e->P.height * 0.5f, up = e->P.rise < h2 ? e->P.rise : h2, step;
+    if (!(*knock_t > 0)) { step = sqrtf(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z); to.x += delta.x; to.y += delta.y; to.z += delta.z; }
+    else { *knock_t -= dt; if (*knock_t < 0) *knock_t = 0; step = dt * E_KNOCK * *knock_t; to.x += kd.x * step; to.y += kd.y * step; to.z += kd.z * step; }   /* 0x41b3c0 */
+    Vec3 pd = plat_delta(e); to.x += pd.x; to.y += pd.y; to.z += pd.z;          /* 0x41b453 */
+    float gy = from.y, ny = 1.0f;
+    Vec3 res = enemy_sweep(e, pl, from, to, up, &gy, &ny);                     /* 0x41b4d8 */
+    if (behav == 1) {                                                           /* Chase hook 0x41bdf0 */
+        float mx = res.x - from.x, my = res.y - from.y, mz = res.z - from.z;
+        if (sqrtf(mx * mx + my * my + mz * mz) < 0.01f && step > 0) {
+            res.x += (float)((rand() & 31) - 16); res.z += (float)((rand() & 31) - 16);
+            e->want_ang = atan2f(from.z - res.z, from.x - res.x);               /* 0x41ba60(res, from, 0) */
+        }
+    }
+    if (e->type >= 13) res.y = from.y;                                          /* 0x41b4fe: subtypes 9 (ghost), 11..13 (bosses) */
+    e->plat_inst = NULL;                                                        /* 0x41b514 */
+    float drop = res.y - gy;
+    int ok = ny >= 0.8f && !(drop >= e->P.drop);                               /* 0x41b519..0x41b54a */
+    if (getenv("WOODY_SWEEPLOG") && (!ok || fabsf(res.x - to.x) + fabsf(res.z - to.z) > 0.5f))
+        printf("  SWEEP %u (type %d st %d) %s at %.0f %.0f %.0f: wanted %.1f %.1f got %.1f %.1f, floor %.1f below, normal y %.2f", e->inst->index, e->type, e->st, ok ? "pushed" : "blocked", from.x, from.y, from.z, to.x - from.x, to.z - from.z, res.x - from.x, res.z - from.z, drop, ny), puts("");
+    if (ok) { e->pos = res; return 1; }
+    e->pos.x += pd.x; e->pos.y += pd.y; e->pos.z += pd.z;                       /* 0x41b601 */
+    return 0;
+}
+static void enemy_move(Enemy *e, struct Player *pl, Vec3 delta, float dt)
+{
+    if (e->behav == 3) return;                                                  /* the path follower 0x41cf00 slides on its own (state 0), without the sweep (docs/ENEMY.md 5.5) */
+    if (!enemy_common_move(e, pl, delta, &e->knock_t, e->knock_dir, e->behav, dt)) enemy_blocked(e);
 }
 
 void enemy_place(Enemy *e)
@@ -386,9 +449,13 @@ static void ground_snap(Enemy *e, struct Player *pl)
  * tol = h/2. 0x416a10 (type 10) and 0x41b030 (vtbl[56]: no call site through +0xe0) are not used by a shipped enemy. */
 int enemy_probe(Enemy *e, struct Player *pl, Vec3 pt, float tol, float *gy, int *found)
 {
-    uint32_t col = 0xffffffffu;
-    *gy = player_ground_query_col(pl, e->inst, pt, found, &col);
+    uint32_t col = 0xffffffffu, node = 0; const Instance *hi = NULL;
+    *gy = player_ground_query_hit(pl, e->inst, pt, found, &col, &hi, &node);
     int on = *found && pt.y - (*gy + tol) < 1.0f;
+    /* on an instance press node (hit type 2) 0x436d80 attaches the probe to it at pt (0x431700: pt in node space), anything else
+     * clears it (0x436ea2 / 0x436ed0); the next common move adds that point's displacement (platform carry) */
+    e->plat_inst = NULL;
+    if (on && hi && player_node_local(hi, node, pt, &e->plat_local)) { e->plat_inst = hi; e->plat_node = node; e->plat_world = pt; }
     game_col_probe(&e->col_cur, on, col, e->inst);
     return on;
 }
@@ -412,7 +479,7 @@ void enemies_msg6_off(EnemySet *s, Instance *inst)
  * home point +0x134 when flag 2 (message 11/6, "guard") is set; no view cone, no line of sight */
 static int find_target(const Enemy *e, const struct Player *pl)
 {
-    Vec3 c = e->guard ? e->home : e->pos, tp = pl->pos; float dx = tp.x - c.x, dy = tp.y - c.y, dz = tp.z - c.z;
+    Vec3 c = e->guard ? e->home : e->pos, tp = perso_pos(pl); float dx = tp.x - c.x, dy = tp.y - c.y, dz = tp.z - c.z;
     return !pl->dead_kind && dx * dx + dy * dy + dz * dz < e->P.see * e->P.see && fabsf(dy) < e->P.dy;
 }
 /* speed channel of H (Tick 0x41ba90): moves linearly toward the target speed at 1000 u/s^2, both ways */
@@ -432,14 +499,14 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     if (e->hit_t > 0) e->hit_t -= dt;
     if (e->reload >= 0) e->reload -= dt;
     if (e->type == 13 && e->st != 12) in->fade = 0.5f;            /* 0x413ab0: fade target 0.5 every frame = half transparent */
-    Vec3 tp = pl->pos; float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z;
+    Vec3 tp = perso_pos(pl); float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z;
     int see = find_target(e, pl);
     float dxz = sqrtf(dx * dx + dz * dz), to_player = atan2f(dz, dx);
     Vec3 step = { 0, 0, 0 }; int anim = EA_IDLE;
 
     speed_tick(e, dt);
 
-    if (e->st == 1 || e->st == 4 || e->st == 8) enemy_sensor_tick(e, pl);   /* Enemy::Update 0x41a3e0: only under Chase / Wander (kind 1 / 0) */
+    if (e->behav == 0 || e->behav == 1) enemy_sensor_tick(e, pl);   /* Enemy::Update 0x41a3e0: only under Wander / Chase (kind 0 / 1) */
     switch (e->st) {
     case 0: {                                                     /* patrol: slides exactly along the TRAJ segments, ping-pong on an open path */
         const Trajectory *T = &in->traj; Vec3 b = T->points[e->path_to];
@@ -454,18 +521,18 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         if (e->cool < 0 && see) { e->home = e->pos; e->st = 2; }
         break; }
     case 7:                                                       /* to wander 0x418d77 (ghost: state 4, 0x413b6b): speed P+0x08 direct, Wander restarts */
-        e->speed = e->want_speed = e->P.walk; wander_restart(e, -1); e->st = 8; anim = -2;
+        e->speed = e->want_speed = e->P.walk; wander_restart(e, -1); e->behav = 0; e->st = 8; anim = -2;
         break;
     case 8: {                                                     /* wander 0x418dc6 (ghost 5): the behaviour's actions (wander_tick) */
         float l = wander_tick(e, dt); anim = -2;
         step = (Vec3){ cosf(e->ang) * l, 0, sinf(e->ang) * l };
         if (e->cool < 0 && see) e->st = 2;
-        if (in->traj.npoints > 1) { float hx = e->home.x - e->pos.x, hz = e->home.z - e->pos.z; if (hx * hx + hz * hz < 10.0f * 10.0f) e->st = 0; }   /* back on the path (0x41cfb0); no enemy of the 28 levels has a TRAJ */
+        if (in->traj.npoints > 1) { float hx = e->home.x - e->pos.x, hz = e->home.z - e->pos.z; if (hx * hx + hz * hz < 10.0f * 10.0f) { e->behav = 3; e->st = 0; } }   /* back on the path (0x41cfb0); no enemy of the 28 levels has a TRAJ */
         break; }
     case 2:                                                       /* noticed: turn on the spot first, then run */
         if (!see) { e->st = 7; break; }
         e->want_ang = chase_target(e, to_player);                     /* 0x41bc80 -> Steer 0x41bd00 */
-        e->turn_t = fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; e->speed = e->want_speed = e->P.run; e->st = 1; if (e->type == 13) e->reload = e->P.reload;
+        e->turn_t = fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; e->speed = e->want_speed = e->P.run; e->behav = 1; e->st = 1; if (e->type == 13) e->reload = e->P.reload;
         /* fallthrough */
     case 1:
         if (!see) { e->st = 7; break; }
@@ -479,7 +546,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
             const Model *mo = in->model; uint32_t want = e->hand == 1 ? 0 : 1, seen = 0; Vec3 m0 = { e->pos.x, e->pos.y + e->P.height * 0.6f, e->pos.z };
             for (uint32_t i = 0; i < mo->nnodes; i++) if (mo->nodes[i].kind == 0x20 && mo->nodes[i].type_code == 1 && mo->nodes[i].npoints >= 1) { if (seen++ == want) { m0 = ins_point_world(in, mo->nodes[i].point_base); break; } }
             Vec3 sd = { tp.x - m0.x, tp.y - m0.y, tp.z - m0.z }; float sl = sqrtf(sd.x * sd.x + sd.y * sd.y + sd.z * sd.z);
-            if (sl > 1e-3f && !player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, m0))
+            float rt; if (sl > 1e-3f && !player_ray_full(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, m0, &rt))   /* 0x497ed0: world and press nodes */
                 game_enemy_shot(e, m0, (Vec3){ sd.x / sl, sd.y / sl, sd.z / sl }, 1000.0f, e->P.shot_dmg, 0, e->P.shot_visual, e->P.shot_fx);   /* straight fireball at the feet (0x414d10) */
             e->reload += e->P.reload; e->hand ^= 1;
             break;
@@ -488,13 +555,13 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         break;
     case 4:                                                       /* dash: the only state that hurts the player */
         anim = EA_DASH;
-        if (!see || e->atk_t <= 0) { e->t = ea_len(e, EA_BRAKE); e->st = 6; break; }
+        if (!see || e->atk_t <= 0) { e->t = ea_len(e, EA_BRAKE); e->behav = 2; e->st = 6; break; }   /* 5 -> 6 (ghost 13 -> 8): Stand */
         e->atk_t -= dt; steer(e, e->want_ang, e->P.turn_fast, dt); e->want_ang = chase_target(e, to_player);
         step = (Vec3){ cosf(e->ang) * e->speed * dt, 0, sinf(e->ang) * e->speed * dt };
         if (sqrtf(dx * dx + dy * dy + dz * dz) < e->P.radius + 69.0f) {
             Vec3 d = dxz > 1e-3f ? (Vec3){ dx / dxz, 0, dz / dxz } : (Vec3){ 1, 0, 0 };
-            if (player_hit(pl, e->P.bite, d)) { player_kill(pl, 3); e->t = ea_len(e, EA_WIN); e->want_speed = e->P.walk; e->st = 11; }
-            else { e->t = ea_len(e, EA_MISS); e->st = 3; }
+            if (player_hit(pl, e->P.bite, d)) { player_kill(pl, 3); e->t = ea_len(e, EA_WIN); e->want_speed = e->P.walk; e->behav = 2; e->st = 11; }   /* 10 -> 11: Stand */
+            else { e->t = ea_len(e, EA_MISS); e->behav = 2; e->st = 3; }   /* Stand */
         }
         break;
     case 3: anim = EA_MISS; if ((e->t -= dt) <= 0) { e->cool = e->P.cool; e->st = 7; } break;
@@ -502,7 +569,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     case 11: anim = EA_WIN; if ((e->t -= dt) <= 0) e->st = 7; break;
     case 9:
         anim = EA_HIT;
-        if (e->hp <= 0) { game_enemy_stars(e); e->attackable = 0; e->dead_t = e->type == 13 ? (ea_len(e, EA_DEAD) + 1.0f) * 0.5f : 0; e->st = 12; }   /* the ghost starts fading at once */
+        if (e->hp <= 0) { game_enemy_stars(e); e->attackable = 0; e->dead_t = e->type == 13 ? (ea_len(e, EA_DEAD) + 1.0f) * 0.5f : 0; e->behav = 2; e->st = 12; }   /* the ghost starts fading at once; the behaviour stays through state 9 */
         else if (e->hit_t <= 0) { e->st = 7; if (e->type == 13) e->reload = 2.0f * e->P.reload; }
         break;
     case 12: {                                                    /* dead: animation 13, fades out during the second half, then removed */
@@ -511,9 +578,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         if (e->dead_t >= L) { e->removed = 1; in->visible = 0; g_eset->killed++; return; }   /* +0x10c |= 1 -> 0x40bf60 -> vtbl[29] 0x41aff0: [0x4c532c]++ (the defeated-enemies stat) */
         break; }
     }
-    /* knockback replaces the normal step: v = 600 * t_rest for 0.25 s */
-    if (e->knock_t > 0) { e->knock_t -= dt; if (e->knock_t < 0) e->knock_t = 0; float v = dt * E_KNOCK * e->knock_t; step = (Vec3){ e->knock_dir.x * v, 0, e->knock_dir.z * v }; }
-    if ((step.x != 0 || step.z != 0) && !enemy_move(e, pl, step)) enemy_blocked(e, e->st == 8, e->st == 1 || e->st == 4);
+    enemy_move(e, pl, step, dt);                                  /* the behaviour tick's common move 0x41b2c0, every frame (knockback: v = 600 * t_rest for 0.25 s) */
     if (e->st == 8) wander_avoid(e, dt);
     if (e->type == 13) {                                          /* height control 0x414f10: feet at the player's feet height (home without a target); frozen when hit / dead */
         if (e->st != 9 && e->st != 12) {
@@ -521,7 +586,7 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
             float want = see ? tp.y - e->pos.y : e->home.y - e->pos.y, stp = see ? e->P.run * dt : e->P.walk * dt;
             if (see && want > 0 && (pl->jumper.state == 0 || pl->jumper.state == 1 || pl->jumper.state == 7)) stp *= 0.2f;
             if (want < -0.01f) { e->pos.y += want < -stp ? -stp : want; if (found && e->pos.y < gy) { e->pos.y = gy; on = 1; } }
-            else if (want > 0.01f) { float up = want > stp ? stp : want; if (!player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height, e->pos.z }, (Vec3){ e->pos.x, e->pos.y + e->P.height + up, e->pos.z })) e->pos.y += up; }
+            else if (want > 0.01f) { float up = want > stp ? stp : want, t; if (!player_ray_full(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height, e->pos.z }, (Vec3){ e->pos.x, e->pos.y + e->P.height + up, e->pos.z }, &t)) e->pos.y += up; }   /* 0x4359b0: world and press nodes */
             game_msgmask(in, 0x200, on);                              /* 0x41514d / 0x415169: +0x174 bit 0 (hit or clamped); frozen with it while hit / dead */
         }
     } else
@@ -562,14 +627,14 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     if (e->cool >= 0) e->cool -= dt;
     if (e->hit_t > 0) e->hit_t -= dt;
     if (e->reload >= 0) e->reload -= dt;
-    Vec3 tp = pl->pos; float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z;
+    Vec3 tp = perso_pos(pl); float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z;
     int see = find_target(e, pl);
     float dxz = sqrtf(dx * dx + dz * dz), to_player = atan2f(dz, dx);
     Vec3 step = { 0, 0, 0 }; int anim = SA_IDLE; float anim_speed = 0;
 
     speed_tick(e, dt);
 
-    if (e->st == S_WANDER || e->st == S_DASH) enemy_sensor_tick(e, pl);   /* Enemy::Update: Wander in 3, Chase in 6 */
+    if (e->behav == 0 || e->behav == 1) enemy_sensor_tick(e, pl);   /* Enemy::Update: under Wander (2, 3, 16 -> 3) / Chase (5, 6) */
     switch (e->st) {
     case S_PATH: {
         const Trajectory *T = &in->traj; Vec3 b = T->points[e->path_to];
@@ -581,19 +646,20 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
             e->path_to = (uint32_t)nx;
         } else { e->ang = atan2f(bz, bx); e->pos.x += bx / l * mv; e->pos.z += bz / l * mv; }
         anim = SA_WALK;
-        if (e->cool < 0 && see) { e->home = e->pos; e->st = S_WAIT; }
+        if (e->cool < 0 && see) { e->home = e->pos; e->behav = 2; e->st = S_WAIT; }
         break; }
     case S_TOWANDER:                                              /* 0x417057: speed P+0x08 direct, turn speed P+0x10, Wander restarts */
-        e->speed = e->want_speed = e->P.walk; wander_restart(e, -1); e->st = S_WANDER; anim = -2;
+        e->speed = e->want_speed = e->P.walk; wander_restart(e, -1); e->behav = 0; e->st = S_WANDER; anim = -2;
         break;
     case S_WANDER: {                                              /* 0x4170a3 */
         float l = wander_tick(e, dt); anim = -2;
         step = (Vec3){ cosf(e->ang) * l, 0, sinf(e->ang) * l };
         if (e->cool < 0 && see) e->st = S_WAIT;
-        if (in->traj.npoints > 1) { float hx = e->home.x - e->pos.x, hz = e->home.z - e->pos.z; if (hx * hx + hz * hz < 10.0f * 10.0f) e->st = S_PATH; }   /* even when 11 was just set */
+        if (in->traj.npoints > 1) { float hx = e->home.x - e->pos.x, hz = e->home.z - e->pos.z; if (hx * hx + hz * hz < 10.0f * 10.0f) { e->behav = 3; e->st = S_PATH; } }   /* even when 11 was just set */
         break; }
     case S_WAIT: {                                                /* reloading: stands still and does NOT turn (H.Tick is not called in 0x4171bd) */
         if (!see) { e->st = S_TOWANDER; break; }
+        e->behav = 2;                                             /* 0x4171bd: Stand with Stand+0x38 = 0 */
         float d = ang_diff(to_player, e->ang), T = 4.0f * fabsf(d) / e->P.turn_fast;
         anim = d > 0 ? SA_TURN_L : SA_TURN_R;
         if (T > 0.02f) { const Model *m = in->model; int s = g_sa[anim].anim; anim_speed = (uint32_t)s < m->nanims ? m->anims[s].duration_s / T : 0; } else anim = SA_IDLE;
@@ -607,11 +673,11 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         break;
     case S_FIRE: {
         if (!see) { e->st = S_TOWANDER; break; }
-        anim = SA_THROW; Vec3 m0;
+        anim = SA_THROW; Vec3 m0; float rt;
         if (!shooter_vector(in, 1, &m0)) { m0 = (Vec3){ e->pos.x + cosf(e->ang) * e->P.radius, e->pos.y + e->P.height * 0.7f, e->pos.z + sinf(e->ang) * e->P.radius }; }
         if (e->type == 9 && (e->t -= dt) > 0) break;
         /* 0x497ed0: from the own centre to the own muzzle; blocked = the shot is skipped but the reload still counts */
-        if (!player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, m0))
+        if (!player_ray_full(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, m0, &rt))   /* world and press nodes */
             game_enemy_shot(e, m0, (Vec3){ cosf(e->ang), 0, sinf(e->ang) }, 1000.0f, e->P.shot_dmg, e->P.steer, e->P.shot_visual, e->P.shot_fx);
         e->reload += e->P.reload; e->throw_hold = 1; e->st = S_WAIT;
         break; }
@@ -619,17 +685,17 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         if (!see) { e->st = S_TOWANDER; break; }
         if (dxz > e->P.melee) break;
         e->want_ang = chase_target(e, to_player);
-        e->turn_t = fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; e->speed = e->want_speed = e->P.run; e->atk_t = dxz / e->P.run; e->st = S_DASH;
+        e->turn_t = fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; e->speed = e->want_speed = e->P.run; e->atk_t = dxz / e->P.run; e->behav = 1; e->st = S_DASH;
         break;
     case S_DASH:
         anim = SA_DASH;
-        if (!see || e->atk_t < 0) { e->t = sa_len(e, SA_BRAKE); e->want_speed = e->P.walk; e->st = S_BRAKE; break; }
+        if (!see || e->atk_t < 0) { e->t = sa_len(e, SA_BRAKE); e->want_speed = e->P.walk; e->behav = 2; e->st = S_BRAKE; break; }   /* 14: Stand */
         e->atk_t -= dt; steer(e, e->want_ang, e->P.turn_fast, dt); e->want_ang = chase_target(e, to_player);
         if ((e->turn_t -= dt) <= 0) step = (Vec3){ cosf(e->ang) * e->speed * dt, 0, sinf(e->ang) * e->speed * dt };
         if (sqrtf(dx * dx + dy * dy + dz * dz) < e->P.radius + 69.0f) {
             Vec3 d = dxz > 1e-3f ? (Vec3){ dx / dxz, 0, dz / dxz } : (Vec3){ 1, 0, 0 };
-            if (player_hit(pl, e->P.bite, d)) { player_kill(pl, 3); e->t = sa_len(e, SA_WIN); e->st = S_WIN; }
-            else { e->t = sa_len(e, SA_BITE); e->st = S_BITE; }
+            if (player_hit(pl, e->P.bite, d)) { player_kill(pl, 3); e->t = sa_len(e, SA_WIN); e->behav = 2; e->st = S_WIN; }   /* 8: Stand */
+            else { e->t = sa_len(e, SA_BITE); e->behav = 2; e->st = S_BITE; }   /* 1: Stand */
         }
         break;
     case S_BITE: anim = SA_BITE; if (e->t > 0) e->t -= dt; else { e->cool = e->P.cool; e->st = S_TOWANDER; } break;
@@ -637,7 +703,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     case S_WIN: anim = SA_WIN; if ((e->t -= dt) <= 0) e->st = S_TOWANDER; break;
     case S_HIT:
         anim = SA_HIT;
-        if (e->hp <= 0) { game_enemy_stars(e); e->attackable = 0; e->dead_t = 0; e->st = S_DEAD; }
+        if (e->hp <= 0) { game_enemy_stars(e); e->attackable = 0; e->dead_t = 0; e->behav = 2; e->st = S_DEAD; }
         else if (e->hit_t <= 0) e->st = S_TOWANDER;
         break;
     case S_DEAD: {
@@ -650,20 +716,20 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         Vec3 cand[4] = { { d.x, 0, d.z }, { -d.z, 0, d.x }, { d.z, 0, -d.x }, { -d.x, 0, -d.z } }, pick = cand[0];
         for (int k = 0; k < 4; k++) {
             Vec3 c = { e->pos.x + cand[k].x, e->pos.y, e->pos.z + cand[k].z }; int found;
-            float gy = player_ground_query(pl, in, (Vec3){ c.x, c.y + e->P.height * 0.5f, c.z }, &found);
-            if (found && fabsf(gy - e->pos.y) <= E_STEP && !player_segment_blocked(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, (Vec3){ c.x, c.y + e->P.height * 0.5f, c.z })) { pick = cand[k]; break; }
+            float rt; if (player_ray_full(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, (Vec3){ c.x, c.y + e->P.height * 0.5f, c.z }, &rt)) continue;   /* 0x4359b0: world and press nodes */
+            float gy = player_ground_query(pl, in, (Vec3){ c.x, c.y + e->P.height * 0.5f, c.z }, &found), drop = e->pos.y - gy;   /* GetHeight 0x435650(c, -1, 1): nothing found = c.y, so -drop = h/2 */
+            if (drop <= e->P.drop && -drop <= e->P.rise) { pick = cand[k]; break; }
         }
         e->dodge_dir = (Vec3){ pick.x / e->P.dodge, 0, pick.z / e->P.dodge }; e->ang = atan2f(-pick.z, -pick.x);   /* faces against the move */
-        e->t = e->P.dodge / (3.0f * e->P.run); e->st = S_DODGE;
+        e->t = e->P.dodge / (3.0f * e->P.run); e->behav = 2; e->st = S_DODGE;
         break; }
     case S_DODGE:
         anim = SA_DODGE;
         if (e->t > 0) { e->t -= dt; float v = 3.0f * e->P.run * dt; step = (Vec3){ e->dodge_dir.x * v, 0, e->dodge_dir.z * v }; }
-        else { e->reload = e->P.reload; e->cool = e->P.cool; e->speed = e->want_speed = e->P.walk; e->st = S_WANDER; wander_restart(e, 0); }   /* 0x41c0c0(0): Wander restarts with action 0 */
+        else { e->reload = e->P.reload; e->cool = e->P.cool; e->speed = e->want_speed = e->P.walk; e->behav = 0; e->st = S_WANDER; wander_restart(e, 0); }   /* 0x41c0c0(0): Wander restarts with action 0 */
         break;
     }
-    if (e->knock_t > 0) { e->knock_t -= dt; if (e->knock_t < 0) e->knock_t = 0; float v = dt * E_KNOCK * e->knock_t; step = (Vec3){ e->knock_dir.x * v, 0, e->knock_dir.z * v }; }
-    if ((step.x != 0 || step.z != 0) && !enemy_move(e, pl, step)) enemy_blocked(e, e->st == S_WANDER, e->st == S_DASH);
+    enemy_move(e, pl, step, dt);                                  /* the common move 0x41b2c0 of the behaviour tick, every frame */
     if (e->st == S_WANDER) wander_avoid(e, dt);
     { int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* ground following 0x41a4e0 */
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
@@ -679,7 +745,8 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
  * He never walks (only the behaviour Stilstaan). He turns to the player at 2 pi rad/s, throws a bomb from his marker 1 as soon
  * as he faces him (template 0 at 800 u/s, fuse 7.5 s four times, then 1.3 s once), swipes within 300, cannot be pecked (a peck
  * only breaks his rhythm for 3.6 s) and loses 1 of his 5 hp per bomb blast, with 3.6 s of immunity after each. When he is dead
- * msgmask 0x10 tells the script to end the level (W2B object 533: MSGTEST 16 -> 1083). Port: Touch is the 3D distance. */
+ * msgmask 0x10 tells the script to end the level (W2B object 533: MSGTEST 16 -> 1083). Touch 0x411840 is the base 0x40c1e0 (3D
+ * distance of the position pointers) with P+0x8c added once after the flag +0x1fc; like every class he has no boss bar. */
 enum { BA_AIM, BA_THROW, BA_WIND, BA_AFTER, BA_BACK, BA_WIN, BA_STUN, BA_DEAD, BA_HIT };
 static const struct { int anim; float speed; int hold; } g_ba[] = {    /* logical 0, 14, 3, 5, 4, 6, 15, 8, 7 (records 0x4b1d10) */
     { 0, 3, 0 }, { 6, 3, 1 }, { 3, 3, 1 }, { 4, 2, 1 }, { 5, 3, 1 }, { 7, 3, 1 }, { 8, 3, 1 }, { 10, 1, 1 }, { 9, 3, 1 } };
@@ -702,7 +769,12 @@ static void bomber_blast(Enemy *e, Vec3 c, float r)                    /* vtbl[4
     float dx = e->pos.x - c.x, dy = e->pos.y - c.y, dz = e->pos.z - c.z;
     if (e->st == 13 || e->hit_t > 0 || dx * dx + dy * dy + dz * dz >= r * r) return;
     audio_fx(52, NULL, NULL); e->st = 14; e->hit_t = ba_len(e, BA_STUN);
-    e->hp -= 1.0f; game_hit_star(c);                                   /* Enemy_TakeDamage(0, 1.0, 0, pos, 0): the star on the blast point */
+    /* Enemy_TakeDamage 0x41adc0(0, 1.0, &(0,0,0), pos, 0): Behav_Knock 0x41b6b0 refuses while Stand's knock timer runs, else it starts it
+     * with a zero direction for vtbl[53](-1) = AnimLen(7) in state 14 (0.4 s with the W2B model, always shorter than the 3.6 s hitT that
+     * gates this function, so the refusal never happens); then the star on the blast point and 1 hp */
+    if (e->knock_t > 0) return;
+    e->knock_dir = (Vec3){ 0, 0, 0 }; e->knock_t = ba_len(e, BA_HIT);
+    e->hp -= 1.0f; game_hit_star(c);
     if (getenv("WOODY_BOSSLOG")) printf("  THROWER %u blast: hp %.0f", e->inst->index, e->hp), puts("");
 }
 /* actor list 1 (0x4c52d8, max 8, double-buffered by 0x40bf60): besides the Perso only two enemy Updates call RegisterActor 0x40c080 --
@@ -816,7 +888,7 @@ static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     if (e->removed || !in->visible || !game_enemy_thinks(in)) return;      /* Think 0x41a320 only runs from 0x42b400, for the instances of this frame's list world+0x64 */
     ground_snap(e, pl);
     { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != 13) return; }   /* Think 0x41a320 */
-    Vec3 tp = pl->pos; float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z, d3 = sqrtf(dx * dx + dy * dy + dz * dz);
+    Vec3 tp = perso_pos(pl); float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z, d3 = sqrtf(dx * dx + dy * dy + dz * dz);
     int see = !pl->dead_kind && d3 < e->P.see && fabsf(dy) < e->P.dy;   /* FindTarget(1, 0) */
     if (e->reload > 0) e->reload -= dt;
     if (e->hit_t > 0) e->hit_t -= dt;
@@ -887,6 +959,7 @@ static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         break;
     }
     if (e->st == 4 || e->st == 7 || e->st == 9 || e->st == 11) anim = -1;   /* the set-up states have no animation of their own */
+    enemy_move(e, pl, (Vec3){ 0, 0, 0 }, dt);                         /* Enemy::Update: Stand's Tick = the common move 0x41b2c0 with a zero step (sweep, platform, knock timer) */
     { int found; float gy, h2 = e->P.height * 0.5f; int on = enemy_probe(e, pl, (Vec3){ e->pos.x, e->pos.y + h2, e->pos.z }, h2, &gy, &found);   /* ground following 0x41a4e0 */
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
       if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
@@ -914,13 +987,14 @@ static void enemy_reset(Enemy *e)
     e->pos = e->home = e->start; e->ang = e->want_ang = e->start_ang;
     e->hp = e->P.hp; e->hit_t = e->dead_t = e->knock_t = e->vfall = 0; e->removed = 0; e->attackable = 1;
     in->visible = 1; in->fade = 0; in->anim = 0; in->anim_time = 0; e->lanim = -1;
+    e->plat_inst = NULL;                                          /* both probes reset (0x436d10) */
     e->need_snap = e->type < 13; if (g_epl) ground_snap(e, g_epl); enemy_reset_probe(e);   /* 0x41a0f8..0x41a148: ground snap 0x41a1a0, then the probe (Press/In/UnPress) */
     game_msgmask(in, 0x10, 0);
     e->cool = e->t = e->atk_t = e->reload = e->turn_t = 0; e->throw_hold = 0; e->path_to = 1; e->path_dir = 1;
-    if (e->type == 12) { e->st = 0; e->idle_t = 0; e->nlong = 4; e->idle_a = 9; e->done = 0; e->melee_t = e->windup = 0; e->big_touch = 0; }
+    if (e->type == 12) { e->st = 0; e->idle_t = 0; e->nlong = 4; e->idle_a = 9; e->done = 0; e->melee_t = e->windup = 0; e->big_touch = 0; e->behav = 2; }
     else {
         e->speed = e->want_speed = e->P.walk;
-        if (in->traj.npoints > 1) e->st = 0; else { e->st = e->type >= 7 && e->type <= 9 ? S_WANDER : 8; wander_restart(e, -1); }
+        if (in->traj.npoints > 1) { e->st = 0; e->behav = 3; } else { e->st = e->type >= 7 && e->type <= 9 ? S_WANDER : 8; wander_restart(e, -1); e->behav = 0; }
     }
     enemy_place(e);
 }

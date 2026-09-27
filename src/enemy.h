@@ -84,6 +84,8 @@ typedef struct Enemy {
     uint32_t path_to; int path_dir;              /* patrol along the instance TRAJ */
     EnemySensor sens;                            /* +0x124 */
     uint32_t col_cur;                            /* +0x198 = probe +0x178 +0x20: the world_collision it presses, 0xffffffff none (ctor 0x436cf0) */
+    int behav;                                   /* +0x11c, the active behaviour: 0 Wander, 1 Chase, 2 Stand, 3 Pad (path) - picks OnBlocked / the hook of the common move */
+    const Instance *plat_inst; uint32_t plat_node; Vec3 plat_local, plat_world;   /* probe +0x178: +0 instance, +4 press node, +8 point in node space, +0x14 in world (0x436d80) */
 } Enemy;
 
 #define MAX_ENEMIES 256
@@ -128,6 +130,9 @@ void game_msgmask(Instance *in, uint32_t bits, int on);                      /* 
 void game_col_probe(uint32_t *cur, int on, uint32_t col, const Instance *actor);   /* 0x436dc0's Press/In/UnPress (cur = Probe+0x20; in main_engine.c) */
 int  enemy_probe(Enemy *e, struct Player *pl, Vec3 pt, float tol, float *gy, int *found);   /* Probe_Test 0x436dc0 on the probe +0x178: 1 = on the ground */
 void enemy_reset_probe(Enemy *e);                                             /* the probe of Enemy::Reset 0x41a010 at the start position */
+/* the common move 0x41b2c0 (every behaviour tick but the path's): step or knockback, platform delta, the sphere sweep 0x437580, the Chase
+ * hook 0x41bdf0 when behav == 1, then the free test; 1 = moved, 0 = blocked (the caller runs the behaviour's OnBlocked) */
+int  enemy_common_move(Enemy *e, struct Player *pl, Vec3 delta, float *knock_t, Vec3 knock_dir, int behav, float dt);
 void enemies_msg6_off(EnemySet *s, Instance *inst);                           /* Enemy::HandleMsg 0x41abfd: message 6 with 0 on an enemy in the world */
 
 /* class 14, the Buzz boss (boss.c, docs/BOSS14.md) */

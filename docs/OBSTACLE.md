@@ -224,9 +224,11 @@ Use by the behaviours (ENEMY.md §5):
 `enemy_sensor_init/_tick/_free/_nearest_free/_random_free/_widest_free` in `src/enemy.c`, 17-slot arrays as in the
 original. Ticked for types 4/5/6/13 in states 1, 4 (Chase) and 8 (Wander), for the shooters in 3 (Wander) and 6 (Chase),
 for boss 14 under Dwalen / Achtervolgen; `EnemyParams.drop/rise` = `P+0x2c/0x30` (10, type 13: 10000, boss 14: 15000).
-Chase now steers with the one-frame target lag of `0x41bd00`. Where the port's simplified move refuses a step (ledge or
-step over 10) the behaviour's OnBlocked runs as above; with nothing free Wander still turns round (the original keeps its
-target). `WOODY_SENSLOG=1` prints the 16 kinds of each enemy once per sweep (direction 0 = +x) and every OnBlocked.
+Chase now steers with the one-frame target lag of `0x41bd00`. The sensor now ticks by the active behaviour (`Enemy.behav`:
+Wander or Chase, so also in the hit state that keeps it). Where the common move `0x41b2c0` (ported with its sphere sweep,
+ENEMY.md §5.1) refuses a step - floor normal below 0.8 under the sphere or a drop over `P+0x2c` - the behaviour's OnBlocked
+runs as above; with nothing free Wander still turns round (the original keeps its target). A wall does not refuse a step:
+the sphere slides along it, as in the original. `WOODY_SENSLOG=1` prints the 16 kinds of each enemy once per sweep (direction 0 = +x) and every OnBlocked.
 
 Observed (W1A / K1A / W2B, 25 s each): walls come out as runs of 2 on one side (W1A 282 at 652 −2000 −433:
 `1111122211111111`), W2B 217 at the edge of its platform (−3276 −417 −8560) sees the drop as 3 in directions 15/0/1, and
@@ -242,5 +244,5 @@ starts above the roof; the original would do the same, as that face points at th
   sensor as a drop.
 * Instance press nodes are tested two-sided in the port (`inst_ray_press`); the original's `0x431de0` is one-sided with the
   stored plane, whose orientation relative to the port's vertex-order normal has not been checked.
-* The port's enemy move has no swept cylinder against walls (ENEMY.md §5.1), so OnBlocked fires only at ledges and steps,
-  not at walls as in the original.
+* (Solved round 33) the enemy move is the original's sphere sweep (ENEMY.md §5.1). Correction to the old note here: OnBlocked
+  does not fire at walls in the original either - only at steep floors under the sphere and at drops.

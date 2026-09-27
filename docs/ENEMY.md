@@ -317,6 +317,45 @@ if ([0x4b310c] >= 0.8f /*0x4a987c*/ && res.y - groundY < maxDrop) {      /* clea
 ```
 So enemies **don't walk off edges** higher than `P+0x2c` = 10 (subtypes 9/10: 10000) and step up at most 10.
 
+Read instruction by instruction (round 33, `0x41b2c0..0x41b6a0`, sweep `0x437580..0x437700`, probe `0x436cf0..0x436ef8`):
+* **Who runs it.** Stand's Tick is `0x41bed0` = `jmp 0x41b2c0`, Chase's `0x41bee0` and Wander's `0x41c640` (via `0x41c470`) end in it; only the
+  path follower `0x41cf00` does not. So it runs **every frame** under Wander, Chase and Stand, also with a zero step: a standing enemy is still
+  swept (pushed out of whatever its sphere touches) and still carried by its platform. Behaviour vtables (`[0]` step, `[1]` direction, `[2]` hook,
+  `[3]` OnBlocked, `[4]` Tick): Stand `0x4aa0d0` = `0x41b7b0` (`dt · +0x38`), `0x41b7c0` (copy of `+0x2c`), `0x41b7a0` (`ret 0xc`), `0x445840`
+  (`ret`), `0x41bed0`; Chase `0x4aa0f8` = `0x41bdc0` (`+0x30 ? dt · H.speed : 0`), `0x41b780` (H direction), **`0x41bdf0`**, `0x41be90`, `0x41bee0`;
+  Wander `0x4aa118` = `0x41c3a0`, `0x41b780`, `0x41b7a0`, `0x41c420`, `0x41c640`; Pad `0x4aa13c` has the default hook and no OnBlocked.
+* `up = min(P+0x30, h/2)` (`0x41b33b`); knockback when `knockT > 0` (`0x41b36e`, NaN = normal step): `knockT = max(0, knockT − dt)`, `v = dt ·
+  P+0x44 · knockT`, `to = from + knockDir · v` (x, y, z); `to += 0x436d20(probe +0x178)` (the platform delta); `0x437040` (Probe2) is dead (§10).
+* Sweep `0x437580(&res, &from, &to, up, 30)`: `h = [0x4b3118] + up + 1` with `[0x4b3118] = P+4` (`0x41b489`); `k = floor(|to − from| / 30) + 1`,
+  `n = _ftol(k + 0.5)`, the step is divided by the float `k`; per substep `c += d`, `0x407340(&c, r, −1)` and, only when `[0x4c4bd0]` says it touched,
+  `c.x += [0x4c4bb4]`, `c.z += [0x4c4bbc]`; `0x435650(&c, −1, 1)`; `c.y − h < [0x53a568]` ⇒ `c.y = [0x53a568] + h`; `res = c − (0, h, 0)`.
+  For the ordinary enemies (`r` 30, `up` 10) the sphere spans feet + 11 .. feet + 71; the thrower (60 / 10) + 11 .. + 131; the ghost (30 / 70)
+  + 71 .. + 131; Buzz (240 / 75) + 76 .. + 556; Boss2 (50 / 10) + 11 .. + 111; class 16 (50 / 70) + 71 .. + 171.
+* Hook `[2](&res, &from, step)` (`step` = the normal step or the knock `v`): only Chase's `0x41bdf0` does something: `|res − from| < 0.01` (3D,
+  `0x4a94f8`) and `step > 0` ⇒ `res.x += (rand() & 31) − 16`, `res.z += (rand() & 31) − 16`, then `0x41ba60(&res, &from, 0)` = the H target angle
+  from `res` back to `from` (the next Steer `0x41bd00` turns one frame toward it and then retargets the player).
+* Subtype ≥ 9 (types 13, 14, 15, 16) `res.y = from.y`; `0x436d10` clears the probe's platform (`probe+0 = 0`); `drop = res.y − [0x53a568]`;
+  **free** = `[0x4b310c] ≥ 0.8` (NaN blocked) and `drop < P+0x2c` (NaN free). Free: with `drop < 1` and `[0x53a554] == 2` the probe is attached
+  to the instance floor at `res` (`0x436d80`) - but the ground follower's `0x436dc0` of the same Update attaches or clears the probe every
+  frame, so this store never survives; `pos = res`, collision centre, `0x4077f0`. Blocked: `pos += platform delta`; re-attach only if the
+  probe still has a platform (never: `0x436d10` just cleared it); centre, `0x4077f0`, **OnBlocked** `[3]`.
+* **Walls do not call OnBlocked.** The sphere slides along a wall (the push-out takes the step's component into the wall away) and the free test
+  passes, so the enemy keeps walking along or into it until its wander action ends; OnBlocked comes from floors steeper than ~37° under
+  the sphere centre (a bevel at the foot of a wall does it: normal y 0.71 seen in W1A), from drops over `P+0x2c`, and from nothing at all
+  never (GetHeight without a floor answers `y = c.y`, normal (0, 1, 0): the sphere is lifted by `h`, drop 0, free; the enemy then falls).
+  Walls are avoided beforehand by the obstacle sensor (§5.6), and a Chase stuck dead against one wriggles through the hook.
+* Probe `+0x178` (`0x436cf0` ctor, `+0x20 = −1`): `+0` platform instance, `+4` press node, `+8` the point in node space (`0x431700`), `+0x14` the
+  point in world. `0x436dc0(pt, cell, tol, id)`: GetHeight; `pt.y − (ground + tol) < 1` ⇒ on the ground: hit type 2 ⇒ attach at `pt` (`0x436d80`),
+  else clear (`0x436ea2`); not on the ground ⇒ clear (`0x436ed0`); plus the Press / In / UnPress events. `0x436d20` = node(`+8`) now − `+0x14`
+  (the pose is refreshed first if stale, `vt[2](1)`), zero without an instance.
+* **Port** (`src/enemy.c` `enemy_common_move`, `enemy_sweep`, `plat_delta`, `enemy_probe`; used by types 4..9, 12, 13 and by `boss.c` for 14,
+  15 and 16): the enemy keeps its active behaviour in `Enemy.behav` (0 Wander, 1 Chase, 2 Stand, 3 Pad, switched where the state machines
+  switch it), which picks the OnBlocked (Wander `0x41c420`, Chase `0x41be90`, Stand nothing), the hook and the sensor tick (Wander / Chase
+  only, also through the hit state). Log `WOODY_SWEEPLOG=1` (a push by the sweep or a blocked step). Checked with a ray at feet + 41 between
+  consecutive positions (30 s at each level start): the old straight step went through geometry 23× (W1A), 339× (K1A, shooter 295 walking
+  inside a press node), 470× (W3D), 201× (S3A), 4× (W1B, W2B), the sweep 0× in all 14 levels. Port order difference (unchanged): the state
+  switch runs before the behaviour tick, the original's `Enemy::Update` (and so the move) comes first.
+
 ### 5.2 Stand still (`0x41b710`, vtable `0x4aa0d0`): step = `dt · (+0x38 = 0)`, direction `+0x2c` = 0 ⇒ knockback/platform only.
 
 ### 5.3 Chase (`0x41bbf0(enemy, flee)`, vtable `0x4aa0f8`; `+0x2c` target, `+0x30` moving, `+0x34` turn timer, `+0x38` 1 = fleeing)
@@ -864,7 +903,7 @@ bool enemy_take_damage(Enemy *e, void *att, float dmg, vec3 *dir, vec3 *pt, int 
   `0x437040` (called by the common move as "Probe2_PushOut", by projectile Move `0x449cc0` and by the Perso `0x4624f0`) is **dead code**: its two sphere
   queries `0x435b60` are a stub (`mov [0x53a554], 0; ret`), so it always returns a zero push and resets its probe. `0x436d80` attaches the ground probe
   to an instance press node (from `0x436dc0`), `0x436d20` returns that node's displacement since the attach (platform carry); its readers are only the
-  enemy common move `0x41b2c0`, the path follower `0x41ce37` and the Perso `0x4624f0`.
+  enemy common move `0x41b2c0`, the path follower `0x41ce37` and the Perso `0x4624f0`. Ported for the enemies (§5.1).
 * The obstacle sensor (§5.6) is decompiled in OBSTACLE.md §3. Type 7/8/9: `vtbl[42]` (`0x417ff0`) has no caller found; `P+0x48` and `P+0x6c`
   have no reader in the class; animation record 22 (sub 20) is never requested (§8).
 * Parameter `P+0x44` (600) is proven to be the knockback factor; `P+0x48, +0x50, +0x58, +0x84..0xbc` belong to types 10..13 (not read).

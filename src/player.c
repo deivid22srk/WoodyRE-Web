@@ -493,6 +493,17 @@ static float ground_query_full(const Player *p, const Instance *skip, Vec3 pt, i
 float player_ground_query_col(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col) { return ground_query_full(p, skip, pt, found, col, NULL); }
 float player_ground_query_n(const Player *p, const Instance *skip, Vec3 pt, int *found, Vec3 *n) { return ground_query_full(p, skip, pt, found, NULL, n); }
 float player_ground_query(const Player *p, const Instance *skip, Vec3 pt, int *found) { return ground_query_full(p, skip, pt, found, NULL, NULL); }
+/* the same GetHeight with its hit type 2 ([0x53a554] == 2): the instance [0x53a560] and the press node [0x53a58c] under pt, for the
+ * platform attach 0x436d80 of the probe 0x436dc0 (enemies); *hi = NULL for a world floor or nothing */
+float player_ground_query_hit(const Player *p, const Instance *skip, Vec3 pt, int *found, uint32_t *col, const Instance **hi, uint32_t *node)
+{
+    const InsNode *hn; Vec3 keep = g_ground_n; int32_t keep_mat = g_ground_mat;
+    g_ground_skip = skip; g_skip_self = skip ? p->inst : NULL; float y = world_ground(p, pt, found, hi, &hn); g_ground_skip = NULL; g_skip_self = NULL;
+    g_ground_n = keep; g_ground_mat = keep_mat;
+    if (col) *col = *found ? hit_collision(*hi, hn) : 0xffffffffu;
+    if (!*found || !*hi || !hn) { *hi = NULL; *node = 0; } else *node = (uint32_t)(hn - (*hi)->model->nodes);
+    return y;
+}
 
 /* Landing ring 0x44af90 (docs/PERSO_JUMP.md 5), run by the Perso post-render update 0x44b4a0 every frame that is not
  * paused. Not in Perso state 2 (dead), 4 (climbing), 5 (scripted) or 8 (rocket), nor while the game's mode object is in a
@@ -541,6 +552,10 @@ static int mat4_inv_apply(const Mat4 *m, Vec3 w, Vec3 *out)        /* out = M^-1
     float c20 = a[4] * a[9] - a[8] * a[5], c21 = a[8] * a[1] - a[0] * a[9], c22 = a[0] * a[5] - a[4] * a[1];
     out->x = (c00 * x + c10 * y + c20 * z) / det; out->y = (c01 * x + c11 * y + c21 * z) / det; out->z = (c02 * x + c12 * y + c22 * z) / det;
     return 1;
+}
+int player_node_local(const Instance *in, uint32_t node, Vec3 w, Vec3 *local)   /* 0x431700: world point -> node space (the probe's attach 0x436d80) */
+{
+    return in && in->node_world && node < in->model->nnodes && mat4_inv_apply(&in->node_world[node], w, local);
 }
 static Vec3 attach_delta(Player *p)
 {
@@ -918,16 +933,33 @@ static int attack_probe(Player *p, Vec3 v)                                      
  * word (vtbl[4] 0x403fe0 = inst+0x104) has bit 0x400, strictly within r of the feet (3D, instance origin +0xc), at most the
  * first 16 in list order, bubble-sorted by distance; the first is taken. Bit 0x400 = Enemy.attackable: set by the enemy
  * PostLoad 0x419e30 / Reset 0x41a010, cleared in the dead state of types 4..13, never for the bosses 14..16; 1201 / 1202
- * (enemies_msg1201) are never sent. Port difference: no 16-candidate cap (the enemy array is not in list order) */
+ * (enemies_msg1201) are never sent. 0x463303: the walk over the list stops as soon as 16 candidates are in (so a 17th enemy is
+ * never seen, however near); 0x4633a5: bubble sort, swapping only when d[j] > d[j + 1] (ties keep the list order), +0x84 = 0;
+ * 0x463420 returns entry 0. Only the enemies carry bit 0x400 in the port (as in the shipped game) */
+static Enemy *enemy_of(const Player *p, const Instance *in)
+{
+    for (int i = 0; i < p->enemies->n; i++) if (p->enemies->e[i].inst == in) return &p->enemies->e[i];
+    return NULL;
+}
 static Enemy *nearest_enemy(Player *p, float r)
 {
-    Enemy *best = NULL; float bd = r * r;
     if (!p->enemies) return NULL;
-    for (int i = 0; i < p->enemies->n; i++) {
-        Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible || !game_enemy_thinks(e->inst)) continue;
-        Vec3 d = vsub(e->pos, p->pos); float dd = vdot(d, d); if (dd < bd) { bd = dd; best = e; }
+    Instance *const *list; uint32_t nl = game_instance_list(&list);
+    Enemy *c[16]; float cd[16]; int n = 0;
+    for (uint32_t k = 0; list && k < nl && n < 16; k++) {                    /* 0x463303 */
+        Enemy *e = enemy_of(p, list[k]); if (!e || e->removed || !e->attackable) continue;   /* vtbl[4] 0x403fe0, bit 0x400 (0x463323) */
+        Vec3 d = vsub(list[k]->position, p->pos); float dd = sqrtf(vdot(d, d));   /* instance origin +0xc against the feet */
+        if (dd < r) { c[n] = e; cd[n] = dd; n++; }
     }
-    return best;
+    if (!list)                                                               /* no renderer (tests without a window): every thinking enemy */
+        for (int i = 0; i < p->enemies->n && n < 16; i++) {
+            Enemy *e = &p->enemies->e[i]; if (e->removed || !e->attackable || !e->inst->visible || !game_enemy_thinks(e->inst)) continue;
+            Vec3 d = vsub(e->inst->position, p->pos); float dd = sqrtf(vdot(d, d)); if (dd < r) { c[n] = e; cd[n] = dd; n++; }
+        }
+    for (int i = 0; i < n; i++)                                              /* 0x4633a5 */
+        for (int j = 0; j < n - i - 1; j++)
+            if (cd[j] > cd[j + 1]) { float t = cd[j]; cd[j] = cd[j + 1]; cd[j + 1] = t; Enemy *q = c[j]; c[j] = c[j + 1]; c[j + 1] = q; }
+    return n ? c[0] : NULL;
 }
 static void auto_aim(Player *p)                                          /* 0x4579a0: the charge run steers to the nearest enemy */
 {
@@ -1925,6 +1957,7 @@ static int ray_4359b0(const Player *p, Vec3 a, Vec3 b, float *t, const Instance 
     if (k) { *t = h.t; if (inst_out) *inst_out = h.in; return k; }
     *t = kind ? tw : 2.0f; if (inst_out) *inst_out = NULL; return kind;
 }
+int player_ray_full(const Player *p, Vec3 a, Vec3 b, float *t) { return ray_4359b0(p, a, b, t, NULL); }
 
 /* Crush test 0x462a40 (Perso_Update 0x44b87c, right after MoveCollide 0x4624f0 - and 0x4567f0 in state 1 - in the Perso states
  * 0, 1, 2, 3, 4 and 6; not in 5, 7, 8, 9, which skip MoveCollide). Nothing while dead (+0x26c). h = 0x4624c0 / +0x54 = the
