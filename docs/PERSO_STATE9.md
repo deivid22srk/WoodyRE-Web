@@ -122,7 +122,7 @@ the hub scripts while the sequence runs (they wait for `var` of 1140).
 |---|---|---|
 | `+0x724` | sub-state 0..5 | `0x453d90` (0), `0x4540f9` (1), `0x453fc0` (2/3), `0x454020` (4), `0x454050` (5) |
 | `+0x728` | the script variable of 1140 (set to 1 at the end) | `0x453d90` |
-| `+0x72c..0x740` | door vector P0 / P1 (typecode 5, else 0, of the door instance) | `0x453d90` |
+| `+0x72c..0x740` | door vector P0 / P1: marker typecode 5 of the door instance (`0x444a0a`: `0x42f6b0(door, 5, buf, 0)`, no fallback; a door without one would pass the stale stack buffer; the port falls back to typecode 0, then the .ins facing) | `0x453d90` |
 | `+0x744` | the fade-out timer of sub 5 (0.5 s) | `0x454050` |
 | `+0x748` | the prop of message 1142 | `0x4449c2` |
 

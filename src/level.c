@@ -587,12 +587,14 @@ static void out_push(struct GelCol *C, Instance *in, uint32_t id)
     if (C->nout >= C->out_cap) { C->out_cap = C->out_cap ? C->out_cap * 2 : 128; C->out = (GelColRef *)realloc(C->out, C->out_cap * sizeof *C->out); }
     C->out[C->nout].in = in; C->out[C->nout].id = id; C->nout++;
 }
+void (*gel_col_clock)(Instance *in);
 static int col_candidate(const struct GelCol *C, Instance *in, uint32_t id)
 {
     uint32_t nc;
     if (!in || !in->visible || !in->node_world || (in->cell_ok && in->cell_sec < 0)) return 0;   /* +0x1c == -1 */
     if (in->col_stamp == C->igen || in->noncollide) return 0;
     ins_collision_nodes(in->model, &nc); if (!nc) return 0;
+    if (gel_col_clock) gel_col_clock(in);                                      /* 0x4324c9..0x4324dc: vt[2](1) unless clocked this frame; its re-cell 0x43f351 moves an unlisted instance to its animated root */
     return (ins_phase_mask(in) & id & 0xffff0000u) != 0;
 }
 uint32_t gel_col_instances(const GelFile *g, const InsFile *ins, const GelColRef **out)

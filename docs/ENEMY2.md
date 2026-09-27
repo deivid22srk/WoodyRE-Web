@@ -410,6 +410,18 @@ hit test (`a == T.owner`); a thrown-back bomb (owner = player) explodes on conta
 * `vtbl[31]` Touch = `0x411840`: if `+0x1fc == 0` ⇒ base class `0x40c1e0`; otherwise (the flag is cleared) the same loop over `0x4c5258` but with
   range `own radius + other radius + P+0x8c` (60 + 69 + 300).
 * `vtbl[41](true)` = `0x411b10`: state ≠ 13 ⇒ 9. `vtbl[47]` `0x411970` (byte table `0x411998`): not an actor in state 1 and 13.
+* Read again (round 33). **Touch**: both `0x40c1e0` and `0x411840` measure the 3D distance between the position pointers `vtbl[34]` (his feet,
+  the Perso's `0x44c030` = feet `+0x1f4`, or the root position `+0x544` while `+0x550` is set) against `vtbl[32]` + `vtbl[32]` (the Perso's radius =
+  `+0x114` via `0x4624d0`), over list 2 `0x4c5258`; the thrower adds `P+0x8c` once after `+0x1fc`. So the port's 3D distance was already the
+  original's; it now takes the Perso's position pointer (`perso_pos`, also in FindTarget and the other enemies' Touch). **Knockback**: the blast
+  `0x4119b0` (state ≠ 13, `hitT ≤ 0`, `dist² < r²`): SoundFx 52, state 14, `hitT = AnimLen(15)`, then `Enemy_TakeDamage(0, 1.0, &(0,0,0), &pos, 0)`,
+  whose `Behav_Knock 0x41b6b0` refuses while Stand's knock timer runs and otherwise starts it with a **zero** direction for `vtbl[53](−1)` =
+  `0x411d50` in state 14 = `AnimLen(7)` (jump table `0x411e44`; 0.4 s with model 52) - always shorter than `hitT` (3.6 s), so the refusal
+  cannot happen and the knockback never moves him. The peck `0x411ab0` never calls TakeDamage. **Platform / sweep**: his only behaviour
+  is Stand, whose Tick is the common move `0x41b2c0` (ENEMY.md §5.1): every frame a zero step through the sphere sweep (r 60, centre 71 above
+  the feet), the platform delta of the ground probe and the free test. In W2B he stands on world floor and touches nothing, so it changes
+  nothing there (checked: position identical to the old port through the whole fight). **Boss bar**: none - the only callers of `0x4484d0`
+  are `0x40cbf1`, `0x40dd80`, `0x40fd82` (classes 16, 15, 14). **Death**: the ordinary remove path (§4.6), no class code of its own. All ported.
 
 ### 4.5 Animations (`vtbl[45]` = `0x411b30`, table `0x411c40`; records `0x4b1d10`; model: 17 animations)
 
@@ -521,7 +533,7 @@ Constants: radius 60, height 280, sight 2400 (|dy| < 1000), hp 5, melee 3 hearts
 
 1. Stands still (no wander/chase): only knockback + gravity from the base class. Starts off (message 6,0 after 1 s) until the script sends 6,1 ⇒ message 6 must work.
 2. State machine §4.2 verbatim (15 states, one of which is empty). `enemy_take_damage` for this type: no hp loss, `hit_t = len(8)/3`, `st = 11`, SoundFx 54, return 0.
-3. Requires the **bomb system** (not yet ported: BONUS.md §7, PROJECTILES §2.4, Perso state 6): projectile template 0 (g = 3000, bounces, damping 0.95 ground / 0.99 air per 1/60 s,
+3. Requires the **bomb system** (ported since: BOMB.md, BOMB_CARRY.md; BONUS.md §7, PROJECTILES §2.4, Perso state 6): projectile template 0 (g = 3000, bounces, damping 0.95 ground / 0.99 air per 1/60 s,
    speed 800) with a carried bomb instance (type 40, W2B has them), fuse from `T.life`, pickup/throw-back, explosion r 400 ⇒ `blast()` on all enemies and the player.
    `enemy_blast(e, pos, r)`: types 4..11, 13 ⇒ dead (`take_damage(hp)`); type 12 ⇒ §4.4 (1 hp, `st = 14`, SoundFx 52). Without bombs the level cannot be finished:
    set msgmask 0x10 on the instance when it is removed (script ⇒ 1083).

@@ -41,9 +41,7 @@ its life.
 | 0x40 | UV set `+0x22c` via `0x470d80` (else set 0) | `0x4714b4` |
 | 0x80 | submit flag \| 1 | `0x4719c2` |
 
-* **Colour path** (`0x4710b7`): with a MODULATE2X device the colour is copied as is; without one it is doubled
-  and clamped to 1 (`0x471224`, `0x4713a7`). The end result is the same: in the alpha-blended path c = 0.5 is
-  neutral and c = 1.0 doubles the texture (saturating).
+* **Colour path**: see §1.1.
 * **Corners** (`0x470f39..0x4710b3`): corner k sits at `size·(cos t, sin t)` in the quad's own axes with
   `t = rot + base`, `rot − base + 256`, `rot + base + 256`, `rot − base + 512` (1/512 turn). `base` comes from the table
   `[0x5e823c]+0x800[mode]`, filled at `0x4024bb`: `table[8r + c] = ftol(atan(2^(r−c)) · 81.4873)` (`0x4a9028` = 512/2π)
@@ -76,6 +74,52 @@ its life.
   `1 − |n.y| < 0.001`) `v = normalize(0, −n.z, n.y)`, `u = v × n`. The corner offsets go along u (x) and v (y).
 * **Frame `0x46d320(out, d)`** (rows X, Y, Z = d; used by §3 and §6): generally `X = normalize(d.z, 0, −d.x)`,
   `Y = d × X`; for `|d.x|, |d.z| < 0.001`: `Y = normalize(0, d.z, −d.y)`, `X = Y × d`.
+
+### 1.1 The colour path, traced to the device (settles the pickup-particle brightness)
+
+1. **Vertex colour** (`0x4710b7..0x471216`): `[0x5e8650]+0x20` = the device offers MODULATE2X (LIGHTING.md §1.5 step 6). If
+   set, the four corners get the sprite's rgba `+0x214..0x220` (flag 2) or `0x4b7a84` = (0.5, 0.5, 0.5, 1) as they are; if
+   not (`0x47121b..0x4713a1`), every rgb is doubled (`fadd st0, st0`) and clamped to 1 (`0x4713a7..`), alpha unchanged.
+2. **Submit** (`0x4719b2..0x4719f3`): `0x481560(renderer [0x5e86ac], 4 vertices, S, texture [0x5e866c] + (image & 0xffff)·0x74,
+   0x20 | (flags & 8 ? 8 : 4) | (flags & 0x80 ? 1 : 0))`.
+3. **`0x481560`**: flag 8 (`0x481a05..`) opens a batch of mode 2 (`0x481a82`: list `renderer+0x1c8`) with colour byte
+   `fistp(c·255)` per channel and alpha byte `fistp(a·255)` (`0x481ab2..0x481b26`, `0x4aa308` = 255); flag 4 (`0x481d8c..`)
+   a batch of mode 3 (`0x481e16`: list `+0x1cc`) with colour byte **`fistp(a·c·128)`** (`0x481e5e..0x481f37`, `0x4a9020` =
+   128.0) and no alpha.
+4. **Flush**: the frame's render step `0x4293f0` (called at `0x401756` after the game frame `0x401ab0`, so after the effect
+   driver `0x470c70` of `0x401dfa`) sets stage-0 COLOROP = MODULATE2X at `0x429758` (only if `device+0x20`), then draws the
+   model lists and calls `0x428d00` (`0x4299b6`), which walks `+0x1c8` (SRCALPHA/INVSRCALPHA) and `+0x1cc` (ONE/ONE,
+   `0x429182`/`0x429198`). Of the SetTextureStageState calls on the device (`[[0x5e8650]+0x34]`, vtable `+0x94`), the
+   stage-0 COLOROP writes are only the device setup `0x47ed23` (MODULATE2X), `0x4294be` (MODULATE, before the world) and
+   `0x429758` (MODULATE2X); `0x428d00` itself only sets ADDRESS (`0x428eef`), and `0x429a30` / `0x429e20` write stage 1
+   (`0x429b36`, `0x429f15`, ...), not stage 0.
+
+Result, both device kinds: **alpha blended (flag 8): texture × min(1, 2c), alpha a** (0.5 = the plain texture);
+**additive (no flag 8): texture × c × a × 256/255 added** (0.5 = half the texture; alpha is a brightness). The port's
+`hud_world_spr_mode`, `hud_world_fx`, `hud_world_fx_plane` (additive: `glColor(c·a)`, MODULATE, ONE/ONE; blended:
+`blend2x_begin` = `GL_COMBINE` with `RGB_SCALE` 2, or doubled and clamped without it) and the line/ribbon/quad helpers
+(always additive) follow this rule.
+
+The sprite callers checked against it (rgb / flags as the original writes them; all port counterparts pass the same values):
+
+| original | image | flags | rgb, alpha | path | port |
+|---|---|---|---|---|---|
+| `0x4791f0` pickup particle | 4 | 7 | 0.5, 1 | additive: texture × 0.5 | `fx_update` kind 2: was rgb 1 (2× too bright), now 0.5 |
+| `0x477350` death stars | 10/11 | 0x4f | 0.5 | blended: plain texture | `stars_draw`: was 1 on a 1× path, now 0.5 on the 2× path (same pixels) |
+| `0x477350` their glow | 5 | 3 | (1, 1, 0.5) | additive | `stars_draw` glow |
+| `0x476710` bomb smoke ring (explosion kind 0) | 24 | 0xa | 0.8 | blended: texture × 1.6 | `bombs_draw` `hud_world_fx_plane`: was ×0.8 (no ×2), now ×1.6 |
+| `0x478a8c` launcher muzzle puff | 24 | 0xb | 1 | blended: texture × 2 (clamped) | `bombs_draw`: was ×1, now ×2 |
+| `0x4765f0` bomb flash | 4 | 3 | (1, 1, 0) | additive | `bombs_draw` yellow |
+| `0x478b70` fuse spark | 18 | 7 | 1, 0.7 | additive | `bombs_draw` |
+| `0x470420` fireball head | 12 | 5 | 0.5, 0.7 | additive | `fireball_draw` 0.5 |
+| `0x46f180`, `0x46f2d0`, `0x46fa40`, `0x4702b0`, `0x470370` projectile heads, muzzle flashes, sparks | 4, 6, 13, 32 | 7 | 1 | additive | `launchers_draw` 1 |
+| `0x46fb30` flame | 4 | 7 | (1, 0.58, 0) | additive | `flame` |
+| `0x474e00` / `0x475040` hit star spark / flash | 8 / 9 | 7 / 3 | 1 (flash alpha 0.4) | additive | 1 |
+| `0x475380`, `0x475cd0`, `0x47e370` puffs | 14 | 7 | 1 | additive | 1 |
+| `0x4762e0` explosion flash planes | 12 | 2 | 1 | additive | `fx_smoke_draw` 1 |
+| `0x4767f0` burning head, `0x479760` peck flash | 12 / 18 | 3 | 0.8 / 1 (0.8) | additive | same |
+| `0x4781b0` / `0x478290` splash ring / ripple, `0x473050` wake | 0x3a / 3 | 6 / 2 | (0.65, 0.65, 0.8) / 0.8 | additive | same |
+| `0x479519` bonus halo, `0x478753` speech bubble | 0x13-0x17, 0x2e / 44-52 | 0x1b / 0x49 | 0.5 (default) | blended: plain texture | rgb 1 on a 1× path (same pixels) |
 
 ## 2. Footsteps `0x47cba0(pos, normal, dir, foot, kind)` (FOOTSTEPS.md §1)
 
@@ -235,7 +279,8 @@ All of the above live in the port's copy of the pool (`g_fx`, `fx_new`, `fx_upda
 `FxKind` per callback: `FX_STEP_EMIT/PUFF/PRINT` (§2), `FX_RING` (§3), `FX_PECK_EMIT/CHIP/FLASH/HOLE` (§4),
 `FX_DEBRIS_EMIT/DEBRIS` (§5.1), `FX_BURN_EMIT/BURN/TRAIL_SMOKE/TRAIL_SPARK` (§5.2), `FX_SKELETON` (§6), drawn by
 `fx_particle`. The sprite primitive is `hud_world_spr` / `hud_world_spr_mode` (`src/hud.c`), which takes the
-original's flags as they are (§1); the alpha-blended path uses `GL_COMBINE` with `RGB_SCALE` 2 for MODULATE2X.
+original's flags as they are (§1); the alpha-blended path uses `GL_COMBINE` with `RGB_SCALE` 2 for MODULATE2X (`blend2x_begin`,
+shared with `hud_world_fx` / `hud_world_fx_plane` since 2026-09-26, §1.1).
 
 | original | port |
 |---|---|

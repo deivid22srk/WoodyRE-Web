@@ -20,6 +20,8 @@ Probes (--probe, several allowed, comma separated):
             the camera matrix [0x5e86ac]+0x154 and the instance rows 0x489210 writes, for slots 105..114
   rocket    rideable rocket (docs/ROCKET.md): per frame state/t/rot rows/quaternions of the class-20 instance --inst
   cam       per frame Perso pos/state + camera mode index/position (CamMgr+0x138/+0x1d0) and the rail point (+0x3e8)
+  blackbox  the BlackBox mini game (docs/BLACKBOX.md): with --level BlackBox, patches 0x4042c9 so the load creates the object
+            and sets App state 3 at --at; logs the round / Woody / Buzz / pool per 0x4846d0 call; --bbpos teleports Woody
   crush     the crush test 0x462a40: every squash < 1 (0x462bd4) and every Kill(4) call (0x462bed)
   python tools/wverify.py game --level W1A --probe list,fpu --from 15 --frames 12 --seconds 110 --out out/trace/v_list.txt
 """
@@ -39,6 +41,7 @@ def main():
     ap.add_argument('--frames', type=int, default=12); ap.add_argument('--list-from', dest='lfrom', type=float, help='list probe start (default --from)'); ap.add_argument('--inst', type=int, default=323)
     ap.add_argument('--until', type=float, default=1e9, help='stop per-frame logging this many s after INIT')
     ap.add_argument('--sav'); ap.add_argument('--every', type=float, default=0, help='cam/rocket probes: at most one line per this many s')
+    ap.add_argument('--bbpos', default='', help='blackbox probe: "T x y [T x y ...]" puts Woody on x y T s after INIT')
     ap.add_argument('--onto', type=float, nargs=2, help='INST DY: teleport at --at onto the animated root inst+0x60 of that instance, DY above it')
     a = ap.parse_args()
     probes = set(a.probe.split(','))
@@ -223,7 +226,33 @@ def main():
         ctx.Eip = dbg.u32(ctx.Esp); ctx.Esp += 20; ctx.Eax = 1
         return 'skip'
 
+    # --- BlackBox (docs/BLACKBOX.md): with --level Blackbox, 0x4042c9 je -> jmp makes the load of slot 0 create the object
+    # 0x484420 (as dev flag 0x10 would), and --at T after INIT App+0 = 3 takes the title page away (state 3 = the mini game).
+    # Per call of the frame 0x4846d0 (at most one line per --every s from --from): the round, Woody, Buzz and the pool;
+    # --bbpos "T x y ..." teleports Woody (+0xc0034 +0x10). (A GDI screen grab only sees the last logo: the game flips a DirectDraw surface.)
+    def on_bb_frame(ctx):
+        t = since()
+        if t < 0: return
+        app = dbg.u32(0x4c2d00)
+        if not st.get('bb3') and t >= a.at and app:
+            dbg.write(app, struct.pack('<I', 3)); st['bb3'] = True; dbg.log('%s # App state -> 3' % T())
+        o = ctx.Ecx
+        if a.frm <= t <= a.until and t >= st.get('next', 0):
+            st['next'] = t + a.every
+            p, b = o + 0xc0034, o + 0xc00bc
+            pool = sum(1 for i in range(10) if dbg.u32(o + 0xc02e4 + 0x64 + 0x68 * i))
+            dbg.log('%s BB arg %d lvl %d woody st %d pos %.1f %.1f z %.0f dir %d lives %d inv %.2f | buzz ph %d st %d pos %.0f %.0f | pool %d | cage %d t %.2f end %.2f' % (
+                T(), dbg.u32(ctx.Esp + 4) & 0xff, dbg.u32(o + 0xc0764), dbg.u32(p + 0xc), *fv(p + 0x10, 3), struct.unpack('<i', dbg.read(p + 0x54, 4))[0],
+                dbg.u32(p + 0x6c), f32(p + 0x74), struct.unpack('<i', dbg.read(b + 0x64, 4))[0], dbg.u32(b + 0xc), *fv(b + 0x10, 2), pool,
+                dbg.read(o + 0xc0760, 1)[0], f32(o + 0xc076c), f32(o + 0xc077c)))
+        tp = [float(x) for x in a.bbpos.split()] if a.bbpos else []
+        k = st.get('ntp', 0)
+        if 3 * k + 2 < len(tp) and t >= tp[3 * k]:
+            dbg.write(o + 0xc0034 + 0x10, struct.pack('<2f', tp[3 * k + 1], tp[3 * k + 2])); st['ntp'] = k + 1
+            dbg.log('%s # Woody -> %.0f %.0f' % (T(), tp[3 * k + 1], tp[3 * k + 2]))
+
     bps = {0x401370: on_route, 0x442240: on_tick, 0x4427e0: on_init}
+    if 'blackbox' in probes: bps[0x4846d0] = on_bb_frame
     if keys: bps[0x467ef0] = on_kbpoll
     if 'list' in probes: bps[0x42a980] = on_listbuild
     if 'fpu' in probes: bps[0x439cb3] = on_sweep_fistp; bps[0x439cb9] = on_sweep_after
@@ -236,7 +265,9 @@ def main():
         want = (r'\Data\%s\%s.gel' % (a.level, a.level)).encode()
         match = [p for p in table if img[p - 0x400000:p - 0x400000 + len(want) + 1] == want + bytes(1)]
         if not match: sys.exit('unknown level %s' % a.level)
-        def redirect(ctx): dbg.write(0x4b12a0, struct.pack('<I', match[0])); dbg.log('# level slot 0 -> %s' % a.level)
+        def redirect(ctx):
+            dbg.write(0x4b12a0, struct.pack('<I', match[0])); dbg.log('# level slot 0 -> %s' % a.level)
+            if 'blackbox' in probes: dbg.write(0x4042c9, b'\xeb'); dbg.log('# 0x4042c9 je -> jmp: every level load creates the BlackBox object')
         dbg.post_arm = redirect
         bps[0x446b00] = skip_logo
     dbg.pre_bps = bps

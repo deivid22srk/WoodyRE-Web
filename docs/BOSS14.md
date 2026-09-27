@@ -501,11 +501,11 @@ void Sweep(vec3 *res, vec3 *from, vec3 *to, float up, float sub /*30*/) {      /
   Chase `0x41be90`: nearest free direction, turn timer 0). `[0x53a568]` / `[0x4b310c]` are the ground height and the normal y of the
   LAST substep's GetHeight `0x435650(&c, −1, 1)` at the sphere centre; when GetHeight finds nothing it answers `y = c.y`, normal
   (0, 1, 0) (`0x43568c`), so the sweep then lifts the sphere by h (`c.y − h < c.y`) and the step is free. Over the W1B arena floor
-  the test always passes; it matters on slopes steeper than ~37° under the sphere (mode 2 arenas). Port: `boss_sweep` returns both,
+  the test always passes; it matters on slopes steeper than ~37° under the sphere (mode 2 arenas). Port: `enemy_sweep` / `enemy_common_move` (enemy.c, shared with every enemy since round 33, ENEMY.md §5.1) return both,
   `behav_move` does the test and the two OnBlocked (`player_ground_query_n`, the ground query with the normal). Log `WOODY_BOSSLOG=1`
   prints `boss blocked at ...`.
-* The push-out per polygon (closest point, `r − distance` along that direction) is the port's reading of `0x409ad0`/`0x433ff0` at the
-  call level, not traced instruction by instruction.
+* The push-out per polygon (`r − distance` along the direction from the face or from every edge the sphere cuts, per-axis
+  maximum/minimum; instances x/z only) is decoded instruction by instruction in PERSO_MOVE.md §6.8 (`0x409ad0` / `0x439d60`).
 
 ## 6. Damage
 

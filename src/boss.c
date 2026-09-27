@@ -127,56 +127,31 @@ static void h_speed(Enemy *e, float dt)
     if (e->speed < e->want_speed) { e->speed += B_ACC * dt; if (e->speed > e->want_speed) e->speed = e->want_speed; }
     else if (e->speed > e->want_speed) { e->speed -= B_ACC * dt; if (e->speed < e->want_speed) e->speed = e->want_speed; }
 }
-/* sweep 0x437580(res, from, to, up, 30): a SPHERE of radius P+4 (240) whose centre sits r + up + 1 above the feet
- * (up = min(P+0x30, h/2) = 75, so 316 over pos: it spans pos.y + 76 .. pos.y + 556) moves in substeps of at most 30;
- * after each one it is pushed out of the world polygons and the instance press nodes (0x407340, xz only, the full push)
- * and lifted so the feet never end below GetHeight. This is what keeps Buzz out of the four lanterns of the W1B arena
- * (model 6, press nodes up to y 1972) and away from the rock walls behind them: in the low phase (pos.y 1635) the sphere
- * meets the lantern heads, in the high phase (2430) it passes over them but meets the walls, so he never gets within the
- * 150 (xz) he needs to stomp a player who hides in the corner behind a lantern (docs/BOSS14.md 5.1). */
-static Vec3 boss_sweep(Enemy *e, Player *pl, Vec3 from, Vec3 to, float *ground_y, float *ground_ny)
-{
-    float r = e->P.radius, up = e->P.height * 0.5f, h = r + up + 1.0f;
-    Vec3 d = { to.x - from.x, to.y - from.y, to.z - from.z };
-    int n = (int)(floorf(sqrtf(d.x * d.x + d.y * d.y + d.z * d.z) / 30.0f) + 1.0f + 0.5f); if (n < 1) return from;
-    d.x /= n; d.y /= n; d.z /= n;
-    Vec3 c = { from.x, from.y + h, from.z }, res = from;
-    for (; n > 0; n--) {
-        c.x += d.x; c.y += d.y; c.z += d.z;
-        Vec3 push = player_sphere_push(pl, e->inst, c, r); c.x += push.x; c.z += push.z;
-        int found; Vec3 gn; float gy = player_ground_query_n(pl, e->inst, c, &found, &gn);   /* GetHeight 0x435650(&c, -1, 1): nothing found = c.y, normal (0, 1, 0) */
-        if (c.y - h < gy) c.y = gy + h;                              /* 0x4376bf (with nothing found that lifts the sphere by h) */
-        res = (Vec3){ c.x, c.y - h, c.z };
-        *ground_y = gy; *ground_ny = gn.y;                           /* [0x53a568] / [0x4b310c] of the last substep */
-    }
-    return res;
-}
-/* common move 0x41b2c0 for subtype >= 9: y is kept, no ledge or step test (P+0x2c/0x30 = 15000); the sweep slides the
- * sphere along whatever it touches. Then the "free" test 0x41b514..0x41b54a: the step is taken only when the floor under
- * the sphere of the last substep has a normal y >= 0.8 (0x4a987c) and lies less than P+0x2c below the feet; otherwise he
- * stays (plus the platform delta, 0 for Buzz) and the behaviour's OnBlocked vtbl[3] runs: Wander 0x41c420 turns to the
- * widest free sensor direction (action 5), Chase 0x41be90 to the free direction nearest its angle with the turn timer 0.
- * Over the W1B arena floor the test always passes; it refuses steps over steep slopes (and over nothing: no normal) */
+/* The common move 0x41b2c0 with the sweep 0x437580 is enemy_common_move (enemy.c, docs/ENEMY.md 5.1): a SPHERE of radius P+4
+ * (240) whose centre sits r + up + 1 above the feet (up = min(P+0x30, h/2) = 75, so 316 over pos: it spans pos.y + 76 .. pos.y
+ * + 556), in substeps of at most 30, pushed out of the world polygons and the instance press nodes (0x407340, xz only) and lifted
+ * so the feet never end below GetHeight. This is what keeps Buzz out of the four lanterns of the W1B arena (model 6, press nodes
+ * up to y 1972) and away from the rock walls behind them: in the low phase (pos.y 1635) the sphere meets the lantern heads, in
+ * the high phase (2430) it passes over them but meets the walls, so he never gets within the 150 (xz) he needs to stomp a
+ * player who hides in the corner behind a lantern (docs/BOSS14.md 5.1). Subtype 11 keeps y (res.y = from.y) and has
+ * P+0x2c/0x30 = 15000, so only the floor normal of the free test 0x41b514..0x41b54a can refuse a step: then he stays (plus the
+ * platform delta) and the behaviour's OnBlocked vtbl[3] runs: Wander 0x41c420 turns to the widest free sensor direction
+ * (action 5), Chase 0x41be90 to the free direction nearest its angle with the turn timer 0. Over the W1B arena floor the test
+ * always passes; it refuses steps over steep slopes. The Chase hook 0x41bdf0 (stuck => wriggle -16..15) is in there too. */
 static void behav_move(Enemy *e, Player *pl, float step, float dt)
 {
     BossState *b = &e->b;
     /* the sweep runs EVERY frame, also with a zero step (Stilstaan, the shake, the stomp fall): 0x437580 then does one
-     * substep in place, so the sphere keeps pushing him off a lantern head while he drops next to it */
-    if (b->knock[b->behav] > 0) { b->knock[b->behav] -= dt; if (b->knock[b->behav] < 0) b->knock[b->behav] = 0; step = 0; }   /* a peck knocks with dir 0: no step */
+     * substep in place, so the sphere keeps pushing him off a lantern head while he drops next to it. A peck knocks with
+     * dir 0: the knock timer of the active behaviour only freezes the step */
     if (step < 0) step = 0;
-    Vec3 d = { cosf(e->ang), 0, sinf(e->ang) };
-    float gy = e->pos.y, ny = 1.0f;
-    Vec3 res = boss_sweep(e, pl, e->pos, (Vec3){ e->pos.x + d.x * step, e->pos.y, e->pos.z + d.z * step }, &gy, &ny);
-    if (b->behav == 1 && step > 0) {                                /* Achtervolgen hook [2] 0x41bdf0: stuck (< 0.01) => wriggle -16..15 */
-        float mx = res.x - e->pos.x, mz = res.z - e->pos.z;
-        if (sqrtf(mx * mx + mz * mz) < 0.01f) { res.x += (float)(rand() % 32 - 16); res.z += (float)(rand() % 32 - 16); }
-    }
-    if (ny >= 0.8f && !(e->pos.y - gy >= e->P.drop)) { e->pos.x = res.x; e->pos.z = res.z; return; }   /* subtype >= 9: res.y = from.y */
+    Vec3 d = { cosf(e->ang) * step, 0, sinf(e->ang) * step };
+    if (enemy_common_move(e, pl, d, &b->knock[b->behav], (Vec3){ 0, 0, 0 }, b->behav, dt)) return;
     if (b->behav == 0) {                                             /* Wander OnBlocked 0x41c420 */
         float a = enemy_sensor_widest_free(e); if (a >= 0) e->want_ang = a;
         b->w_act = 5; int n = wander_rec(e, 5); b->w_t = n < 0 ? 0 : anim_len(e, n);
     } else if (b->behav == 1) { e->want_ang = enemy_sensor_nearest_free(e, e->ang); b->c_turn_t = 0; }   /* Chase OnBlocked 0x41be90 */
-    if (getenv("WOODY_BOSSLOG")) printf("  boss blocked at %.0f %.0f %.0f: floor normal y %.2f, %.0f below (behav %d)", e->pos.x, e->pos.y, e->pos.z, ny, e->pos.y - gy, b->behav), puts("");
+    if (getenv("WOODY_BOSSLOG")) printf("  boss blocked at %.0f %.0f %.0f (behav %d)", e->pos.x, e->pos.y, e->pos.z, b->behav), puts("");
 }
 static void behav_tick(Enemy *e, Player *pl, float dt)
 {
@@ -569,7 +544,7 @@ void boss15_reset(Enemy *e)                                          /* vtbl[17]
 void boss15_init(Enemy *e)
 {
     BossBState *b = &e->bb; Instance *in = e->inst;
-    e->P.radius = 50; e->P.height = 140; e->P.hp = 6; e->P.see = 1000; e->P.dy = 1000; e->P.active_d = 3500; e->P.fall_g = 200;   /* subtype 12, 0x41db5f */
+    e->P.radius = 50; e->P.height = 140; e->P.hp = 6; e->P.see = 1000; e->P.dy = 1000; e->P.active_d = 3500; e->P.fall_g = 200; e->P.drop = e->P.rise = 10.0f;   /* subtype 12, 0x41db5f (P+0x2c / 0x30 keep the default 10) */
     e->attackable = 1;
     e->ang = e->want_ang = start_angle(in);
     b->W = (Vec3){ cosf(e->ang), 0, sinf(e->ang) }; b->U = (Vec3){ 0, 1, 0 }; b->R = (Vec3){ b->W.z, 0, -b->W.x };   /* 0x41b860, then 0x46d320 */
@@ -610,7 +585,8 @@ void boss15_update(Enemy *e, Player *pl, Vec3 cam, float dt)
     g_b15_pl = pl;
     if (!in->visible || !game_enemy_thinks(in)) return;              /* out of the world (0x407850) or not in this frame's list world+0x64: no Think (0x42b400) */
     if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;    /* Think 0x41a320: 3500 */
-    ground_follow(e, pl, dt); enemy_place(e);                        /* Enemy::Update 0x41a3e0; its vtbl[45] is empty */
+    enemy_common_move(e, pl, (Vec3){ 0, 0, 0 }, &e->knock_t, e->knock_dir, 2, dt);   /* Enemy::Update 0x41a3e0: Stand's Tick = 0x41b2c0 (sweep r 50, up 10) */
+    ground_follow(e, pl, dt); enemy_place(e);                        /* its vtbl[45] is empty */
     if (!b->crush[0]) return;
     game_boss_bar(1, (int)e->hp, (int)e->P.hp);                      /* 0x40dd80 */
     switch (b->st) {
@@ -707,7 +683,7 @@ void boss16_reset(Enemy *e)                                          /* vtbl[17]
 void boss16_init(Enemy *e)
 {
     BossBState *b = &e->bb; Instance *in = e->inst;
-    e->P.radius = 50; e->P.height = 140; e->P.hp = 10; e->P.see = 4600; e->P.dy = 3000; e->P.active_d = 3000; e->P.fall_g = 200;   /* subtype 13, 0x41dba7 */
+    e->P.radius = 50; e->P.height = 140; e->P.hp = 10; e->P.see = 4600; e->P.dy = 3000; e->P.active_d = 3000; e->P.fall_g = 200; e->P.drop = e->P.rise = 5000.0f;   /* subtype 13, 0x41dba7 (P+0x2c / 0x30 = 5000) */
     e->attackable = 1;
     e->ang = e->want_ang = start_angle(in);
     b->C = in->position; b->radius = 1200.0f;                        /* +0x254, +0x268 */
@@ -748,6 +724,7 @@ void boss16_update(Enemy *e, Player *pl, Vec3 cam, float dt)
     BossBState *b = &e->bb; Instance *in = e->inst;
     if (!in->visible || !game_enemy_thinks(in)) return;              /* list world+0x64 (0x42b400) */
     if (dist3(e->pos, cam) >= e->P.active_d && e->hp > 0) return;    /* Think 0x41a320: 3000 */
+    enemy_common_move(e, pl, (Vec3){ 0, 0, 0 }, &e->knock_t, e->knock_dir, 2, dt);   /* Stand's Tick = 0x41b2c0 (sweep r 50, up 70: P+0x30 = 5000) */
     ground_follow(e, pl, dt); enemy_place(e);
     if (!b->grp[0][0]) return;
     b->frame++;

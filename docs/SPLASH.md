@@ -259,9 +259,11 @@ The submit path `0x481560` chooses based on its 4th argument (sprite `0x4719b2..
 For the splash: ring/ripple peak `(0.65, 0.65, 0.8)·0.3 = (0.195, 0.195, 0.24)` × texture, linear to 0 — a faint
 blue-white ring; drop head `0.5·0.65 = 0.325` grey, tail 0.
 
-> Side finding (not addressed in this task): BONUS.md §2.4 ("color (0.5,0.5,0.5) = full white") only applies to
-> alpha-blended sprites. The pickup particle `0x4791f0` is additive (flag 7) ⇒ effectively 0.5; `game_pickup_fx` in the
-> port draws it with `white = {1,1,1}` and is thereby 2× too bright. The wake in `src/water.c` (raw 0.8) is correct.
+> Side finding, settled 2026-09-26 (PARTICLES.md §1.1): BONUS.md §2.4 had "color (0.5,0.5,0.5) = full white", which only
+> applies to alpha-blended sprites. The pickup particle `0x4791f0` is additive (flags 7, rgb 0.5, alpha 1, `0x479249..0x479295`)
+> ⇒ colour byte 64 ⇒ texture × 0.5. The port drew it with rgb 1 (2× too bright) and now passes 0.5 (`fx_update` kind 2). The
+> path was traced to the device: the sprite batches are flushed by `0x428d00` from `0x4299b6`, after `0x429758` set COLOROP
+> MODULATE2X, and nothing in between changes COLOROP of stage 0. The wake in `src/water.c` (raw 0.8) is correct.
 
 ## 8. Constants
 
