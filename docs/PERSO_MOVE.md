@@ -824,7 +824,8 @@ their `.col` refs, if any, still count too. A flag-0x20 instance away from where
 listed is not found by any query (W3D boss-16 pad 805: Buzz stands on it only while the camera lists it).
 
 **Hit selection per test**: floor vt[7] `t < [0x4c4bd4]` strict (the nearest; the first tested on a tie); cylinder vt[8] and
-sphere vt[9] merge per axis into a positive maximum and a negative minimum (the order does not matter, only the set);
+sphere vt[9] merge per axis into a positive maximum and a negative minimum (the order does not matter, only the set;
+the sphere merges an instance only on x and z, §6.8);
 segment vt[5] the LAST polygon tested (6.6); endless vt[6] the nearest, `t < [0x4c4bd4]` strict, with only the first
 entered polygon of each node considered (`0x432315` / `0x432447`). The actor push `0x4627d0` does not use cells at all
 (the actor list `0x4c5258` of the previous frame) and adds its pushes, so its order does not matter either.
@@ -847,6 +848,134 @@ and door, the W1B shuttles and boss, W2D/W3D bosses and the W2A cannon found dif
 (`gel_col_clock` in `col_candidate`, before the phase test like `0x4324c9..0x4324dc`; render_gl.c `query_clock`): the
 re-cell moves it to the front of its sector chain and to the cell of its animated root, which changes the next frame's
 list (INSTANCE.md §4.2: an instance whose `.ins` position has no floor group is listed only once a clock ran).
+
+### 6.8 The sphere push-out `0x407340`: world `0x409ad0`, instances vt[9] `0x433ff0` → `0x439d60`
+
+Not used by the Perso itself: its two callers are the actor sweep `0x437580` (from `0x41b2c0`, the Boss14 move, BOSS14.md §5)
+and the camera sweep `0x439c50` (from Center_Collide `0x422e30`, CAMERA.md §3.3). Decoded instruction by instruction this round.
+
+```c
+void SpherePush(vec3 *c, float r, int cell)                       /* 0x407340, cdecl; r is also [0x4b3118] for vt[9]'s callers */
+{
+    if (cell == -1) cell = FindCell(c);                           /* 0x408180 */
+    SphereCells(c, r, cell);                                      /* 0x40a700: flood, FORMAT_GEL.md 5.1 */
+    [0x4c4c24]++;  [0x4c4bd0] = 0;  pos = neg = 0;                /* the polygon stamp; 0x40737a..0x40739e */
+    for (cells visited) for (poly in cell->polys) if (poly->stamp != [0x4c4c24]) {       /* cel+8 / +0xc, poly+4 */
+        poly->stamp = [0x4c4c24];
+        if (poly->vt/0x409ad0(c, r, &p, &n)) { [0x4c4bd0] = 3;                          /* 0x4073f8, 0x40740d */
+            pos.xyz = max(pos.xyz, p.xyz);  neg.xyz = min(neg.xyz, n.xyz); }             /* all THREE axes, 0x407405..0x407495 */
+    }
+    [0x4c4c08]++;                                                 /* the instance stamp, 0x4074ca */
+    for (cells visited, refs in file order; then the dynamic list, id | 0xffff0000)        /* §6.7 */
+        if (inst->vt[9](c, r, &p, &n, id))                        /* 0x433ff0, ret 0x14 */
+            { pos.x = max(pos.x, p.x); pos.z = max(pos.z, p.z);   /* x and z ONLY: 0x407536..0x40758e, 0x4075e4..0x40763c */
+              neg.x = min(neg.x, n.x); neg.z = min(neg.z, n.z); }
+    [0x4c4bb4..bc] = pos + neg;                                   /* 0x407651 */
+}
+```
+
+**vt[9] `0x433ff0`(c, r, &p, &n, id)** (same entry in all 37 instance vtables): the common preamble of §6.7 (cell −1, stamp, flag
+0x40, clock `vt[2](1)`, mask `+0xd0 & id & 0xffff0000`), then `+0x20 = [0x4c4c08]`; for each press node: in the uniform
+branch (`sx == sy == sz`, `0x43409d..0x4340c0`) a sphere cull `|o − c|² > (N+0x2c·sx + r)²` (`0x434116..0x43416e`), the
+node's vertices to world space with the node matrix (`0x43419d..0x434204`), the plane `n' = M3x3·n_loader · (1/sx)`,
+`d = −n'·v0` (first world vertex, `0x434216..0x4342c3`); in the non-uniform branch `0x4343e7` no cull and `n'` normalised
+(`0x434543..0x434552`). Each polygon goes to `0x439d60`; the first polygon that touches writes `p = (p.x, 0, p.z)`,
+`n = (n.x, 0, n.z)`, `[0x4c4bd0] = 4`, `[0x4c4bdc] = id & 0xffff` (`0x4342e6..0x43432d`), later ones merge x and z only
+and write the press-list index to `[0x4c4be0]` (`0x434335..0x434392`). Returns whether anything touched.
+
+**One polygon: `0x409ad0` (world, thiscall on the polygon, `ret 0x10`) = `0x439d60` (instance, cdecl `(nv, verts, plane, c, r,
+&pos, &neg)`)** - the same algorithm:
+```c
+int SpherePoly(poly, vec3 c, float r, vec3 *pos, vec3 *neg)
+{
+    float dist = n·c + d;                                         /* (n.y c.y + n.z c.z) + n.x c.x + d (0x409ade); instance: (n.y c.y + n.x c.x) + n.z c.z */
+    if (dist <= 0.001f /*0x4a94c4*/ || !(dist <= r)) return 0;    /* 0x439d93 / 0x439db1: front side, at most r away (r itself counts) */
+    int inside = 0;  edges kept = {};
+    for (edge prev -> cur, starting with the last vertex) {
+        vec3 m = inward edge normal in the plane;                  /* instance: (cur − prev) × n_loader (0x439e33..0x439ea2), the loader normal
+                                                                      points against the winding; world: (prev − cur) × n_gel (0x409bf1..0x409cd9),
+                                                                      the .gel plane points along it (checked: every polygon of W1A, W1B, K2A,
+                                                                      W3D, House); both = n_winding × e */
+        float s = m·(c − cur);                                    /* world: m·(c − prev), the same value */
+        if (s >= 0) { inside++; continue; }                       /* 0x439eea */
+        if (|m|²·r² < s²) return 0;                               /* 0x439f28: the centre more than r beyond this edge's line */
+        keep (e, c − cur);
+    }
+    if (inside == nv) {                                           /* 0x439f59: the centre is over the face */
+        v = (r − dist)·n;  pos = max(v, 0);  neg = min(v, 0);     /* written, not merged (0x439f63..0x439fe3) */
+        return 1;
+    }
+    int hit = 0;
+    for (kept edge e = cur − prev, w = c − cur) {                 /* 0x43a019 */
+        float a = |e|²;  if (a <= 0.001f) continue;               /* 0x43a040: instance only; the world code has no such test */
+        float B = −2 (w·e), D = B² − 4a(|w|² − r²);  if (D < 0) continue;              /* 0x4a9504 = −2, 0x4a94c0 = 4 */
+        float s1 = (−B − √D)/2a, s2 = (√D − B)/2a;  sort;          /* |w − s e| = r; the segment is s ∈ [−1, 0] (prev .. cur) */
+        if (s1 > 0 || s2 < −1) continue;                          /* 0x43a0f4 / 0x43a109: the sphere misses the segment */
+        if (!hit) { hit = 1; *pos = *neg = 0; }                   /* 0x43a11e */
+        float mm = clamp((s1 + s2)/2, −1, 0);                     /* the chord's midpoint = the closest point of the segment */
+        vec3 q = w − mm·e;  float l = |q|;                        /* c − (cur + mm e) */
+        v = q·(r − l)/l;  pos = max(pos, v);  neg = min(neg, v);  /* per axis, 0x43a171..0x43a286 */
+    }
+    return hit;
+}
+```
+Consequences: the push of a polygon is `r − distance` along the direction from its nearest point to the centre, like a
+closest-point test, except that **near a corner every edge the sphere cuts pushes** (per-axis maximum/minimum), not only the
+nearest one; a face exactly `r` away touches with a zero push (`[0x4c4bd0] ≠ 0`: the camera then takes the swept point,
+CAMERA.md §3.3); and **instances push only in x and z** - the camera is never lifted or lowered by an instance, only by world
+polygons (a sphere under the W1A start saucer, inst 17, is pushed sideways out of it, not down). The actor sweep uses only x/z
+anyway. The distance `l = 0` divides by zero in the original (never seen); the port skips that edge.
+
+**Port** (`src/player.c` `sphere_poly`, `sphere_dist`, `player_sphere_push`): the algorithm above for both, the instance plane
+from `press_normal` and `d = −n·v0` (as the cylinder, §6.5), world pushes on three axes, instance pushes on x/z,
+`[0x4c4bd0]` = `g_sphere_contact` (3/4). Before, the port took one closest point per polygon, `dist < r` strict, a normal from
+`(v1 − v0) × (v2 − v0)` flipped away from the node's centroid, and instance pushes on all three axes. Measured with a
+side-by-side build (old and new test on every call): W1B boss fight with Woody behind a lantern (`--pos -5753 1800 -8901 --yaw
+-90 --walk 2`, `WOODY_POSAT="25 -7983 1360 -7567"`): 4673 differing calls, none in x or z (only the y of the lantern
+pushes, which the boss sweep ignores); W1A walks: only zero-push contacts at `dist == r`; under the W1A start saucer
+(`--pos 258 -1990 -1677 --walk 5`): the saucer no longer pushes the camera down (−1.3 .. −2.1 per step before). The world
+polygons are still taken from a box query (`gel_polys_in_box`) instead of the cells of `0x40a700`; the merge makes the
+order irrelevant and a polygon that touches the sphere lies in a cell the flood reaches.
+
+### 6.9 Two instance methods nothing calls: vt[11] `0x4305c0` and vt[12] `0x430af0`
+
+Both sit in all 37 instance vtables (base `0x4aa31c`: `+0x2c` = `0x4305c0`, `+0x30` = `0x430af0`; e.g. `0x4a9060`/`0x4a9064`,
+`0x4a90d8`/`0x4a90dc`, … `0x4abe50`/`0x4abe54`) and no class overrides them. **Neither is ever called**: no instruction of the
+game code (below `0x480000`) calls or jumps through `[reg+0x2c]` / `[reg+0x30]` on an instance - the eleven `call [reg+0x2c]`
+and six `call [reg+0x30]` there are COM calls (the interface pushed as the first argument, while instance methods are
+thiscall: `0x4266e3`, `0x42674a`, `0x47eae2`, `0x47eeb4`, `0x47fcb5`), the menu page object (`0x446588`, `0x4465b0`) and the
+sound manager (`0x467797`..`0x46822d`); no SIB or disp32 encoding of such a
+call or jump exists, no `mov reg, [reg+0x2c/0x30]; call reg` below `0x480000` (byte scan of `.text`), and no direct call
+reaches either (their only callees `0x434850`, `0x430f10`, `0x4352f0` have no other caller). So they are dead code
+(statically certain; the unused parts of a collision API whose live members are vt[5]..vt[9], §6.6/§6.7).
+
+* **vt[11] `0x4305c0`(A, B, flags)** (`ret 0xc`): a **swept sphere** of radius `[0x4b3118]` from A to B against the press
+  nodes. Only for a uniform scale (`0x4305cb..0x4305f8`, otherwise it returns at once); no cell/stamp/flag/mask tests. Per
+  press node: A and B into node space (`0x440fc0`), `[0x4b3118] /= sx` (restored after the node, `0x430aa4`); per polygon
+  `0x434850(nv, node-space verts, n.x, n.y, n.z, d, &a, &b)`:
+  * `0x434850`: `dA = n·a + d ≤ 0.1` (`0x4a9008`) → 0 (behind or on the face); `dA > r` and `dB > r` → 0; the edge side
+    planes; `dA < r` and a inside all of them → **3** (already touching at A, `0x434a71..0x434ad3`); else the face contact
+    at `t = (dA − r)/(dA − dB)` (`0x434c41..0x434c6a`, 0 when `dA == dB`) if that point is inside the edge planes → **1**
+    with `t` in `[0x53a578]` and the contact point (projected onto the plane) in `[0x53a56c..74]`; otherwise the edges and
+    vertices (quadratics `0x434e5d`, `0x434fcd`, `0x435078`; `t` starts at 1.0, `0x434d8e`, the smallest `t ∈ [0, 1]`
+    wins) → 1. (Read at the level of its structure: the constants, the returns and the globals; the edge/vertex
+    quadratics not term by term.)
+  * result 1: the plane `normalize(M3x3·n)` and `d = −n_w·(M·v0)` to `[0x4b3108..14]`, the contact point to world space
+    (`0x430925..0x43099e`); recorded - `[0x53a558] = t`, `[0x53a57c..84]` = point, `[0x53a560]` = instance,
+    `[0x53a554] = 1` - when `[0x53a554]` was 0 or `t < [0x53a558]` (`0x4309b8..0x430a31`, the nearest over all calls);
+    result 3: `[0x53a554] = 3`, `[0x53a560]` = instance, `[0x53a558] = 0` (`0x430a39..0x430a52`).
+  * `flags & 0x10`: on any hit `msgmask_set(inst->id, 0x20)` (`0x443e50`, `0x4309ac` / `0x430a64`), and without a hit in the
+    whole call `msgmask_clear(inst->id, 0x20)` (`0x443e90`, `0x430acf`). This is the "instance touched" bit of EVENTS.md;
+    since the method is never called, msgmask 0x20 on an instance only ever comes from the chests (`0x451814`, BONUS.md §7).
+* **vt[12] `0x430af0`(c)** (`ret 4`): a **static sphere** of radius `[0x4b3118]` at c against the press nodes; returns 3 or 0.
+  Uniform scale here (`[0x4b3118] /= sx`, c into node space per node); a non-uniform scale goes to `0x430f10` (from `0x430eef`: the
+  same in world space with a normalised plane normal, `0x43108e..0x43109d`, and without the `[0x53a55c]` count). Per polygon `0x4352f0(nv, verts, n.x, n.y, n.z, d, &c)`: `dist = n·c + d ≤ 0.1` → 0,
+  `dist > r` → 0, the edge side planes (a point more than r outside one → 0), inside all of them → 3, else the edge and
+  vertex distances (`0x4354e1..0x435642`) → 3 or 0. A hit: `[0x53a55c]++`, `[0x53a560]` = instance, `[0x53a58c]` = press-list
+  index, the world plane (`n = M3x3·n/sx`, d) to `[0x53a33c..48]` (`0x430d96..0x430ea5`), return 3. Also 3, without the
+  plane, when c is behind every polygon of a node (`f ≤ 0` counted at `0x430ce9`, count = `N+4`, `0x430d5a`: inside the node).
+* What they were for is not known (a projectile or physics-object API the game does not use; the live sphere test is vt[9]
+  above). **Port**: nothing to port.
 
 ## 7. Open questions and contradictions
 
@@ -887,6 +1016,8 @@ list (INSTANCE.md §4.2: an instance whose `.ins` position has no floor group is
   and its non-conservative node cull (§6.6), which makes the W1A stamper 186 kill in one frame as in the original. Left
   over: the lasers, shots and bombs of `main_engine.c` keep their two-sided nearest-hit instance test (only their instance
   set follows §6.7). The Kill(4) branch of the crush test is live-verified under the W1A stampers 186/187 (§6.6).
+  Round 33: the sphere push-out `0x407340` with its polygon test `0x409ad0` / `0x439d60` (§6.8), and the two instance
+  methods nobody calls, vt[11] `0x4305c0` (swept sphere, msgmask 0x20) and vt[12] `0x430af0` (static sphere) (§6.9).
 * **Press nodes, not hulls.** All four instance tests (floor vt[7] `0x432480`, cylinder vt[8] `0x433140`, sphere vt[9] `0x433ff0`,
   ray `0x4359b0`) walk only the press node list `model+0x58/0x5c` (node flag 0x01). The hull list `model+0x38/0x3c` (flag 0x04) is only
   read by the draw function `0x42e2b0` (`0x42e7e8`): hull nodes are the visible meshes of characters and props (Woody: 43 hull nodes,

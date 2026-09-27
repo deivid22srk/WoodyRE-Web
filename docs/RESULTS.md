@@ -108,9 +108,12 @@ Row anchors `0x4b5748 + 8·r` (x, y), used for the labels (row = case + 1) and f
 
 ### 2.2 A counting line: icon + label `0x4549c0`, "=" + number `0x454f60`, slide-in `0x454f20`
 
-`0x4549c0(xoff, case, str, size, colour, shadow)`: `SetSize(size)`; icon from §2.1 at `x + xoff`; if
-`str`: label at `x = 45 − w/2 + xoff`, `y = row(case+1).y`, first (if `shadow`) white `0xfe808080` at
-`(+0.05·cel, +0.05·cel)` (`0x4aab4c`, cel = 62·S/40), then in `colour`.
+`0x4549c0(xoff, case, str, size, colour, shadow)` (`ret 0x18`, switch table `0x454f08`): `SetSize(size)` (`0x4549e4`); icon
+from §2.1 at `x + xoff`, **all five numbers of the rect rounded with `fistp`** (`0x454dd2..0x454e25`, round-to-nearest-even:
+x = 9.28 → 9, w = 71.44 → 71, $ x = 20.68 → 21, w = 48.64 → 49; while sliding, `x + xoff` is rounded too) and drawn with
+`0x480a10(x, y, w, h, sx, sy, sw, sh, 4 × 0xfe808080, texture, flag)`; if `str`: label at `x = 45 − w/2 + xoff`,
+`y = row(case+1).y`, first (if `shadow`) white `0xfe808080` at `(+0.05·cel, +0.05·cel)` (`0x4aab4c`, cel = 62·S/40), then in
+`colour`. It returns the clock `+0x3c` when `xoff == 0`, else −1 (`0x454edd`); every caller throws that away (`fstp st(0)`).
 
 `0x454f20(start, xoff, force)`: `force ? xoff : (clock − start < 0.2 ? (0.2 − (clock − start))·(−1000) : 0)` —
 each line **slides in over 0.2 s from −200 px to 0** (icon + label), linearly.
@@ -132,11 +135,17 @@ return done;                                                    /* = start time 
 ```
 The number thus counts up from 0 at 5000/s and is right-aligned, so the final number starts at x = 100.
 Numbers: `itoa` `0x441820` (negative → 0). The end time becomes the start of the next line; a line takes
-0.2 s + value/5000 s + 1 frame.
+0.2 s + value/5000 s + 1 frame. Label, "=" and number of a line all use the line's own `SetSize`; the fit `0x45dc90` (TOTAL,
+level name) starts from the **current** font size (`font+0x4c`), which is 15 there because the line before set it.
 
 ### 2.3 The lines (normal level: `0x454700`; race: `0x454860`)
 
-`0x454700(xoff, force)`: `clock (+0x3c) += dt`; then in order, each only if the previous is done (≠ −1):
+`0x454700(xoff, force)`: `clock (+0x3c) += dt` (`[0x509adc]+0x38`); then in order, each only if the previous is done (> −1).
+A line runs every frame once it is reached; its return value is stored only while its slot is still −1 (`cmp [+0x44], −1`
+at `0x454716`, likewise `0x454777`, `0x4547c6`, `0x454802`), so the end time is the frame it finished. Two details:
+the **"+" is drawn in the else branch** (`0x454738`, `0x45478f`): only from the frame *after* the line above it finished, and
+before that line is drawn again; and the **$ line's result is stored every frame** (`0x454848`, race `0x454909`): `+0x54`
+is the clock of the current frame once the $ counter is done (−1 in a frame where the counter is exactly at its value).
 
 | line | function | icon (case) | label (S 15, white, no shadow) | "=" + number (S, colour) | value | end time |
 |---|---|---|---|---|---|---|
@@ -146,7 +155,7 @@ Numbers: `itoa` `0x441820` (negative → 0). The end time becomes the start of t
 | — | `0x454920(2)` | | "+" at x 45, **y 245** | | | once `+0x48 ≠ −1` |
 | 2 W bonuses | `0x4553a0(+0x48)` | big W (2) | `stat[3]/stat[1]` (`app+0x80`, `app+0x78`) | 15, white | `stat[3]·100`, ×1.5 if complete (`0x453d20`) | `+0x4c` |
 | 3 total | `0x455580(+0x4c)` | bar (4) | string 14 **"TOTAL"**, S 15 shrunk to width ≤ 65 (`0x45dc90`), **red `0xfeff0000` with white shadow** | same S, white | `0x453cb0(stats, +0x58 == 1)` = sum of the three (race: line 2 only) | `+0x50` |
-| 4 $ | `0x455650(+0x50)` | $ (5) | — (`SetSize(0)`, no text) | "=" S **40** white at (85 − w/2, 405) from start + 0.2; number via `0x454f60(start + 0.4, …, row 6, 40, **red `0xfeff0000`**, shadow)` → appears from start + 0.6 | `0x453cf0` = count of complete categories (0..2) = count of new unique $ items (GAMEFLOW §5.1) | `+0x54` |
+| 4 $ | `0x455650(+0x50)` | $ (5) | — (`0x4549c0(…, 5, str 0, S 15, white, 0)`, no text) | "=" S **40** white at (85 − w/2, 405) from start + 0.2; number via `0x454f60(start + 0.4, …, row 6, 40, **red `0xfeff0000`**, shadow)` → appears from start + 0.6 | `0x453cf0` = count of complete categories (0..2) = count of new unique $ items (GAMEFLOW §5.1) | `+0x54` |
 
 The values come from `app+0x74..0x84` (= `perso+0x710`, GAMEFLOW §5.1: `{total enemies, total W, defeated,
 collected, float time}`). The screenshot "5:01 = 12363" is a line that's **still counting** (final value (1800 − 301)·10 = 14990).
@@ -269,7 +278,7 @@ lines) is **dead** for this page: nothing calls `0x45bae0`/`0x45bb40` (confirm i
 ```c
 p->result10 = 0;
 if (p->lock24) return 0;
-if (p->t54 > -1) { if (p->shown5c) p->result10 = 5; }          /* everything done: OK */
+if (p->t54 > -1) { if (p->shown5c) return p->result10 = 5; }   /* everything done: OK (returns before clearing +0x14, 0x4545cb) */
 else if (p->t28 > p->dur34) {                                  /* still counting: skip */
     float k = p->klok3c; p->klok3c += 60;                      /* 0x4ab284 */
     p->t40 = p->t44 = p->t48 = p->t4c = p->t50 = p->t54 = k;   /* all lines "done at time k" */
@@ -320,4 +329,13 @@ HUD_TEXT §5.2 (`rgb = min(1, 2·c/255)`). No "OK" item, no dim panel, no backgr
    live with `tools/wverify.py --probe fpu`); `_ftol` for the time truncates.
 3. Draw order alpha vs. additive list within the 2D bucket (§2) is inferred from the structure of `0x428ee0`, not
    traced in full detail.
-4. `vt[6]` `0x455db0` (0 if the panel is visible, else 3): no reader found.
+4. `vt[6]` `0x455db0` (0 if the panel is visible, else 3: `neg al; sbb; and 0xfd; add 3`): no reader found.
+
+Round 33 (static): every function of the page (`0x4542f0`, `0x4543c0`, `0x4544b0..0x454610`, `0x454700`, `0x454860`,
+`0x454920`, `0x4549c0`, `0x454f20`, `0x454f60`, `0x455160`, `0x4552b0`, `0x4553a0`, `0x455490`, `0x455580`, `0x455650`,
+`0x455790`, `0x455850`, `0x4559b0` with table `0x455b60`, `0x455bc0`, `0x455db0`) and the panel base (`0x45b8c0`,
+`0x45b990`) re-read instruction by instruction, every constant read from the exe (`0x4ab250..0x4ab28c`, `0x4ab694..0x4ab6cc`,
+`0x4a9014` 0.5, `0x4a9740` 30, `0x4a9760` 0.2, `0x4a9864` 15, `0x4a9868` −300, `0x4a9884` 5, `0x4aa394` 0.4, `0x4a9750` 10).
+Corrections: the icon rects are rounded (§2.2), the "+" appears one frame after its line, `+0x54` is rewritten every frame
+(§2.3), the $ line sets size 15 (§2.3), result 5 returns early (§5). All of them are in the port now (`src/hud.c`
+`res_icon`, `res_lines`, `res_dollar`).

@@ -242,7 +242,7 @@ also wakes them). `obj_id` = `inst+4`. Bits found:
 | 0x200 | enemy | `0x410993`, `0x41514d`, `0x416c69`, `0x41a642` (`this+0x174` bit 0 = result of `0x436dc0`, also set when the fall is clamped onto the ground `0x41a5ea`) | `0x4109ab`, `0x415169`, `0x416c85`, `0x41a65e` | enemy is on the ground |
 | 0x10 | player | `0x44c77c` in `0x44c730` (losing a life; sets `perso+0x278 = 2`) | `0x44b5de` (2 frames later, `+0x278` counts down) | **player has died** (2-frame pulse) |
 | 0x10 | enemy | `0x411729` (type 12 only: `this+0x10c \|= 1` after timer `+0x15c` runs out = dead) | `0x4110ab` (type 12 Reset `0x411020`), `0x41a167` (Enemy::Reset `0x41a010`, every class; `+0x174 = (…&~0x10)\|4`) | the bomb thrower is dead (ENEMY2.md §4) |
-| 0x20 | instance | `0x4309ac`, `0x430a64` in `0x4305c0` (sphere/segment test of a moving object against an instance's press nodes, if flag 0x10 is set in the call) | `0x430acf` (no hit) | **instance touched/pushed** by the player (presumed; `0x4305c0` is called via vtable) |
+| 0x20 | instance | `0x4309ac`, `0x430a64` in `0x4305c0` (instance vt[11]: a swept sphere A→B against the press nodes, if flag 0x10 is set in the call) | `0x430acf` (no hit) | "instance touched by a moving sphere" - **never happens**: vt[11] has no caller anywhere in the exe (PERSO_MOVE.md §6.9) |
 | 0x20 | bonus/switch object (class with `+0x100` = scale) | `0x451814` in `0x4517d0` (effect `0x477060`, scale 0.5) | `0x45175c` in `0x451730` (scale 100, reset) | object "taken/activated" (`0x451770` first tests `msgmask & 0x20`; if not set and distance to point < r → `vtable[0x74]`) |
 
 C API: `eko_msgmask_set(vm, obj_id & 0xffffff, bits)` / `eko_msgmask_clear(…)`.
@@ -326,7 +326,7 @@ over the call operands), and the script side with a scan of all 28 `code` files 
 | `0x410993`, `0x41514d`, `0x416c69`, `0x41a642` / `…ab`, `0x415169`, `0x416c85`, `0x41a65e` | msgmask 0x200 | enemy on the ground (probe or clamp) | none | ported (with the probes above) |
 | `0x44c77c` / `0x44b5de` | msgmask 0x10 | player lost a life (2-frame pulse) | `MSGTEST 16` on the player in W1B, W2B, W2D, W3B, W3D, WWS and on the race riders of K1R..S3R | ported (player.c) |
 | `0x411729` / `0x4110ab`, `0x41a167` | msgmask 0x10 | bomb thrower dead (`+0x10c \|= 1`); every Enemy::Reset clears it | only on the W2B bomb thrower (type 12, slot 533) → 1083 | ported: set by type 12, cleared by every Reset (enemy.c, and the boss resets in boss.c) |
-| `0x4309ac`, `0x430a64` / `0x430acf` (`0x4305c0`) | msgmask 0x20 | instance touched by a moving sphere (`0x4305c0` has no direct caller; dead code per OBJECTS.md §7) | none | not needed |
+| `0x4309ac`, `0x430a64` / `0x430acf` (`0x4305c0`) | msgmask 0x20 | instance touched by a moving sphere (vt[11] of all 37 instance vtables, never called: no `call`/`jmp` through `[reg+0x2c]` on an instance in any encoding, PERSO_MOVE.md §6.9) | none | dead code, not needed |
 | `0x451814` / `0x45175c` (chests 120/121) | msgmask 0x20 | chest opened / reset | `MSGTEST 32` on W2B chests 506, 507, 523, 545 | ported |
 | `0x443ff0` at `0x44c771`, `0x44cf0a`, `0x44de3a`, `0x44a8d3` | leave_all | the player leaves every volume (death, teleport 26, the door actions 17/18 of `0x44dda0`, the debug SavePos load) | implicit | ported for death, 26 and 1040 17/18 (`player_leave_all`, log `VOL leave_all`); the debug-key load is not ported (no debug keys); 1043 is still a hold (MESSAGES.md) |
 | replies in `0x444870` (1082, 1084, 1085, 1140, 1173, 1042, 1048..1050) | SetVar | answers to script messages | – | ported |
@@ -353,10 +353,10 @@ Every engine → VM event source is now raised by the port, except the debug-key
 
 ## 7. Open questions
 
-1. `0x4305c0` (sphere/segment vs press nodes, msgmask 0x20 on the instance) is called via a vtable;
-   the exact caller (presumably the player's movement collision `0x437180`/`0x437040`) and the
-   meaning of flag 0x10 in the call have not been verified (the exe isn't in the repo,
-   so vtables can't be looked up).
+1. ~~`0x4305c0` (sphere/segment vs press nodes, msgmask 0x20 on the instance) is called via a vtable~~
+   Settled (round 33, static): `0x4305c0` is slot 11 (`+0x2c`) of all 37 instance vtables and nothing calls it - the
+   player's movement uses the cylinder vt[8], the floor vt[7] and the ray vt[5] instead. Flag 0x10 only switches the
+   msgmask 0x20 set/clear on (PERSO_MOVE.md §6.9).
 2. The message ids that register `enemy+0x294 / +0x230 / +0x24c` (class-specific cases
    `0x40d7aa`, `0x4100b0`, `0x40e7e3`) have not been determined (jump tables live in data).
 3. Semantics of msgmask 0x10 on enemies (`0x411729`).

@@ -504,8 +504,8 @@ void Sweep(vec3 *res, vec3 *from, vec3 *to, float up, float sub /*30*/) {      /
   the test always passes; it matters on slopes steeper than ~37° under the sphere (mode 2 arenas). Port: `boss_sweep` returns both,
   `behav_move` does the test and the two OnBlocked (`player_ground_query_n`, the ground query with the normal). Log `WOODY_BOSSLOG=1`
   prints `boss blocked at ...`.
-* The push-out per polygon (closest point, `r − distance` along that direction) is the port's reading of `0x409ad0`/`0x433ff0` at the
-  call level, not traced instruction by instruction.
+* The push-out per polygon (`r − distance` along the direction from the face or from every edge the sphere cuts, per-axis
+  maximum/minimum; instances x/z only) is decoded instruction by instruction in PERSO_MOVE.md §6.8 (`0x409ad0` / `0x439d60`).
 
 ## 6. Damage
 
