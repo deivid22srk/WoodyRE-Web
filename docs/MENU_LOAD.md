@@ -526,7 +526,7 @@ page 2: panel; confirm on non-empty slot -> panel_close(1, 10+s, 1); carousel_po
         result 10+s: g_save = g_file.slot[s]; options.music = g_file.music[s]; options.sfx = g_file.sfx[s]; page = 3
         result 24: page = 1
 page 3: result 14..17: request_level((int[]){1, 11, 18, 25}[r - 14], 0.4f);  /* BlackBox: state 3 = the BlackBox object (BLACKBOX.md, src/blackbox.c) */
-        result 4: high-score page (not yet ported: ignore or a simple list from rec[].best)
+        result 4: high-score page (ported, §4.8)
         result 24: page = 1
 
 /* ---- carousel: instances */

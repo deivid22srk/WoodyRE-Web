@@ -74,7 +74,7 @@ Lang, Blackbox and Credits have a one-object script that only does `SetTypeInsta
 | +0x6c | **previous level index** (init 0x1b) | `0x404176`, `0x4025e4` |
 | +0x70 | byte, message 1172 sets it to 1; reset on load | `0x404230` |
 | +0x74..+0x87 | 5 dwords, statistics of the level just finished (copy of `perso+0x710..`) | `0x404c21` |
-| +0x7c | play-time counter `[0x4c532c]` | `0x404c34`, `0x40177c` |
+| +0x7c | = stat[2]: overwritten with the defeated-enemies counter `[0x4c532c]` (§5.1) | `0x404c34`, `0x40177c` |
 | +0x88 | logo player (`+8` = logo index) | `0x40260c` |
 | +0x8c, +0x90 | message 1160: script variable + instance of the intro cinematic | `0x444950` |
 | +0x94 | byte: 1 = "New game chosen" during page 0x1f | `0x4051ca` |
@@ -137,7 +137,7 @@ cur = app+0x68
 if cur in {1, 0xb, 0x12, 0x19}: RequestLevel(fade, 0, 0, 0); return      // leaving a hub = go to title
 save_set_done(app+0x48, cfg+0x380 /*character*/, cur)                     // 0x450700: rec+4 = 1
 memcpy(app+0x74, perso+0x710, 20)                                         // level statistics
-app+0x7c = [0x4c532c]                                                     // (overwrites stat[2])
+app+0x7c = [0x4c532c]                                                     // defeated enemies, overwrites stat[2] (§5.1)
 RequestLevel(fade, character==0 ? 1 : character==1 ? 0xb : 0x12, 1, 0)
 ```
 
@@ -208,8 +208,9 @@ the save struct (§6.2): lives, items, charges, health.
   you end up back in 3D at the last checkpoint, usually right before the door of that section (PERSO_DEATH §3.4).
   `1030` with instance 0 takes Woody's current position and facing (`0x44a920(NULL, 0)`). `SavePos.bin` (the `save = 1`
   paths of `0x44a920`/`0x44a810`) belongs only to the dev-flag debug keys, which the shipped exe cannot enable (PERSO_DEATH §3.4).
-  (Message 1020 = `perso->vt[0x98](1)` + camera `0x459030`: belongs to the same kind of volumes; exact
-  meaning not worked out.)
+  (Message 1020 = the pit kill: `Perso::Kill(1)` (`perso->vt[38]` = `0x44c110`, PERSO_DEATH.md §3.1) and, unless the camera
+  is in the side view (CamMgr+0x138 = mode index 5), the fixed death camera `0x459030` = `0x41fb50(CamMgr, &state.pos, P)`
+  (`0x44516a..0x445197`); §8.)
 - **Back in the hub**: the hub script handles it itself. Object 297 in WWS (KWS/SWS analogous):
   init: `DELAY 1` → **1084 `GetPrevLevel(var51)`** (`0x4450ee`: `var = app+0x6c`). Then per value
   `var51 == N` (2..10): `1085(N+1, var54)` (is the next level already done?), **`1140(door_inst_N,
@@ -294,7 +295,7 @@ mode 1. The three area gates work with a **pair** of instances (green arrow 77/7
 | 0x1d | `0x405796` | **game over** (opened by `0x404e10` from respawn `0x44a8f5` when lives == 0): OK → `0x44ffa0(save)` (wipe the whole active save) + to title |
 | 0x1e | `0x4058cd` | **results** after a level (§5.1) |
 | 6, 5, 0x17, 0xc, 8, 9 | `0x405358`, `0x4054ac`, `0x405586`, `0x405662` | "save?" → slot choice (occupied slot, `0x4501f0 != 0` → 0x17 confirm) → `0x456dc0` copy to slot → `vt[4]` writes `Woody.sav` → 8 succeeded / 9 failed → back to 6. "no"/done: `0x454050(perso)` (fade-out 0.5 s, `perso+0x724 = 5`; the Perso update `0x454192` then does the fade-in, `SetVar(var of 1140, 1)`) + state 1 |
-| 0x20 | `0x40577b` | credits: 5 → to title |
+| 0x20 | `0x40577b` | credits: 5 (confirm after 5 s) → to title; the page itself: CREDITS.md |
 | 0x16, 0x21 | `0x404f90`, `0x405a49` | language/memory-card pages (console leftover, unreachable on PC) |
 
 House script, object 115: var1 = 0 idle, 1 = start request from the engine, 2/3 = intro playing
@@ -313,12 +314,29 @@ stat[2]*100(+50 % if == stat[0]) + stat[3]*100(+50 % if == stat[1])`. If score >
 `stats` = `app+0x74` = copy of `perso+0x710`: {total A, total B, collected A, collected B, float time}
 (`0x453c80` init with `[0x4c5330]` and the Bonus-Woody total `[0x5e54e4]`; see BONUS.md).
 
-**Which two categories?** `0x453c80` receives the two totals: `[0x4c5330]` (every enemy counts itself in
-its PostLoad, ENEMY.md) and `[0x5e54e4]` (the Bonus-Woody total, `[0x5e54f4]` in a race level). Because
-the score compares `stat[2]` with `stat[0]` (and `stat[3]` with `stat[1]`), `stat[2]` **must** be the
-number of **defeated enemies** — the +50 % is for "cleared everything". `[0x4c532c]`, which EndLevel
-copies over `stat[2]`, is updated every frame in App::Frame (`0x40177c`), presumably as "total − still
-alive"; not decompiled (was §10.2).
+**Which two categories?** `0x453c80` (called once, from the level start `0x44a6a0` → `0x44a6e1`) receives the two
+totals: `[0x4c5330]` (enemies) and `[0x5e54e4]` (the Bonus-Woody total, `[0x5e54f4]` for the race subtypes 4/5,
+`0x44a6a8..0x44a6d3`). `stat[2]` is the number of **defeated enemies** (decompiled, was §10.2):
+
+* `[0x4c5330]` (total) and `[0x4c532c]` (defeated) are both zeroed per level by `0x40bf30` (called from the load,
+  `0x40439e`). The total is incremented in the **PostLoad** (`vtbl[1]`) of the six enemy classes: types 4..6 `0x418c09`,
+  7..9 `0x416eb9`, 10 `0x4153a9`, 11 `0x4122f9`, 12 `0x411002`, 13 `0x413999`. The three boss classes (14/15/16, ctors
+  `0x40eb50`/`0x40d850`/`0x40c730`) do **not** count.
+* `[0x4c532c]++` happens in only one place: `vtbl[29]` = **`0x41aff0`** (`inc [0x4c532c]; jmp 0x407850`), present in all
+  ten Npc-derived enemy/boss vtables (`0x4a96cc` … `0x4aa030` hold it). Its only caller is `0x40bf60` (start of every
+  frame), which calls `vtbl[29]` for each Npc whose `+0x10c` bit 0 is set and clears the bit (`0x40bfc9..0x40bfe1`). That
+  bit is set only at the end of a death animation, in the six enemy classes (`0x419391`, `0x4179f2`, `0x415f55`,
+  `0x412c81`, `0x41171f`, `0x414396`) — never by the bosses. So: an enemy of type 4..13 counts **once it has finished
+  dying and is taken out of the world**, not when its health reaches 0.
+* `0x40177c` is **not** a per-frame update: it sits in the level-switch branch of App::Frame (`app+0xcc` and the fade timer
+  `app+0xd0 ≤ 0`), right before `Unload 0x4049a0`. EndLevel (`0x404c34`) copies `[0x4c532c]` over `stat[2]` first; the
+  unload copies it again, so an enemy that finishes dying during the 0.5 s EndLevel fade still counts. `perso+0x718`
+  (stat[2] of the Perso's own block) is never written.
+
+Port: `EnemySet.total` / `.killed` (`src/enemy.h`): `enemies_add` counts types 4..13, the three remove points of
+`src/enemy.c` (`enemy_update`, `shooter_update`, `bomber_update`) count the kill; `results_capture` copies them at 1083
+and the level switch copies `killed` again before `level_free`. (Before: every enemy in the list, bosses included, and
+`hp <= 0` at the moment of 1083.)
 `stat[4]` is the clock `perso+0x710+0x10` (`0x453ca0`, every frame `+= dt`).
 
 ### 5.2 The port of the results screen (`src/main_engine.c`, `src/hud.c`, `src/player.c`)
@@ -385,8 +403,11 @@ while still counting and SoundFx 0x3f when the page opens.
   Page 8 + Continue leaves the menu (not back to 6, as previously stated here); 9 goes back to 6. The
   cursor on page 6 starts on the first selectable item ("Yes"); only for page 0x1c is it known that it
   starts on "No".
-- End position of state 5: P0 of the door vector (the last 0x4d put him there), ground snap, looking
-  towards P0 − P1.
+- End position of state 5 (decompiled `0x4541be..0x4542af`, PERSO_STATE9.md §2): **P0** of the door vector — the
+  sub-5 case restarts 0x4d with `0x44dda0(0x4d, P0/P1)` *before* the timer test (`0x4541a3`), and during an action
+  `0x44e290` only writes the render position `+0x544` (`+0x550` = 1), so `+0x1f4` is always P0; then ground snap
+  `0x45423f`, facing `P0 − P1` (`0x454244..0x454287`, xz and y, not normalised: `0x459ff0` normalises), `A->Reset()`,
+  `A->Request(1)` (idle), `+0x550 = 0` (draw at `+0x1f4`, not at the root blend), SetState(0). The port does the same.
 - The game is **not** paused during the screen and there is no half-black overlay; the normal HUD stays
   hidden (table `0x405af8[0x1e] = 1`, RESULTS.md §6).
 
@@ -459,11 +480,11 @@ in the script).
 | id | args | meaning |
 |---|---|---|
 | 1010 | 9 ints | debug print (`0x462c60`, disabled logger) |
-| 1020 | – | `perso->vt[0x98](1)`; if camera mode ≠ 5: `0x459030(game+8, cam+0x90)` |
+| 1020 | – | the pit: `Perso::Kill(1)` (`vt[38]` = `0x44c110`); if CamMgr+0x138 ≠ 5 (not the side view): `0x459030(game+8, &CamMgr.state.pos)` = the fixed death camera — **unconditional**, also when Kill refuses (`0x44516a..0x445197`). 73 SENDs in the shipped scripts |
 | 1030 | inst | **SaveAuto(this)**: checkpoint (§4.5); inst 0 → warning + `0x44a920(0,0)` |
-| 1040 | inst, action | Perso scripted action `0x44dda0(action, vector of inst, 0)` (17 = walk through door) |
-| 1043 | inst, action, inst2 | same, with a target instance |
-| 1041 | inst, x | `0x44e040(x, position of inst)` |
+| 1040 | inst, action | `0x42f6b0(inst, typecode 5, buf, 0)` (no fallback to typecode 0; a miss leaves `buf` stale) → `0x44dda0(action, buf, 0)` (`0x445230..0x44525f`); §8.1. 354 SENDs, all with action 17 or 18 |
+| 1043 | inst, action, inst2 | `0x44dda0(action, vector 5 of inst, inst2)` (`0x4451e4..0x445226`): inst2 is carried (§8.1). No SEND in the shipped scripts |
+| 1041 | inst, x | `0x44e040(x, &inst.pos)` (`0x445443..0x445481`), §8.1. No SEND in the shipped scripts |
 | 1042 | inst, dist, angle, var | var = 0; if the Perso is on the ground (`0x44bcf0` = `+0x22c`, `0x44527f`) and in state 0 (`+0x21c == 0`), within `dist` (XZ, not ×0.01) of inst and looking within `angle`° of the direction to inst → `0x458e40`, var = 1 |
 | 1044 / 1045 | inst | `0x44e140` / `0x44e1a0` |
 | 1048 / 1049 / 1050 | var, mode | var = 0; key 0 / 1 / 6 on `[0x5e6188]`; mode 0 = `0x467400`, 1 = `0x467420`, 2 = `0x467440` → var = 1 |
@@ -476,6 +497,81 @@ in the script).
 | 1160 | var, inst | `app+0x8c = var`, `app+0x90 = script object` of the intro |
 | 1172 | – | `app+0x70 = 1` |
 | 1180 | x | to Credits |
+
+### 8.1 The scripted Perso actions: `0x44dda0`, the state-5 frame `0x44db50`, `0x44e040` (decompiled)
+
+```c
+bool Perso_Action(Perso *p, int act, const Vec3 vec[2] /*P0, P1 or NULL*/, Inst *carry)       /* 0x44dda0, ret 0xc */
+{
+    if (p->state == 2) return false;                                  /* dead: refused */
+    p->carry554 = carry;  p->camOK558 = 1;
+    int sub = p->typeword104 & 0x3e0;                                 /* subtype << 5 */
+    if (sub != 0xa0 && sub != 0x80) {                                 /* not the race riders (subtypes 5 / 4): otherwise the flags stay as they were */
+        p->fadeOut560 = act == 0x11;  p->fadeIn561 = act == 0x12;
+    }
+    switch (table_0x44dfe8[act - 10]) {                               /* jump table 0x44dfdc */
+    case 1: Volumes_LeaveAll(p->id);                                  /* 0x44de36: acts 0x11 / 0x12 only; 0x443ff0 */
+            /* fall through */
+    case 0: p->side4ec = 0;  Perso_ClearAttack(p);                    /* 0x44de42: acts 10..0x13 and 0x48..0x4e; 0x44dd70 */
+            p->rec534 = A->LogRecord(act);                            /* 0x463e30 */
+            p->total538 = p->remain53c = A->Length(p->rec534, 0);     /* 0x436b90 */
+            A->Reset(); A->Request(p->rec534); break;
+    default: Log("unknown action %d", act);                           /* 0x4b3b10 through the empty logger 0x462c60: state 5 with stale timers */
+    }
+    p->action540 = act;  SetState(p, 5);
+    if (vec) { p->pos = vec[0];  p->onGround22c = 1;
+               Mover_SetDir(&p->M, xzNormalize(vec[1] - vec[0]));     /* 0x459ff0; left unnormalised when the length is 0 */
+               p->useRoot550 = 0;  Perso_ApplyMatrix(p); }             /* 0x44bd00 */
+    if (Inst_HasCameraTrack(p, act) && p->camOK558) {                 /* 0x42feb0 */
+        CamMgr->anim5d4 = p;  CamMgr->flags618 &= ~2;                 /* no letterbox */
+        Cam_Transition(2); Cam_SetMode(7, 0);                         /* 0x41f9f0 cut, 0x41f410: mode 0x80 = the action's camera track */
+    }
+    A->Tick(p->dt2f8);                                                /* vt[3] */
+    return true;
+}
+void Perso_State5(Perso *p)                                           /* 0x44db50 */
+{
+    if (p->carry554) { Vec3 e = Inst_CameraEye(p, ...);               /* 0x42fa40: the node-0x80 point of the running animation */
+        carry->pos = e; carry->rot = p->rot; carry->+0x58 = -1; carry->vt[2](1); }
+    if (act == 0x11 || act == 0x12) {                                 /* doors */
+        if (p->remain53c < 0.6f && p->fadeOut560) { p->fadeOut560 = 0; App_FadeOut(0.5f); }   /* 0x401480 */
+        if (p->fadeIn561) { p->fadeIn561 = 0; App_FadeIn(0.5f); }                           /* 0x401440 */
+        if ((p->remain53c -= dt) <= 0) { SetState(p, 0);
+            if (act == 0x12) { Mover_SetDir(-dir); SnapToGround(p); A->Request(1);
+                               if (!p->side4ec) Perso_CamBack(p); } }  /* 0x44e5a0: follow camera, 0.5 s transition type 1 */
+    } else {
+        bool end = (p->remain53c -= dt) <= 0;
+        if (end) { SetState(p, 0); A->Request(1); }
+        Perso_RootMotion(p, end);                                     /* 0x44e290, OBJECTS.md §1.5 */
+        if (end) { SnapToGround(p); Perso_CamBack(p); }
+    }
+}
+void Perso_FaceAction(Perso *p, int act, const Vec3 *at)             /* 0x44e040, message 1041 */
+{
+    Mover_SetDir(&p->M, xzNormalize(*at - p->pos));  SnapToGround(p);
+    p->rec534 = A->LogRecord(act);  A->Reset();  A->Request(p->rec534);
+    p->remain53c = p->total538 = 0;  p->carry554 = 0;  p->action540 = act;  SetState(p, 5);
+}   /* length 0: the next 0x44db50 ends it at once (idle; for anything but 0x11/0x12 the end of 0x44e290 puts him at the root end) */
+```
+
+The action codes (byte table `0x44dfe8`, valid = 10..0x13 and 0x48..0x4e; everything else is the default):
+
+| act | .ins anim | caller(s) | what |
+|---|---|---|---|
+| 0x11 (17) | 17 | 1040 (all hub/level doors) | walk into a door: leaves every volume, fade-out 0.5 s starting 0.6 s before the end, at the end only SetState(0) (the teleport / level switch that follows is the script's) |
+| 0x12 (18) | 18 | 1040 | come out of a door: leaves every volume, fade-in 0.5 s on the first frame, at the end turned 180°, ground snap, idle, follow camera unless in the side view |
+| 10..0x10, 0x13 | 10..16, 19 | none in the shipped data | root-motion actions (case 0) |
+| 0x48 (72) | 72 | none | valid (case 0), never used |
+| 0x49 (73) | 73 | `0x44e690` (House, every frame while `app+0x68 == 0`, only in state 0 and after 1141) | the title/menu pose at the vector of the 1141 instance (typecode 5, `0x4448d1`); the frame also sets the Perso's fade target to 0 (visible) during a cinematic and 1.0 (invisible) otherwise, `+0x100 = 10000` (`0x44e6c0..0x44e6f4`, CINEMATIC.md §3.2) |
+| 0x4a (74) | 74 | `0x453d90` (1140) | results: floats in and lies down under the parasol |
+| 0x4b (75) | 75 | `0x454090` sub 0/1 | lying while page 0x1e counts (restarted whenever it ends) |
+| 0x4c (76) | 76 | `0x453fc0(0)` | no complete category: the shrug |
+| 0x4d (77) | 77 | `0x454020`, sub 4/5 | standing, looped through the save pages and the fade |
+| 0x4e (78) | 78 | `0x453fc0(1)` | at least one complete category: the cheer |
+
+Port (`src/player.c`, `src/main_engine.c`): `player_script_action` = `0x44dda0` (the default case logs and holds 2 s, not
+reachable), the state-5 branch of `player_update` = `0x44db50` (now with the carried instance and the side-view test of the
+0x12 end), `player_face_action` = `0x44e040` (message 1041, new), message 1043 = 1040 + `script_carry` (was a 2 s hold).
 
 ## 9. Recipe for the port
 
@@ -537,20 +633,21 @@ A command-line level can keep working as a "dev slot": index 0x1b, character unc
 
 ## 10. Uncertain
 
-1. The results state machine `perso+0x724` (update `0x454090`, table `0x4542c4`) has only been read in
-   broad strokes (see §5.1/§5.2 for the chain the port derives from it). Not worked out: the exact end
-   position of state 5 (`0x454244..`), the layout of the panel (`0x454963..0x455d97`) and what table
-   `0x405af8` sets for pause/overlay flags on page 0x1e.
-2. Given the score comparison, `stat[2]` is the number of defeated enemies (§5.1); where `[0x4c532c]`
-   exactly comes from (`0x40177c`, every frame) is not decompiled. Which of the two totals is
-   "Bonus Woody" is known for certain though: `stat[1]`.
+1. ~~The results state machine `perso+0x724` only read in broad strokes~~: decompiled in full. `0x454090` (table `0x4542c4`:
+   0 → `0x4540c1`, 1 → `0x45410a`, 2/3 → `0x454138`, 4 → `0x454164`, 5 → `0x454192`) is PERSO_STATE9.md §2; the end position of
+   state 5 is §5.2 (P0, snapped, facing P0 − P1); the panel `0x4544b0..0x455db0` is RESULTS.md §1-§5 (re-read line by line
+   this round, every constant from the exe); `0x405af8[0x1e]` = 1 → case `0x404fb7`: `app+0xf4 &= ~8` (not paused), world
+   rendered by `0x401ab0`, no `0x80000000` overlay (`bl` stays 0), HUD `0x448450(2)` (RESULTS.md §6).
+2. ~~Where `[0x4c532c]` comes from~~: the count of enemies (types 4..13) removed after their death, `vtbl[29]` `0x41aff0`
+   (§5.1). `0x40177c` is the copy at unload, not a per-frame update. `stat[1]` is "Bonus Woody".
 3. 1082 reads the block of the *current* character. In KWS (character 1) the script asks
    `LevelIsEnable(13..17)`; K1A (12) is opened without 1082. `LevelIsEnable(11/12)` would look at
    W2D in block 1 and thus always give 0; character selection uses `0x4509b0` with an explicit
    block 0 for that instead. Not verified dynamically. The hubs also ask 1082/1085 for levels of the
    other characters (4, 7, 14, 16, 21, 23 / 2, 12, 19: presumably progress boards).
-4. Messages 1020, 1041, 1044, 1045 and the action codes of `0x44dda0` (0x11 walk through door, 0x49
-   menu pose, 0x4a..0x4e results) are only inferred from usage.
+4. ~~Messages 1020, 1041, 1044, 1045 and the action codes of `0x44dda0` only inferred from usage~~: decompiled, §8 / §8.1
+   (1044/1045: PERSO_STATE7.md). Not ported: what the carried instance's `vt[2](1)` and `+0x58 = -1` do (`0x44dbcc`, 1043
+   only, dead in the shipped data).
 5. The BlackBox object (`0x484420`, 0xc0780 B, state 3, level 0x19, unlocked after S3R) and the credits
    trigger in `0x401d1b..0x401d42`: analysed in **BLACKBOX.md** (a 2D platformer, three rounds, then the credits).
 6. Dev flags `cfg+0x384` (2 = sound debug, 4 = level-picker dialog, 8 = debug keys incl. `SavePos.bin`, 0x10 = BlackBox object

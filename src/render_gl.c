@@ -886,30 +886,33 @@ static void chain_unlink(Renderer *r, Instance *in)
     if (*pp) *pp = in->cell_next;
     in->cell_next = NULL; in->chain_sec1 = 0;
 }
-/* the cell point: an enemy's collision centre (0x4077f0 in its mover), a flag-0x20 link its .ins position (the last
- * explicit 0x4077f0(NULL)), everything else the animated root inst+0x60 (the clock 0x43f2f1) */
+/* the cell point of a clock run or an actor's own re-cell: an enemy's collision centre (0x4077f0 in its mover), a flag-0x20
+ * link its .ins position (the last explicit 0x4077f0(NULL)), everything else the animated root inst+0x60 (the clock 0x43f2f1) */
 static Vec3 cell_point(const Instance *in)
 {
     return in->cell_dy > 0 ? (Vec3){ in->position.x, in->position.y + in->cell_dy, in->position.z } : in->cell_fixed ? in->position : ins_anim_centre(in);
 }
+/* +8 & 0x20 (level.c ins_flag20): the actors move and re-cell themselves (the Perso, enemies and bosses, the race board, the
+ * rocket, the bomb cannon, the bombs), the links of messages 61/62 are never re-celled by their clock */
+static int inst_flag20(const Instance *in) { return ins_flag20(in); }
+static int inst_actor(const Instance *in) { return in->cell_dy > 0 || (inst_flag20(in) && !in->cell_fixed); }
+/* the point of 0x407790(NULL) / 0x4077f0(NULL): the .ins position +0xc. The loader (0x4288cf), a show (message 6, 0x42d99b),
+ * the SetTypeInstance relink (0x403e7a, ebx = 0 from 0x403524) and the bonus respawns (0x44f595, 0x44f8f5) all pass NULL; only
+ * a clock run (0x43f351) or an actor's mover passes a point of its own. For the actors the port takes their mover's point. */
+static Vec3 load_point(const Instance *in) { return inst_actor(in) ? cell_point(in) : in->position; }
 static void cell_compute(const GelFile *g, Instance *in, Vec3 ref)    /* 0x4081c0 sector, 0x40a0c0 floor group (cached per point) */
 {
     if (!in->cell_ok || ref.x != in->cell_ref.x || ref.y != in->cell_ref.y || ref.z != in->cell_ref.z) {
         in->cell_ref = ref; in->cell_ok = 1; in->cell_sec = gel_sector(g, ref); in->cell_grp = gel_floor_group(g, ref);
     }
 }
-/* 0x4077f0 / 0x407790: out of its chain and IN FRONT of the chain of the sector of its cell point (none: out of the world) */
-static void chain_recell(Renderer *r, Instance *in)
+/* 0x4077f0 / 0x407790 at point p: out of its chain and IN FRONT of the chain of the sector of p (none: out of the world,
+ * +0x1c = -1, and only a show or an actor's mover brings it back), +0x18 = the floor group under p (0x40a0c0) */
+static void chain_recell(Renderer *r, Instance *in, Vec3 p)
 {
     chain_unlink(r, in);
-    cell_compute(r->gel, in, cell_point(in));
+    cell_compute(r->gel, in, p);
     if (in->cell_sec >= 0 && (uint32_t)in->cell_sec < r->nchain) { in->cell_next = r->chain[in->cell_sec]; r->chain[in->cell_sec] = in; in->chain_sec1 = in->cell_sec + 1; }
-}
-/* +8 & 0x20: the actors move and re-cell themselves (enemy PostLoad 0x419e4d, the Perso, the race board), the links of
- * messages 61/62 are never re-celled by their clock; everything else is re-celled by every clock run (0x43f2ed) */
-static int inst_flag20(const Instance *in)
-{
-    return in->cell_dy > 0 || in->cell_fixed || (!in->scripted && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19));
 }
 /* the clock 0x43eee0 runs at most once per frame (inst+0x58 = [[0x509adc]]) and ends with the re-cell 0x43f351 - unless
  * the pose cache hits: 0x42e2b0 asks 0x42f3d0 for it when fade +0x6c < 0.01 (valid while the clock speed is 0 and the
@@ -917,17 +920,25 @@ static int inst_flag20(const Instance *in)
  * cached matrices and returns before the re-cell (0x43efff -> 0x43f06e; with a TRAJ +0x78 it never takes that branch).
  * The draw stores the cache (0x42ecf8, fade <= 0.98) when the speed is 0 and clears it otherwise (0x42f460 -> 0x42f483).
  * So a stationary opaque instance keeps its place in its chain, and only animated, moving or fading ones go to the front
- * (verified live with tools/wverify.py --probe list: W1A start, only the looping pairs 11/12, 14/15 and 77/79 swap each frame) */
-static void chain_clock(Renderer *r, Instance *in)
+ * (verified live with tools/wverify.py --probe list: W1A start, only the looping pairs 11/12, 14/15 and 77/79 swap each frame).
+ * The clock is the ONLY re-cell of a non-actor after it entered the world: an instance keeps the cell of its .ins position
+ * until its clock first runs - listed (0x42a94e), the camera leaf's .col objects (0x42aa0b) or a collision query that tests
+ * it (0x4324d6, level.c gel_col_clock) - and afterwards the cell of its animated root as of its last clock run.
+ * draw = the list's draw vtbl[2](5/7) follows (0x42b380), which is what stores or clears the pose cache. */
+static void chain_clock(Renderer *r, Instance *in, int draw)
 {
-    if (in->clock_frame == r->frame) return;
-    in->clock_frame = r->frame;
-    int hit = in->pc_ok && in->fade < 0.01f && in->a_speed == 0 && !in->traj.npoints && in->a_pos == in->pc_ac && in->slot[0] == in->pc_slot
-              && in->position.x == in->pc_pos.x && in->position.y == in->pc_pos.y && in->position.z == in->pc_pos.z;
+    if (in->clock_frame != r->frame) {
+        in->clock_frame = r->frame;
+        int hit = in->pc_ok && in->fade < 0.01f && in->a_speed == 0 && !in->traj.npoints && in->a_pos == in->pc_ac && in->slot[0] == in->pc_slot
+                  && in->position.x == in->pc_pos.x && in->position.y == in->pc_pos.y && in->position.z == in->pc_pos.z;
+        if (!hit && !inst_flag20(in)) chain_recell(r, in, ins_anim_centre(in));   /* 0x43f2f1..0x43f351 */
+    }
+    if (!draw) return;
     if (in->a_speed != 0) in->pc_ok = 0;
     else if (in->fade <= 0.98f) { in->pc_ok = 1; in->pc_pos = in->position; in->pc_ac = in->a_pos; in->pc_slot = in->slot[0]; }
-    if (!hit && !inst_flag20(in)) chain_recell(r, in);
 }
+static Renderer *g_clock_r;                                                  /* the renderer of the current level, for gel_col_clock */
+static void query_clock(Instance *in) { if (g_clock_r && g_clock_r->chain_ok && in->visible && in->chain_sec1) chain_clock(g_clock_r, in, 0); }   /* a hidden or out-of-world instance is never tested (0x43248e) */
 static uint32_t g_link_seq;
 void rnd_note_link(Instance *in) { if (in) in->link_seq = ++g_link_seq; }
 static int link_cmp(const void *a, const void *b) { uint32_t x = (*(Instance *const *)a)->link_seq, y = (*(Instance *const *)b)->link_seq; return x < y ? -1 : x > y; }
@@ -941,22 +952,23 @@ static void chains_relink(Renderer *r)
     }
     if (!n) return;
     qsort(buf, n, sizeof *buf, link_cmp);
-    for (uint32_t i = 0; i < n; i++) if (buf[i]->visible) chain_recell(r, buf[i]);
+    for (uint32_t i = 0; i < n; i++) if (buf[i]->visible) chain_recell(r, buf[i], load_point(buf[i]));   /* 0x403e7a: 0x407790(NULL) */
     r->link_done = top;
 }
 /* keep the chains in step with what happened since the last frame: 0x4288cf put every instance of the .ins in front of
- * its sector's chain in file order at load, then the script's 1200s (chains_relink); message 6 unlinks (0x407850) and a show links in front again; an actor's
- * own mover re-cells it in front whenever it moved. An instance whose cell point moved to another sector without a
- * clock run would stay in its old chain in the original (the port re-cells such an instance at once instead, the
- * simplification INSTANCE.md 4.1 describes). */
+ * its sector's chain in file order at load (cell point: the .ins position), then the script's 1200s (chains_relink);
+ * message 6 unlinks (0x407850, +0x1c = +0x18 = -1) and a show links in front again at the .ins position (0x42d99b); an
+ * actor's own mover re-cells it in front whenever it moved. Nothing else moves an instance between chains: the clock
+ * (chain_clock) is its only re-cell, so a moving instance that is neither listed nor tested by a query keeps its old cell,
+ * and one whose re-cell found no sector stays out of the world (the original's +0x1c = -1: no clock, no list, no query). */
 static void chains_sync(Renderer *r)
 {
     const GelFile *g = r->gel; InsFile *ins = r->ins;
     if (!r->chain_ok) {
         free(r->chain); r->nchain = g->nsectors; r->chain = (Instance **)calloc(r->nchain ? r->nchain : 1, sizeof *r->chain); r->chain_ok = 1;
-        for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) { Instance *in = &ins->models[mi].instances[k]; in->chain_sec1 = 0; in->cell_next = NULL; }
+        for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) { Instance *in = &ins->models[mi].instances[k]; in->chain_sec1 = 0; in->cell_next = NULL; in->cell_ok = 0; }
         for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
-            Instance *in = &ins->models[mi].instances[k]; if (in->visible) chain_recell(r, in);   /* 0x4288cf, in file order */
+            Instance *in = &ins->models[mi].instances[k]; if (in->visible) chain_recell(r, in, load_point(in));   /* 0x4288cf: 0x407790(NULL), in file order */
         }
         chains_relink(r);                                                              /* then the level script's init 1200s */
         return;
@@ -964,13 +976,11 @@ static void chains_sync(Renderer *r)
     chains_relink(r);
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
         Instance *in = &ins->models[mi].instances[k];
-        if (!in->visible) { if (in->chain_sec1) chain_unlink(r, in); continue; }      /* message 6: 0x407850 */
-        if (!in->chain_sec1) { chain_recell(r, in); continue; }                       /* shown again (0x4077f0) */
-        int32_t was = in->cell_sec; Vec3 ref = cell_point(in);
-        if (ref.x == in->cell_ref.x && ref.y == in->cell_ref.y && ref.z == in->cell_ref.z) continue;
-        if (in->cell_dy > 0 || (inst_flag20(in) && !in->cell_fixed)) { chain_recell(r, in); continue; }   /* an actor that moved: its own 0x4077f0 */
-        cell_compute(g, in, ref);
-        if (in->cell_sec != was) chain_recell(r, in);                                  /* port: see above */
+        if (!in->visible) { if (in->chain_sec1) chain_unlink(r, in); in->cell_ok = 0; continue; }   /* message 6: 0x407850 */
+        if (!in->cell_ok) { chain_recell(r, in, load_point(in)); continue; }          /* shown again: 0x407790(NULL) */
+        if (!inst_actor(in)) continue;                                                 /* only its clock re-cells it */
+        Vec3 ref = cell_point(in);
+        if (ref.x != in->cell_ref.x || ref.y != in->cell_ref.y || ref.z != in->cell_ref.z) chain_recell(r, in, ref);   /* an actor that moved: its own 0x4077f0 */
     }
 }
 void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, const int32_t *race)
@@ -1000,6 +1010,19 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
         }
     }
     r->frame++;                                                                 /* [[0x509adc]]: the clocks of this frame */
+    g_clock_r = r; gel_col_clock = query_clock;                                 /* the queries of this frame clock what they test */
+    if (log >= 5 && !r->chain_ok) for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
+        /* WOODY_VISLOG=5, once per level: every instance without a floor group under its .ins position (the load cell) or under its
+         * animated root (the cell of every later clock run), with what it is: mesh polygons 0 = never drawn anyway (volume boxes) */
+        Instance *in = &ins->models[mi].instances[k]; Vec3 c = ins_anim_centre(in);
+        int gp = gel_floor_group(g, in->position), gc = gel_floor_group(g, c), sp = gel_sector(g, in->position), sc = gel_sector(g, c);
+        if (gp >= 0 && gc >= 0) continue;
+        uint32_t np = 0, ncol = 0, npol = 0; ins_collision_nodes(in->model, &np);
+        for (uint32_t cl = 0; cl < g->ncells; cl++) { uint32_t n = 0; const uint32_t *rf = gel_col_cell(g, cl, &n); for (uint32_t j = 0; j < n; j++) if ((rf[j] & 0xffff) == in->index) ncol++; }
+        for (uint32_t q = 0; q < in->model->nnodes; q++) if (in->model->nodes[q].kind == 0) npol += in->model->nodes[q].npolys;
+        printf("VIS load: inst %u model %u type %d shown %d | position %.0f %.0f %.0f sector %d group %d | root %.0f %.0f %.0f sector %d group %d | mesh polys %u, press nodes %u, .col refs %u, flag20 %d",
+               in->index, mi, in->type, in->visible, in->position.x, in->position.y, in->position.z, sp, gp, c.x, c.y, c.z, sc, gc, npol, np, ncol, inst_flag20(in)), puts("");
+    }
     chains_sync(r);
     /* message 34 (0x42aa0b): the linked instances of a volume that holds the camera get this frame's stamp first */
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins->models[mi].instances[k].listed = ins->models[mi].instances[k].in_zone = 0;
@@ -1015,7 +1038,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
         const uint32_t *refs = leaf >= 0 ? gel_col_cell(g, (uint32_t)leaf, &nref) : NULL;
         for (uint32_t j = 0; j < nref; j++) {
             uint32_t idx = refs[j] & 0xffff; Instance *in = idx < ins->nslots ? ins->slots[idx] : NULL;
-            if (in && in->visible && in->chain_sec1) chain_clock(r, in);       /* 0x42e2c3: out of the world = no clock */
+            if (in && in->visible && in->chain_sec1) chain_clock(r, in, 0);    /* 0x42e2c3: out of the world = no clock */
         }
     }
     /* the side planes of 0x437b00, from the same camera the renderer uses */
@@ -1054,7 +1077,7 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
             if (r->nlist >= r->list_cap) { uint32_t cap = r->list_cap ? r->list_cap * 2 : 256; Instance **nl = (Instance **)realloc(r->list, cap * sizeof *nl); if (!nl) continue; r->list = nl; r->list_cap = cap; }
             r->list[r->nlist++] = in; in->listed = 1;                               /* 0x42a931..0x42a948 */
             if (in->type >= 4 && in->type <= 16) n_act++;
-            chain_clock(r, in);                                                     /* vtbl[2](0x81) (not for flag 0x20, 0x42a94e) -> 0x43eee0 -> 0x4077f0 */
+            chain_clock(r, in, 1);                                                  /* vtbl[2](0x81) (not for flag 0x20, 0x42a94e) -> 0x43eee0 -> 0x4077f0 */
         }
     }
     if (all) {                                                                      /* port: instances in no sector are listed too without a .vis */

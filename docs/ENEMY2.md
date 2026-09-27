@@ -521,7 +521,7 @@ Constants: radius 60, height 280, sight 2400 (|dy| < 1000), hp 5, melee 3 hearts
 
 1. Stands still (no wander/chase): only knockback + gravity from the base class. Starts off (message 6,0 after 1 s) until the script sends 6,1 ⇒ message 6 must work.
 2. State machine §4.2 verbatim (15 states, one of which is empty). `enemy_take_damage` for this type: no hp loss, `hit_t = len(8)/3`, `st = 11`, SoundFx 54, return 0.
-3. Requires the **bomb system** (not yet ported: BONUS.md §7, PROJECTILES §2.4, Perso state 6): projectile template 0 (g = 3000, bounces, damping 0.95 ground / 0.99 air per 1/60 s,
+3. Requires the **bomb system** (ported since: BOMB.md, BOMB_CARRY.md; BONUS.md §7, PROJECTILES §2.4, Perso state 6): projectile template 0 (g = 3000, bounces, damping 0.95 ground / 0.99 air per 1/60 s,
    speed 800) with a carried bomb instance (type 40, W2B has them), fuse from `T.life`, pickup/throw-back, explosion r 400 ⇒ `blast()` on all enemies and the player.
    `enemy_blast(e, pos, r)`: types 4..11, 13 ⇒ dead (`take_damage(hp)`); type 12 ⇒ §4.4 (1 hp, `st = 14`, SoundFx 52). Without bombs the level cannot be finished:
    set msgmask 0x10 on the instance when it is removed (script ⇒ 1083).

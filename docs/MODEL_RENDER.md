@@ -381,20 +381,22 @@ chain history and the frame parity; a glow batch of a non-fading instance betwee
 frame.
 
 **Port** (`rnd_instance_list` in `src/render_gl.c`): `Renderer.chain` holds one chain per sector (`Instance.cell_next`,
-`chain_sec1`), built in `.ins` order on the first list of a level, then the 1200 relinks in message order (`rnd_note_link`,
-`Instance.link_seq`, `chains_relink`); `chains_sync` unlinks hidden instances, links shown ones in
-front, re-cells a moved actor / flag-0x20 link (its own `0x4077f0`) in front; the camera leaf's `.col` objects are clocked
-first (`rnd_load_col`, `.col` loaded by `level_load`); the walk follows the `.vis` pairs and `chain_clock` (once per frame,
-`Instance.clock_frame`) re-links every listed non-0x20 instance in front unless its pose cache hits (`Instance.pc_ok`,
-`pc_pos`, `pc_ac`, `pc_slot`: stored when the speed is 0 and fade ≤ 0.98, used when fade < 0.01 and there is no TRAJ).
+`chain_sec1`), built in `.ins` order on the first list of a level at the `.ins` positions, then the 1200 relinks in message
+order (`rnd_note_link`, `Instance.link_seq`, `chains_relink`); `chains_sync` unlinks hidden instances, links shown ones in
+front (at the `.ins` position), re-cells a moved actor (its own `0x4077f0`) in front, and leaves every other instance where
+its last clock put it (INSTANCE.md §4.2); the camera leaf's `.col` objects are clocked first (`rnd_load_col`, `.col` loaded
+by `level_load`); the walk follows the `.vis` pairs and `chain_clock` (once per frame, `Instance.clock_frame`) re-links every
+listed non-0x20 instance in front unless its pose cache hits (`Instance.pc_ok`, `pc_pos`, `pc_ac`, `pc_slot`: stored by the
+list's draw when the speed is 0 and fade ≤ 0.98, used when fade < 0.01 and there is no TRAJ). The collision queries of the
+frame clock the instances they test too (`gel_col_clock`, `0x4324d6`), which re-links them for the next frame's list.
 The sort loop of the fade / additive buckets then
 takes the Perso, the list in order, and last the few instances the port draws outside the list (model order). `WOODY_VISLOG=4`
-prints the whole list every frame; at the W1A start it now equals the original's (above) except: the `.ins` cameras (295, 285,
+prints the whole list every frame; at the W1A start it equals the original's (above) except: the `.ins` cameras (295, 285,
 1, 284) are in the original's list but are not instances in the port, and a few entries whose start history the port does not
-model sit elsewhere in their chain (lasers 196-198: `196 198 292 197` in the original, `196 197 198 292` in the port;
-`13 30 45 17 29` / `13 17 29 30 45`; `34 36 481 35 33` / `33 34 35 36 481`; 37 before 77/79 in the port, after them in the
-original). Port simplification kept: an instance whose cell point moves to another sector without a clock
-run is re-linked at once (the original leaves it in the old chain until a clock runs).
+model sit elsewhere in their chain. Before the query clocks were ported (at 15 s): lasers `196 198 292 197` in the original,
+`196 197 198 292` in the port; `13 30 45 17 29` / `13 17 29 30 45`; `34 36 481 35 33` / `33 34 35 36 481`; 37 before 77/79
+in the port, after them in the original. With them: `292 196 198 197`, `13 29 30 45 17`, `33 34 35 36 481`, and 37 after
+77/79 as in the original (not re-checked live).
 
 **Texture surfaces** (`0x47fa60`). The file's RGB565 goes through `0x47f090(v, 0)` to ARGB8888 with **the low bits 0**
 (`r5 << 3`, `g6 << 2`, `b5 << 3`), the colour key test (`0x47fc0e`), and back through `0x47f170` to the surface format:

@@ -243,6 +243,7 @@ uint32_t gel_walk_down(const GelFile *g, Vec3 p, int found, float floor_y);   /*
 uint32_t gel_walk_seg(const GelFile *g, Vec3 a, Vec3 b, float t_stop, int endless);   /* 0x497fb0 / 0x497b10: the cells along a->b up to t_stop */
 typedef struct { struct Instance *in; uint32_t id; } GelColRef;               /* id = the .col ref (mask << 16 | slot) or slot | 0xffff0000 */
 uint32_t gel_col_instances(const GelFile *g, const InsFile *ins, const GelColRef **out);
+extern void (*gel_col_clock)(struct Instance *in);                             /* the clock vt[2](1) a query runs on an instance it tests (0x4324d6), set by render_gl.c */
 void gel_col_force_all(int on);                                               /* testing (WOODY_CELLCHECK): every instance, as before the cell lists */
 void tex_free(TexFile *t); void gel_free(GelFile *g); void ins_free(InsFile *f); void lit_free(LitFile *l); void vis_free(VisFile *v);
 

@@ -3,6 +3,25 @@
 One list of everything the port (`src/`) still lacks or simplifies, with the place in the docs where the analysis lives.
 Update it every round. "Analysis done" = the named doc contains a recipe; "not analysed" = decompile first.
 
+## Not analysed yet (coverage scan)
+
+`python tools/coverage.py out/disasm_full.txt game/Woody.exe [--min N]` lists every function of Woody.exe whose addresses
+appear nowhere in `docs/`, `src/` or `tools/` (jump-target markers merged into their function). 2026-09-26: 88.7 % of the
+game code below `0x480000` is named (146k of 165k instructions); 829 functions (18.7k instructions) are not, most of them
+under 40 instructions (constructors, destructors, getters, free chains). The library code above `0x480000` (Cryo sound
+library, BigFile, HNM player, the "Golem 0.2 by BKG" window framework, the MSVC runtime, SEH funclets) is replaced by the port
+and needs no analysis. "Named" is not "ported correctly": it only means someone has looked at it.
+
+| what | status | where |
+|---|---|---|
+| **BlackBox mode** (App/Game state 3, level 0x19 `\Data\BlackBox`, unlocked after S3R, carousel figure 4): the BlackBox object `0x484420` (0xc0780 B, allocated at `0x4042f7`, `app+0xe4`, only for level 0x19 or dev flag 0x10), per frame `0x4846d0` (from `0x401d2c`), code `0x480a10..0x488f00` (~4.6k instructions, ~1.7k named); reads `\Game\mask.bin` (1024×768 bytes = the 0xc0000 of the object). When it reports done, `0x401d1b..0x401d42` goes to the credits. The port loads `BlackBox.gel` as an ordinary level | not analysed | GAMEFLOW.md open point 5 |
+| **Credits screen** (App state 0x20, level 0x1a, message 1180 or the BlackBox end): `0x45bd90` (black panel, level-bank image from table `0x4b5df8`, 3 per set chosen by `app+0x6c`, 256×256 at (32,112), swaps every 10 s with an alpha fade, string 131 "THE END"), its unnamed drawer `0x453930` (246 instr); state 0x20 handler `0x40577b` (5 → title). The port only loads level 26 on 1180 | not analysed | TITLE.md §5 (row 0x20), GAMEFLOW.md |
+| Collision helpers never named: `0x434850` (835 instr, the only callee-side body of `0x4305c0` = sphere/segment test of a moving object against an instance's press nodes), `0x439d60` (446 instr, called by the sphere test vt[9] `0x433ff0`, which the port claims), and the methods `0x430af0` / `0x430f10` / `0x4352f0` (~840 instr; `0x430af0` is slot 12/16 of the vtables `0x4a9034`, `0x4a909c`, `0x4a9114`) | not analysed | PERSO_MOVE.md §6, EVENTS.md |
+| Model renderer: five per-vertex routines `0x43c5f0`, `0x43c910`, `0x43cc20`, `0x43cf10`, `0x43d1f0` (~1.5k instr) used by the polygon / triangle / outline drawers `0x43d790` / `0x43e0f0` / `0x43ea30` (probably clip or transform variants; low value for OpenGL unless they hide a colour/fog rule); `0x440740` (152 instr, 3×4 transform from the sprite path `0x470ec4`); `0x429c80` (colour unpack for sky/model) | not analysed | MODEL_RENDER.md |
+| Light BSP recursion `0x40b5d0` / `0x40b650` / `0x40bc10` (shadow receivers of `0x40b8f0` / `0x40bda0`); the port clips with the stencil instead | not analysed | LIGHTING.md §2 |
+| `0x406aa0` (340 instr, called by the action layer `0x402940`, table index below 0xc800, calls the INPUT.md key functions `0x467340`..`0x467460`): possibly the debug-key path | not analysed | INPUT.md |
+| Dev/debug only, not needed: level-picker dialog `0x4063a0` (`level.nam`, `*.gel`, dev flag 4) with `0x406240`/`0x406310`; VM statistics `0x443f00`; GDI debug text `0x43fe70`; the "anim %d does not exist" error `0x42a210`; dialog resource 0x8a `0x448984`/`0x4486f0`; the low-level keyboard hook `0x405f90`/`0x406000` (probably blocks the Windows keys while playing) | n/a | — |
+
 ## Player (Perso)
 
 | what | status | where |

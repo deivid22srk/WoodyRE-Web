@@ -172,8 +172,10 @@ pool. So all five effects consist of a single primitive; they only differ in *wh
 | 4 | 37/38 race + invincibility | 1.0 s | inst.pos | 50/s | 0.2 s | same |
 
 **The particle `0x4791f0`** — a camera-facing quad at a **fixed** world point (never velocity, gravity
-or drift): image `0x10004` = bank 0 image 4 (64×64, bpp 24, soft grey glow), color (0.5,0.5,0.5) =
-full white, **constant alpha 1.0**, **additive ONE/ONE** (flag 7, bit 3 off). So fading in and out is the
+or drift): image `0x10004` = bank 0 image 4 (64×64, bpp 24, soft grey glow), color (0.5,0.5,0.5), **constant alpha 1.0**,
+**additive ONE/ONE** (flag 7, bit 3 off; `0x479249..0x479295`). On the additive path the colour byte is `a·c·128` = 64
+(`0x481e5e`), drawn under MODULATE2X: the particle adds **texture × 0.5**, not the full texture (PARTICLES.md §1.1; the
+"0.5 = full white" rule holds only for the alpha-blended flag-8 sprites such as the halo below). So fading in and out is the
 **size**, not the alpha:
 
 > `size(u) = 30 · sin(π · ⌊255u⌋ / 256)` and `rotation = ⌊45u⌋` in 1/512 turn (31.6° over the entire lifetime).
