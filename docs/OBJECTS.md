@@ -618,8 +618,11 @@ every instance with bit 0x400 strictly within `r` (3D, instance origin `+0xc` vs
 returns the first. Callers, both with the feet `Perso+0x1f4` and r = 500: the charge-run aim `0x4579a0` (substate 9 except its
 first frame, `+0x5fd` set at `0x457499` and cleared at `0x457b6c`; substate 10 every frame; only category 2 targets: turn the Mover
 to it, `+0x5f0 = t`) and the peck dash start (substate 1, `0x457eac..0x457f96`: aim at its origin + 0.8·height for an enemy).
-Port: `nearest_enemy` / `auto_aim` / `attack_update` in `src/player.c` over the enemy set, filtered on `game_enemy_thinks`; no
-16-candidate cap.
+Read again (round 33, `0x4632e0..0x463404`): the count test `+0x80 < 16` comes before every list entry, so the candidates are the
+first 16 qualifying instances in list order (a 17th, however near, is never seen); `vtbl[4]` NULL is skipped; distance
+`sqrt(...) < r` strictly; the bubble sort (`0x4633a5`, `i < n`, `j < n − i − 1`) swaps only when `d[j] > d[j+1]` (`test ah, 0x41`), so
+equal distances keep the list order; `+0x84 = 0` (the read index of `0x463420`). Port: `nearest_enemy` walks `game_instance_list`
+(= `world+0x64` in its order) with the cap and the same sort; without a renderer it falls back to the enemy array.
 
 ## 4. Recipe for the port
 

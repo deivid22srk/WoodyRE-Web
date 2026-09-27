@@ -2341,6 +2341,11 @@ int game_enemy_thinks(const Instance *inst)                                  /* 
 {
     return !g_rnd || inst->listed;
 }
+uint32_t game_instance_list(Instance *const **list)                          /* world+0x64 / +0x60 in list order; 0 = no list (then *list = NULL) */
+{
+    if (!g_rnd || !g_rnd->list_on) { *list = NULL; return 0; }
+    *list = g_rnd->list; return g_rnd->nlist;
+}
 static Vec3 drop_pt(const FxRec *e, float wx, float wy)                      /* a drop at fraction wx along its path; the height uses wy (fistp rounds) */
 {
     return (Vec3){ e->pos.x + e->dir.x * e->D * wx, e->pos.y + sin512((int)lrintf(255.0f * wy)) * e->h * 100.0f, e->pos.z + e->dir.z * e->D * wx };
