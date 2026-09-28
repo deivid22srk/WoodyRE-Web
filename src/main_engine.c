@@ -1030,7 +1030,9 @@ static void car_place(const FreeCamera *cam)
         }
         m[12] = P.x; m[13] = P.y; m[14] = P.z; m[15] = 1;
         Instance *two[2] = { g_car.fig[k], g_car.ped[k] };
-        for (int j = 0; j < 2; j++) if (two[j]) { two[j]->position = P; memcpy(two[j]->world.m, m, sizeof m); }
+        /* 0x489650 = 0x489210 then 0x4077f0(NULL): re-celled at the placed point every frame. Left to its clock (the animated
+         * root), a figure the house swept through got no sector, dropped out of the list and never came back */
+        for (int j = 0; j < 2; j++) if (two[j]) { two[j]->position = P; memcpy(two[j]->world.m, m, sizeof m); two[j]->cell_ok = 0; }
     }
 }
 static void carousel_frame(const FreeCamera *cam, float dt)                          /* after the camera, before the renderer */

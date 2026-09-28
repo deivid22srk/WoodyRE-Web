@@ -1060,10 +1060,10 @@ void hud_carousel(const HudCarousel *c)
         for (int i = 0; i < (int)c->health; i++) sprite(7, 31 + off + 24.0f * i, 78);
         sprite(3, 22 + off, 213); sprite(8, 56 + off, 258); sprite(6, 22 + off, 308); sprite(8, 56 + off, 353);
         /* 0x45eb00 -> 0x45f2a0: red, size 17 centred on the plates; a value >= 100 sets 30 x 0.75 and that size stays for the next ones */
-        const int v[3] = { c->lives - 1, c->unique, c->charges }; float S = 17.0f;
+        const int v[3] = { c->lives - 1, c->unique, c->charges }; const float cy[3] = { 169, 274, 369 }; float S = 17.0f;   /* 16 below each plate */
         for (int i = 0; i < 3; i++) {
             uint16_t s[16]; number_codes(s, v[i]); if (v[i] >= 100) S = 22.5f; font_size(S);
-            font_draw(72 + off - font_measure(s) * 0.5f, 169 + 105.0f * i - font_cell() * 0.5f, s, 0xfeff0000);
+            font_draw(72 + off - font_measure(s) * 0.5f, cy[i] - font_cell() * 0.5f, s, 0xfeff0000);
         }
         /* 0x45f790(-off): centred on x 565 + off', every line shrunk to <= 115 wide */
         float cx = 565 - off;
