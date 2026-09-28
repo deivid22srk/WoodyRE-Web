@@ -736,7 +736,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
       if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
       game_msgmask(in, 0x200, on); }
     /* the throw (priority 1000) plays out over the turn animations (priority 900) of the wait state */
-    if (e->throw_hold) { const Model *m = in->model; int s = g_sa[SA_THROW].anim; if (e->st == S_WAIT && (uint32_t)s < m->nanims && in->anim == s && in->anim_time < m->anims[s].duration_s * 0.98f) { anim = SA_THROW; anim_speed = 0; } else if (e->st != S_FIRE) e->throw_hold = 0; }
+    if (e->throw_hold) { const Model *m = in->model; int s = g_sa[SA_THROW].anim; if (e->st == S_WAIT && (uint32_t)s < m->nanims && (in->anim != s || in->anim_time < m->anims[s].duration_s * 0.98f)) { anim = SA_THROW; anim_speed = 0; } else if (e->st != S_FIRE) e->throw_hold = 0; }   /* in->anim != s: the shot was fired this very frame and the throw has not started yet */
     if (anim == -2) { int r = wander_rec(e, e->w_act); if (r >= 0) er_request(e, r); } else sa_play(e, anim, anim_speed);
     enemy_place(e);
 }
