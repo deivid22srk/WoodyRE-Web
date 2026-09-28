@@ -859,6 +859,21 @@ static float anim_len(const Player *p, int n, int k)                       /* 0x
     const LogAnim *a = log_anim(n); const Model *m = p->inst->model; int s = a->sub[k];
     return (s >= 0 && (uint32_t)s < m->nanims) ? m->anims[s].duration_s / a->speed : 0.0f;
 }
+/* advance through the chain of logical animation n. Runs in the request and again after the clock (player_anim_settle):
+ * the pose wraps the time (ins_pose), so a sub-animation the clock has just carried past its end would show its first
+ * frame for one frame before the next request moves on - Woody stood up for a frame between going down (.ins 24) and
+ * lying (25), and crouched for one at the end of getting up (23). */
+static void ctl_chain(Instance *wi, int n, int *lsub)
+{
+    const LogAnim *a = log_anim(n); const Model *m = wi->model;
+    if (n < 0) return;
+    int nx = *lsub < 3 ? a->sub[*lsub + 1] : 0;
+    if ((uint32_t)wi->anim < m->nanims && *lsub < 3 && (nx < 0 || (uint32_t)nx >= m->nanims)) {     /* hold the last frame: the clock advances after this, so stop it just before the end */
+        if (wi->anim_time >= m->anims[wi->anim].duration_s - 0.15f) { wi->anim_time = m->anims[wi->anim].duration_s * 0.999f; wi->anim_speed = 0; }
+    } else if ((uint32_t)wi->anim < m->nanims && wi->anim_time >= m->anims[wi->anim].duration_s && *lsub < 3) {
+        { wi->anim_time -= m->anims[wi->anim].duration_s; wi->anim = nx; (*lsub)++; }
+    }
+}
 /* one anim controller (class 0x4ab7b4) on one instance: the rider's +0x494 or the race board's +0x498 */
 static void ctl_request(Instance *wi, int *lanim, int *lsub, int n, float rate, const Player *log)
 {
@@ -869,19 +884,18 @@ static void ctl_request(Instance *wi, int *lanim, int *lsub, int n, float rate, 
         if ((uint32_t)a->sub[0] < m->nanims && (a->restart || wi->anim != a->sub[0])) { wi->anim = a->sub[0]; wi->anim_time = 0; }
     }
     wi->anim_speed = a->speed * rate;
-    /* advance through the chain */
-    int nx = *lsub < 3 ? a->sub[*lsub + 1] : 0;
-    if ((uint32_t)wi->anim < m->nanims && *lsub < 3 && (nx < 0 || (uint32_t)nx >= m->nanims)) {     /* hold the last frame: the clock advances after this, so stop it just before the end */
-        if (wi->anim_time >= m->anims[wi->anim].duration_s - 0.15f) { wi->anim_time = m->anims[wi->anim].duration_s * 0.999f; wi->anim_speed = 0; }
-    } else if ((uint32_t)wi->anim < m->nanims && wi->anim_time >= m->anims[wi->anim].duration_s && *lsub < 3) {
-        { wi->anim_time -= m->anims[wi->anim].duration_s; wi->anim = nx; (*lsub)++; }
-    }
+    ctl_chain(wi, *lanim, lsub);
 }
 static void anim_request(Player *p, int n, float rate) { ctl_request(p->inst, &p->lanim, &p->lanim_sub, n, rate, p); }   /* 0x436b70 Request + 0x436a50 Tick */
 /* the board's controller B = +0x498 (docs/RACE.md 7): created by 1120 without a request, so at the level start (SurfEnter runs
  * before the script's 1120, which comes from the start volume in the first frame) the board shows nothing of the start anim
  * and keeps its pose until the first lean, jump or crouch; B->Reset() = board_lanim -1. Ticked every frame (0x463e60). */
 static void board_request(Player *p, int n) { if (p->board && p->board != p->inst) ctl_request(p->board, &p->board_lanim, &p->board_lanim_sub, n, 1.0f, NULL); }
+void player_anim_settle(Player *p)
+{
+    if (p->inst && p->inst->model) ctl_chain(p->inst, p->lanim, &p->lanim_sub);
+    if (p->board && p->board != p->inst && p->board->model) ctl_chain(p->board, p->board_lanim, &p->board_lanim_sub);
+}
 static void board_tick(Player *p) { if (p->board_lanim >= 0) board_request(p, p->board_lanim); }
 static void race_request(Player *p, int n) { anim_request(p, n, 1.0f); board_request(p, n); }   /* A->Request(n) + B->Request(n) */
 

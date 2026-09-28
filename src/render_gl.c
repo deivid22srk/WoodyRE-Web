@@ -755,7 +755,7 @@ static Vec3 g_cam_pos;                 /* the camera of this frame, for the per 
  * and the enemies. Not the Perso (0x42b380 draws it first, outside the loop), not the bomb pool (0x44d820 ticks it with vtbl[2](1))
  * and not the links an actor draws itself (boss saucer, pads, race board: not scripted). The sector/group part of the list
  * (in_zone) is what gates here; the cone test stays instance_visible's, on this frame's camera. */
-static int list_drawn(const Instance *in) { return (in->scripted && in->type != 40) || (in->type >= 4 && in->type <= 16); }
+static int list_drawn(const Renderer *r, const Instance *in) { return in != r->perso && ((in->scripted && in->type != 40) || (in->type >= 4 && in->type <= 16)); }
 
 /* Is this instance drawn at all this frame? The cone test on the model's bounding sphere is what the port already
  * did. On top of it, 0x42aa0b only walks the instances that belong to the sectors the visibility pass kept, so an
@@ -1731,7 +1731,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) { Model *m = &r->ins->models[mi]; for (uint32_t k = 0; k < m->ninstances; k++) {
             Instance *inst = &m->instances[k];
             if (!inst->visible || inst->fade > 0.98f) continue;
-            inst->drawn = (!r->list_on || inst->in_zone || !list_drawn(inst)) && instance_visible(r, inst, aspect, f, fw, rt, up);
+            inst->drawn = (!r->list_on || inst->in_zone || !list_drawn(r, inst)) && instance_visible(r, inst, aspect, f, fw, rt, up);
             if ((inst->drawn || shadow_caster(inst)) && r->lit) instance_light(r, inst, dt); } }   /* a caster off screen still needs its light for the shadow */
         if (r->nlinks) links_hide(r, cam->pos);                                /* message 34: 0x42aa0b runs before the sector walk 0x42a840 */
         if (r->on_drawn) for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) for (uint32_t k = 0; k < r->ins->models[mi].ninstances; k++)
@@ -1860,7 +1860,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         static Instance **ord; static uint32_t ocap; uint32_t on = 0, ntot = 0;
         for (uint32_t mi = 0; mi < r->ins->nmodels; mi++) ntot += r->ins->models[mi].ninstances;
         if (ntot > ocap) { ocap = ntot; ord = (Instance **)realloc(ord, ocap * sizeof *ord); }
-        { Instance *perso = NULL;
+        { Instance *perso = r->perso;
           for (uint32_t mi = 0; mi < r->ins->nmodels && !perso; mi++) for (uint32_t k = 0; k < r->ins->models[mi].ninstances; k++) { Instance *q = &r->ins->models[mi].instances[k];
               if (!q->scripted && (q->type == 1 || q->type == 2 || q->type == 3 || q->type == 18 || q->type == 19)) { perso = q; break; } }
           if (perso && perso->drawn) ord[on++] = perso;

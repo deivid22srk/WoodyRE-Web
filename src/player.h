@@ -143,6 +143,7 @@ typedef struct Player {
 int  player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex);
 void player_bind(Player *p, Instance *inst);           /* SetTypeInstance 1/2/3/18/19: this instance is the player */
 void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float cam_yaw);
+void player_anim_settle(Player *p);                 /* after the animation clock: step an anim chain whose part just ended, before the pose */
 void player_game_tick(Player *p, EkoVM *vm, float dt); /* 0x4459c0: level-start iris, death -> iris closes -> respawn -> iris opens */
 void player_restart(Player *p);                        /* pause menu "Start again" (0x40584d): 0x445930 + race restart 0x4560f0 */
 void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key);   /* behind_key = action 0xa */

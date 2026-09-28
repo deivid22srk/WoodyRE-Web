@@ -3618,6 +3618,7 @@ int main(int argc, char **argv)
         br_prev[0] = br[0]; br_prev[1] = br[1];
         /* frame step 9 (0x401c06..0x401c63): this frame's instance list from the camera as it stands, before any Think; the region
          * list world+0xc0 goes along while the Perso is a rider (subtypes 4/5) */
+        L.rnd.perso = L.have_player ? L.player.inst : NULL;                   /* 0x42b380 draws it outside the list, cinematic or not */
         rnd_instance_list(&L.rnd, &win, &cam, L.have_player && L.player.race_char ? L.rnd.race : NULL);
         static double pf[5]; static int pfn; static const int prof = 1; double pt0 = win_time();
         /* player (provisional controller) + follow camera */
@@ -3746,6 +3747,7 @@ int main(int argc, char **argv)
                 if (ii->scripted) inst_tick(ii, g_now, dt); else ii->anim_time += dt * ii->anim_speed;
                 anim_sounds(ii);
             }
+            if (L.have_player && L.player.inst && !L.player.inst->scripted) player_anim_settle(&L.player);   /* before the pose: a chain part the clock just ended moves on now */
         }
         if (!paused) ambient_update(dt);                                          /* class 90 thinks (ambient.c): new butterflies / motes / rain drops */
         if (!paused) water_update(dt, g_player);

@@ -75,6 +75,9 @@ typedef struct {
     /* called once per frame for every instance that is drawn, after the visibility pass and before any model is drawn:
      * the render-colour vtbl[26] of the class (the lightning rod 0x452010 updates its glow only when drawn) */
     void (*on_drawn)(Instance *inst);
+    /* the Perso's instance, set by the game every frame: 0x42b380(World, Perso) draws it first, outside the list, whatever
+     * its cell - also while a cinematic plays it (scripted, flag 0x20 cleared by 0x44eab0), when it is in no listed chain */
+    Instance *perso;
 } Renderer;
 
 int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis);   /* lit / vis may be NULL */
