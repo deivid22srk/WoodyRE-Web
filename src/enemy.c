@@ -11,6 +11,9 @@
 #include "player.h"
 #include "audio.h"
 
+static void sac_init(Enemy *e);
+static void sac_reset(Enemy *e);
+
 /* constants that no message changes */
 #define E_ACC      1000.0f
 #define E_STEP     10.0f      /* P+0x30 / P+0x2c: max step up / drop */
@@ -66,6 +69,7 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     e->cool = -1; e->attackable = 1; e->speed = e->want_speed = e->P.walk; e->path_dir = 1; e->path_to = 1;
     { Vec3 f = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); e->ang = e->want_ang = e->start_ang = atan2f(f.z - inst->position.z, f.x - inst->position.x); }   /* PostLoad 0x419ec1: angle0 = pos -> pos - row(+0x34) */
     e->start = inst->position; e->lanim = -1; wander_init(e);
+    if (type >= 7 && type <= 9) sac_init(e);
     e->st = inst->traj.npoints > 1 ? 0 : (type >= 7 && type <= 9 ? 3 : 8); e->hand = rand() & 1;
     e->behav = 2;                                                                /* Stand: the thrower (PostLoad 0x410f80 makes only that one), bosses 15 / 16 */
     if (e->st == 0) { Vec3 a = inst->traj.points[0], b = inst->traj.points[1]; e->ang = atan2f(b.z - a.z, b.x - a.x); e->behav = 3; }
@@ -87,6 +91,7 @@ int enemy_take_damage(Enemy *e, float dmg, Vec3 dir)
     if (e->type == 12) return bomber_peck(e);                          /* the peck / charge run of the player (kinds 0 / 1) */
     int shooter = e->type >= 7 && e->type <= 9;
     if (e->removed || e->st == (shooter ? 10 : 12) || e->hit_t > 0 || e->knock_t > 0) return 0;
+    if (shooter) sac_reset(e);                                         /* 0x417f60: AnimCtrl reset, so the hit record 12 takes over whatever runs */
     e->st = shooter ? 4 : 9; e->hit_t = e->knock_t = 0.25f; e->knock_dir = dir; e->hp -= dmg;
     return e->hp <= 0;
 }
@@ -601,16 +606,75 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
 
 /* ---- shooters, types 7/8/9 (docs/ENEMY.md 8): state machine 0x416fb0, animation table 0x4b26a8 -------------------- */
 enum { S_PATH = 0, S_BITE = 1, S_TOWANDER = 2, S_WANDER = 3, S_HIT = 4, S_DASH0 = 5, S_DASH = 6, S_BRAKE = 7, S_WIN = 9, S_DEAD = 10, S_WAIT = 11, S_AIM = 12, S_FIRE = 13, S_DODGE0 = 15, S_DODGE = 16 };
-enum { SA_WALK, SA_DASH, SA_BRAKE, SA_BITE, SA_WIN, SA_HIT, SA_DEAD, SA_IDLE, SA_TURN_L, SA_TURN_R, SA_AIM, SA_THROW, SA_DODGE };
-static const struct { int anim; float speed; int hold; } g_sa[] = {
-    { 4, 3, 0 }, { 13, 3, 0 }, { 15, 3, 1 }, { 14, 2, 1 }, { 18, 3, 1 }, { 11, 4, 1 }, { 12, 3, 1 }, { 6, 2, 0 }, { 16, 3, 0 }, { 17, 3, 0 }, { 21, 3, 1 }, { 22, 3, 1 }, { 19, 3, 1 } };
-static float sa_len(const Enemy *e, int a) { const Model *m = e->inst->model; int s = g_sa[a].anim; return (uint32_t)s < m->nanims ? m->anims[s].duration_s / g_sa[a].speed : 0.5f; }
-static void sa_play(Enemy *e, int a, float speed)
+/* ---- the AnimCtrl +0x1c4 of types 7/8/9 (base 0x4369f0, vtable 0x4a9eac; records 0x4b26a8 = g_r7, docs/ENEMY.md 8.6) and the
+ * instance clock 0x43eee0 it drives (docs/INSTANCE.md 1.2). Every frame the class asks for one record (vtbl[45] 0x418000, from the
+ * state of the previous frame); Tick picks the queued record with the highest priority and only lets it replace a running record of
+ * higher priority while the instance loops (+0xc0: slot0 == slot1). So the throw {22, 0} (1000) ends on the held last frame of anim 0
+ * and the turn records 1 / 2 (900) of the wait state do not show until the next windup (1000). */
+static const short g_r7_prio[28] = { 1000, 900, 900, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1500, 1000, 1000, 2000,
+                                     1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000 };
+static float g_r7_speed[28];                                                     /* the record speeds: 0x436bd0 rewrites them in the (global) table */
+static double g_enow;                                                            /* the clock [0x509adc]+0x30 of the instance clocks */
+static float sac_dur(const Instance *in, int s) { const Model *m = in->model; return s >= 0 && (uint32_t)s < m->nanims && m->anims[s].duration_s > 0 ? m->anims[s].duration_s : 1.0f; }
+static float sac_speed(int n) { if (g_r7_speed[0] == 0) for (int i = 0; i < 28; i++) g_r7_speed[i] = g_r7[i].speed; return g_r7_speed[n]; }
+static float sac_len(const Enemy *e, int n) { int s = g_r7[n].sub[0]; return (uint32_t)s < e->inst->model->nanims ? sac_dur(e->inst, s) / sac_speed(n) : 0; }   /* AnimLen 0x436b90(n, 0) */
+static void sac_set_len(const Enemy *e, int n, float T)                            /* 0x436bd0(n, T, 1): the first animation of the chain lasts T */
 {
-    Instance *in = e->inst; const Model *m = in->model; int s = g_sa[a].anim; e->lanim = -1; if ((uint32_t)s >= m->nanims) return;
-    if (in->anim != s) { in->anim = s; in->anim_time = 0; }
-    in->anim_speed = speed > 0 ? speed : g_sa[a].speed;
-    if (g_sa[a].hold && in->anim_time > m->anims[s].duration_s - 0.15f) { in->anim_time = m->anims[s].duration_s * 0.999f; in->anim_speed = 0; }
+    sac_speed(n); int s = g_r7[n].sub[0];
+    if (T > 1e-4f && (uint32_t)s < e->inst->model->nanims) g_r7_speed[n] = sac_dur(e->inst, s) / T;   /* T = 0 (no turn left) would give an infinite speed: keep the old one */
+}
+static void sac_reset(Enemy *e) { e->ac_nq = 0; e->ac_cur = -1; }                /* 0x436a40 */
+static void sac_init(Enemy *e)                                                   /* instance ctor 0x42e250: slot0 = 0, speed 0, +0xc0 = -1 */
+{
+    sac_reset(e); e->ac_slot[0] = 0; e->ac_slot[1] = e->ac_slot[2] = e->ac_slot[3] = -1; e->ac_c0 = -1; e->ac_speed = e->ac_base = e->ac_pos = 0; e->ac_start = (float)g_enow;
+}
+static void sac_request(Enemy *e, int n) { if (n >= 0 && n < 28 && e->ac_nq < 16) e->ac_q[e->ac_nq++] = n; }   /* 0x436b70 */
+static void sac_tick(Enemy *e)                                                   /* 0x436a50 */
+{
+    int best = -1, bp = 0;
+    while (e->ac_nq) { int r = e->ac_q[--e->ac_nq]; if (g_r7_prio[r] > bp) { bp = g_r7_prio[r]; best = r; } }   /* from the back: the last of equals wins */
+    if (best != -1 && best != e->ac_cur && (e->ac_cur == -1 || g_r7_prio[e->ac_cur] <= bp || e->ac_c0 == 1)) {
+        const ERec *r = &g_r7[best]; int na = (int)e->inst->model->nanims;
+        e->ac_cur = best;
+        if (r->restart) e->ac_start = (float)g_enow;                             /* inst+0xa8 = now */
+        for (int k = 0; k < 4; k++) e->ac_slot[k] = r->sub[k] < na ? r->sub[k] : 0;   /* -1 stays -1 (signed compare) */
+    }
+    if (e->ac_cur >= 0) e->ac_speed = e->ac_base = sac_speed(e->ac_cur);        /* 0x42e290 every tick */
+}
+static void sac_clock(Enemy *e)                                                  /* 0x43eee0, then the pose the renderer reads */
+{
+    Instance *in = e->inst; if ((uint32_t)e->ac_slot[0] >= in->model->nanims) return;
+    float L = sac_dur(in, e->ac_slot[0]), ph, now = (float)g_enow;
+    if (e->ac_speed != 0) {
+        ph = e->ac_speed > 0 ? (now - e->ac_start) / (L / e->ac_speed) : 1.0f - (now - e->ac_start) / -(L / e->ac_speed);
+        if (!(ph >= 0 && ph < 1)) {
+            if (e->ac_slot[1] != -1) {                                           /* on to the next animation of the chain */
+                float n = 0, ratio = L / sac_dur(in, e->ac_slot[1]);
+                if (ph < 0) { n = -floorf(ph); ph += n; }
+                if (ph >= 1) { n = floorf(ph); ph -= n; }
+                ph *= ratio;
+                if (n != 0) e->ac_start += n * (L / fabsf(e->ac_speed));
+                e->ac_speed = e->ac_base;
+                e->ac_slot[0] = e->ac_slot[1]; e->ac_slot[1] = e->ac_slot[2]; e->ac_slot[2] = e->ac_slot[3];
+            } else if (e->ac_speed < 0) { if (ph < 0) { e->ac_speed = e->ac_base = 0; ph = 0; } }
+            else if (ph > 1) { e->ac_speed = e->ac_base = 0; ph = 1; }           /* one shot: the last frame stays */
+        }
+        e->ac_pos = sac_dur(in, e->ac_slot[0]) * ph;
+    } else ph = e->ac_pos / L;
+    e->ac_c0 = e->ac_slot[0] == e->ac_slot[1];
+    L = sac_dur(in, e->ac_slot[0]);
+    in->anim = e->ac_slot[0]; in->anim_speed = 0; in->anim_time = (ph < 0.9999f ? (ph > 0 ? ph : 0) : 0.9999f) * L;   /* short of L: anim_sounds would read a wrap */
+}
+static int sac_state_rec(const Enemy *e)                                         /* vtbl[45] 0x418000 (jump table 0x418184) */
+{
+    switch (e->st) {
+    case 0: return 24;                                                           /* path 0x4182e0: the walk loop (no shooter has a TRAJ) */
+    case 1: return 10;  case 2: case 3: return wander_rec(e, e->w_act);        /* wander 0x4181e0; action 8: nothing */
+    case 4: return 12;  case 5: case 6: return 8;  case 7: case 14: return 9;  case 8: case 9: return 11;  case 10: return 13;
+    case 11: return ang_diff(e->want_ang, e->ang) > 0 ? 1 : 2;                  /* H+0x0c > 0 (0x41b900) */
+    case 12: return 0x13;  case 13: return 0x14;  case 15: return 0;  case 16: return 0x15;
+    default: return -1;
+    }
 }
 static int shooter_vector(const Instance *in, uint32_t tc, Vec3 *p0)      /* 0x42f6b0: start of the first marker with this typecode */
 {
@@ -623,14 +687,15 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     Instance *in = e->inst;
     if (e->removed || !in->visible || !game_enemy_thinks(in)) return;      /* Think 0x41a320 only runs from 0x42b400, for the instances of this frame's list world+0x64 */
     ground_snap(e, pl);
-    { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != S_DEAD) return; }
+    { float dx = e->pos.x - cam.x, dy = e->pos.y - cam.y, dz = e->pos.z - cam.z; if (dx * dx + dy * dy + dz * dz >= e->P.active_d * e->P.active_d && e->st != S_DEAD) { sac_clock(e); return; } }
+    sac_request(e, sac_state_rec(e)); sac_tick(e);                /* Enemy::Update: vtbl[45] + Tick, on the state of the previous frame */
     if (e->cool >= 0) e->cool -= dt;
     if (e->hit_t > 0) e->hit_t -= dt;
     if (e->reload >= 0) e->reload -= dt;
     Vec3 tp = perso_pos(pl); float dx = tp.x - e->pos.x, dy = tp.y - e->pos.y, dz = tp.z - e->pos.z;
     int see = find_target(e, pl);
     float dxz = sqrtf(dx * dx + dz * dz), to_player = atan2f(dz, dx);
-    Vec3 step = { 0, 0, 0 }; int anim = SA_IDLE; float anim_speed = 0;
+    Vec3 step = { 0, 0, 0 };
 
     speed_tick(e, dt);
 
@@ -645,14 +710,13 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
             if (nx < 0 || nx >= (int)T->npoints) { if (T->closed) nx = nx < 0 ? (int)T->npoints - 1 : 0; else { e->path_dir = -e->path_dir; nx = (int)e->path_to + e->path_dir; } }
             e->path_to = (uint32_t)nx;
         } else { e->ang = atan2f(bz, bx); e->pos.x += bx / l * mv; e->pos.z += bz / l * mv; }
-        anim = SA_WALK;
         if (e->cool < 0 && see) { e->home = e->pos; e->behav = 2; e->st = S_WAIT; }
         break; }
     case S_TOWANDER:                                              /* 0x417057: speed P+0x08 direct, turn speed P+0x10, Wander restarts */
-        e->speed = e->want_speed = e->P.walk; wander_restart(e, -1); e->behav = 0; e->st = S_WANDER; anim = -2;
+        e->speed = e->want_speed = e->P.walk; wander_restart(e, -1); e->behav = 0; e->st = S_WANDER;
         break;
     case S_WANDER: {                                              /* 0x4170a3 */
-        float l = wander_tick(e, dt); anim = -2;
+        float l = wander_tick(e, dt);
         step = (Vec3){ cosf(e->ang) * l, 0, sinf(e->ang) * l };
         if (e->cool < 0 && see) e->st = S_WAIT;
         if (in->traj.npoints > 1) { float hx = e->home.x - e->pos.x, hz = e->home.z - e->pos.z; if (hx * hx + hz * hz < 10.0f * 10.0f) { e->behav = 3; e->st = S_PATH; } }   /* even when 11 was just set */
@@ -660,54 +724,52 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
     case S_WAIT: {                                                /* reloading: stands still and does NOT turn (H.Tick is not called in 0x4171bd) */
         if (!see) { e->st = S_TOWANDER; break; }
         e->behav = 2;                                             /* 0x4171bd: Stand with Stand+0x38 = 0 */
-        float d = ang_diff(to_player, e->ang), T = 4.0f * fabsf(d) / e->P.turn_fast;
-        anim = d > 0 ? SA_TURN_L : SA_TURN_R;
-        if (T > 0.02f) { const Model *m = in->model; int s = g_sa[anim].anim; anim_speed = (uint32_t)s < m->nanims ? m->anims[s].duration_s / T : 0; } else anim = SA_IDLE;
-        if (e->reload <= 0) { e->t = sa_len(e, SA_AIM); e->st = S_AIM; }
+        e->want_ang = to_player;                                  /* 0x41ba60(own, tgt, 0): the target angle, no snap */
+        { float T = 4.0f * fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; sac_set_len(e, 2, T); sac_set_len(e, 1, T); }   /* +0x1e0: the turn records last as long as the turn would */
+        if (e->reload <= 0) { e->t = sac_len(e, 0x13); e->st = S_AIM; }
         break; }
     case S_AIM:                                                   /* windup: the only place it turns, at 4 * P+0x14 */
         if (!see) { e->st = S_TOWANDER; break; }
         if (dxz <= e->P.melee) { e->st = S_DASH0; break; }
         if (e->t > 0) e->t -= dt; else { if (e->type == 9) e->t = 0.1f; e->st = S_FIRE; }
-        steer(e, to_player, 4.0f * e->P.turn_fast, dt); anim = SA_AIM;
+        steer(e, to_player, 4.0f * e->P.turn_fast, dt);
         break;
     case S_FIRE: {
         if (!see) { e->st = S_TOWANDER; break; }
-        anim = SA_THROW; Vec3 m0; float rt;
+        Vec3 m0; float rt;
         if (!shooter_vector(in, 1, &m0)) { m0 = (Vec3){ e->pos.x + cosf(e->ang) * e->P.radius, e->pos.y + e->P.height * 0.7f, e->pos.z + sinf(e->ang) * e->P.radius }; }
         if (e->type == 9 && (e->t -= dt) > 0) break;
         /* 0x497ed0: from the own centre to the own muzzle; blocked = the shot is skipped but the reload still counts */
         if (!player_ray_full(pl, (Vec3){ e->pos.x, e->pos.y + e->P.height * 0.5f, e->pos.z }, m0, &rt))   /* world and press nodes */
             game_enemy_shot(e, m0, (Vec3){ cosf(e->ang), 0, sinf(e->ang) }, 1000.0f, e->P.shot_dmg, e->P.steer, e->P.shot_visual, e->P.shot_fx);
-        e->reload += e->P.reload; e->throw_hold = 1; e->st = S_WAIT;
+        e->reload += e->P.reload; e->st = S_WAIT;
         break; }
     case S_DASH0:
         if (!see) { e->st = S_TOWANDER; break; }
         if (dxz > e->P.melee) break;
         e->want_ang = chase_target(e, to_player);
         e->turn_t = fabsf(ang_diff(to_player, e->ang)) / e->P.turn_fast; e->speed = e->want_speed = e->P.run; e->atk_t = dxz / e->P.run; e->behav = 1; e->st = S_DASH;
+        sac_set_len(e, 8, e->atk_t);                              /* 0x436bd0(8, +0x1d4, 1): the charge run animation lasts the run */
         break;
     case S_DASH:
-        anim = SA_DASH;
-        if (!see || e->atk_t < 0) { e->t = sa_len(e, SA_BRAKE); e->want_speed = e->P.walk; e->behav = 2; e->st = S_BRAKE; break; }   /* 14: Stand */
+        if (!see || e->atk_t < 0) { e->t = sac_len(e, 9); e->want_speed = e->P.walk; e->behav = 2; e->st = S_BRAKE; break; }   /* 14: Stand */
         e->atk_t -= dt; steer(e, e->want_ang, e->P.turn_fast, dt); e->want_ang = chase_target(e, to_player);
         if ((e->turn_t -= dt) <= 0) step = (Vec3){ cosf(e->ang) * e->speed * dt, 0, sinf(e->ang) * e->speed * dt };
         if (sqrtf(dx * dx + dy * dy + dz * dz) < e->P.radius + 69.0f) {
             Vec3 d = dxz > 1e-3f ? (Vec3){ dx / dxz, 0, dz / dxz } : (Vec3){ 1, 0, 0 };
-            if (player_hit(pl, e->P.bite, d)) { player_kill(pl, 3); e->t = sa_len(e, SA_WIN); e->behav = 2; e->st = S_WIN; }   /* 8: Stand */
-            else { e->t = sa_len(e, SA_BITE); e->behav = 2; e->st = S_BITE; }   /* 1: Stand */
+            if (player_hit(pl, e->P.bite, d)) { player_kill(pl, 3); e->t = sac_len(e, 11); e->behav = 2; e->st = S_WIN; }   /* 8: Stand */
+            else { e->t = sac_len(e, 10); e->behav = 2; e->st = S_BITE; }   /* 1: Stand */
         }
         break;
-    case S_BITE: anim = SA_BITE; if (e->t > 0) e->t -= dt; else { e->cool = e->P.cool; e->st = S_TOWANDER; } break;
-    case S_BRAKE: anim = SA_BRAKE; if (e->t < 0) { e->cool = e->P.cool; e->st = S_TOWANDER; } else e->t -= dt; break;
-    case S_WIN: anim = SA_WIN; if ((e->t -= dt) <= 0) e->st = S_TOWANDER; break;
+    case S_BITE: if (e->t > 0) e->t -= dt; else { e->cool = e->P.cool; e->st = S_TOWANDER; } break;
+    case S_BRAKE: if (e->t < 0) { e->cool = e->P.cool; e->st = S_TOWANDER; } else e->t -= dt; break;
+    case S_WIN: if ((e->t -= dt) <= 0) e->st = S_TOWANDER; break;
     case S_HIT:
-        anim = SA_HIT;
         if (e->hp <= 0) { game_enemy_stars(e); e->attackable = 0; e->dead_t = 0; e->behav = 2; e->st = S_DEAD; }
         else if (e->hit_t <= 0) e->st = S_TOWANDER;
         break;
     case S_DEAD: {
-        anim = SA_DEAD; e->dead_t += dt; float L = sa_len(e, SA_DEAD) + 1.0f;
+        e->dead_t += dt; float L = sac_len(e, 13) + 1.0f;
         if (e->dead_t > L * 0.5f) { in->fade = (e->dead_t - L * 0.5f) / (L * 0.5f); if (in->fade > 1) in->fade = 1; }
         if (e->dead_t >= L) { e->removed = 1; in->visible = 0; g_eset->killed++; return; }   /* +0x10c |= 1 -> 0x40bf60 -> vtbl[29] 0x41aff0: [0x4c532c]++ (the defeated-enemies stat) */
         break; }
@@ -724,7 +786,6 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         e->t = e->P.dodge / (3.0f * e->P.run); e->behav = 2; e->st = S_DODGE;
         break; }
     case S_DODGE:
-        anim = SA_DODGE;
         if (e->t > 0) { e->t -= dt; float v = 3.0f * e->P.run * dt; step = (Vec3){ e->dodge_dir.x * v, 0, e->dodge_dir.z * v }; }
         else { e->reload = e->P.reload; e->cool = e->P.cool; e->speed = e->want_speed = e->P.walk; e->behav = 0; e->st = S_WANDER; wander_restart(e, 0); }   /* 0x41c0c0(0): Wander restarts with action 0 */
         break;
@@ -735,9 +796,7 @@ static void shooter_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
       e->vfall += 200.0f * dt - 0.2f * e->vfall; e->pos.y -= e->vfall;
       if (found && e->pos.y <= gy) { e->pos.y = gy; e->vfall = 0; on = 1; }
       game_msgmask(in, 0x200, on); }
-    /* the throw (priority 1000) plays out over the turn animations (priority 900) of the wait state */
-    if (e->throw_hold) { const Model *m = in->model; int s = g_sa[SA_THROW].anim; if (e->st == S_WAIT && (uint32_t)s < m->nanims && (in->anim != s || in->anim_time < m->anims[s].duration_s * 0.98f)) { anim = SA_THROW; anim_speed = 0; } else if (e->st != S_FIRE) e->throw_hold = 0; }   /* in->anim != s: the shot was fired this very frame and the throw has not started yet */
-    if (anim == -2) { int r = wander_rec(e, e->w_act); if (r >= 0) er_request(e, r); } else sa_play(e, anim, anim_speed);
+    sac_clock(e);                                                 /* the instance clock of this frame's draw */
     enemy_place(e);
 }
 
@@ -973,7 +1032,7 @@ void enemy_player_killed(Enemy *e)
 {
     if (!e || e->removed) return;
     if (e->type == 13) { if (e->st != 12) { e->t = ea_len(e, EA_WIN); e->want_speed = e->P.walk; e->st = 11; } }
-    else if (e->type >= 7 && e->type <= 9 && e->st != S_DEAD) { e->t = sa_len(e, SA_WIN); e->st = S_WIN; }
+    else if (e->type >= 7 && e->type <= 9 && e->st != S_DEAD) { e->t = sac_len(e, 11); e->st = S_WIN; }
 }
 
 /* vtbl[17] Reset: Enemy::Reset 0x41a010 (back to the start position and angle, re-entered into the world = visible again, full hp,
@@ -990,7 +1049,8 @@ static void enemy_reset(Enemy *e)
     e->plat_inst = NULL;                                          /* both probes reset (0x436d10) */
     e->need_snap = e->type < 13; if (g_epl) ground_snap(e, g_epl); enemy_reset_probe(e);   /* 0x41a0f8..0x41a148: ground snap 0x41a1a0, then the probe (Press/In/UnPress) */
     game_msgmask(in, 0x10, 0);
-    e->cool = e->t = e->atk_t = e->reload = e->turn_t = 0; e->throw_hold = 0; e->path_to = 1; e->path_dir = 1;
+    e->cool = e->t = e->atk_t = e->reload = e->turn_t = 0; e->path_to = 1;
+    if (e->type >= 7 && e->type <= 9) sac_init(e);                /* the animation reset 0x42e250 and the AnimCtrl reset of 0x416ed0 */ e->path_dir = 1;
     if (e->type == 12) { e->st = 0; e->idle_t = 0; e->nlong = 4; e->idle_a = 9; e->done = 0; e->melee_t = e->windup = 0; e->big_touch = 0; e->behav = 2; }
     else {
         e->speed = e->want_speed = e->P.walk;
@@ -1055,7 +1115,7 @@ void enemies_msg11(EnemySet *s, Instance *inst, int n, int v)
 
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt)
 {
-    g_eset = s; g_epl = pl;
+    g_eset = s; g_epl = pl; g_enow += dt;
     for (int i = 0; i < s->n; i++) {
         Enemy *e = &s->e[i];
         if (e->type == 14) { boss_update(e, pl, cam_pos, dt); boss_frame_end(e); }

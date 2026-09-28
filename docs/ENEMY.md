@@ -754,6 +754,15 @@ Differences from the type-4 table: 1/2 (sub ×4, prio 900), 8 (speed 3 instead o
 * Timing of the shot: state 13 lasts exactly one frame for type 7/8; the throw animation 0x14 keeps playing afterward because the wait animations 1/2
   have **prio 900** and `Tick` (`0x436a50`) only allows a lower priority once the instance animation is finished (`inst+0xc0 == 1`).
 * At an angle difference of 0 in state 11, `T = 0` ⇒ `speed = duration/0` (infinite): guard against this in the port (hold pose).
+* `Tick 0x436a50` exactly: take the queued request with the highest priority (strict `>` while walking the queue from the back, so the last of
+  equals); it replaces the running record if there is none, if its priority is not lower, or if `inst+0xc0 == 1` (slot0 == slot1, the instance
+  **loops**; it is not an "ended" flag). On a switch: `restart` ⇒ `inst+0xa8 = now`; slots = `sub[]` (a sub ≥ nanims becomes 0, −1 stays).
+  Always `0x42e290(record speed)`. `+0x50 > 0` ⇒ only `+0x50 −= dt` (nothing sets it in these classes). Consequence: after the throw
+  `{22, 0, −1, −1}` the slots end as `{0, −1, …}` (no loop), so the turn records 1/2 (900) never replace it: the shooter holds the last frame of
+  anim 0 until the windup record 0x13 (1000) of the next shot. The turn records only show when state 11 follows a looping record.
+* Port: `src/enemy.c` `sac_*` (records `g_r7`, priorities, the global speed table that `0x436bd0` rewrites, request/Tick at the top of the
+  update from the previous frame's state, and the instance clock `0x43eee0` with the slot chain). The earlier port played single .ins animations
+  and after the throw dropped to an idle variation and a turn animation at a speed recomputed every frame, which looked like a stutter.
 * W1A model 45 (23 anims), duration in s: 11 = 1.2, 12 = 4.4, 13 = 1.2, 14 = 2.0, 15 = 2.4, 16/17 = 1.6, 18 = 12.4, 19 = 1.2, 20 = 1.2, 21 = 1.6, 22 = 1.3 ⇒
   winding up 0.533 s, throwing 0.433 s, dodging 0.4 s, bite 1.0 s, braking 0.8 s, cheering 4.13 s, hit anim 0.3 s, dead 1.467 + 1.0 = **2.467 s**.
 
@@ -806,7 +815,7 @@ bone 26) plus type code 0.
 2. **Animation table** alongside `g_ea` (main .ins anim, divider, hold): `WALK {4, 3, 0}`, `DASH {13, *, 0}` (divider = `duration(13) / dashT`),
    `BRAKE {15, 3, 1}`, `BITE {14, 2, 1}`, `WIN {18, 3, 1}`, `HIT {11, 4, 1}`, `DEAD {12, 3, 1}`, `IDLE {6, 2, 0}`, `TURN_L {16, *, 0}`, `TURN_R {17, *, 0}`
    (divider = `duration / T`, `T = 4·Δ/P14`; Δ = 0 ⇒ hold pose), `AIM {21, 3, 1}`, `THROW {22, 3, 1}`, `DODGE {19, 3, 1}`. The throw animation must
-   finish playing while the state is already 11: hold `THROW` until `anim_time ≥ duration` (priority rule §8.6) and only then show `TURN_*`.
+   finish playing while the state is already 11, and then anim 0 holds until the next windup (priority rule §8.6; the port runs the AnimCtrl itself).
 3. **States** (pseudo-C, `see` = FindTarget with `dy 800`, `dxz` = xz distance, `to_player` = angle):
 ```c
 enum { S_PATH=0, S_BITE=1, S_TOWANDER=2, S_WANDER=3, S_HIT=4, S_DASH0=5, S_DASH=6, S_BRAKE=7, S_WIN=9, S_DEAD=10, S_WAIT=11, S_AIM=12, S_FIRE=13, S_DODGE0=15, S_DODGE=16 };

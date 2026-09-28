@@ -59,7 +59,8 @@ typedef struct BossBState {
 } BossBState;
 
 typedef struct Enemy {
-    EnemyParams P; float reload; Vec3 warn, dodge_dir; int throw_hold;   /* shooters */
+    EnemyParams P; float reload; Vec3 warn, dodge_dir;                   /* shooters */
+    int ac_cur, ac_nq, ac_q[16], ac_slot[4], ac_c0; float ac_start, ac_speed, ac_base, ac_pos;   /* shooters: AnimCtrl +0x1c4 (+0x48 record, +0x44/+0x04 queue) and the instance clock (slots +0xb0, +0xc0, +0xa8, +0xa0, +0xa4, +0xac) */
     BossState b;                                                         /* type 14 */
     BossBState bb;                                                       /* types 15, 16 */
     int hand;                                                            /* ghost (type 13): fires from alternating hands */
