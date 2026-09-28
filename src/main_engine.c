@@ -771,7 +771,8 @@ static void results_prop(Instance *pr, Vec3 p0, Vec3 dir)
     if (l > 1e-4f) pr->quat = quat_from_axes(R, F, U);
     mat4_from_trs(&pr->world, pr->position, pr->quat, pr->scale);
     pr->visible = 1; pr->scripted = 1;
-    inst_play_once(pr, 0, 3.0f, g_now);                                               /* 1.0 x [0x4a988c], like every other .ins clock */
+    pr->cell_ok = 0;                                                                  /* 0x453f82: 0x4077f0 re-cells it at the new +0xc (renderer chains_sync); it kept the cell of its .ins position otherwise and was never listed */
+    inst_play_once(pr, 0, 3.0f, g_now);                                              /* 1.0 x [0x4a988c], like every other .ins clock */
 }
 static void results_begin(EkoVM *vm, Instance *door, uint32_t var)                    /* 0x453d90 */
 {
@@ -3041,7 +3042,7 @@ static void anim_sounds(Instance *ii)
     const InsNode *n = &mo->nodes[0]; if (!n->event_refs || !n->pool || !n->event_refs[ii->anim].cnt) { ii->snd_anim = ii->anim; return; }
     const InsAnim *a = &mo->anims[ii->anim]; float dur = a->duration_s > 0 ? a->duration_s : 1.0f;
     float ph = fmodf(ii->anim_time / dur, 1.0f); if (ph < 0) ph += 1.0f; float tf = ph * (float)a->nframes;
-    float t0 = ii->snd_anim == ii->anim ? ii->snd_tf : (tf > 2.0f ? tf - 2.0f : 0.0f);
+    float t0 = ii->snd_anim == ii->anim ? ii->snd_tf : 0.0f;                         /* 0x43a8b4: a new animation plays its events of [0, tNow) (Woody's results arrival, anim 74, speaks at t = 0) */
     ii->snd_anim = ii->anim; ii->snd_tf = tf;
     if (tf == t0) return;
     float r = -1;
