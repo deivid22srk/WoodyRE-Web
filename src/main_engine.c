@@ -3741,7 +3741,14 @@ int main(int argc, char **argv)
         double pt1 = win_time();
         /* VM tick: time in 1/100 s like the original */
         if (!paused) {
+            L.vm.defer_msgs = 1;
             eko_tick(&L.vm, (int32_t)((g_clock - dt) * 100.0));   /* 0x401a0c writes the VM clock AFTER the tick, so a tick always runs on the value of the previous frame */
+            L.vm.defer_msgs = 0;
+            /* 0x401a14..0x401a63: the tick only queues its messages; the game takes the queue afterwards and 0x441d40 empties it. So a
+             * variable a handler writes (1082, 1084, 1085, ...) is not yet visible to the objects that run later in the same tick: the WWS
+             * gate reveal (object 297) relies on it - 1085 LevelIsDone only reaches var 54 a tick later, so its "3 [45, 0, 0, 10]" (gate
+             * closed) comes AFTER object 45's "3 [45, 0, 1, 1]" (gate open, woken by 1082 of object 287) instead of before it */
+            { int n = L.vm.nmsgs; for (int i = 0; i < n; i++) on_msg(&L.vm, &L.vm.msgs[i], NULL); eko_msg_reset(&L.vm); }
             { int n = g_nretry; g_nretry = 0; for (int i = 0; i < n; i++) { Instance *ri = slot_instance(g_retry[i].args[0]); if (ri && inst_msg(ri, g_retry[i].id, g_retry[i].args, g_retry[i].nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = g_retry[i]; } }
             for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
                 Instance *ii = &g_ins.models[mi].instances[k];

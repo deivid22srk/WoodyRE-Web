@@ -61,6 +61,11 @@ Loader in the exe: `0x4424b0` (reads file, version check), `0x442570` (builds ta
 
 Afterward the game loop processes the **outgoing message queue** (`0x5bd300`, 48-byte records, max 1280):
 `record = {id, nargs, arg0..}`; arg0 is usually the target instance (`0x01000000 | index`).
+`0x401a14..0x401a63`: count `0x441d20`, record i `0x441d30`, ids 1200..1300 to the app (`0x403440`), the rest to the
+world (`0x401370`/`0x401250`), then `0x441d40` empties the queue. So a handler that writes a variable (1082, 1084, 1085, …)
+does so only **after** every object of the tick has run: a later object in the same tick still reads the old value. The
+port follows this (`main_engine.c`, `defer_msgs` around `eko_tick`); handing the messages over inside `SEND` broke the WWS
+gate reveal (object 297 closed the gate with `3 [45, 0, 0, 10]` a tick early, and object 45's `3 [45, 0, 1, 1]` then opened it again).
 
 ## 3. Opcodes (handler table `0x5d0418`, init in `0x442a30`, interpreter `0x4429f0`)
 
