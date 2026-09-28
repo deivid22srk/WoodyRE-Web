@@ -18,7 +18,7 @@ CAMERA.md §5 (projection), HNM.md (films).
 - **dt**: raw `QueryPerformanceCounter` delta per frame, **clamped to 0.1 s** (and a dt ≤ 0 also becomes 0.1). A developer
   "Constant Frame rate" switch replaces it with `1/200` s.
 - **Aspect**: the layout (HUD, menus: 640x480 virtual) and the 3D projection are fixed 4:3; a non-4:3 mode is stretched.
-- **Port**: window of any size or borderless fullscreen, 4:3 (pillarboxed) or wide (Hor+, HUD/menus kept 4:3 and centred),
+- **Port**: window of any size or borderless fullscreen, 4:3 (pillarboxed) or wide (Hor+, menus kept 4:3 and centred, HUD at the edges),
   vsync (default on, as the original), optional fps cap, all saved in `woodyre.cfg`; a "Display" page under Options.
 
 ## 1. The original: display mode
@@ -122,7 +122,9 @@ So the game speed is real time down to 10 fps, slow motion below. The port does 
   aspect of the view box, so a wide view sees more to the sides (16:9: hfov 116°, 4:3: 100.4° as the original).
 - **2D layer** (`hud.c` `hud_begin_view`): the 480 virtual lines fill the view height; on a view wider than 4:3 the
   virtual x range grows symmetrically around 0..640 (16:9: −107..747), so every HUD element and menu page keeps its
-  4:3 shape and sits centred. `hud_rect` (menu backdrop, storm flash, black of page 4) covers the full range; the iris
+  4:3 shape; menu pages sit centred, while the in-game HUD hugs the view's edges (`hud_edges`): the blue bar, the
+  bonus / $ / charge column and the power gauge move by the left edge `vx0`, the red bar, hearts, portrait, lives and
+  the boss row by the right edge `vx1 − 640` (slide-outs and the W swarm follow). `hud_rect` (menu backdrop, storm flash, black of page 4) covers the full range; the iris
   ring reaches the corners of the wider view and is fully open at v = 1. Pickups projected to the screen
   (`rnd_project`, the HUD fly-in) are remapped into that range. `hud_bars` paints the pillar/letter bars black at the
   end of the frame (after the fade).

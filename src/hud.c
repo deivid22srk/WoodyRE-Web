@@ -251,8 +251,17 @@ static void number_centred(float cx, float cy, int v) { number_sized(cx, cy, v, 
 #define FLY_DUR   0.2f                                                /* PickupFly+0x4c, fixed in the ctor 0x47b170 */
 #define SWARM_DUR 0.4f                                                /* one trip of one W, 0x47c760 */
 
-static const float k_anchor[4][2] = { {32,82}, {66,197}, {66,282}, {600,86} };                           /* 0x5d7b50 = slot[2i+1] + 16 */
-static const float k_slot[8][2] = { {16,16}, {16,66}, {16,136}, {50,181}, {16,221}, {50,266}, {544,30}, {584,70} };   /* 0x4b3a10 */
+static const float k_anchor0[4][2] = { {32,82}, {66,197}, {66,282}, {600,86} };                          /* 0x5d7b50 = slot[2i+1] + 16 */
+static const float k_slot0[8][2] = { {16,16}, {16,66}, {16,136}, {50,181}, {16,221}, {50,266}, {544,30}, {584,70} };   /* 0x4b3a10 */
+/* port extra (docs/DISPLAY.md 3): on a view wider than 4:3 the left column (slots 0..5, anchors 0..2) moves with the view's
+ * left edge H.vx0 and the portrait / lives (slots 6, 7, anchor 3) with its right edge H.vx1; set by hud_begin_view */
+static float k_anchor[4][2], k_slot[8][2];
+static void hud_edges(void)
+{
+    float l = H.vx0, r = H.vx1 - 640.0f;
+    for (int i = 0; i < 8; i++) { k_slot[i][0] = k_slot0[i][0] + (i < 6 ? l : r); k_slot[i][1] = k_slot0[i][1]; }
+    for (int i = 0; i < 4; i++) { k_anchor[i][0] = k_anchor0[i][0] + (i < 3 ? l : r); k_anchor[i][1] = k_anchor0[i][1]; }
+}
 
 typedef struct { float x, y, size, t; int fresh, spawned; } SwarmW;
 static struct {
@@ -414,9 +423,9 @@ static int slide_tick(int k, float dt)
 #define SL(n) k_slot[n][0], k_slot[n][1]
 static void dollar_in_start(void)                                       /* 0x4618d0 */
 {
-    plate_start(0, SL(1), 34.0f, 34.0f, 0, 0); slide_start(0, 4, SL(0), -k_spr[4].w, k_slot[0][1]);   /* the bonus plate shrinks, then the W leaves to the left */
+    plate_start(0, SL(1), 34.0f, 34.0f, 0, 0); slide_start(0, 4, SL(0), H.vx0 - k_spr[4].w, k_slot[0][1]);   /* the bonus plate shrinks, then the W leaves to the left */
     A.f7c = A.f79 = 1;
-    slide_start(1, 3, -k_spr[3].w, k_slot[2][1], SL(2)); plate_start(1, SL(3), 0, 0, 34.0f, 34.0f);   /* the $ comes in from the left, its plate grows */
+    slide_start(1, 3, H.vx0 - k_spr[3].w, k_slot[2][1], SL(2)); plate_start(1, SL(3), 0, 0, 34.0f, 34.0f);   /* the $ comes in from the left, its plate grows */
     pop_start(1, 2, 17.0f, 37.0f, 0.2f);
     A.f7a = A.f7d = A.f76 = 1;
 }
@@ -431,9 +440,9 @@ static int dollar_in_tick(int value, float dt)                          /* 0x461
 }
 static void dollar_out_start(void)                                      /* 0x461a70 */
 {
-    plate_start(0, SL(1), 0, 0, 34.0f, 34.0f); slide_start(0, 4, -k_spr[4].w, k_slot[0][1], SL(0));
+    plate_start(0, SL(1), 0, 0, 34.0f, 34.0f); slide_start(0, 4, H.vx0 - k_spr[4].w, k_slot[0][1], SL(0));
     A.f7c = A.f79 = 1;
-    slide_start(1, 3, SL(2), -k_spr[3].w, k_slot[2][1]); plate_start(1, SL(3), 34.0f, 34.0f, 0, 0);
+    slide_start(1, 3, SL(2), H.vx0 - k_spr[3].w, k_slot[2][1]); plate_start(1, SL(3), 34.0f, 34.0f, 0, 0);
     A.f7a = A.f7d = 1;
 }
 static int dollar_out_tick(float dt)                                    /* 0x461a00: the W slides back and its plate grows; the $ plate shrinks, then the $ leaves */
@@ -446,9 +455,9 @@ static int dollar_out_tick(float dt)                                    /* 0x461
 }
 static void pause_in_start(void)                                        /* 0x461c40: $ and charge come in together */
 {
-    slide_start(1, 3, -k_spr[3].w, k_slot[2][1], SL(2)); plate_start(1, SL(3), 0, 0, 34.0f, 34.0f); pop_start(1, 2, 17.0f, 37.0f, 0.2f);
+    slide_start(1, 3, H.vx0 - k_spr[3].w, k_slot[2][1], SL(2)); plate_start(1, SL(3), 0, 0, 34.0f, 34.0f); pop_start(1, 2, 17.0f, 37.0f, 0.2f);
     A.f76 = A.f7a = A.f7d = 1;
-    slide_start(2, 6, -k_spr[6].w, k_slot[4][1], SL(4)); plate_start(2, SL(5), 0, 0, 34.0f, 34.0f); pop_start(2, 2, 17.0f, 37.0f, 0.2f);
+    slide_start(2, 6, H.vx0 - k_spr[6].w, k_slot[4][1], SL(4)); plate_start(2, SL(5), 0, 0, 34.0f, 34.0f); pop_start(2, 2, 17.0f, 37.0f, 0.2f);
     A.f77 = A.f7b = A.f7e = 1;
 }
 static int pause_in_tick(int dollars, int charges, float dt)            /* 0x461b60 */
@@ -460,9 +469,9 @@ static int pause_in_tick(int dollars, int charges, float dt)            /* 0x461
 }
 static void pause_out_start(void)                                       /* 0x461e10: no pop, the plates shrink and then both icons leave */
 {
-    slide_start(1, 3, SL(2), -k_spr[3].w, k_slot[2][1]); plate_start(1, SL(3), 34.0f, 34.0f, 0, 0);
+    slide_start(1, 3, SL(2), H.vx0 - k_spr[3].w, k_slot[2][1]); plate_start(1, SL(3), 34.0f, 34.0f, 0, 0);
     A.f76 = A.f7a = A.f7d = 1;
-    slide_start(2, 6, SL(4), -k_spr[6].w, k_slot[4][1]); plate_start(2, SL(5), 34.0f, 34.0f, 0, 0);
+    slide_start(2, 6, SL(4), H.vx0 - k_spr[6].w, k_slot[4][1]); plate_start(2, SL(5), 34.0f, 34.0f, 0, 0);
     A.f77 = A.f7b = A.f7e = 1;
 }
 static int pause_out_tick(float dt)                                     /* 0x461da0 */
@@ -526,14 +535,14 @@ void hud_anim_pickup(int kind, const float *screen, int face)
         fly_start(1, screen, face >= 0 && face < 3 ? face : 0, 6, 1);
         break;
     case 2:                                                            /* 0x461420: the $ item; its whole counter slides in, waits and leaves again */
-        slide_start(1, 3, k_slot[2][0], k_slot[2][1], -k_spr[3].w, k_slot[2][1]);
+        slide_start(1, 3, k_slot[2][0], k_slot[2][1], H.vx0 - k_spr[3].w, k_slot[2][1]);
         pop_start(1, 2, 17.0f, 37.0f, 0.2f);
         plate_start(1, k_slot[3][0], k_slot[3][1], 0, 0, 34.0f, 34.0f);
         fly_start(2, screen, 3, 2, 0);
         A.stage[1] = 1; A.hold[1] = 0;
         break;
     case 3:                                                            /* 0x461560: the charge, the same sequence one row lower */
-        slide_start(2, 6, k_slot[4][0], k_slot[4][1], -k_spr[6].w, k_slot[4][1]);
+        slide_start(2, 6, k_slot[4][0], k_slot[4][1], H.vx0 - k_spr[6].w, k_slot[4][1]);
         pop_start(2, 2, 17.0f, 37.0f, 0.2f);
         plate_start(2, k_slot[5][0], k_slot[5][1], 0, 0, 34.0f, 34.0f);
         fly_start(3, screen, 6, 4, 1);
@@ -555,7 +564,7 @@ void hud_anim_pickup(int kind, const float *screen, int face)
 static void hud_anim_reward(int to_life, float health_old)
 {
     swarm_start(to_life, to_life ? (k_spr[0].w - 23.0f) * 0.5f + k_slot[6][0] - k_slot[0][0]    /* 548.5: a 23 wide square centred on the portrait */
-                                 : 559.0f - 30.0f * (health_old + 1.0f) - k_slot[0][0]);        /* the slot of the heart that is coming in */
+                                 : 559.0f + H.vx1 - 640.0f - 30.0f * (health_old + 1.0f) - k_slot[0][0]);   /* the slot of the heart that is coming in */
     A.latch = 1;
 }
 
@@ -620,7 +629,7 @@ static void hud_anim_tick(const HudState *s, float dt)
         case 2: sprite(6, si[0], si[1]); if (!plate_tick(2, dt)) A.mcharge = 3; break;                      /* the round plate grows */
         case 3: sprite(6, si[0], si[1]); sprite(8, sp[0], sp[1]); if (!pop_tick(2, old, dt)) A.mcharge = 4; break;   /* 17 -> 37 -> 17 */
         case 4: sprite(6, si[0], si[1]); sprite(8, sp[0], sp[1]); number_centred(k_anchor[2][0], k_anchor[2][1], old);
-                pop_start(2, 1, 17.0f, 0.0f, 0.2f); slide_start(2, 6, si[0], si[1], -k_spr[6].w, si[1]); plate_start(2, sp[0], sp[1], 34.0f, 34.0f, 0, 0);
+                pop_start(2, 1, 17.0f, 0.0f, 0.2f); slide_start(2, 6, si[0], si[1], H.vx0 - k_spr[6].w, si[1]); plate_start(2, sp[0], sp[1], 34.0f, 34.0f, 0, 0);
                 A.mcharge = 5; A.mcharge_t = 0; break;
         case 5: sprite(6, si[0], si[1]); sprite(8, sp[0], sp[1]); number_sized(k_anchor[2][0], k_anchor[2][1], old, 17.0f);
                 if ((A.mcharge_t += dt) > 1.0f) A.mcharge = 6; break;
@@ -636,7 +645,7 @@ static void hud_anim_tick(const HudState *s, float dt)
         if (s->lives < A.prev_lives && !A.mlives) { A.mlives = 1; pop_start(3, 2, 17.0f, 37.0f, 0.2f); }
         if (s->unique < A.prev_unique) { dollar_minus_start(); A.f3f = 1; }   /* 0x448340 -> 0x462330 */
         if (s->charges < A.prev_charges && !A.mcharge) {               /* 0x448300 -> 0x462380 */
-            slide_start(2, 6, -k_spr[6].w, k_slot[4][1], k_slot[4][0], k_slot[4][1]); plate_start(2, k_slot[5][0], k_slot[5][1], 0, 0, 34.0f, 34.0f);
+            slide_start(2, 6, H.vx0 - k_spr[6].w, k_slot[4][1], k_slot[4][0], k_slot[4][1]); plate_start(2, k_slot[5][0], k_slot[5][1], 0, 0, 34.0f, 34.0f);
             pop_start(2, 2, 17.0f, 37.0f, 0.2f); A.mcharge = 1;
         }
     }
@@ -645,14 +654,16 @@ static void hud_anim_tick(const HudState *s, float dt)
 
 void hud_begin(int win_w, int win_h) { hud_begin_view(0, 0, win_w, win_h); }
 /* port extra (docs/DISPLAY.md 3): the 480 virtual lines fill the view's height; a view wider than 4:3 shows more virtual x on
- * both sides of 0..640 instead of stretching it, so the HUD and the menus keep their 4:3 layout, centred. A narrower view
- * stretches 0..640 as before (the display code hands it a 4:3 box instead). */
+ * both sides of 0..640 instead of stretching it, so the menus keep their 4:3 layout, centred, and the in-game HUD keeps its
+ * shapes but hugs the view's edges (hud_edges). A narrower view stretches 0..640 as before (the display code hands it a 4:3
+ * box instead). */
 void hud_begin_view(int vx, int vy, int vw, int vh)
 {
     glViewport(vx, vy, vw, vh);
     H.vx0 = 0; H.vx1 = 640;
     if (vh > 0 && vw * 3 >= vh * 4) { float hw = 240.0f * vw / vh; H.vx0 = 320 - hw; H.vx1 = 320 + hw; H.iris_kx = H.iris_ky = 1; }
     else { float sx = vw / 640.0f, sy = vh / 480.0f, s = sx > sy ? sx : sy; H.iris_kx = sx > 0 ? s / sx : 1; H.iris_ky = sy > 0 ? s / sy : 1; }
+    hud_edges();
     glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(H.vx0, H.vx1, 480, 0, -1, 1);
     glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
     glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_LIGHTING); glDisable(GL_ALPHA_TEST); glDisable(GL_STENCIL_TEST); glDisable(GL_FOG);
@@ -686,43 +697,43 @@ void hud_draw(const HudState *s, float dt)
 /* 0x447210: the bars, 0x447660 the sprites and numbers, 0x447d70 the power meter, 0x4480d0 the animations */
 static void hud_static(const HudState *s, float dt)
 {
-    const float Y = 51, BH = 23;
-    quad(0, Y, 256, BH, 0, 0, 0, 0, 0, 0x800000ff, 0x800000ff, 0x000000ff, 0x000000ff);                   /* blue bar (0x4472d8) */
+    const float Y = 51, BH = 23, l = H.vx0, r = H.vx1 - 640.0f;                                           /* l, r: the view's edges (hud_edges) */
+    quad(l, Y, 256, BH, 0, 0, 0, 0, 0, 0x800000ff, 0x800000ff, 0x000000ff, 0x000000ff);                   /* blue bar (0x4472d8) */
     if (!s->race) {
-        quad(384, Y, 27, BH, 0, 0, 0, 0, 0, 0x00ff0000, 0x00ff0000, 0x13ff0000, 0x13ff0000);
+        quad(r + 384, Y, 27, BH, 0, 0, 0, 0, 0, 0x00ff0000, 0x00ff0000, 0x13ff0000, 0x13ff0000);
         for (int i = 1; i <= 5; i++) {                                                                      /* empty health slots, alpha ramp (x - 384) * 128 / 175 */
             float x = 556.0f - 29.0f * i; uint32_t al = (uint32_t)((x - 384) * 128 / 175), ar = (uint32_t)((x + 29 - 384) * 128 / 175);
-            sprite_part(9, x, Y, 1e9f, al << 24 | 0x808080, ar << 24 | 0x808080);
+            sprite_part(9, r + x, Y, 1e9f, al << 24 | 0x808080, ar << 24 | 0x808080);
         }
-    } else quad(384, Y, 172, BH, 0, 0, 0, 0, 0, 0x00ff0000, 0x00ff0000, 0x80ff0000, 0x80ff0000);
-    quad(556, Y, 84, BH, 0, 0, 0, 0, 0, 0x80ff0000, 0x80ff0000, 0x80ff0000, 0x80ff0000);
-    sprite(s->face >= 0 && s->face < 3 ? s->face : 0, 544, 30);                                             /* slot 6 */
-    sprite(8, 584, 70);                                                                                     /* slot 7, anchor A3 */
-    if (!A.fly[1].on && !A.mlives && !(A.sw.on && A.sw.to_life && !A.latch)) number_centred(600, 86, s->lives > 0 ? s->lives - 1 : 0);   /* 0x44771e */
+    } else quad(r + 384, Y, 172, BH, 0, 0, 0, 0, 0, 0x00ff0000, 0x00ff0000, 0x80ff0000, 0x80ff0000);
+    quad(r + 556, Y, 84, BH, 0, 0, 0, 0, 0, 0x80ff0000, 0x80ff0000, 0x80ff0000, 0x80ff0000);
+    sprite(s->face >= 0 && s->face < 3 ? s->face : 0, k_slot[6][0], k_slot[6][1]);                         /* slot 6 */
+    sprite(8, k_slot[7][0], k_slot[7][1]);                                                                  /* slot 7, anchor A3 */
+    if (!A.fly[1].on && !A.mlives && !(A.sw.on && A.sw.to_life && !A.latch)) number_centred(k_anchor[3][0], k_anchor[3][1], s->lives > 0 ? s->lives - 1 : 0);   /* 0x44771e */
     if (A.c == 0 && (s->race || (!A.f3b && !A.f3c))) {                                                      /* 0x447794: while 1172 holds the $ counter up there is no bonus row at all */
-        sprite(s->race ? 5 : 4, 16, 16);                                                                        /* slot 0 */
-        sprite(8, 16, 66);                                                                                      /* slot 1, A0: the icon and the plate stay, only the number moves out of the way */
-        if (!A.sw.on && !A.fly[4].on && !A.fly[5].on) number_centred(32, 82, s->bonus);                          /* 0x44792e, 0x44794f */
+        sprite(s->race ? 5 : 4, k_slot[0][0], k_slot[0][1]);                                                    /* slot 0 */
+        sprite(8, k_slot[1][0], k_slot[1][1]);                                                                  /* slot 1, A0: the icon and the plate stay, only the number moves out of the way */
+        if (!A.sw.on && !A.fly[4].on && !A.fly[5].on) number_centred(k_anchor[0][0], k_anchor[0][1], s->bonus);  /* 0x44792e, 0x44794f */
         if (s->show_total && !A.sw.on) {                                                                        /* the "taken / total" line goes too while the reward is paid out */
             uint16_t t[40]; int n = number_codes(t, s->got); const uint16_t *sl = hud_string(9);                /* "/" */
             for (; sl && *sl && n < 20; sl++) t[n++] = *sl;
             number_codes(t + n, s->total);
-            font_size(17.0f); font_draw(110, Y + 12 - font_cell() * 0.5f, t, 0xfe808080);
+            font_size(17.0f); font_draw(l + 110, Y + 12 - font_cell() * 0.5f, t, 0xfe808080);
         }
     }
     if (!s->race || A.c > 0) for (int i = 1; i <= (int)s->health && i <= 5; i++) {
         if (A.sw.on && !A.sw.to_life && i == (int)s->health) continue;                                       /* 0x447ad5: the heart the W's are bringing in is left out until they land */
-        sprite(7, 559.0f - 29.0f * i, Y);
+        sprite(7, r + 559.0f - 29.0f * i, Y);
     }
     if (A.c > 0 ? !A.f3b && !A.f3c && !A.f3f : A.state == 1 && !A.f3d && !A.f3e && !s->race) {           /* 0x447c63 / 0x447b15 */
-        sprite(3, 16, 136); sprite(8, 50, 181); number_centred(66, 197, s->unique);                         /* slots 2/3, A1 */
+        sprite(3, k_slot[2][0], k_slot[2][1]); sprite(8, k_slot[3][0], k_slot[3][1]); number_centred(k_anchor[1][0], k_anchor[1][1], s->unique);   /* slots 2/3, A1 */
     }
     if (A.state == 1 && !A.f3d && !A.f3e && (A.c > 0 || !s->race)) {                                        /* the charge row only on the pause page */
-        sprite(6, 16, 221); sprite(8, 50, 266); number_centred(66, 282, s->charges);                        /* slots 4/5, A2 */
+        sprite(6, k_slot[4][0], k_slot[4][1]); sprite(8, k_slot[5][0], k_slot[5][1]); number_centred(k_anchor[2][0], k_anchor[2][1], s->charges);  /* slots 4/5, A2 */
     }
     if (s->power > 0) {                                                                                     /* power gauge 0x447d70 */
-        if (s->power >= 1.0f) { H.blink += dt; if (H.blink >= 0.3f) H.blink -= 0.3f; sprite(10, 0, 426); if (H.blink >= 0.15f) sprite(11, 0, 421); }
-        else { float w = s->power * 104.0f; sprite_part(10, 0, 426, w, 0xfe808080, 0xfe808080); sprite_part(11, 0, 421, w, 0xfe808080, 0xfe808080); }
+        if (s->power >= 1.0f) { H.blink += dt; if (H.blink >= 0.3f) H.blink -= 0.3f; sprite(10, l, 426); if (H.blink >= 0.15f) sprite(11, l, 421); }
+        else { float w = s->power * 104.0f; sprite_part(10, l, 426, w, 0xfe808080, 0xfe808080); sprite_part(11, l, 421, w, 0xfe808080, 0xfe808080); }
     } else H.blink = 0;
     hud_anim_tick(s, dt);                                                                                   /* 0x4480d0 runs after 0x447660, so the animations draw on top */
 }
@@ -731,9 +742,16 @@ static void hud_static(const HudState *s, float dt)
  * drawer 0x47b0b0(cur, max). X = 559 - 3, row y 424; the max slots (sprite 14) with alpha 30..128 across the row and the red end
  * rect slide in from the right edge in 2.0 s (+0x24), then the Buzz face (sprite 12) grows in 0.2 s (0x47bf70 / 0x47bff0) and
  * only after that the cur balls (sprite 13) are drawn. t = seconds since the bar was switched on. */
+static void hud_boss_row(int cur, int max, float t);
 void hud_boss_bar(int cur, int max, float t)
 {
     if (!H.ok || max <= 0) return;
+    glPushMatrix(); glTranslatef(H.vx1 - 640.0f, 0, 0);                         /* port extra: against the view's right edge, as the HUD (hud_edges) */
+    hud_boss_row(cur, max, t);
+    glPopMatrix();
+}
+static void hud_boss_row(int cur, int max, float t)
+{
     const float X = 556, Y = 424, W = 19.0f * max, D = W + (640.0f - X) + 2.0f;   /* +0x10 */
     float x = t < 2.0f ? X + D - t * D / 2.0f : X;
     for (int i = 1; i <= max; i++) {                                                                           /* 0x47ad10 */
