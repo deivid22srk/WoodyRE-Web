@@ -462,7 +462,11 @@ ground the usual blend). The rest of the Mover is unchanged: the phase automaton
 * Up/down (actions 2/3) never walk here: they only pick the camera height `p->h` (`0x459d51..0x459dcd`: up 0, down or duck
   (action 5) 2, else 1). Jump (`0x462d70`/Jumper), attacks `0x457a50`, ducking `0x465b10`, climbing and the look-around are
   the normal code; they move along whatever the facing is (an attack's own displacement `+0x5bc` is built from `M+0x10` inside
-  `0x457a50`, before the snap of that frame).
+  `0x457a50`, before the snap of that frame). One exception in climbing: the sideways climb with left/right (state 4, `0x465387`:
+  `test [esi+0x4ec]; jne 0x4653f7`) is skipped while `+0x4ec` is set, so on a peck wall in a side section left/right do nothing
+  (no turn either, see above); he only rises and is pressed against the wall. The plane clamp `0x459eb0` is the last step of
+  `Perso_Move`, which state 4 does not run, so without this gate the side step (along the wall, i.e. the depth axis when the
+  wall faces the walking axis) would carry him off the plane. OBJECTS.md §1.3.
 
 **4. The plane lock (`0x459eb0`)**, the last call of Perso_Move `0x44bb20` (`0x44bcd8`, after `disp (+0x204)` has been chosen
 from the attack `+0x5bc`, `+0x69c` or walk + push and `disp.y += dt · +0x244`), so it runs in the states that use Perso_Move

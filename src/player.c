@@ -1433,7 +1433,9 @@ static Vec3 climb_update(Player *p, const PlayerInput *in, float dt)
     case 2: {
         anim_request(p, 0x15, 1.0f);
         Vec3 side = { p->wall_n.z, 0, -p->wall_n.x };                   /* cross((0,1,0), n) */
-        float s = 300.0f * dt, a = in->left ? -s : in->right ? s : 0;   /* P+0x78 */
+        /* sideways with left / right (P+0x78), but not in the side view: 0x465387 skips it while Perso+0x4ec is set (left / right is
+         * the walking axis there, and the side step would leave the plane, which only Perso_Move clamps) */
+        float s = 300.0f * dt, a = p->side_on ? 0 : in->left ? -s : in->right ? s : 0;
         disp.y = 250.0f * dt;                                           /* always upwards, no input needed (P+0x74) */
         disp.x = side.x * a - p->wall_n.x * dt * 200.0f;                /* 0x4aa164: pressed against the wall */
         disp.z = side.z * a - p->wall_n.z * dt * 200.0f;

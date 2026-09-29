@@ -206,6 +206,10 @@ Port (`src/player.c` `climb_update` + `move_collide`): as above. Test: `WOODY_TA
 (climb and over the top at ≈ 9.5 s), sideways `WOODY_KEYS=1.6:LEFT:3.0` (slides along a neighbouring press node near x 690, lets go past
 the node's edge). At more than 250 fps the first climb frame rises less than 1 unit and the ground probe of `0x4624f0` puts him back on
 the floor, as it would in the original; he gets away on the first longer frame.
+Side view (`+0x4ec` = `Player.side_on`, `0x465387`): no sideways climb. Test on W3C wall 385 (side sections there are full of peck
+walls, 501..511 and 385..390): `WOODY_TAP=1 WOODY_SIDE=516 WOODY_POSAT="1.5 2770 -780 -2633" WOODY_KEYS="2.2:LEFT:0.3 3.4:RIGHT:1.5"
+W3C --peck 3.0 0.15`: grab at 3.0 s, RIGHT held while climbing; z stays −2633 up to the climb-over at (2949, −450, −2633). Before the
+fix RIGHT slid him 272 off the plane (z −2361) and he climbed over there.
 
 **W1A climb walls** (no script; objects 52 and 495 are empty):
 
