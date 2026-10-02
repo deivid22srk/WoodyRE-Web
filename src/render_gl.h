@@ -78,10 +78,19 @@ typedef struct {
     /* the Perso's instance, set by the game every frame: 0x42b380(World, Perso) draws it first, outside the list, whatever
      * its cell - also while a cinematic plays it (scripted, flag 0x20 cleared by 0x44eab0), when it is in no listed chain */
     Instance *perso;
+    /* the world sprites of the frame (lists +0x1c8 alpha blended / +0x1cc additive of 0x481560, recorded by hud.c): rnd_sorted
+     * buckets them by the view z of their first clipped corner together with the fade list and the glow faces (0x428d00) */
+    int  (*spr_count)(void);
+    void (*spr_quad)(int i, float v[4][3], int *blended, int *early);
+    void (*spr_draw)(int i);
+    void (*spr_done)(void);
 } Renderer;
 
 int  rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis);   /* lit / vis may be NULL */
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s);
+/* 0x428d00, the end of the 3D frame: the fade list, the glow faces and the world sprites recorded since rnd_frame, in 256 depth
+ * buckets from far to near. Call once after rnd_frame, when the frame's world sprites have been recorded (hud_world_*) */
+void rnd_sorted(Renderer *r);
 void rnd_fade(float brightness);             /* darken the finished frame: 1 = normal, 0 = black */
 void rnd_free(Renderer *r);
 /* message 34 [inst, other] (0x42dc21): while the camera is inside one of inst's volume nodes, `other` is not drawn (0x42aa0b) */

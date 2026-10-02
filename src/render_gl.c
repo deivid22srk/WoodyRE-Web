@@ -1703,6 +1703,15 @@ static void draw_dyn_world(Renderer *r)
     glDisable(GL_POLYGON_OFFSET_FILL); glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDepthFunc(GL_LESS);
 }
 
+/* the lists of 0x428d00 for this frame: built by rnd_frame (fade list +0x1c4 and the glow faces of +0x1cc, each with the sort
+ * depth its batch copied from [0x5ac8d4]), drawn by rnd_sorted together with the world sprites hud.c recorded meanwhile */
+static struct {
+    Instance **fl, **al; float *fd, *ad; uint32_t fn, an, fcap, acap;
+    Vec3 pos, fw, rt, up; float sx, sy;                              /* camera and the side-plane scales of the frame */
+    int on;
+} g_srt;
+static double T[6]; static int TN;                                   /* WOODY_PROF */
+
 void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s)
 {
     glViewport(w->vx, w->vy, w->width, w->height);
@@ -1712,7 +1721,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         if (tg->frame_count > 1 && tg->anim_duration > 0 && ((tg->flags >> 8) & 0xff) != 2) tg->gl_tex = tg->gl_frames[(uint32_t)(time_s / tg->anim_duration * tg->frame_count) % tg->frame_count];
     }
     glDepthMask(GL_TRUE); glDisable(GL_BLEND); glClearColor(0.08f, 0.09f, 0.11f, 1); glClearStencil(0); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-    static double T[6]; static int TN; double q0 = win_time();
+    double q0 = win_time(); g_srt.on = 0; g_srt.fn = g_srt.an = 0;
     /* camera basis and frustum first: what is visible decides what still has to be lit and drawn */
     float aspect = w->height ? (float)w->width / (float)w->height : 1.333f, zn = 5.0f, zf = 200000.0f;
     if (cam->letterbox) aspect /= 0.75f;                     /* the image strip is 3/4 as tall, see the viewport below */
@@ -1720,6 +1729,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     Vec3 fw = cam_forward(cam), rt = cam_right(cam);
     Vec3 up = { rt.y * fw.z - rt.z * fw.y, rt.z * fw.x - rt.x * fw.z, rt.x * fw.y - rt.y * fw.x };   /* right x forward */
     float frust[6][4]; frustum_planes(cam, fw, rt, up, aspect, f, zn, zf, frust);
+    g_srt.pos = cam->pos; g_srt.fw = fw; g_srt.rt = rt; g_srt.up = up; g_srt.sx = f / aspect; g_srt.sy = f;
     { double a = win_time(); world_visibility(r, cam, frust); T[5] += win_time() - a; }
     {   /* Pose every visible instance, on screen or not: player.c collides against node_world, so a platform that
          * stops being posed stops carrying the player. Lighting goes to what is actually drawn, and to every shadow caster. */
@@ -1832,8 +1842,9 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
          * face of a blended group, mode 3 at 0x43d7c8) share 256 depth buckets, drawn from 255 down to 0 (far to near).
          * bucket = round(depth * 254 / deepest) (fistp, [0x4aa2f0] = 254), deepest = max(1, every batch depth) (0x428d27..0x428db8).
          * Per bucket: the fade batches depth-only (ZERO/ONE, ZWRITE on, 0x428f10) and again blended (SRCALPHA/INVSRCALPHA,
-         * 0x428fdd), then ZWRITE off (0x42908d), list +0x1c8 (SRCALPHA; only the 2D quads, drawn later by the port) and
-         * list +0x1cc with ONE/ONE (0x429182). Bucket 0 merges +0x1c8 and +0x1cc by batch address (0x429240).
+         * 0x428fdd), then ZWRITE off (0x42908d), list +0x1c8 (SRCALPHA, the alpha blended world sprites) and list +0x1cc
+         * with ONE/ONE (0x429182: the glow faces and the additive world sprites). Bucket 0 merges +0x1c8 and +0x1cc by batch
+         * address (0x429240). The sprites are recorded after this function (hud.c), so the buckets are drawn by rnd_sorted.
          * The sort depth is the global [0x5ac8d4], which every model batch copies when a polygon lands in it (0x43e0d3,
          * 0x43eec7, 0x43ea1d); its only writer is 0x43b56a, for an instance that is fading (alpha < 252): camera-space
          * z of its .ins position (row +0x11c/+0x12c/+0x13c/+0x14c against inst+0xc), clamped at 0. A batch holds
@@ -1852,7 +1863,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
                 for (uint32_t ni = 0; ni < m->nnodes && !r->model_blend[mi]; ni++) { const InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || n->type_code == 2) continue;
                     for (uint32_t k = 0; k < n->npolys; k++) if (n->polys[k].nverts >= 3 && mat_blended(r, n->polys[k].material)) { r->model_blend[mi] = 1; break; } } }
         }
-        static Instance **fl, **al; static float *fd, *ad; static int *fb, *ab; static uint32_t fcap, acap; uint32_t fn = 0, an = 0; float dmax = 1.0f;
+        static Instance **fl, **al; static float *fd, *ad; static uint32_t fcap, acap; uint32_t fn = 0, an = 0; float dmax = 1.0f;
         /* the draw order of 0x42b380: the Perso first (vtbl[2](4 or 6)), then the frame's instance list world+0x64 in its
          * order (vtbl[2](5 or 7), the Perso skipped), because that order decides which fading instance leaves its depth in
          * [0x5ac8d4] for the glow batches after it. The port draws a few instances outside the list (the bomb pool, links
@@ -1871,8 +1882,8 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             Instance *inst = ord[oi]; uint32_t mi = (uint32_t)(inst->model - r->ins->models); if (inst->type == 60) continue;
             int fading = inst_fading(inst), add = r->model_blend[mi];
             if (!fading && !add) continue;
-            if (fn == fcap) { fcap = fcap * 2 + 16; fl = (Instance **)realloc(fl, fcap * sizeof *fl); fd = (float *)realloc(fd, fcap * sizeof *fd); fb = (int *)realloc(fb, fcap * sizeof *fb); }
-            if (an == acap) { acap = acap * 2 + 64; al = (Instance **)realloc(al, acap * sizeof *al); ad = (float *)realloc(ad, acap * sizeof *ad); ab = (int *)realloc(ab, acap * sizeof *ab); }
+            if (fn == fcap) { fcap = fcap * 2 + 16; fl = (Instance **)realloc(fl, fcap * sizeof *fl); fd = (float *)realloc(fd, fcap * sizeof *fd); }
+            if (an == acap) { acap = acap * 2 + 64; al = (Instance **)realloc(al, acap * sizeof *al); ad = (float *)realloc(ad, acap * sizeof *ad); }
             if (fading) {                                            /* 0x43b528..0x43b56a */
                 float d = (inst->position.x - cam->pos.x) * fw.x + (inst->position.y - cam->pos.y) * fw.y + (inst->position.z - cam->pos.z) * fw.z;
                 sort_depth = d < 0 ? 0 : d;
@@ -1881,42 +1892,134 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             if (add) { al[an] = inst; ad[an++] = sort_depth; }
             if (sort_depth > dmax) dmax = sort_depth;
         }
-        for (uint32_t i = 0; i < fn; i++) fb[i] = (int)lrintf(fd[i] * 254.0f / dmax);
-        for (uint32_t i = 0; i < an; i++) ab[i] = (int)lrintf(ad[i] * 254.0f / dmax);
-        int bmax = -1; for (uint32_t i = 0; i < fn; i++) if (fb[i] > bmax) bmax = fb[i];
-        for (uint32_t i = 0; i < an; i++) if (ab[i] > bmax) bmax = ab[i];
-        for (int b = bmax; b >= 0; b--) {
-            if (fn) {
-                g_zfunc = GL_LEQUAL; glDepthFunc(GL_LEQUAL);
-                for (int sub = 1; sub <= 2; sub++) {
-                    int any = 0;
-                    for (uint32_t i = 0; i < fn; i++) {
-                        if (fb[i] != b) continue;
-                        if (!any) { any = 1; g_fading = sub; g_last_material = 0xffffffffu; if (sub == 1) glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); }
-                        g_fade_alpha = 1.0f - fl[i]->fade;
-                        draw_instance(r, fl[i], 0); draw_outline(r, fl[i]);
-                    }
-                    if (!any) break;
-                    bt_flush(); glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                }
-                g_fading = 0; g_fade_alpha = 1.0f; g_zfunc = GL_LESS; glDepthFunc(GL_LESS);
-            }
-            int any = 0;                                             /* list +0x1cc of this bucket, in the port's instance order (ONE/ONE commutes) */
-            for (uint32_t i = 0; i < an; i++) {
-                if (ab[i] != b) continue;
-                if (!any) { any = 1; g_last_material = 0xffffffffu; glDisable(GL_ALPHA_TEST); }
-                draw_instance(r, al[i], 1);
-            }
-            if (any) { bt_flush(); glEnable(GL_ALPHA_TEST); }
-        }
-        g_last_material = 0xffffffffu; glEnable(GL_ALPHA_TEST);
+        (void)dmax;
+        g_srt.fl = fl; g_srt.fd = fd; g_srt.fn = fn; g_srt.al = al; g_srt.ad = ad; g_srt.an = an;
         T[3] += win_time() - a;
     }
+    g_srt.on = 1;
     set_blend(0);
     g_ndyn = 0; g_idyn_n = 0;                                      /* the dynamic lights of this frame are used up */
     T[4] += win_time() - q0;
     if (getenv("WOODY_PROF") && ++TN == 60) { printf("  RND ms: pose %.2f cull %.2f shadows %.2f instances %.2f total %.2f | world %u/%u tris, %u/%u sectors%s", T[0] / 60 * 1000, T[5] / 60 * 1000, T[2] / 60 * 1000, T[3] / 60 * 1000, T[4] / 60 * 1000, r->drawn_tris, r->total_tris, r->nsec_vis, r->gel->nsectors, r->pvs_on ? " (.vis)" : ""); puts(""); T[0] = T[2] = T[3] = T[4] = T[5] = 0; TN = 0; }
     (void)time_s;
+}
+
+/* The sort depth of a world sprite (0x481560): its corners go to view space (the sprite submits them there, flag 0x20) with the
+ * side planes at x = +-z and y = +-z (outcodes 1: x > z, 2: -x > z, 4: y > z, 8: -y > z, 0x48170e..0x48176b); all four outside
+ * one plane = no batch at all (0x481930); otherwise the planes that any corner is outside of clip the polygon in the order
+ * 1, 2, 4, 8 (0x482440 / 0x482690 / 0x4828c0 / 0x482ae0, Sutherland-Hodgman starting at the first vertex: an inside vertex is
+ * kept, an edge that crosses adds its intersection), fewer than 3 vertices left = no batch, and batch+0x10 = the view z of the
+ * FIRST vertex left (0x481d7f). There is no near plane. Returns 0 for no batch. */
+static int sprite_depth(const float v[4][3], float *depth)
+{
+    float P[2][12][3]; int n = 4, cur = 0, all = 15, any = 0;
+    for (int i = 0; i < 4; i++) {
+        float d[3] = { v[i][0] - g_srt.pos.x, v[i][1] - g_srt.pos.y, v[i][2] - g_srt.pos.z };
+        float x = (d[0] * g_srt.rt.x + d[1] * g_srt.rt.y + d[2] * g_srt.rt.z) * g_srt.sx, y = (d[0] * g_srt.up.x + d[1] * g_srt.up.y + d[2] * g_srt.up.z) * g_srt.sy;
+        float z = d[0] * g_srt.fw.x + d[1] * g_srt.fw.y + d[2] * g_srt.fw.z;
+        int oc = (x > z ? 1 : 0) | (-x > z ? 2 : 0) | (y > z ? 4 : 0) | (-y > z ? 8 : 0);
+        all &= oc; any |= oc; P[0][i][0] = x; P[0][i][1] = y; P[0][i][2] = z;
+    }
+    if (all) return 0;
+    for (int pl = 0; pl < 4; pl++) {
+        if (!(any & (1 << pl))) continue;
+        int m = 0; const float (*a)[3] = P[cur]; float (*o)[3] = P[cur ^ 1];
+        #define SPR_D(q) ((pl == 0 ? (q)[0] : pl == 1 ? -(q)[0] : pl == 2 ? (q)[1] : -(q)[1]) - (q)[2])   /* > 0 = outside */
+        for (int i = 0; i < n && m < 11; i++) {
+            const float *c = a[i], *nx = a[(i + 1) % n]; float dc = SPR_D(c), dn = SPR_D(nx);
+            if (!(dc > 0)) { o[m][0] = c[0]; o[m][1] = c[1]; o[m][2] = c[2]; m++; }
+            if ((dc > 0) != (dn > 0) && m < 11) { float t = dc / (dc - dn); for (int k = 0; k < 3; k++) o[m][k] = c[k] + t * (nx[k] - c[k]); m++; }
+        }
+        #undef SPR_D
+        n = m; cur ^= 1;
+        if (n < 3) return 0;
+    }
+    *depth = P[cur][0][2];
+    return 1;
+}
+
+void rnd_sorted(Renderer *r)
+{
+    if (!g_srt.on) return;
+    g_srt.on = 0;
+    double a = win_time();
+    /* the world sprites recorded since rnd_frame (hud.c): one batch each on +0x1c8 (alpha blended) or +0x1cc (additive) */
+    static float *qd; static int *qb; static uint8_t *qk; static int qcap;
+    int nq = r->spr_count && r->spr_quad && r->spr_draw ? r->spr_count() : 0;
+    if (nq > qcap) { qcap = nq + 256; qd = (float *)realloc(qd, (size_t)qcap * sizeof *qd); qb = (int *)realloc(qb, (size_t)qcap * sizeof *qb); qk = (uint8_t *)realloc(qk, (size_t)qcap); }
+    Instance **fl = g_srt.fl, **al = g_srt.al; const float *fd = g_srt.fd, *ad = g_srt.ad; uint32_t fn = g_srt.fn, an = g_srt.an;
+    /* deepest = max(1, every batch depth of +0x1cc, +0x1c8 and +0x1c4) (0x428d27..0x428db8) */
+    float dmax = 1.0f;
+    for (uint32_t i = 0; i < fn; i++) if (fd[i] > dmax) dmax = fd[i];
+    for (uint32_t i = 0; i < an; i++) if (ad[i] > dmax) dmax = ad[i];
+    for (int i = 0; i < nq; i++) {
+        float v[4][3]; int bl, early; r->spr_quad(i, v, &bl, &early);
+        qk[i] = (uint8_t)((bl ? 1 : 0) | (early ? 2 : 0) | (sprite_depth(v, &qd[i]) ? 4 : 0));
+        if ((qk[i] & 4) && qd[i] > dmax) dmax = qd[i];
+    }
+    /* bucket = fistp(depth * 254 / deepest) (0x428dd7 / 0x428e28 / 0x428e89); a negative depth (a corner behind the eye that
+     * survived the side planes) would index below the bucket table in the original - the port puts it in bucket 0 */
+    static int *fb, *ab; static uint32_t bcap;
+    if (fn > bcap || an > bcap) { bcap = (fn > an ? fn : an) + 64; fb = (int *)realloc(fb, bcap * sizeof *fb); ab = (int *)realloc(ab, bcap * sizeof *ab); }
+    int bmax = -1;
+    for (uint32_t i = 0; i < fn; i++) { fb[i] = (int)lrintf(fd[i] * 254.0f / dmax); if (fb[i] < 0) fb[i] = 0; if (fb[i] > bmax) bmax = fb[i]; }
+    for (uint32_t i = 0; i < an; i++) { ab[i] = (int)lrintf(ad[i] * 254.0f / dmax); if (ab[i] < 0) ab[i] = 0; if (ab[i] > bmax) bmax = ab[i]; }
+    for (int i = 0; i < nq; i++) { if (!(qk[i] & 4)) { qb[i] = -1; continue; } qb[i] = (int)lrintf(qd[i] * 254.0f / dmax); if (qb[i] < 0) qb[i] = 0; if (qb[i] > bmax) bmax = qb[i]; }
+    if (getenv("WOODY_SORTLOG")) {
+        static int fr; if (fr++ % 60 == 0) {
+            printf("  SORT deepest %.0f | fade %u, glow %u, sprites %d:", dmax, fn, an, nq);
+            for (int i = 0; i < nq && i < 40; i++) if (qb[i] >= 0) printf(" %s%d@%.0f", (qk[i] & 1) ? "b" : "a", qb[i], qd[i]);
+            puts("");
+        }
+    }
+    /* the sprite records of bucket b: blended (list +0x1c8) or additive (+0x1cc), each in creation order (a source list is LIFO
+     * and the bucket split pushes in front again, 0x428dfb..0x428e01, so a bucket holds its batches oldest first) */
+    #define SPR_STATE() do { if (!sstate) { sstate = 1; bt_flush(); glEnable(GL_BLEND); glDepthMask(GL_FALSE); glDisable(GL_ALPHA_TEST); glDisable(GL_CULL_FACE); } } while (0)
+    for (int b = bmax; b >= 0; b--) {
+        int sstate = 0;
+        if (fn && r->show_instances) {
+            g_zfunc = GL_LEQUAL; glDepthFunc(GL_LEQUAL);
+            for (int sub = 1; sub <= 2; sub++) {
+                int any = 0;
+                for (uint32_t i = 0; i < fn; i++) {
+                    if (fb[i] != b) continue;
+                    if (!any) { any = 1; g_fading = sub; g_last_material = 0xffffffffu; if (sub == 1) glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); }
+                    g_fade_alpha = 1.0f - fl[i]->fade;
+                    draw_instance(r, fl[i], 0); draw_outline(r, fl[i]);
+                }
+                if (!any) break;
+                bt_flush(); glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            }
+            g_fading = 0; g_fade_alpha = 1.0f; g_zfunc = GL_LESS; glDepthFunc(GL_LESS);
+        }
+        /* then ZWRITE off (0x42908d) and, for b > 0, all of +0x1c8 (SRCALPHA/INVSRCALPHA, 0x4290bf) before all of +0x1cc
+         * (ONE/ONE, 0x429182). Bucket 0 (0x429240) takes the two lists by batch address, i.e. in creation order: the halos of the
+         * instance Updates (0x42b400), the model batches of the world draw (0x42b380), then the Perso and the effects (0x46d040). */
+        for (int pass = 0; pass < 3; pass++) {
+            if (pass == 1) {                                         /* the glow faces of this bucket (ONE/ONE commutes among them) */
+                int any = 0;
+                if (r->show_instances) for (uint32_t i = 0; i < an; i++) {
+                    if (ab[i] != b) continue;
+                    if (sstate) { r->spr_done(); sstate = 0; }
+                    if (!any) { any = 1; g_last_material = 0xffffffffu; glDisable(GL_ALPHA_TEST); }
+                    draw_instance(r, al[i], 1);
+                }
+                if (any) { bt_flush(); glEnable(GL_ALPHA_TEST); }
+                continue;
+            }
+            for (int i = 0; i < nq; i++) {
+                if (qb[i] != b) continue;
+                int key = b > 0 ? (qk[i] & 1) : (qk[i] & 2);          /* b > 0: pass 0 = blended, 2 = additive; b = 0: pass 0 = early, 2 = late */
+                if (pass == 0 ? !key : key) continue;
+                SPR_STATE(); r->spr_draw(i);
+            }
+        }
+        if (sstate) r->spr_done();
+    }
+    #undef SPR_STATE
+    if (nq && r->spr_done) r->spr_done();
+    g_last_material = 0xffffffffu; glEnable(GL_ALPHA_TEST); glDisable(GL_BLEND); glDepthMask(GL_TRUE);
+    T[3] += win_time() - a; T[4] += win_time() - a;
 }
 
 void rnd_set_race(Renderer *r, const Trajectory *path)
