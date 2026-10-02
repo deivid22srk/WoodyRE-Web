@@ -920,6 +920,13 @@ static const struct { uint16_t idx; uint8_t s10, fl; uint16_t w, h; } k_cred[253
 #undef I
 static struct { int img; float t_img, off; } g_cr;             /* page +0x14 (image 0..2), +0x1c (its clock); the roll's offset [0x5e59fc] */
 void hud_credits_enter(void) { memset(&g_cr, 0, sizeof g_cr); }  /* 0x45bd60: 0x4538f0(0) = this roll from its start, +0x14 = +0x1c = 0 */
+void hud_gameover(void)                                         /* 0x45bbd0 */
+{
+    if (!H.ok) return;
+    hud_rect(0xfe000000);                                        /* black panel, 640 x 480 */
+    const uint16_t *s = hud_string(56);                          /* 0x20038 = Common 56 "GAME OVER", size 35, at (320 - w/2, 240 - h/2), h = 0 on one line */
+    font_size(35.0f); if (s) font_draw(320.0f - font_measure(s) * 0.5f, 240.0f, s, 0xfeffffff);
+}
 void hud_credits(int prev_level, float dt)                     /* 0x45bd90, dt = the menu's [0x4b39a0] (the roll reads [[0x509adc]+0x38], the same frame time) */
 {
     static const uint8_t img[9] = { 4, 5, 6, 7, 8, 9, 10, 11, 12 };   /* 0x4b5df8: three pictures per character */

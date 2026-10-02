@@ -833,6 +833,7 @@ static struct {
     int wait, wait_r;                          /* app+0x5c: the frames a wait page 0xb / 0xc / 0xe still stands; the read result it hands on */
     Display disp;                              /* port page 0x40: the display settings being edited (applied on Continue) */
     float cred_t;                              /* page 0x20 +0x18: time on the credits page (0x45bd9e) */
+    float go_t;                                /* page 0x1d +0x14: GAME OVER time left (0x45bbb0: 5.0)  */
 } M ={ -1, 0, 0, { 0 }, 0, 1, 1, { 0 }, 0, 35.0f };
 static float g_title_t;                        /* seconds since the title pose (action 0x49) started: the orbit phase (docs/TITLE.md 1.4) */
 static int g_intro_obj;                        /* message 1160 arg 2 & 0xffffff: script object 115 */
@@ -1136,6 +1137,7 @@ static void menu_enter(int page)
     case 0x40: M.disp = g_dnow; disp_items(); M.sel = 1; break;        /* port page: the cursor on the first choice */
     case 0x1c: M.sel = 2; break;                                       /* 0x45bd40: on "No" */
     case 0x18: case 0x19: case 0x1f: M.sel = 0; hud_logo_off(); break; /* 0x45b390 */
+    case 0x1d: M.go_t = 5.0f; break;                                   /* 0x45bbb0: base enter, +0x14 = 5.0 */
     case 0x20: M.sel = 0; M.cred_t = 0; hud_credits_enter(); break;   /* 0x45bd60: base enter, the roll 0x4538f0(0), +0x14 = +0x18 = +0x1c = 0 */
     default: M.sel = menu_first(); break;
     }
@@ -1310,6 +1312,12 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
         if (k->ok && M.cred_t > 5.0f) request_level(0, 0.5f);         /* 0x40577b -> 0x405780: 0x404b60(0.5, 0, 0, 0), the page stays up during the fade */
         break;
     case 9: if (k->ok) menu_enter(6); break;
+    case 0x1d:                                                         /* GAME OVER: the draw 0x45bbd0 counts +0x14 down and sets +0xc = 1 every frame (no confirm), */
+        if (M.go_t > 0 && (M.go_t -= dt) <= 0) {                       /* back gives 24, ignored; result 5 in the frame the timer crosses 0 -> handler 0x405796 */
+            save_reset(); g_slot = -1;                                 /* 0x44ffa0: the active save wiped in memory (9 lives, 3.0 health), Woody.sav is not written */
+            request_level(0, 0.5f);                                    /* 0x405780: 0x404b60(0.5, 0, 0, 0) -> the title; the page stays up during the fade */
+        }
+        break;
     case 0x18: case 0x19: {                                            /* 0x4057f5, table 0x405cfc on result - 5; "back" does nothing */
         static const int res18[3] = { 5, 6, 7 }, res19[4] = { 5, 18, 6, 7 };
         int r = !k->ok ? 0 : M.page == 0x19 ? res19[M.sel & 3] : res18[M.sel % 3];
@@ -1323,7 +1331,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
 
 /* table 0x405af8: the half-black backdrop and whether the world stands still */
 static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 0xb || page == 0xc || page == 0xe || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && ((page >= 0x18 && page <= 0x1c) || page == 0x40)); }   /* 0x40: port page, as 0x1b */
-static int menu_pauses_world(void) { return g_level != 0 && ((M.page >= 0x18 && M.page <= 0x1c) || M.page == 0x40 || M.page == 0x20); }   /* 0x20: the credits level stands still */
+static int menu_pauses_world(void) { return g_level != 0 && ((M.page >= 0x18 && M.page <= 0x1c) || M.page == 0x40 || M.page == 0x20 || M.page == 0x1d); }   /* 0x20: the credits level stands still; 0x1d GAME OVER (table 0x405af8 = 0) */
 
 /* the page layer of a frame: items, then the iris, then the logo (docs/TITLE.md 5.4) */
 static void menu_draw(float dt)
@@ -1342,6 +1350,7 @@ static void menu_draw(float dt)
     case 3: if (M.p.opening && M.p.t == 0) hud_iris(0); hud_iris(panel_iris_v()); carousel_draw(dt); break;
     case 4: hud_rect(0xfe000000); if (!(M.p.lock && M.p.ti >= 0.5f)) scores_draw(); break;   /* 0x45ba29: iris target 0 = a black rect, then vt[17] */
     case 0x20: hud_credits(g_prev_level, dt); break;                  /* 0x45bd90: the page draws no item list */
+    case 0x1d: hud_gameover(); break;                                  /* 0x45bbd0 */
     case 0x1f: case -1: break;
     default: if (it) hud_menu_items(it, n, yf, M.sel, M.delay <= 0); break;
     }
@@ -3394,6 +3403,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     eko_msg_reset(&L->vm);
     if (L->have_player) { SaveChar *sc = &g_save.chr[g_char]; L->player.lives = sc->lives; L->player.health = sc->health > 0 ? sc->health : 1.0f;
                           L->player.unique_items = sc->unique; L->player.special_charges = sc->charges;
+                          if (getenv("WOODY_LIVES")) L->player.lives = atoi(getenv("WOODY_LIVES"));   /* testing: 1 = the next death is game over */
                           player_race_start(&L->player);     /* 0x44ab20 -> 0x456150 SurfEnter with the board of 1120 (docs/RACE.md 3.1) */
                           player_ground_snap(&L->player); }   /* 0x44a6a0 / 0x44a759; 0x44a7ee: he starts standing on the floor, not falling onto it */
     if (g_level == 25 && bb_init(dir)) printf("BlackBox: not available, the level runs as a plain set\n");   /* 0x4042c1: level 0x19 -> new 0x484420, App state 3 */
@@ -3713,6 +3723,8 @@ int main(int argc, char **argv)
                  * (the side view, the death camera of 0x459030 / 0x41fb50, a script camera). The script turns the side view on again
                  * only through the section's own door (1088), exactly as the first time. This runs before the plane projection below. */
                 plane_release(); g_cam.death_cam = 0; cam_hard_reset(); bombs_discard_all(); }   /* 0x44ab20 -> 0x44db10: every bomb out goes, unexploded */
+            if (L.player.gameover_req) { L.player.gameover_req = 0;                                                /* 0x44a8f5: 0x404e10 = SetPage(0x1d) + App_SetState(0) */
+                g_cam.death_cam = 0; cam_hard_reset(); menu_enter(0x1d); }                                          /* 0x445930 still ends with 0x458f90 (no Reset, so the plane lock stays) */
             if (g_res.on) results_update(&L.vm, dt, mk.ok);      /* 0x454090: after the action tick, so a finished action starts the next one in the same frame */
             if (g_cam.mode != 0x20 && (L.player.dead_cam_req || (L.player.dead_kind == 7 && !g_cam.death_cam))) {     /* 0x41fb50: kind 1 is watched from where he hung (+100), kind 7 from where the camera is */
                 g_cam.fix_pos = L.player.dead_kind == 7 ? g_cam.pos : (Vec3){ L.player.pos.x, L.player.pos.y + 100.0f, L.player.pos.z };

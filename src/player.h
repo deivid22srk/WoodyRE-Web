@@ -91,6 +91,7 @@ typedef struct Player {
     /* idle 0x464500: +0x230 seconds standing still, +0x530 which idle variation, +0x52c the zzz bubble is up (its live flag);
      * idle_hold = Perso state != 0 (results, title, frozen by a cinematic camera): the timer neither runs nor resets (set by the app) */
     float idle_t; int idle_var, sleep_bubble, idle_hold;
+    int gameover_req;                                                   /* 0x44a810 found no life left: menu page 0x1d GAME OVER (consumed by the app) */
     int respawn_req;                                                    /* respawn 0x445930 happened: side view off + camera reset 0x458f90 (consumed by the app) */
     /* Perso state 8: riding a class-20 rocket (docs/ROCKET.md 6). The app fills ride_state / ride_seat / ride_q before the update */
     /* race levels (script types 18/19, docs/RACE.md): message 1120 hangs the board under the Perso (+0x4b4) and gives the track polyline (+0x4b0) */

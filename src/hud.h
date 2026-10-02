@@ -52,6 +52,7 @@ void hud_iris(float v);                                         /* black ring, h
 void hud_rect(uint32_t argb);                                   /* flat colour over the virtual screen */
 float hud_pen_text(float x, float y, float size, uint32_t col, uint32_t ref, int num);   /* BlackBox: Common string ref (0: the number num) at the pen, returns the new pen x */
 void hud_credits_enter(void);                                   /* menu page 0x20 entered (0x45bd60): picture 0, the roll from the bottom */
+void hud_gameover(void);                                         /* menu page 0x1d (0x45bbd0): black panel, Common 56 "GAME OVER" in the centre */
 void hud_credits(int prev_level, float dt);                     /* the credits page (0x45bd90): black panel, picture set of app+0x6c, THE END, the roll */
 /* the save-slot list of pages 2 (load) and 5 (save), docs/MENU_LOAD.md 2.2: sel 1..4, pct 0 = free slot,
  * open bit 0 Knothead / bit 1 Splinter unlocked, slide = the panels' offset while they move in or out,

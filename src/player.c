@@ -1287,13 +1287,16 @@ void player_game_tick(Player *p, EkoVM *vm, float dt)
     if (dt <= 0) return;
     switch (p->game_state) {
     case 0: iris_tick(p, dt); p->game_t -= dt;
-            if (p->game_t <= 0) { player_reset(p); iris_set(p, 0, 0, 0.1f); iris_set(p, 0, 1.0f, 1.0f); p->game_state = 1; }   /* 0x445930, then 0x445a44 */
+            if (p->game_t <= 0) {                                        /* 0x445930 -> Perso respawn 0x44a810, then 0x445a44 */
+                if (p->lives == 0) { player_ground_snap(p); p->gameover_req = 1; }   /* 0x44a82b: no life left -> 0x44a8f5 0x404e10 = page 0x1d, no checkpoint, no Reset; only the snap 0x44a900 */
+                else player_reset(p);
+                iris_set(p, 0, 0, 0.1f); iris_set(p, 0, 1.0f, 1.0f); p->game_state = 1; }
             break;
     case 1: if (iris_tick(p, dt)) p->game_state = 2; break;
     case 2: if (p->dead_kind) { p->game_state = 3; p->game_t = 0; } break;
     case 3: p->game_t += dt; if (p->game_t >= p->death_delay - 1.0f) { iris_set(p, 1.0f, 0, 1.0f); p->game_state = 4; } break;   /* 0x445ac1 */
     case 4: if (iris_tick(p, dt)) {
-                if (p->lives > 0) p->lives--;                            /* 0x44c730: life lost, leave all volumes, msgmask 0x10 pulse */
+                p->lives--;                                              /* 0x44c730: life lost (no clamp: 0 -> game over in 0x44a810), leave all volumes, msgmask 0x10 pulse */
                 player_leave_all(p, vm);
                 if (vm) { eko_msgmask_set(vm, p->inst->id, 0x10); p->mask10_frames = 2; }
                 p->game_state = 0; p->game_t = 0.25f; } break;
