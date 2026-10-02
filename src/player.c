@@ -891,10 +891,12 @@ static void anim_request(Player *p, int n, float rate) { ctl_request(p->inst, &p
  * before the script's 1120, which comes from the start volume in the first frame) the board shows nothing of the start anim
  * and keeps its pose until the first lean, jump or crouch; B->Reset() = board_lanim -1. Ticked every frame (0x463e60). */
 static void board_request(Player *p, int n) { if (p->board && p->board != p->inst) ctl_request(p->board, &p->board_lanim, &p->board_lanim_sub, n, 1.0f, NULL); }
-void player_anim_settle(Player *p)
+/* the slot step of the instance clock 0x43eee0 (0x43f0c9: past the end of slot0 it moves slot1..3 up) for the instance `in` just
+ * clocked, so the event scan 0x42f5e0 that follows sees the new part (animPrev != animNow) and not a wrap of the old one */
+void player_anim_settle(Player *p, const Instance *in)
 {
-    if (p->inst && p->inst->model) ctl_chain(p->inst, p->lanim, &p->lanim_sub);
-    if (p->board && p->board != p->inst && p->board->model) ctl_chain(p->board, p->board_lanim, &p->board_lanim_sub);
+    if (p->inst && p->inst == in && p->inst->model) ctl_chain(p->inst, p->lanim, &p->lanim_sub);
+    if (p->board && p->board != p->inst && p->board == in && p->board->model) ctl_chain(p->board, p->board_lanim, &p->board_lanim_sub);
 }
 static void board_tick(Player *p) { if (p->board_lanim >= 0) board_request(p, p->board_lanim); }
 static void race_request(Player *p, int n) { anim_request(p, n, 1.0f); board_request(p, n); }   /* A->Request(n) + B->Request(n) */

@@ -98,6 +98,7 @@ typedef struct EnemySet { Enemy e[MAX_ENEMIES]; int n;
 
 void enemies_add(EnemySet *s, Instance *inst, int type);                      /* on SetTypeInstance 4..9, 12..16 */
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt);
+void enemies_anim_settle(EnemySet *s, const Instance *inst);                  /* right after inst's clock: step a wander chain whose part just ended */
 /* vtbl[39] 0x419480: returns 1 when the enemy died. dir = (0,0,0) for a peck (no knockback). */
 int  enemy_take_damage(Enemy *e, float dmg, Vec3 dir);
 int  enemy_hit(Enemy *e, float dmg, Vec3 dir, Vec3 pt, int kind);              /* vtbl[39] with the hit point: Enemy_TakeDamage 0x41adc0 puts the hit star 0x4750e0 on pt (not for Buzz on kind 2) */
