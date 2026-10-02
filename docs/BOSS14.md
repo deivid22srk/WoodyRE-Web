@@ -99,7 +99,7 @@ All other slots = base (among others 32 radius = `P+4`, 33 height = `P+0x28`, 34
 
 | P+ | value | mode 1 (Reset) | mode 2 (Reset) | used in this class |
 |---|---|---|---|---|
-| 0x00 | 200 | **400** | **800** | fall acceleration (base ground follower during the fall) |
+| 0x00 | **200** | (400) | (800) | fall acceleration: the Fall object (`+0x110`, ctor `0x4402f0`) copies it **once**, in PostLoad (`0x419eb2`), so the drop always uses **200**; Reset's 400 / 800 have no reader (§3.3) |
 | 0x04 | **240** | | | radius (`vtbl[32]`; used by other code, not by the class) |
 | 0x08 | **600** | **400** | **390** | walk speed (Wander, retreat, H speed in state 10) |
 | 0x0c | **900** | **900** | **400** | run speed (Chase); mode 2 also bob speed |
@@ -163,9 +163,11 @@ No Path behaviour and no `[0x4c5330]++` (does not count as "enemy in the level")
 
 ```c
 void Boss14_Reset(Boss14 *e) {
-    Enemy_Reset(e);            /* 0x41a010: pos = home = start, hp = P+0x34, hitT = deathT = 0, type word |= 0x400,
-                                  not in the world ⇒ 0x407790 (so becomes visible again!), flag 4 on, clear msgmask 0x10 */
-    e->behav = e->wander;  e->wander->vtbl[6]();  Wander_Start(e->wander);   /* 0x41c160: turn speed P+0x10 */
+    Enemy_Reset(e);            /* 0x41a010: pos = home = START +0x128 (not where he is now), H angle snapped to the start angle
+                                  H+0x1c and its angular speed 0 (0x41b840), Fall object cleared (0x440310: v and clock, NOT its g),
+                                  hp = P+0x34, hitT = deathT = 0, type word |= 0x400, not in the world ⇒ 0x407790 (so becomes
+                                  visible again!), flag 4 on, clear msgmask 0x10. It touches no behaviour (knock timers, §6.2) */
+    e->behav = e->wander;  e->wander->vtbl[6]();  Wander_Start(e->wander);   /* vtbl[6] 0x41c090 → 0x41b2b0: Wander knock timer 0; 0x41c160: turn speed P+0x10 */
     e->flags &= ~4;                                    /* no falling */
     e->state = 0;  e->t1d8 = 0;  e->deathT = 0;  e->high = 1;  e->u22c = 0;  e->acc = 0;
     e->bobDown = 1;  e->bobMax = 150.0f;  e->bob = 0;
@@ -173,14 +175,14 @@ void Boss14_Reset(Boss14 *e) {
     smokeOn[0] = smokeOn[1] = smokeOn[2] = 0;          /* bytes 0x5e857c..e: smoke plumes off (§9.2) */
     e->anim->vtbl[4]();  if (e->linkAnim) e->linkAnim->vtbl[4]();   /* AnimCtrl reset (0x436a40) */
     switch (e->mode) {
-    case 1: P->+0x0c = 900; P->+0x08 = 400; P->+0x00 = 400; break;     /* 0x40ee7d */
-    case 2: P->+0x0c = 400; P->+0x08 = 390; P->+0x00 = 800; break;     /* 0x40ee49 */
+    case 1: P->+0x0c = 900; P->+0x08 = 400; P->+0x00 = 400; break;     /* 0x40ee7d; P+0 has no reader any more (§2.3) */
+    case 2: P->+0x0c = 400; P->+0x08 = 390; P->+0x00 = 800; break;     /* 0x40ee49; ditto: the drop keeps g = 200 */
     }
     SoundSrc_Init(&e->src);                            /* 0x468e10(this+0x248) */
 }
 ```
 Reset is called by the factory (message 1200), by **every mode switch** (§3.4) and by message `11 [inst, 4]` (base; W2D/W3D
-use that to put the boss back).
+use that to put the boss back when Woody loses a life in the arena, §11.1).
 
 ### 3.4 Mailbox `0x410be0` (every Update, first thing)
 
@@ -348,6 +350,16 @@ bool PlayerStill(vec3 *a, vec3 *b) { return len3(*a - *b) < 1.0f; }  /* 0x410c60
 vulnerable) → { peck ⇒ 9 (2.1 s) ⇒ 0 high | contact ⇒ player −1 ⇒ 0 high | player stands still nearby ⇒ 4/5 retreat until he moves ⇒ 2 }.
 The actual "fall in" condition for the stomp is only **xz distance < 150** (plus ≤ 20 below the high hover height); there is no line-of-sight or angle test.
 Frame-dependent (literally): the 1 % slide in state 7, the fall (per frame, §5) and the at-most-one-shake-step-per-frame in state 6.
+The port normalises the 1 % slide to 60 Hz (`1 − 0.99^(60·dt)`, like its other per-frame effects) and keeps the fall's literal per-frame
+step like every other ground follower (its terminal speed `g/0.2` = 1000 u/s does not depend on the frame rate, only the first frames do).
+
+**Knock timers.** Every behaviour switch of states 0, 2 and 3 (and Reset) calls the new behaviour's `vtbl[6]` first (`0x40eff6`,
+`0x40f0af`, `0x40f3c6`, `0x40eda7`: Wander `0x41c090`, Chase `0x41bc60`), and both start with `0x41b2b0`, which zeroes the
+behaviour's knock timer `Behav+0x1c` (and `+0x20..+0x28`). The switches to Stand (states 3, 5, 9, 10, 12) do not. So the knock
+timer a peck puts on the Chase (§6.2, `AnimLen(8/25)`) is frozen through state 9 (Stand is active) and the wander, and cleared by the
+next chase start in state 2. Without that clear (the port before this was fixed) the chase spends the leftover 2.1 / 2.4 s with a zero
+direction and a step > 0, so the Chase's stuck hook `0x41bdf0` (moved < 0.01 ⇒ ±16 random in x and z, new target angle) fires every
+frame: Buzz shakes after rising from a hit, and a peck while the timer still runs costs no hp.
 
 ## 4. Animation
 
@@ -440,7 +452,8 @@ void Boss14_Height(Boss14 *e) {
     e->flags = hit ? e->flags | 1 : e->flags & ~1;   msgmask(e->id, 0x200) = hit;   /* 0x443e50 / 0x443e90 */
     if (e->flags & 4) {                                             /* 0x410b78: FALLING (state 7, 8, 10, 12) */
         float k = (e->mode == 2) ? 130.0f : 200.0f;                 /* feet sit k below pos */
-        e->pos.y -= k;  Enemy_Ground(e);  e->pos.y += k;            /* 0x41a4e0: gravity P+0 (400), v += dt·g − 0.2·v per frame */
+        e->pos.y -= k;  Enemy_Ground(e);  e->pos.y += k;            /* 0x41a4e0 → 0x440330/0x440340: v += dt·g − 0.2·v per frame, g = the Fall
+                                                                       object's +4 = P+0 at PostLoad = 200 (not Reset's 400/800) */
         return;
     }
     if (e->mode == 2 && !e->high && e->state != 9) {                /* BOBBING (mode 2 only, low phase) */
@@ -461,6 +474,9 @@ void Boss14_Height(Boss14 *e) {
 ```
 * **W1B hover heights** (mode 1): high = **2430** (placement), low = **1634.8** (floor 1344.8 + 290), landing: `pos.y` = floor + **200** (≈ 1544.8 if the
   arena floor there is also 1344.8). The low height is a **fixed** y (calculated below the start position), not ground-following.
+* **The drop**: g = 200, v in units per frame (`v += dt·200 − 0.2·v`), so it reaches its terminal 1000 u/s within ≈ 0.1 s. W1B: 2430 → 1544.8
+  in **0.97 s**; W2D (mode 2, feet 130 below pos): 3012 → 2336 (floor 2206) in **0.75 s** at 60 fps, 0.70 s at ~150 fps (port). With the
+  400 / 800 the port used before, W2D's drop took ≈ 0.25 s.
 * `pos` is the boss's logical point; his **cone** runs from `pos.y − 250` to `pos.y` (§6.1), his base collision cylinder (`vtbl[24]` = `0x41ad80`)
   from `pos.y` to `pos.y + 150` with radius 240. The model is drawn at `pos` with the rotation from H (`vtbl[44]`); the root node comes from the
   animation. If a port stays stuck on **anim 0** (cinematic track, root y ≈ 5826), the model hovers far above the arena: in the original, from the
@@ -666,6 +682,24 @@ ground, `0x410993`/`0x4109ab`), 0x10 cleared in `Enemy::Reset`; **script var**: 
 * During the fight, the boss is **not** reset when Woody dies (the Perso reset `0x445b23` only touches the Perso); var49 stays 2.
 * W2D (745 + 746, `63 [746, 1]`, var 288), W3D (775 + 776, var 318) and WWS (362 + 363, var 138) write **2** ⇒ mode 2.
 
+### 11.1 W2D: the reset after a death in the arena
+
+Unlike W1B, W2D puts Buzz back when Woody loses a life (W3D the same, BOSS15_16.md §9.3):
+
+1. The Perso's death: `0x44c730` pulses msgmask 0x10 on the Perso's object (port: `player.c`, game state 4); W2D object **3** (the Perso,
+   `MSGTEST 16`) sets **var0 = 1**. (The engine itself resets no actor: `0x445930 → 0x40c040` calls `vtbl[28]` = `0x445840` = `ret`.)
+2. Object **739** (the fight director) watches var0: `var0 == 1 && var291 == 1` (var291 = 1 since Woody entered volume 336, object 748,
+   which also started phase 1) ⇒ `var292 = var293 = var294 = 1`, `var288 = var289 = −1` (both mailboxes), `var286 = 2903`, `var285 = 2`,
+   `var0 = 0` (any other wake also clears var0).
+3. Object **745** watches var292: `11 [745, 4, 0]` (Reset §3.3: start position and angle, hp 5, state 0, high, mode kept), `6 [745, 0]`,
+   `6 [746, 0]`, `var292 = 0`. Object 762 does the same for class 15 (`11 [762, 4, 0]`, Boss15_Reset: hp 6, phase 0).
+4. Phase 2 again with the intro skipped (`2903 − var286 − 50 < 0`): fade `1152`, after 0.7 s `6 [745, 1]`, `6 [746, 1]`, **`var288 = 2`**.
+   The mode is still 2, so the mailbox only acknowledges (no second Reset); the fight restarts from the start position with 5 hp.
+
+Port (verified at 60 fps and uncapped, `WOODY_BOSSLOG=1`): `BOSS 745 reset: pos −3849 3012 14286 ang 1.571 hp 5 mode 2` ≈ 3 s
+after every death (also after hits: hp 3 → 5), and the boss reappears there 0.6 s later. Before, `boss_reset` put pos and home on the
+instance position (= where `enemy_place` had last put him) and kept his angle, so he resumed the fight from wherever he was.
+
 ## 12. Recipe for the port (W1B playable and correctly on screen)
 
 Order of implementation; numbers for mode 1 / W1B.
@@ -675,13 +709,15 @@ Order of implementation; numbers for mode 1 / W1B.
 2. **Mailbox** at the start of every boss update: `v = var[mail_var]`; `v == 1/2` ⇒ if the mode changes: `mode = v; boss_reset()`; always `var[mail_var] = -1`
    (wake watchers). `mode == 0` ⇒ do nothing else (no animation choice, no HUD, no drag-along either).
 3. **Activation** as with `Enemy::Think`: only update if the boss is within **3000** of the camera (or hp ≤ 0) and no cinematic is running.
-4. **Reset** (`boss_reset`): pos = home = placement (−7031, 2430, −8863), hp = 5, `high = 1`, state 0, falling off, make visible, smoke off,
-   `walk = 400, run = 900, g = 400`; `y_high = 2430`, `y_low = floor_below_start + 290` (**1634.8**, determined once at load time).
+4. **Reset** (`boss_reset`): pos = home = **start position** (the placement, −7031, 2430, −8863; not the current position), H angle = start angle,
+   hp = 5, `high = 1`, state 0, falling off, make visible, smoke off, `walk = 400, run = 900` (P+0 = 400 is written but unread: the fall keeps g = 200);
+   `y_high = 2430`, `y_low = floor_below_start + 290` (**1634.8**, determined once at load time).
 5. **Animation**: never leave anim 0 in place. Table logical record → (.ins anim, speed, chain): 2 → (7, 3, loop), 4 → (9, 3, then 10 looped), 7 → (13, 2, loop),
    8 → (14, 1, then 5), 9 → (18, 1, hold), 10/11/12 → (15/16/17, 3, then 5), 15 → (12, 3, loop), 16 → (16,17,15,16, 1.5). Choice per state §4.2
    (from the previous frame). **Same record on 404** with its own animations. `AnimLen(8) = len(14)/1 = 2.1 s`, `AnimLen(2) = 0.167 s`.
 6. **Movement**: horizontal the existing wander/chase from `src/enemy.c` (but: keep y fixed, no edge/step-up test, turning π/4 resp. π, speeds 400/900,
-   leash 1000 in 3D); vertical §5: towards `home.y` at max 900 u/s, or falling with `g = 400` (per-frame formula of ENEMY.md §3.3) with the feet 200 below `pos`.
+   leash 1000 in 3D); vertical §5: towards `home.y` at max 900 u/s, or falling with **`g = 200`** (the Fall object's, per-frame formula of ENEMY.md §3.3)
+   with the feet 200 below `pos` (mode 2: 130). Every wander / chase start zeroes that behaviour's knock timer (§3A.1).
 7. **Drag-along**: after the boss update, 404.pos = 405.pos and 404.rot = 405.rot (including the cell).
 8. **State machine** §3A literally (13 states, including the 60 Hz shaking −20/+20/+20/−20 + 10 % towards the player, the 1 %/frame slide during the fall,
    the retreat 1300 from the player while he stands still (< 1 unit/frame), and the 20-unit gate before the stomp).
@@ -711,6 +747,11 @@ Order of implementation; numbers for mode 1 / W1B.
   sounds 44..49, the explosion at `pos + 400` on hits; class-17 smoke never exists (W2D/W3D send `63 [inst, 1]`, §9.2). Nothing
   mode-2-specific is missing beyond the two items above.
   Test corner: `WOODY_POSAT="24 -7990 1360 -7560"` for the test below (Woody is no longer hit; the old build kills him).
+* Reset, drop and knock timers (W2D reports): Reset puts pos / home / angle on the start (`Enemy.start` / `start_ang`, §3.3) and the instance with it; the drop uses the Fall
+  object's g = 200 (`BossState.fall_g`, §5); wander / chase starts zero their knock timers (§3A.1: no more shaking after a hit, every hit
+  costs hp); the 1 % slide of state 7 is normalised to 60 Hz. W2D test: `--pos -3845 2300 16300 --yaw 180 --walk 1.5` (fight from ≈ 28 s),
+  `WOODY_BOSSHIT=1` (testing: a 1-hp peck as soon as he is low and within 400), `WOODY_GOD=1`, `WOODY_KILLAT="44 3"`; the boss log
+  now also prints the three knock timers and the game time.
 * The linked instance is excluded from the boss's ground test by `player_set_carried`; `player_ground_query` now also skips the player himself
   (the boss used to land on Woody's own collision node).
 * Found while porting: the cinematic start `0x44ecc0` calls `0x4077f0` on every actor, and that always puts a hidden instance back into its

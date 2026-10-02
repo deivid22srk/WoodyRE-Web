@@ -9,7 +9,7 @@ struct Player;
 /* parameter block P (0x41d510); message 11 writes into it. shot_visual = P+0x74 (0/1 missile, 2 bolt, 3 fireball),
  * shot_fx = the SoundFx that 0x449130 plays for that visual */
 typedef struct { float radius, height, walk, run, dash, see, dy, turn, turn_fast, leash, hp, cool, bite, shot_dmg, reload, melee, dodge, steer, active_d; int shot_visual, shot_fx;
-                 float fall_g;                                                 /* P+0: gravity of the ground follower (200; the boss sets 400/800) */
+                 float fall_g;                                                 /* P+0: gravity of the ground follower (200); the Fall object copies it once in PostLoad (0x419eb2), so Buzz's Reset writing 400 / 800 changes nothing */
                  float drop, rise; } EnemyParams;                              /* P+0x2c / P+0x30: max step down / up (10; subtype 10: 10000, the bosses: 15000) */
 
 /* obstacle sensor Enemy+0x124 (ctor 0x41cfc0, tick 0x41d4a0(3), docs/OBSTACLE.md 3): 16 directions, one probed per frame */
@@ -26,7 +26,7 @@ typedef struct BossState {
     float y_high, y_low; int y_low_ok;   /* +0x214 / +0x218 hover heights */
     Vec3 pl_prev, pl_cur, home_save; float leash_save;
     int bob_down; float bob, bob_max;    /* mode 2 hops */
-    int grav, on_ground; float fall_v;   /* flag 4 (falling) and flag 1 (on the ground), the base ground follower's per-frame speed */
+    int grav, on_ground; float fall_v, fall_g;   /* flag 4 (falling) and flag 1 (on the ground), the base ground follower's per-frame speed and the Fall object's gravity (+4, P+0 at PostLoad = 200) */
     float turn;                     /* H turn rate (rad/s) */
     int w_act; float w_t;           /* Dwalen: current action (-1 none) and its remaining time */
     int c_run; float c_turn_t;      /* Achtervolgen: running, turn-in-place timer */
