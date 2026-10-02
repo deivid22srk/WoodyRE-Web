@@ -235,6 +235,15 @@ static float er_len(const Enemy *e, int n, int k)                             /*
     const ERec *r = er_rec(e, n); const Model *m = e->inst->model; int s = r->sub[k];
     return s >= 0 && (uint32_t)s < m->nanims ? m->anims[s].duration_s / r->speed : 0.0f;
 }
+static void er_chain(Enemy *e)                                                 /* the slot step of the clock 0x43eee0 (0x43f0c9) */
+{
+    Instance *in = e->inst; const ERec *r = er_rec(e, e->lanim); const Model *m = in->model;
+    int nx = e->lsub < 3 ? r->sub[e->lsub + 1] : 0;
+    if ((uint32_t)in->anim >= m->nanims) return;
+    if (e->lsub < 3 && (nx < 0 || (uint32_t)nx >= m->nanims)) {                 /* chain ends: hold the last frame (the clock runs after this) */
+        if (in->anim_time >= m->anims[in->anim].duration_s - 0.15f) { in->anim_time = m->anims[in->anim].duration_s * 0.999f; in->anim_speed = 0; }
+    } else if (e->lsub < 3 && in->anim_time >= m->anims[in->anim].duration_s) { in->anim_time -= m->anims[in->anim].duration_s; in->anim = nx; e->lsub++; }
+}
 static void er_request(Enemy *e, int n)                                        /* Request 0x436b70 + Tick 0x436a50 */
 {
     Instance *in = e->inst; const ERec *r = er_rec(e, n); const Model *m = in->model;
@@ -243,11 +252,18 @@ static void er_request(Enemy *e, int n)                                        /
         if (r->sub[0] >= 0 && (uint32_t)r->sub[0] < m->nanims && (r->restart || in->anim != r->sub[0])) { in->anim = r->sub[0]; in->anim_time = 0; }
     }
     in->anim_speed = r->speed;
-    int nx = e->lsub < 3 ? r->sub[e->lsub + 1] : 0;
-    if ((uint32_t)in->anim >= m->nanims) return;
-    if (e->lsub < 3 && (nx < 0 || (uint32_t)nx >= m->nanims)) {                 /* chain ends: hold the last frame (the clock runs after this) */
-        if (in->anim_time >= m->anims[in->anim].duration_s - 0.15f) { in->anim_time = m->anims[in->anim].duration_s * 0.999f; in->anim_speed = 0; }
-    } else if (e->lsub < 3 && in->anim_time >= m->anims[in->anim].duration_s) { in->anim_time -= m->anims[in->anim].duration_s; in->anim = nx; e->lsub++; }
+    er_chain(e);
+}
+/* right after the clock of `in`, before its event scan and pose (main loop): the chain part the clock just ended moves on, as the
+ * slot step inside 0x43eee0 does; only while `in` still shows the part er_request put there */
+void enemies_anim_settle(EnemySet *s, const Instance *in)
+{
+    for (int i = 0; i < s->n; i++) {
+        Enemy *e = &s->e[i];
+        if (e->inst != in || e->lanim < 0 || e->lsub < 0 || e->lsub > 3) continue;
+        if (er_rec(e, e->lanim)->sub[e->lsub] == in->anim) er_chain(e);
+        return;
+    }
 }
 
 /* ---- behaviour Wander (ctor 0x41bf30, vtable 0x4aa118; docs/ENEMY.md 5.4) ------------------------------------------

@@ -255,6 +255,12 @@ config 1..8 (`0x4693b0`). Setters for the options menu: `vt[0x54/0x5c/0x64]` of 
 `0x43a880(model, animPrev, animNow, tPrev, tNow, buf, wrap)` → `0x43a8f0` collects the events of the **root node** with
 `tPrev ≤ t < tNow` (on wrap: `[tPrev, end)` + `[0, tNow)`) → `0x4695f0(inst, buf, n)`.
 
+Order matters: the clock `0x43eee0` steps a logical-animation chain to its next part itself (slot step `0x43f0c9`) BEFORE this
+scan, so when a chain part ends the scan sees `animPrev != animNow` (a new animation, events from 0) and never a wrap of the
+old part. The port once stepped the chain after the scan: the clock past the end of the peck dive's get-up (`.ins` 16, logical
+0xd = 16 → 0) read as a wrap and played its t = 0 sound (ref 0x19) a second time when Woody stood up (`player_anim_settle` /
+`enemies_anim_settle` now run right after each instance's clock).
+
 Record (9 dwords, FORMAT_INS.md §7.3):
 
 | dword | type | meaning | evidence |

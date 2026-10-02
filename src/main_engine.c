@@ -3768,10 +3768,18 @@ int main(int argc, char **argv)
             { int n = g_nretry; g_nretry = 0; for (int i = 0; i < n; i++) { Instance *ri = slot_instance(g_retry[i].args[0]); if (ri && inst_msg(ri, g_retry[i].id, g_retry[i].args, g_retry[i].nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = g_retry[i]; } }
             for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
                 Instance *ii = &g_ins.models[mi].instances[k];
-                if (ii->scripted) inst_tick(ii, g_now, dt); else ii->anim_time += dt * ii->anim_speed;
+                if (ii->scripted) inst_tick(ii, g_now, dt);
+                else {
+                    ii->anim_time += dt * ii->anim_speed;
+                    /* the slot step belongs to the clock 0x43eee0 (0x43f0c9), so it comes before the pose and before the event scan
+                     * 0x42f5e0: a chain part the clock just ended moves on now. After the scan, the scan read the clock gone past
+                     * the end as a wrap of the part and collected its t = 0 events again (the get-up .ins 16 of the peck dive's
+                     * rebound, logical 0xd = 16 -> 0, played its sound twice) */
+                    if (L.have_player && L.player.inst && !L.player.inst->scripted) player_anim_settle(&L.player, ii);
+                    enemies_anim_settle(&g_enemies, ii);
+                }
                 anim_sounds(ii);
             }
-            if (L.have_player && L.player.inst && !L.player.inst->scripted) player_anim_settle(&L.player);   /* before the pose: a chain part the clock just ended moves on now */
         }
         if (!paused) ambient_update(dt);                                          /* class 90 thinks (ambient.c): new butterflies / motes / rain drops */
         if (!paused) water_update(dt, g_player);
