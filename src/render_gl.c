@@ -1720,7 +1720,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         TexGroup *tg = &r->tex->groups[g];
         if (tg->frame_count > 1 && tg->anim_duration > 0 && ((tg->flags >> 8) & 0xff) != 2) tg->gl_tex = tg->gl_frames[(uint32_t)(time_s / tg->anim_duration * tg->frame_count) % tg->frame_count];
     }
-    glDepthMask(GL_TRUE); glDisable(GL_BLEND); glClearColor(0.08f, 0.09f, 0.11f, 1); glClearStencil(0); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    glDepthMask(GL_TRUE); glDisable(GL_BLEND); glClearColor(0, 0, 0, 1); glClearStencil(0);   /* 0x47ee70 (0x40174e, every frame): Clear(TARGET | ZBUFFER, colour 0 = black, z 1.0) */ glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     double q0 = win_time(); g_srt.on = 0; g_srt.fn = g_srt.an = 0;
     /* camera basis and frustum first: what is visible decides what still has to be lit and drawn */
     float aspect = w->height ? (float)w->width / (float)w->height : 1.333f, zn = 5.0f, zf = 200000.0f;
