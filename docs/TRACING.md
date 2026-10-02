@@ -86,6 +86,17 @@ One debugger run, several probes (`--probe list,fpu,carousel,rocket,cam,crush`),
   has no save, and a copy of the port's `woodyre.sav` (same layout) lets Load game reach the carousel without touching `game/`.
 * `--pos x y z --at T` as `wiris.py`; `--onto INST DY` puts the Perso DY above the animated root `inst+0x60` of an instance
   (first at its `.ins` position until it has been clocked); `--every S` thins the per-tick lines.
+* `--face YAW` (with `--pos`): Mover_SetDir `0x459ff0` on Perso+0x388, called from the VM tick entry with the return on an int3
+  page and the registers put back. The follow camera does not swing round by itself: add `--keys "T:51"` (Num0 = camera behind).
+* `--shot "T file.png ..."` with `--windowed`: **screenshots of the original.** At the entry of Present `0x47ee90` the main thread
+  is sent through `IDirectDrawSurface7::Lock` (vtable `+0x64`, DDLOCK_WAIT | READONLY) and `::Unlock` (`+0x80`) of the back buffer
+  `renderer+0x38`, the pixels are read in between (32 bpp, masks ff0000/ff00/ff) and the registers restored. In exclusive
+  fullscreen Lock fails with DDERR_SURFACELOST as soon as the game is not the foreground window, so `--windowed` patches
+  `0x4027b8` (`and cl, 1` -> `mov cl, 1`) and the renderer takes its never-shipped windowed path (DISPLAY.md §1.1): a 644x504
+  popup on the desktop, the same 640x480 back buffer. To compare with the port, convert the `cam` probe line to `--cam x y z yaw
+  pitch` (yaw = atan2(fwd.x, fwd.z), pitch = asin(fwd.y)) and set `WOODY_CAMFOV=83.97` (the free camera's default fov is 70).
+  Only one Woody.exe can run at a time (a second instance exits at once). In these boots the Perso is not drawn and "Press a
+  key" is shown (the skipped title logo), which does not affect the rest of the frame.
 
 ```bash
 python tools/wverify.py game --level W1A --probe list,fpu --from 15 --frames 16 --seconds 105 --out out/trace/v_list.txt
@@ -93,6 +104,7 @@ python tools/wverify.py game --probe carousel --sav <copy of woodyre.sav> --keys
 python tools/wverify.py game --level W1A --probe rocket --inst 323 --pos 8845 1160 385 --at 5 --keys "7:ATTACK:0.15" --from 6 --until 16
 python tools/wverify.py game --level W1B --probe cam --onto 605 200 --at 5 --from 4.5 --until 35 --every 0.05
 python tools/wverify.py game --level W1A --probe crush,cam --pos 2249 1120 -7577 --at 5 --from 5 --until 15 --every 0.25
+python tools/wverify.py game --level W2D --windowed --probe cam --pos -7852 2785 -1584 --face -90 --at 5 --keys "6:51:0.2" --from 4 --until 12 --every 0.25 --shot "9 out/w2d_cmp/orig_lake_a.png" --seconds 95
 ```
 
 Results of 2026-09-26 (each is written up where the claim lives): the instance list keeps stationary instances in place

@@ -298,12 +298,12 @@ animated liquid of §4.1.
    world batches always bind frame 0. Models keep their own route (`set_material(…,
    frame)`).
 5. Clear color: the original draws nothing below the horizon; what is visible there is the
-   original's clear color (not investigated). In the levels there is geometry there.
+   original's clear color, **black** (`0x47ee70`, every frame from `0x40174e`; WATER.md §7). In the levels there is
+   geometry there - except under the water, where the lake floors are sky faces.
 
 ## 7. Open questions / uncertain
 
-- The original's framebuffer clear color (visible below `y−S` if a level is open there, and
-  anywhere sky faces are not in the visible set).
+- (Settled 2026-10-02: the clear color is black, `0x47ee70` = `Clear(TARGET | ZBUFFER, 0, 1.0)`; WATER.md §7.)
 - Whether the bank images get mipmaps (`0x480780` not read); irrelevant for the cube,
   which is sampled at mip 0.
 - W1B (§8): the original's image has not been placed side by side with the port; that the far

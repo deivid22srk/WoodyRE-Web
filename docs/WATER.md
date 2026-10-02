@@ -67,11 +67,15 @@ Tables in the subsystem `[0x5e823c]` (filled at `0x40248f`/`0x402520`): `+0` = `
 * **Color per vertex** (`0x474490`): `a = norm(camera − v)`, `b = norm(v − sun)`, mirrored `r = (b.x, −b.y, b.z)`;
   `a·r < 0` → value 1, otherwise `|a × r|` (sine of the angle). RGB = `table900[round(value·127)] + 0.4`, alpha = `+0x148`.
   A glint line where the reflected sun hits the eye: 0.9 dead-on, 0.4 outside it.
-* **Two layers**, each all triangles; first layer B, then A. Only **interior points** move (not row 0, not the last row,
+* **Two layers**, each all triangles; layer B is submitted first, then A, but **A is drawn first** (the bucket lists are
+  LIFO, see the next point). Only **interior points** move (not row 0, not the last row,
   not `k % nc == 0`, not `(k+1) % nc == 0`), with `c = cos[ph & 511]`, `s = −cos[(ph+128) & 511] = sin`, amplitude `+0x144`:
   A = `(x + c·amp, y, z + s·amp)`, uv; B = `(x − c·amp, y − 5, z − s·amp)`, `uv + (0.23, 0.85)`. The two layers thus rotate
   against each other; with the coarse grids of W2A (3×5, 3×7, 3×3, 12×8) the effect is mostly a swirling texture.
-* Triangles via `0x472040` (clip) to **texture list 8** (`0x42b460(tex, 8)`): in the flush `0x4293f0` blend on,
+* Triangles via `0x472040` (clip) to **texture list 8** (`0x42b460(tex, 8)`, which links the polygon **in front** of the
+  texture's list for that bucket, `0x42b4c5..0x42b4d3`; the flush walks the list from its head, so every water triangle is
+  drawn in the reverse of its submission order: the volumes in reverse Draw order, layer A before B, last triangle first):
+  in the flush `0x4293f0` blend on,
   SRCALPHA/INVSRCALPHA, **z-write off**, after the models (list 11) and before the additive list 3 and the fade list; MODULATE2X
   (LIGHTING.md §1.5). Color bytes = `float·255` (`0x4aa308`). No culling.
 * Afterward, per vertex `phase += ftol((rand·30 + 250)·dt)` (fistp, rounding): ~265/512 revolution per second, only in
@@ -118,4 +122,29 @@ applied, but invisible because image 58 is round (the port leaves it out).
   branches of `player_kill`).
 * `+0x14d` and `+0x150` (3.0) after drowning are write-only: the only accesses in `0x472e00..0x474b00` are the writes at
   `0x474a0c` and `0x474a23`.
-* Not compared against the running original.
+* Compared against the running original, see §7.
+
+## 7. Compared with the running original (2026-10-02, W2D)
+
+Complaint: "the W2D water has no ground compared to the original" - the original looked like a bright, fairly uniform cyan
+lake with the posts visible only a short way down, the port like translucent water over a dark void. Checked with live
+captures of the original (`tools/wverify.py --windowed --shot`, TRACING.md §3.2) and the port at the same camera
+(`--cam` from the `cam` probe, `WOODY_CAMFOV=83.97`), three W2D spots: the boardwalk `--pos -7852 2785 -1584` (camera
+`-8056.2 3085.0 -1928.0`, yaw 30.71, pitch −21.78), the pillars `--pos -4634.5 2712.0 -12699.6` (camera
+`-4883.7 3012.0 -12386.8`, 141.47, −21.78) and the view over the floating planks to the pirate ship `--pos -7852 2785 -1584
+--face -90` + Num0 (camera `-7675.3 3085.0 -1830.1`, −35.70, −27.84). Images: `out/w2d_cmp/cmp_*_orig_before_after.png`.
+
+* There is **no ground under the lakes in the original either**: the faces below them are the sky group (byte 1 of the flags
+  `== 2`, SKY.md §1), never drawn, and the sky box has no bottom and black lower rows in W2D. What is seen through the two
+  0.4-alpha layers is the frame's clear colour.
+* **The clear colour is black**: `0x47ee70` = `Clear(0, NULL, TARGET | ZBUFFER, 0x00000000, 1.0, 0)`, called every frame from
+  `0x40174e`. The port cleared to (0.08, 0.09, 0.11), so the deep water turned grey-blue and the posts seemed to go down into
+  a lit void. Fixed (`rnd_frame`).
+* **Layer order** (above): the port drew B first. Fixed (`water_draw`).
+* No fog: the exe sets render states 4, 7, 8, 9, 0xe, 0xf, 0x13, 0x14, 0x16..0x1b, 0x1d, 0x29, 0x88..0x8a and nothing else
+  (every `SetRenderState`, device vtable `+0x50`); FOGENABLE (28) keeps the D3D default FALSE.
+* Measured after the two fixes, mean RGB of water regions in the planks / pirate-ship view: original (27.4, 143.0, 161.5),
+  (17.7, 107.6, 135.1), (19.4, 138.6, 157.7); port before (33.6, 145.4, 161.7), (30.3, 121.6, 147.6), (24.8, 143.7, 162.0);
+  port after (26.6, 142.5, 161.3), (17.6, 107.3, 135.2), (19.1, 138.6, 157.8). The draw state of §3 (MODULATE2X, alpha
+  0.40, the glint colours) was right; the grid itself animates, so single pixels still differ.
+
