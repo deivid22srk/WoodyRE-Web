@@ -297,6 +297,7 @@ static void wander_choose(Enemy *e, int a)                                      
 }
 static void wander_restart(Enemy *e, int a)                                     /* vtbl[6] 0x41c090 (a = -1) / 0x41c0c0(a) */
 {
+    e->knock_t = 0;                                                             /* both begin with 0x41b2b0: the behaviour's knock timer +0x1c = 0 (the port keeps one timer for all behaviours) */
     e->w_act = -1; e->w_dur = 0; e->w_home_t = 0; e->w_homing = 0; e->w_avoid = NULL; e->w_avoid_t = 0;
     wander_choose(e, a);
 }

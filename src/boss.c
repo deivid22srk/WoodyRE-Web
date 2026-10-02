@@ -109,10 +109,15 @@ static void wander_choose(Enemy *e)                                  /* 0x41c180
     b->w_act = a; int n = wander_rec(e, a); b->w_t = n < 0 ? 0 : anim_len(e, n);
     if (a == 7) { float r = enemy_sensor_random_free(e); e->want_ang = r >= 0 ? r : (float)(rand() % 6283) * 0.001f; }   /* 0x41c249: a free sensor direction, else 0x41ba10 */
 }
-static void wander_start(Enemy *e) { e->b.behav = 0; e->b.turn = B_TURN_W; e->b.w_act = -1; wander_choose(e); }   /* Init + 0x41c160 */
-static void chase_start(Enemy *e, const Player *pl)                  /* 0x41bc80: run speed at once, turn pi, first turn on the spot */
+/* Every caller of these two (Reset 0x40eda7, states 0 0x40eff6, 2 0x40f0af and 3 0x40f3c6) first calls the behaviour's vtbl[6]
+ * (Wander 0x41c090, Chase 0x41bc60), and both begin with 0x41b2b0, which zeroes the behaviour's knockback timer Behav+0x1c
+ * (and +0x20..+0x28). Without that a peck's knock timer on the Chase (2.4 s in W2D, AnimLen(25)) survives state 9: the next
+ * chase spends it with a zero direction and a step > 0, so the stuck hook 0x41bdf0 wriggles him +-16 every frame, and a
+ * peck while it still runs costs no hp (Enemy_TakeDamage refuses it). */
+static void wander_start(Enemy *e) { e->b.knock[0] = 0; e->b.behav = 0; e->b.turn = B_TURN_W; e->b.w_act = -1; wander_choose(e); }   /* vtbl[6] 0x41c090 + 0x41c160 */
+static void chase_start(Enemy *e, const Player *pl)                  /* vtbl[6] 0x41bc60 + 0x41bc80: run speed at once, turn pi, first turn on the spot */
 {
-    BossState *b = &e->b; b->behav = 1; b->turn = B_TURN_C; e->speed = e->want_speed = e->P.run;
+    BossState *b = &e->b; b->knock[1] = 0; b->behav = 1; b->turn = B_TURN_C; e->speed = e->want_speed = e->P.run;
     e->want_ang = ang_to(e->pos, pl->pos);                           /* Steer: the first target */
     float a = fabsf(ang_diff(ang_to(e->pos, pl->pos), e->ang));
     if (a > 1e-4f) { b->c_turn_t = a / b->turn; b->c_run = 0; } else b->c_run = 1;
@@ -188,7 +193,7 @@ static void height_tick(Enemy *e, Player *pl, float dt)
         float k = m1(e) ? 200.0f : 130.0f, feet = e->pos.y - k; int found;
         float gy; enemy_probe(e, pl, (Vec3){ e->pos.x, feet + h2, e->pos.z }, h2, &gy, &found);   /* 0x41a561 again, with the same probe at the feet */
         int on = found && gy >= feet - 0.5f;
-        if (on) b->fall_v = 0; else { b->fall_v += dt * e->P.fall_g - b->fall_v * 0.2f; if (b->fall_v > 0) feet -= b->fall_v; }   /* 0x41a4e0: v in units per FRAME */
+        if (on) b->fall_v = 0; else { b->fall_v += dt * b->fall_g - b->fall_v * 0.2f; if (b->fall_v > 0) feet -= b->fall_v; }   /* 0x41a4e0 -> 0x440330 / 0x440340: v in units per FRAME, g = the Fall object's own +4 (200) */
         if (found && feet < gy) { feet = gy; on = 1; }
         b->on_ground = on; e->pos.y = feet + k; game_msgmask(e->inst, 0x200, on); return;   /* 0x41a642 / 0x41a65e */
     }
@@ -245,18 +250,31 @@ static void sync_link(Enemy *e)
     l->position = e->inst->position; l->quat = e->inst->quat; l->scale = e->inst->scale; l->world = e->inst->world;
 }
 
+/* Reset is reached from the factory, from every mode switch of the mailbox and from message 11 [inst, 4] (W2D object 745,
+ * W3D 775: when Woody loses a life in the arena, docs/BOSS14.md 11.1; W1B and WWS never send it).Enemy::Reset 0x41a010 puts pos and the home point
+ * back on the START position +0x128 (not on the instance position, which is pos itself in the original and the last placed
+ * pos in the port), snaps the H angle to the start angle +0x1c (0x41b840), clears the Fall object (0x440310: v and its clock,
+ * not its gravity), hp = P+0x34 and the hit timer +0x158. It touches no behaviour: only the Wander's knock timer is cleared,
+ * by its vtbl[6] below; the Chase's is cleared by the next chase start, the Stand's runs out with the hit timer. */
 void boss_reset(Enemy *e)                                            /* vtbl[17] 0x40ed90 (Enemy::Reset 0x41a010 first) */
 {
-    BossState *b = &e->b;
-    e->pos = e->home = e->inst->position; e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp; e->hit_t = 0;   /* WOODY_BOSSHP: testing */ e->inst->visible = 1;   /* 0x407790: back in the world */
-    enemy_reset_probe(e); game_msgmask(e->inst, 0x10, 0);           /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
+    BossState *b = &e->b; Instance *in = e->inst;
+    e->pos = e->home = e->start; e->ang = e->want_ang = e->start_ang;   /* 0x41a02f..0x41a067, 0x41b840 */
+    if (in->position.x != e->pos.x || in->position.y != e->pos.y || in->position.z != e->pos.z) {   /* +0xc IS the instance position in the original */
+        in->position = e->pos; mat4_from_trs(&in->world, in->position, in->quat, in->scale);
+    }
+    e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp; e->hit_t = 0;   /* WOODY_BOSSHP: testing */ in->visible = 1;   /* 0x407790: back in the world */
+    enemy_reset_probe(e); game_msgmask(in, 0x10, 0);                /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
     wander_start(e); b->grav = 0; b->st = 0; b->t1d8 = 0; b->high = 1; b->acc = 0;
-    b->bob_down = 1; b->bob_max = 150.0f; b->bob = 0; b->fall_v = 0; b->knock[0] = b->knock[1] = b->knock[2] = 0;
+    b->bob_down = 1; b->bob_max = 150.0f; b->bob = 0; b->fall_v = 0;
     b->rec = b->lrec = -1; b->sub = b->lsub = 0;
     game_boss_smoke(b->link, -1, 0);                                 /* bytes 0x5e857c..e */
+    /* 0x40ee49 / 0x40ee7d also write P+0 = 400 / 800, but the Fall object took its gravity from P+0 (200) once, in PostLoad
+     * (0x419eb2 -> ctor 0x4402f0), and nothing reads P+0 after that: the drop keeps g = 200 (b->fall_g) */
     if (b->mode == 1) { e->P.run = 900; e->P.walk = 400; e->P.fall_g = 400; }
     else if (b->mode == 2) { e->P.run = 400; e->P.walk = 390; e->P.fall_g = 800; }
     loop_stop(e);                                                    /* 0x468e10: a new source */
+    if (getenv("WOODY_BOSSLOG")) printf("  BOSS %u reset: pos %.0f %.0f %.0f ang %.3f hp %.0f mode %d", in->index, e->pos.x, e->pos.y, e->pos.z, e->ang, e->hp, b->mode), puts("");
 }
 
 void boss_init(Enemy *e)
@@ -265,7 +283,9 @@ void boss_init(Enemy *e)
     e->P.radius = 240; e->P.height = 150; e->P.walk = 600; e->P.run = 900; e->P.fall_g = 200; e->P.leash = 1000; e->P.see = B_SEE; e->P.dy = B_DY;
     e->P.hp = 5; e->P.active_d = 3000; e->attackable = 1; e->P.drop = e->P.rise = 15000.0f;   /* P+0x2c / P+0x30: no edge or step test */
     /* PostLoad 0x419ec1: the start angle from the placement (vtbl[44] builds the same quaternion as enemy_place) */
-    { Quat q = in->quat; float l = sqrtf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w); if (l > 1e-6f) { q.x /= l; q.y /= l; } float yaw = 2.0f * atan2f(-q.y, q.x); e->ang = e->want_ang = PI_F * 0.5f - yaw; }
+    { Quat q = in->quat; float l = sqrtf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w); if (l > 1e-6f) { q.x /= l; q.y /= l; } float yaw = 2.0f * atan2f(-q.y, q.x); e->ang = e->want_ang = e->start_ang = PI_F * 0.5f - yaw; }   /* also H+0x1c, the start angle Reset snaps back to */
+    e->start = in->position;                                         /* +0x128 (0x419f74) */
+    b->fall_g = e->P.fall_g;                                         /* the Fall object +0x110 (0x419eb2): g = P+0 = 200, kept for good */
     b->y_high = in->position.y; b->mode = 0; b->mail_var = 0; b->link = NULL;
     boss_reset(e);
     in->visible = 1;                                                 /* the factory hangs it in the world; the W1B script hides it 1 s later */
@@ -366,7 +386,8 @@ void boss_update(Enemy *e, Player *pl, Vec3 cam, float dt)
             audio_fx(k ? 45 : 40, NULL, NULL);
         }
         e->want_ang = ang_to(e->pos, pl->pos); b->turn = B_TURN_C; h_turn(e, dt);
-        e->pos.x += (pl->pos.x - e->pos.x) * 0.01f; e->pos.z += (pl->pos.z - e->pos.z) * 0.01f;   /* 1 % per FRAME */
+        { float k = 1.0f - powf(1.0f - 0.01f, dt * 60.0f);           /* 0x4a94f8: 1 % per FRAME, normalised to 60 Hz so the pull does not grow with our frame rate */
+          e->pos.x += (pl->pos.x - e->pos.x) * k; e->pos.z += (pl->pos.z - e->pos.z) * k; }
         if (cone_touch(e, pl)) {
             if (bite(e, pl)) { b->st = 10; break; }
             audio_fx(k ? 46 : 41, NULL, NULL); game_cam_shake(1.5f); b->high = 0; b->t1d8 = B_LAND_T; b->st = 8;
@@ -390,9 +411,11 @@ void boss_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         printf("  BOSS %u beaten: var %u := 3", in->index, b->mail_var & 0xffffff), puts("");
         break;
     }
+    if (getenv("WOODY_BOSSHIT") && b->mode && !b->high && b->st == 3 && e->hit_t <= 0 && dist_xz(e->pos, pl->pos) < 400.0f)   /* testing: a peck as soon as he is low and near */
+        printf("  BOSSHIT test peck: %s", boss_take_damage(e, NULL, 0) ? "beaten" : "done"), puts("");
     sync_link(e);
     game_boss_bar(1, (int)e->hp, (int)e->P.hp);                      /* 0x40fd82 */
-    if (getenv("WOODY_BOSSLOG")) printf("  boss st %d high %d mode %d pos %.0f %.0f %.0f hp %.0f rec %d anim %d behav %d act %d", b->st, b->high, b->mode, e->pos.x, e->pos.y, e->pos.z, e->hp, b->rec, in->anim, b->behav, b->w_act), puts("");
+    if (getenv("WOODY_BOSSLOG")) printf("  boss st %d high %d mode %d pos %.0f %.0f %.0f hp %.0f rec %d anim %d behav %d act %d knock %.2f %.2f %.2f t %.3f", b->st, b->high, b->mode, e->pos.x, e->pos.y, e->pos.z, e->hp, b->rec, in->anim, b->behav, b->w_act, b->knock[0], b->knock[1], b->knock[2], game_time()), puts("");
 }
 
 /* every frame, updated or not: the render colour hook vtbl[26] 0x40fde0 (also the link's, through its owner) and the
