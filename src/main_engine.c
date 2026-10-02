@@ -3383,6 +3383,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     if (getenv("WOODY_CELLLOG")) printf("  gel: %u cells, %u sectors, %u kd nodes | lit: %u lights, %u sector light lists\n", L->gel.ncells, L->gel.nsectors, L->gel.nkd, L->lit.nlights, L->lit.nsectors);
     rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL, L->have_vis ? &L->vis : NULL);
     water_reset(&L->tex); L->rnd.post_models = water_draw;   /* class 60 (water.c) */
+    L->rnd.spr_count = hud_wq_count; L->rnd.spr_quad = hud_wq_quad; L->rnd.spr_draw = hud_wq_draw; L->rnd.spr_done = hud_wq_done;   /* the world sprites (hud.c) */
     L->rnd.on_drawn = storm_rod_drawn;                       /* class 80 vt[26] 0x452010: the rod colour, per drawn rod (storm.c) */
     snprintf(path, sizeof path, "%s/%s/%s.col", dir, lvl, lvl); rnd_load_col(&L->rnd, path);   /* 0x4271e0: the objects of every kd leaf (0x42aa0b) */
     L->have_player = player_init(&L->player, &g_ins, &L->gel, &L->tex) == 0;
@@ -3539,6 +3540,7 @@ int main(int argc, char **argv)
     Instance *sel = (g_ins.nmodels && g_ins.models[0].ninstances) ? &g_ins.models[0].instances[0] : NULL;
     if (sel) { cam.pos = sel->position; cam.pos.y += 120; cam.pos.z -= 350; }
     if (have_cam) { cam.pos.x = cam_args[0]; cam.pos.y = cam_args[1]; cam.pos.z = cam_args[2]; cam.yaw = cam_args[3] * 3.14159265f / 180; cam.pitch = cam_args[4] * 3.14159265f / 180; }
+    if (have_cam && getenv("WOODY_CAMFOV")) cam.fov_deg = (float)atof(getenv("WOODY_CAMFOV"));   /* testing: the free camera's vertical fov (70 by default; the game camera's is 83.97, docs/CAMERA.md 5.1) */
     else { cam.pos.x = (L.gel.bbox[0] + L.gel.bbox[1]) / 2; cam.pos.y = L.gel.bbox[3]; cam.pos.z = (L.gel.bbox[4] + L.gel.bbox[5]) / 2; cam.pitch = -1.2f; }
 
     if (!L.have_player) fly = 1;
@@ -3791,13 +3793,21 @@ int main(int argc, char **argv)
                 if (cu.y < 0) { cu.x = -cu.x; cu.y = -cu.y; cu.z = -cu.z; }
                 float w = sinf(3.14159265f * (float)fmod(now - t0, 2.0)), size = w * w * 60.0f + 50.0f;
                 hud_world_sprites_begin(&cr.x, &cu.x);
-                for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
-                    Instance *ii = &g_ins.models[mi].instances[k]; if (!ii->visible || ii->fade > 0.98f || !game_enemy_thinks(ii)) continue;   /* the halo is the bonus Update vtbl[3]: listed instances only (0x42b400, BONUS.md 3.1) */
+                /* 0x42b400 runs the Updates over the frame's instance list in list order, so the halos are submitted (and, within
+                 * one depth bucket, drawn) in that order; without a list (no renderer list yet) in model order */
+                Instance *const *hl; uint32_t hn = game_instance_list(&hl), htot = 0;
+                for (uint32_t mi = 0; mi < g_ins.nmodels; mi++) htot += g_ins.models[mi].ninstances;
+                for (uint32_t hi = 0, mi = 0, k = 0; hl ? hi < hn : hi < htot; hi++) {
+                    Instance *ii;
+                    if (hl) ii = hl[hi];
+                    else { while (k >= g_ins.models[mi].ninstances) { mi++; k = 0; } ii = &g_ins.models[mi].instances[k++]; }
+                    if (!ii->visible || ii->fade > 0.98f || !game_enemy_thinks(ii)) continue;   /* the halo is the bonus Update vtbl[3]: listed instances only (0x42b400, BONUS.md 3.1) */
                     int n = ii->type == 30 ? 0 : ii->type == 35 ? 1 : ii->type == 34 ? 2 : ii->type == 36 ? 3 : ii->type == 37 || ii->type == 38 ? 4 : -1; if (n < 0) continue;
                     float p[3] = { ii->position.x, ii->position.y, ii->position.z };
                     if (ii->type == 34 && ii->node_world) { p[0] = ii->node_world[0].m[12]; p[1] = ii->node_world[0].m[13]; p[2] = ii->node_world[0].m[14]; }
                     hud_world_sprite(n, p, size);
                 }
+                hud_world_sprites_late();                                     /* the Perso (0x44b4a0) and the effects (0x46d040) come after the world draw */
                 if (L.have_player && !fly && !cin_running() && g_level >= 1 && g_level <= 24) {
                     /* landing ring 0x44af90 (docs/PERSO_JUMP.md 5): fades in under Woody while he is in the air, out on the
                      * ground. Run by 0x44b4a0 only when not paused (PERSO_FRAME.md 1 step 24), so a paused frame has none */
@@ -3828,6 +3838,7 @@ int main(int argc, char **argv)
                 }
                 launchers_draw(&cam.pos.x, paused ? 0 : dt); stars_draw(paused ? 0 : dt); bubbles_draw(&cam, paused ? 0 : dt); rockets_draw(paused ? 0 : dt); bombs_draw(&cam.pos.x, paused ? 0 : dt); fx_smoke_draw(paused ? 0 : dt); boss_fx_draw(paused ? 0 : dt); board_fx_draw(paused ? 0 : dt); g_fx_fwd = cam_forward(&cam); torch_update(paused ? 0 : dt); fx_update(paused ? 0 : dt, &cam.pos.x);
                 hud_world_sprites_end();
+                rnd_sorted(&L.rnd);                                           /* 0x428d00: fade list, glow faces and these sprites in depth buckets (docs/MODEL_RENDER.md 10) */
             }
             if (g_black_frame || (g_sfade.hold && !(g_sfade.rest > 0))) { rnd_fade(0); g_black_frame = 0; }                /* 1152 blanks the 3D picture only: the House intro shows its text on black */
             if (L.have_player && now - t0 >= pick_at - 0.5) {            /* set the counters a few frames early, so the HUD sees them change like it would in play */

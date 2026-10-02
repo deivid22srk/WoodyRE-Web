@@ -94,6 +94,15 @@ void hud_world_sprite(int n, const float *pos, float size);
 void hud_world_wing(int n, const float *c, const float *u, const float *v, float half);   /* bank 0 images 53..56: one wing of a butterfly */
 void hud_world_bubble(int image, const float *pos, float size, int mirror);   /* bank 0 images 44..52: the speech bubble 0x478980, alpha blended, mirrored in u */
 void hud_world_sprites_end(void);
+/* The world sprites are not drawn when called: each hud_world_* call records one quad (one batch of 0x481560 on list +0x1c8
+ * alpha blended or +0x1cc additive), and the renderer draws them inside the fade buckets of 0x428d00 (rnd_sorted, docs/
+ * MODEL_RENDER.md 10). hud_world_sprites_begin empties the record; hud_world_sprites_late marks where the instance Updates
+ * (0x42b400: the bonus halos) end and the model draw 0x42b380 would come, which matters for the creation order of bucket 0. */
+void hud_world_sprites_late(void);
+int  hud_wq_count(void);
+void hud_wq_quad(int i, float v[4][3], int *blended, int *early);    /* corners (k0 first, as submitted) and kind of record i */
+void hud_wq_draw(int i);                                              /* draw record i: needs depth test on, depth writes off, blending on */
+void hud_wq_done(void);                                               /* texture env / blend func / colour back to the defaults */
 /* additive effect sprite (bank 0 image 0, 4 or 6), rotated by `turns` around the view axis; colour = rgb * alpha */
 void hud_world_fx(int image, const float *pos, float size, float turns, const float *rgb, float alpha);
 /* the same sprite, but lying in the plane with normal `n` instead of facing the camera (sprite flag bit 0 off,

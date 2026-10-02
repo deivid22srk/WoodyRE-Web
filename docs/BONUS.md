@@ -237,6 +237,10 @@ sector lists `sector+0x44 → inst+0x24`). So a collected bonus
 (`0x407850`: out of the sector list) no longer gets an Update ⇒ no halo; a bonus in a non-
 visible sector doesn't either (and type 36 only tests its save flag once its sector becomes visible).
 
+The halo is not drawn on the spot: flags `0x1b` make it an alpha-blended batch of its own on list `+0x1c8`, sorted with
+the fade list by its view depth in `0x428d00`, far to near (MODEL_RENDER.md §10). So in a row of pickups the near halo
+covers the far ones.
+
 ### 3.2 Rotating / bobbing / magnet / scale
 
 The bonus classes contain **no** code for rotation, bob, magnet or scale animation. Slot +0x08

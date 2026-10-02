@@ -10,6 +10,13 @@ Common options (every probe):
   --seconds N          wall-clock limit (the boot to INIT takes ~70 s)
   --sav FILE           CreateFileA of "Woody.sav" is redirected to FILE (game/ has no save; a copy of the port's woodyre.sav,
                        which has the original layout, lets the Load game chain reach the carousel without touching game/)
+  --face YAW           with --pos: turn the Perso to YAW degrees (0 = +z, 90 = +x) through Mover_SetDir 0x459ff0 (the follow
+                       camera does not swing round by itself; add --keys "T:51" = Num0, camera behind, to make it)
+  --shot "T f.png ..." the finished frame T s after INIT, read from the back buffer at Present 0x47ee90 through
+                       IDirectDrawSurface7::Lock/Unlock called in the game's main thread; needs --windowed (in exclusive
+                       fullscreen the surfaces are lost as soon as the game is not the foreground window: DDERR_SURFACELOST)
+  --windowed           0x4027b8 patched so the renderer takes its unused windowed path (DISPLAY.md 1.1): a 644x504 popup,
+                       no display mode switch, same 640x480 back buffer and 16-bit z (not compared with a fullscreen frame)
 
 Probes (--probe, several allowed, comma separated):
   list      the per-frame instance list world+0x64 (0x42a980 -> 0x42a840, docs/INSTANCE.md 4.1): at the entry of 0x42a980
@@ -43,6 +50,9 @@ def main():
     ap.add_argument('--sav'); ap.add_argument('--every', type=float, default=0, help='cam/rocket probes: at most one line per this many s')
     ap.add_argument('--bbpos', default='', help='blackbox probe: "T x y [T x y ...]" puts Woody on x y T s after INIT')
     ap.add_argument('--onto', type=float, nargs=2, help='INST DY: teleport at --at onto the animated root inst+0x60 of that instance, DY above it')
+    ap.add_argument('--shot', default='', help='"T file.png [T file.png ...]": the finished frame (back buffer at Present 0x47ee90) T s after INIT')
+    ap.add_argument('--face', type=float, help='with --pos: turn the Perso to this yaw (degrees, 0 = +z, 90 = +x) through the Mover 0x459ff0')
+    ap.add_argument('--windowed', action='store_true', help='patch 0x4027b8 so the renderer takes its (never shipped) windowed path: no exclusive mode')
     a = ap.parse_args()
     probes = set(a.probe.split(','))
     out = sys.stdout if a.out == '-' else open(a.out, 'w', encoding='utf-8', buffering=1)
@@ -103,6 +113,8 @@ def main():
                     else: tgt = (r[0], r[1] + a.onto[1], r[2])
                 v = struct.pack('<3f', *tgt); dbg.write(p + 0x1f4, v); dbg.write(p + 0x28c, v); st['moved'] = done
                 dbg.log('%s # Perso %08x teleported to %.1f %.1f %.1f' % (T(), p, *tgt))
+                if a.face is not None and done and not st.get('faced'):
+                    st['faced'] = True; return face_call(ctx, p)
         if 'fpu' in probes and st['fpu'] < 3:
             cw = fpu_cw(ctx); dbg.log('%s FPU control word at the VM tick 0x442240: 0x%04x' % (T(), cw)); st['fpu'] += 1
         if st['init'] is not None and a.frm <= since() <= a.until and since() >= st.get('next', 0):
@@ -251,7 +263,91 @@ def main():
             dbg.write(o + 0xc0034 + 0x10, struct.pack('<2f', tp[3 * k + 1], tp[3 * k + 2])); st['ntp'] = k + 1
             dbg.log('%s # Woody -> %.0f %.0f' % (T(), tp[3 * k + 1], tp[3 * k + 2]))
 
+    # --- screenshots (--shot). The game flips a DirectDraw surface, so a GDI grab sees nothing useful. Instead, at the entry
+    # of Present 0x47ee90 (ecx = renderer [0x5e8650]; +0x38 = back buffer, +0x3c = primary, DISPLAY.md 2.2) the finished
+    # frame is still in the back buffer: the main thread is sent through IDirectDrawSurface7::Lock (vtable +0x64,
+    # DDLOCK_WAIT | DDLOCK_READONLY) and ::Unlock (+0x80) with a return address on an int3 page of our own, the pixels are
+    # read with ReadProcessMemory in between, and the registers are put back before Present runs as usual.
+    shots = []
+    if a.shot:
+        tok = a.shot.split()
+        shots = [(float(tok[i]), tok[i + 1]) for i in range(0, len(tok) - 1, 2)]
+    def remote_alloc(n, prot):
+        va = wtrace.k32.VirtualAllocEx
+        va.restype = ctypes.c_void_p; va.argtypes = [wtrace.wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wtrace.wt.DWORD, wtrace.wt.DWORD]
+        return va(dbg.hproc, None, n, 0x3000, prot)
+    REGS = ('Eax', 'Ebx', 'Ecx', 'Edx', 'Esi', 'Edi', 'Ebp', 'Esp', 'Eip', 'EFlags')
+    def on_present(ctx):
+        if st.get('shot') or not shots or st['init'] is None or since() < shots[0][0]: return None
+        if 'page' not in st:
+            st['page'] = remote_alloc(4096, 0x40)
+            dbg.write(st['page'], b'\xcc' * 4096); dbg.add_bp(st['page'], on_shot_ret)
+            st['desc'] = st['page'] + 0x100
+        back = dbg.u32(ctx.Ecx + 0x38)
+        st['shot'] = {'regs': {r: getattr(ctx, r) for r in REGS}, 'back': back, 'step': 'lock'}
+        st['shot']['regs']['Eip'] = 0x47ee90                 # the context of a breakpoint hit has Eip past the int3
+        dbg.write(st['desc'], struct.pack('<I', 0x7c) + bytes(0x78))
+        esp = ctx.Esp - 24
+        dbg.write(esp, struct.pack('<6I', st['page'], back, 0, st['desc'], 0x11, 0))
+        ctx.Esp = esp; ctx.Eip = dbg.u32(dbg.u32(back) + 0x64)
+        return 'skip'
+    # --face: Mover_SetDir 0x459ff0 (thiscall, ecx = Perso+0x388, arg = &dir, ret 4) called from the VM tick entry with the
+    # return address on an int3 page, then the registers are put back and the tick runs as usual
+    def face_call(ctx, p):
+        if 'fpage' not in st:
+            st['fpage'] = remote_alloc(4096, 0x40); dbg.write(st['fpage'], b'\xcc' * 4096); dbg.add_bp(st['fpage'], on_face_ret)
+        yaw = math.radians(a.face)
+        dbg.write(st['fpage'] + 0x100, struct.pack('<3f', math.sin(yaw), 0.0, math.cos(yaw)))
+        st['fregs'] = {r: getattr(ctx, r) for r in REGS}; st['fregs']['Eip'] = 0x442240
+        esp = ctx.Esp - 8
+        dbg.write(esp, struct.pack('<2I', st['fpage'], st['fpage'] + 0x100))
+        ctx.Esp = esp; ctx.Ecx = p + 0x388; ctx.Eip = 0x459ff0
+        dbg.log('%s # Mover_SetDir(%.3f 0 %.3f)' % (T(), math.sin(yaw), math.cos(yaw)))
+        return 'skip'
+    def on_face_ret(ctx):
+        for r, v in st['fregs'].items(): setattr(ctx, r, v)
+        return 'skip'
+    def save_png(path, raw, w, h, pitch, bpp, rm, gm, bm):
+        from PIL import Image
+        bpb = bpp // 8
+        if bpb == 4 and (rm, gm, bm) == (0xff0000, 0xff00, 0xff):
+            img = Image.frombuffer('RGB', (w, h), raw, 'raw', 'BGRX', pitch, 1)
+        elif bpb == 2 and (rm, gm, bm) == (0xf800, 0x7e0, 0x1f):
+            img = Image.frombuffer('RGB', (w, h), raw, 'raw', 'BGR;16', pitch, 1)
+        else:
+            def chan(px, m):
+                if not m: return 0
+                sh = (m & -m).bit_length() - 1
+                return ((px & m) >> sh) * 255 // (m >> sh)
+            img = Image.new('RGB', (w, h)); pix = img.load()
+            for y in range(h):
+                row = raw[y * pitch:y * pitch + w * bpb]
+                for x, px in enumerate(struct.unpack('<%d%s' % (w, 'I' if bpb == 4 else 'H'), row)): pix[x, y] = (chan(px, rm), chan(px, gm), chan(px, bm))
+        img.save(path)
+    def on_shot_ret(ctx):
+        s = st['shot']; t, path = shots[0]
+        if s['step'] == 'lock':
+            hr = ctx.Eax
+            d = dbg.read(st['desc'], 0x7c)
+            h, w, pitch = struct.unpack_from('<III', d, 8); surf = struct.unpack_from('<I', d, 0x24)[0]
+            bpp, rm, gm, bm = struct.unpack_from('<IIII', d, 0x54)
+            if hr == 0 and surf:
+                try:
+                    save_png(path, dbg.read(surf, pitch * h), w, h, pitch, bpp, rm, gm, bm)
+                    dbg.log('%s SHOT %s (%dx%d, %d bpp, masks %x %x %x)' % (T(), path, w, h, bpp, rm, gm, bm))
+                except Exception as e: dbg.log('%s SHOT %s failed: %r' % (T(), path, e))
+            else: dbg.log('%s SHOT Lock failed hr=%08x' % (T(), hr))
+            s['step'] = 'unlock'
+            esp = ctx.Esp - 12
+            dbg.write(esp, struct.pack('<3I', st['page'], s['back'], 0))
+            ctx.Esp = esp; ctx.Eip = dbg.u32(dbg.u32(s['back']) + 0x80)
+            return 'skip'
+        for r, v in s['regs'].items(): setattr(ctx, r, v)
+        shots.pop(0); st['shot'] = None
+        return 'skip'
+
     bps = {0x401370: on_route, 0x442240: on_tick, 0x4427e0: on_init}
+    if shots: bps[0x47ee90] = on_present
     if 'blackbox' in probes: bps[0x4846d0] = on_bb_frame
     if keys: bps[0x467ef0] = on_kbpoll
     if 'list' in probes: bps[0x42a980] = on_listbuild
@@ -269,6 +365,12 @@ def main():
             dbg.write(0x4b12a0, struct.pack('<I', match[0])); dbg.log('# level slot 0 -> %s' % a.level)
             if 'blackbox' in probes: dbg.write(0x4042c9, b'\xeb'); dbg.log('# 0x4042c9 je -> jmp: every level load creates the BlackBox object')
         dbg.post_arm = redirect
+    if a.windowed:
+        prev = getattr(dbg, 'post_arm', None)
+        def win_patch(ctx):
+            if prev: prev(ctx)
+            dbg.write(0x4027b8, b'\xb1\x01\x90'); dbg.log('# 0x4027b8 and cl,1 -> mov cl,1: renderer+0 = windowed (DISPLAY.md 1.1)')
+        dbg.post_arm = win_patch
         bps[0x446b00] = skip_logo
     dbg.pre_bps = bps
     dbg.iat_bps = {0x5eb5ec: on_msgbox}

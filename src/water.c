@@ -230,8 +230,16 @@ void water_draw(const TexFile *tex, Vec3 eye)
     static int combine = -1;
     if (combine < 0) { const char *ext = (const char *)glGetString(GL_EXTENSIONS), *ver = (const char *)glGetString(GL_VERSION);
                        combine = (ext && strstr(ext, "GL_ARB_texture_env_combine")) || (ver && (ver[0] > '1' || (ver[0] == '1' && ver[2] >= '3'))); }
-    for (int i = 0; i < g_nw; i++) {
-        Water *w = &g_w[i]; Instance *in = w->inst;
+    /* 0x42b460 links every polygon IN FRONT of its texture's list for the bucket (0x42b4c5..0x42b4d3) and the flush walks
+     * that list from its head, so the water triangles come out in the reverse of their submission: the volumes in the reverse
+     * of their Draw order (the instance list world+0x64, 0x42b380), each with layer A (submitted second) before layer B and
+     * every layer from its last triangle to its first */
+    static int ord[64]; int no = 0;
+    { Instance *const *lst; uint32_t n = game_instance_list(&lst);
+      if (lst) { for (uint32_t li = n; li-- > 0 && no < 64; ) for (int i = 0; i < g_nw; i++) if (g_w[i].inst == lst[li]) { ord[no++] = i; break; } }
+      for (int i = g_nw; i-- > 0 && no < 64; ) { int seen = 0; for (int q = 0; q < no; q++) seen |= ord[q] == i; if (!seen) ord[no++] = i; } }   /* no list, or drawn outside it */
+    for (int oi = 0; oi < no; oi++) {
+        Water *w = &g_w[ord[oi]]; Instance *in = w->inst;
         if (!w->ready || !in->visible || !in->drawn || w->group < 0 || (uint32_t)w->group >= tex->ngroups) continue;
         int N = w->nc * w->nr;
         /* 0x474128: a point behind the water as seen from the camera, a quarter of the edge sum up */
@@ -250,8 +258,9 @@ void water_draw(const TexFile *tex, Vec3 eye)
             int idx = (int)lrintf(val * 127.0f); if (idx < 0) idx = 0; if (idx > 127) idx = 127;
             col[k] = g_spec[idx] + 0.4f;                           /* 0x4aa394 */
         }
-        /* the two layers: B (5 lower, UV + (0.23, 0.85), the vertices circling the other way) first, then A. Only the
-         * interior vertices move; the border rows and columns stay put so the surface keeps its outline */
+        /* the two layers: B (5 lower, UV + (0.23, 0.85), the vertices circling the other way) is submitted first, then A
+         * (0x473a58..), so A is drawn first (see above). Only the interior vertices move; the border rows and columns stay put
+         * so the surface keeps its outline */
         glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tex->groups[w->group].gl_frames ? tex->groups[w->group].gl_frames[0] : tex->groups[w->group].gl_tex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); glDisable(GL_ALPHA_TEST);
@@ -260,10 +269,11 @@ void water_draw(const TexFile *tex, Vec3 eye)
                        glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA_ARB, GL_MODULATE); glTexEnvf(GL_TEXTURE_ENV, GL_RGB_SCALE_ARB, 2.0f); }
         else { glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); k2 = 2.0f; }
         glBegin(GL_TRIANGLES);
-        for (int layer = 0; layer < 2; layer++) {
+        for (int layer = 1; layer >= 0; layer--) {
             float sgn = layer == 0 ? -1.0f : 1.0f, dy = layer == 0 ? -5.0f : 0.0f, du = layer == 0 ? 0.23f : 0.0f, dv = layer == 0 ? 0.85f : 0.0f;
-            for (int j = 0; j + 1 < w->nr; j++) for (int i2 = 0; i2 + 1 < w->nc; i2++) {
-                int t[6] = { j * w->nc + i2, j * w->nc + i2 + 1, (j + 1) * w->nc + i2, (j + 1) * w->nc + i2, j * w->nc + i2 + 1, (j + 1) * w->nc + i2 + 1 };
+            for (int j = w->nr - 2; j >= 0; j--) for (int i2 = w->nc - 2; i2 >= 0; i2--) {
+                /* the cell's two triangles (k, k+1, k+nc) and (k+nc, k+1, k+nc+1) (+0x108), the second one first */
+                int t[6] = { (j + 1) * w->nc + i2, j * w->nc + i2 + 1, (j + 1) * w->nc + i2 + 1, j * w->nc + i2, j * w->nc + i2 + 1, (j + 1) * w->nc + i2 };
                 for (int q = 0; q < 6; q++) {
                     int k = t[q]; Vec3 p = w->v[k];
                     int edge = k < w->nc || k >= (w->nr - 1) * w->nc || k % w->nc == 0 || (k + 1) % w->nc == 0;

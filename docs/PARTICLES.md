@@ -94,6 +94,9 @@ its life.
    `0x429758` (MODULATE2X); `0x428d00` itself only sets ADDRESS (`0x428eef`), and `0x429a30` / `0x429e20` write stage 1
    (`0x429b36`, `0x429f15`, ...), not stage 0.
 
+Where the batches end up in the frame (one batch per sprite, depth = view z of the first clipped corner, 256 depth buckets
+shared with the fade list, far to near): MODEL_RENDER.md §10.
+
 Result, both device kinds: **alpha blended (flag 8): texture × min(1, 2c), alpha a** (0.5 = the plain texture);
 **additive (no flag 8): texture × c × a × 256/255 added** (0.5 = half the texture; alpha is a brightness). The port's
 `hud_world_spr_mode`, `hud_world_fx`, `hud_world_fx_plane` (additive: `glColor(c·a)`, MODULATE, ONE/ONE; blended:

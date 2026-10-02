@@ -412,6 +412,53 @@ on single pixels), and a colour-key mip texel is opaque **only when all four sou
 keeps the alpha bit, 3 × `0x80` / 4 = `0x60` does not; SKY.md §8 had "3 of 4"). Port: `tex16_texel`,
 `tex16_halve`, `tex16_widen` in `render_gl.c` keep each level as the 16-bit surface and widen only for GL. Visible:
 colour-key foliage at a distance thins out slightly (W2A palms).
+## 10. The world sprites: lists `+0x1c8` / `+0x1cc` in the same buckets
+
+**Submission.** Every world sprite, line and quad goes through `0x481560(renderer, n, verts, tex, flags)`: the sprite primitive
+`0x470f10` (`0x4719f3`, flags `0x20 | (8 or 4) | (0x80 ? 1)`, PARTICLES.md §1), the line primitive `0x471a10` (`0x471eb2`, flags
+`0x24`) and the fire ring of the special attack `0x47a4c0` (`0x47a73c`, `0x47a75d`). With flag `0x20` the vertices are already in
+view space (x, y pre-scaled by the projection so that the side planes are x = ±z, y = ±z). Outcodes `1: x > z`, `2: −x > z`,
+`4: y > z`, `8: −y > z` (`0x48181f..0x48187b`); all corners outside one plane → nothing (`0x481930`); otherwise only the planes some
+corner is outside of clip, in the order 1, 2, 4, 8 (`0x482440`, `0x482690`, `0x4828c0`, `0x482ae0`; Sutherland-Hodgman from the first
+vertex: an inside vertex is kept, a crossing edge adds its intersection), fewer than 3 vertices → nothing. There is no near plane.
+Then **every call opens a batch of its own** (the current batch is closed and linked unconditionally, `0x481a20` / `0x481d8c`):
+flag 8 → mode 2 on list `renderer+0x1c8` (`0x481a82`, alpha blended), flag 4 → mode 3 on `+0x1cc` (`0x481e16`, additive, the same
+list as the glow faces of §9). The sort depth `batch+0x10` is the view z of the **first vertex left after the clip** (`0x481d7f`,
+`0x4820af`).
+
+**Flush `0x428d00`** (`0x4299b6`, after the transparent world buckets 11 / 8 (the water) / 3):
+1. `deepest = max(1.0, every batch+0x10 of +0x1cc, +0x1c8, +0x1c4)` (`0x428d27..0x428db8`; on the fade list only the first batch
+   of each run of one instance is read).
+2. Each list is split into 256 bucket lists by `fistp(depth · 254 / deepest)` (`0x428dd7`, `0x428e28`, `0x428e89`; round to
+   nearest under the control word `0x007F`); a fade run moves as a whole. A source list is LIFO (newest first) and the split pushes
+   in front again (`0x428dfb..0x428e01`), so **every bucket holds its batches oldest first**.
+3. Buckets 255 → 0. Per bucket: the fade batches depth-only (ZWRITE on, ZERO/ONE, `0x428f10..0x428f45`) and blended
+   (SRCALPHA/INVSRCALPHA, `0x428fdd`), ZWRITE off (`0x42908d`), then for b > 0 **all of `+0x1c8`** (SRCALPHA/INVSRCALPHA,
+   `0x4290bf`/`0x4290d2`) **before all of `+0x1cc`** (ONE/ONE, `0x429182`/`0x429198`). Bucket 0 (`0x429240`) walks the two lists
+   together and takes the lower batch address first (`cmp ebx, edi; jae`), i.e. **creation order** across both lists.
+4. ALPHATESTENABLE follows the colour-key bit `tex+0x44 & 1` of each batch's texture (`0x429102`, `0x4291c4`, `0x4292b6`, `0x42932f`).
+   Bank images are created with `+0x44 = 0` (`0x47f926`, the rck image loader `0x47f910`), so **no world sprite is alpha tested**.
+
+**Creation order within a frame** (it only matters in bucket 0 and among the blended batches of one bucket): the instance Updates
+`0x42b400` (the bonus halos `0x479530`, in instance-list order) → the world draw `0x42b380` (the model batches, the glow faces) →
+the Perso `0x44b4a0` (landing ring) → the effects `0x46d040` (effect pool `0x470c70`, lasers `0x46e530`, race board `0x475440`).
+
+Consequence for the pickups: the halos (flags `0x1b`, alpha blended) are sorted far to near by their own view depth, so a near
+W is blended over a far one. Glow faces of non-fading instances keep their stale depth (§9, usually bucket 0, i.e. after every
+sprite with a depth > 0).
+
+**Port.** `hud.c` records every `hud_world_*` call as one quad instead of drawing it (`WQuad`: corners k0..k3, uv, colour per
+corner, blended ×2 / plain / additive, polygon offset for the plane sprites, `early` = submitted before `hud_world_sprites_late`,
+i.e. the halos); `rnd_frame` (`render_gl.c`) builds the fade and glow lists with their depths as before but leaves the buckets to
+the new `rnd_sorted`, which `main_engine.c` calls after the frame's sprites: `sprite_depth` = the clip above on the port's
+projection, one shared `deepest`, buckets from far to near with fade depth-only, fade blend, blended sprites, glow faces, additive
+sprites (b > 0), and in bucket 0 the early sprites, the glow faces, then the rest in recording order. The halo loop follows the
+instance list (`game_instance_list`). Test: `extract/Data W2D --pos -5210 2950 -5900 --cam -5225 2980 -5500 1 -3` with
+`WOODY_CAMFOV=83.97` (the W row 211..217 / 451..454 seen lengthwise; before, the far Ws were blended over the near one);
+`WOODY_SORTLOG=1` prints `deepest` and the bucket of each sprite once a second.
+Checked against a live capture of the original (`tools/wverify.py --windowed --shot`, W2D `--pos -5210 2950 -5450 --face 0`,
+Num0): there too each nearer W of that row is drawn over the farther ones (`out/w2d_cmp/zoom_wrow_orig_before_after.png`).
+
 ## Uncertain
 - Draw order of the two eye layers: `0x43d790` doesn't draw directly but fills batches per (texture, mode)
   (`renderer+0x1b8`, lists `+0x1c0`); a closed batch is linked at the front, so the later-closed
