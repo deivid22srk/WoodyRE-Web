@@ -177,7 +177,7 @@ All in the instance draw function `0x42e2b0`/`0x42e374` (arg bits: 2 = cast shad
 **Light choice** (`0x42e3e4..0x42e573`): light list of the instance's **sector**
 (`lightsys+0x10[inst+0x1c]` = `{n, index…}`). `n == 0` → no light (bit 2 drops out).
 `n == 1` → that light. `n > 1`: per light `f = 0x40b540(S, inst+0x60)` (the animated skeleton root, INSTANCE.md §1.1;
-the port takes `ins_anim_centre()` + 20 up as its sole reference point, also for the light direction, which the original determines per part):
+the port takes `ins_anim_centre()` + 20 up for this choice; the light vector is per part, below):
 
 - `f == −1` and `|L − p|² < R²` → this light, done (`0x42e4c2`);
 - `f ≠ −1` and `plane(f)·p > 0` (point in front of the leaf face = lit) → this light, done (`0x42e541`);
@@ -202,19 +202,30 @@ centroids of A faces and C polygons: 100% / 99.9% lit.)
 instances `0x42f110`, without damping):
 
 ```
-p      = world position of the part (matrix translation +0x24..+0x2c)
+M      = the part's node matrix (scaled: it carries the instance scale inst+0x4c..+0x54)
+p      = M translation (+0x24..+0x2c)            ; the part's origin in world space
 Ldir  *= 0.85                                   ; [0x4aa3d8], every frame
-if a light was chosen and the point is lit (query above) and |L − p| < R:
-    Ldir += 0.15 · normalize(L_local − p_local) · (1 − |L − p|/R)     ; [0x4aa1c8]
-    Lcolour = C (floats 0..255)                 ; part+0x0c..+0x14
+if a light was chosen and p is lit (query above: leaf -1, or in front of the leaf face; NO world range test):
+    q = M⁻¹·L − pivot                            ; 0x440fc0(M, sx, sy, sz) = transpose · 1/s², 0x43ba86; pivot = node N+0x20
+    d = |q|                                      ; a LOCAL distance: world distance / scale
+    if d < R:                                    ; 0x43bb74
+        Ldir += 0.15 · (q/d) · (1 − d/R)         ; [0x4aa1c8]
+        Lcolour = C (floats 0..255)              ; part+0x0c..+0x14, only written here
 ```
+
+The range test and the falloff use the distance in the part's own (scaled) space, so an instance placed at scale `s`
+is lit as if the light stood `s` times closer. W3B's knight statues by the door (model 8, scale 4) stand 1791 units
+from light 11 (R 1600, colour 236,133,19): out of range in world units, but 448 local units, `k = 0.72` — the gold of
+the original. Measured against the running original (W3B cinematic, var 20 = 1; W2B start: the scaled plants and rocks).
 
 Storage: 0x18 B per part at `inst+0xf4 + partoffset` (`Ldir` 3 floats, colour 3 floats).
 
 **Vertex colour** (`0x43bce4..0x43bdbd`): `ndl = N·Ldir` (vertex normal `+0x10`, vertex colour
 `+0x1c..+0x24`):
 `out = vcol · renderer+0x1ac · 0.5 (= vcol·0.3) + (ndl > 0 ? ndl·Lcolour : 0)`, per channel,
-then clamped. Models are drawn after step 6 of §1.5 (MODULATE2X), so effectively
+then clamped at 255 (`0x43be20`, `[0x4aa308]`), so under MODULATE2X a vertex reaches up to 2 × its texture.
+`N` is the vertex's rest normal in the part's space, against that part's own `Ldir`; a skinned vertex uses the colour
+its owner part computed. Models are drawn after step 6 of §1.5 (MODULATE2X), so effectively
 `0.6·vcol + 2·ndl·C`. There is no separate per-instance "colour"; it's contained in the per-part
 light vector. `[0x5ac850]` (1/2) then still adds `[0x5ac854]` to the colour (`0x43bdce`;
 flash/highlight, not investigated).
@@ -387,7 +398,7 @@ Cost measured in the class-16 fight: +0.1 ms per frame.
 - `[0x5ac860]` = 1 with vector `[0x5ac864..0x5ac86c]` (`0x42ed16`): alternative
   light direction for models (menu/cutscene?), and `[0x5ac850]/[0x5ac854]` (colour summation)
   are not investigated.
-- The exact clamping/rounding of the model vertex colour after `0x43bdbd` and the details of
+- The rounding of the model vertex colour after `0x43bdbd` (the clamp is at 255, §3) and the details of
   the outline/clip functions `0x43aaa0`, `0x40b8f0`, `0x40bbc0` (only needed for cast
   instance shadows) are not worked out.
 - Whether `device+0x20` (MODULATE2X support, `0x429745`) is set on every card; if not,

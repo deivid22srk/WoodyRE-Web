@@ -641,13 +641,29 @@ static int g_mat_blended;                            /* [0x5ac8d8]: the material
  * 25 ms per frame in the hubs. Fans are turned into triangles; bt_flush() must run before any GL state change. */
 #define BT_STRIDE 9                                  /* x y z u v r g b a */
 static struct { float *v; uint32_t n, cap; float col[3], uv[2], first[BT_STRIDE], prev[BT_STRIDE]; int fan, count; } g_bt;
+/* The models are drawn MODULATE2X (0x429740) with a lit vertex colour clamped at 255 (0x43be20), so a vertex reaches up to
+ * twice its texture. A colour here is in units of the texture (1.0 = 1 x texture) and may go up to 2.0; GL clamps a vertex
+ * colour at 1, so a textured MODULATE batch that goes above it is drawn at half colour through ARB_texture_env_combine
+ * with RGB_SCALE 2. Every other batch is drawn exactly as given. */
 static void bt_flush(void)
 {
     if (!g_bt.n) return;
+    int x2 = 0;
+    for (uint32_t i = 0; i < g_bt.n && !x2; i++) { const float *c = g_bt.v + (size_t)i * BT_STRIDE + 5; x2 = c[0] > 1.0f || c[1] > 1.0f || c[2] > 1.0f; }
+    if (x2) { GLint mode = 0; if (glIsEnabled(GL_TEXTURE_2D)) glGetTexEnviv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, &mode); x2 = mode == GL_MODULATE; }
+    if (x2) {
+        for (uint32_t i = 0; i < g_bt.n; i++) { float *c = g_bt.v + (size_t)i * BT_STRIDE + 5; c[0] *= 0.5f; c[1] *= 0.5f; c[2] *= 0.5f; }
+        enum { COMBINE = 0x8570, COMBINE_RGB = 0x8571, COMBINE_ALPHA = 0x8572, RGB_SCALE = 0x8573, PRIMARY = 0x8577, SRC0_RGB = 0x8580, SRC1_RGB = 0x8581, SRC0_A = 0x8588, SRC1_A = 0x8589 };
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, COMBINE);
+        glTexEnvi(GL_TEXTURE_ENV, COMBINE_RGB, GL_MODULATE); glTexEnvi(GL_TEXTURE_ENV, SRC0_RGB, GL_TEXTURE); glTexEnvi(GL_TEXTURE_ENV, SRC1_RGB, PRIMARY);
+        glTexEnvi(GL_TEXTURE_ENV, COMBINE_ALPHA, GL_MODULATE); glTexEnvi(GL_TEXTURE_ENV, SRC0_A, GL_TEXTURE); glTexEnvi(GL_TEXTURE_ENV, SRC1_A, PRIMARY);
+        glTexEnvf(GL_TEXTURE_ENV, RGB_SCALE, 2.0f);
+    }
     glEnableClientState(GL_VERTEX_ARRAY); glEnableClientState(GL_TEXTURE_COORD_ARRAY); glEnableClientState(GL_COLOR_ARRAY);
     glVertexPointer(3, GL_FLOAT, BT_STRIDE * 4, g_bt.v); glTexCoordPointer(2, GL_FLOAT, BT_STRIDE * 4, g_bt.v + 3); glColorPointer(4, GL_FLOAT, BT_STRIDE * 4, g_bt.v + 5);
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)g_bt.n);
     glDisableClientState(GL_VERTEX_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glDisableClientState(GL_COLOR_ARRAY);
+    if (x2) { glTexEnvf(GL_TEXTURE_ENV, 0x8573, 1.0f); glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); }
     g_bt.n = 0;
 }
 static void bt_push(const float *v9)
@@ -725,7 +741,7 @@ static void set_material(const Renderer *r, uint32_t material, const Material **
 }
 
 /* ---- model lighting (0x42e3e4 light choice, 0x43b912 light vector, 0x43bce4 vertex colour; docs/LIGHTING.md 3).
- * Simplified to one light vector per instance (the original keeps one per model part). */
+ * The light choice is per instance, the light vector per model part (instance_light). */
 static const int32_t *model_owner(Model *m) { ins_point_owner(m, 0); return m->owner; }   /* the table level.c builds */
 /* 0x42e3e4..0x42e573: the candidate lights of an instance are the lights of its sector (the .lit trailer, lightsys+0x10,
  * indexed by inst+0x1c). n == 0 means no light and no shadow; n == 1 is taken without any test; otherwise the first
@@ -756,9 +772,19 @@ static int sector_light(const Renderer *r, Vec3 p, int *have_list)
     }
     return fallback;
 }
+static int affine_inv_apply(const Mat4 *M, Vec3 w, Vec3 *out);
+/* The light vector is kept per mesh part, in the part's own space (inst+0xf4, 0x18 B each; 0x43b912..0x43bc4c), and the
+ * part is lit by the instance's chosen light when the light's shadow BSP sees the part's origin - the translation of its
+ * node matrix (0x43ba2d: leaf -1, or in front of the leaf face; no range test in world units). The light then goes into
+ * the part's space through the inverse of the SCALED node matrix (0x440fc0 with the instance scale inst+0x4c..0x54,
+ * 0x43ba86), less the node pivot N+0x20, and the falloff 1 - d/R and the range test d < R (0x43bb74) use that local
+ * distance: an instance drawn at scale 4 is lit as if the light stood four times closer. The W3B knight statues by the
+ * door (model 8, scale 4) stand 1791 units from light 11 (R 1600) - out of range in world units, grey 0.6 x vcol, but
+ * 448 local units and k = 0.72 of its orange in the original. The vertex then takes N.Ldir with its own rest normal
+ * (0x43bce4); a skinned vertex the colour its owner part computed. */
 static void instance_light(const Renderer *r, Instance *inst, float dt)
 {
-    const LitFile *lf = r->lit; Vec3 p = ins_anim_centre(inst); p.y += 20.0f;   /* inst+0x60, the animated root (issue #35) */
+    const LitFile *lf = r->lit; Model *m = inst->model; Vec3 p = ins_anim_centre(inst); p.y += 20.0f;   /* inst+0x60, the animated root (issue #35) */
     int have_list = 0, chosen = sector_light(r, p, &have_list), fallback = -1; float cd = 0;
     if (!have_list)                                                             /* no trailer in this .lit: the whole light list, as before */
         for (uint32_t l = 0; l < lf->nlights; l++) {
@@ -768,17 +794,25 @@ static void instance_light(const Renderer *r, Instance *inst, float dt)
         }
     if (chosen < 0) chosen = fallback;
     if (chosen >= 0) { const LitLight *L = &lf->lights[chosen]; float dx = L->pos.x - p.x, dy = L->pos.y - p.y, dz = L->pos.z - p.z; cd = sqrtf(dx * dx + dy * dy + dz * dz); }
-    /* the light vector only grows while the light really sees the part and it is in range (0x43b912); the choice above
-     * stands either way, and so does the shadow */
-    int seen = chosen >= 0 && cd < lf->lights[chosen].range && lit_point_lit(&lf->lights[chosen], r->gel, p);
+    inst->l_seen = chosen >= 0 && cd < lf->lights[chosen].range && lit_point_lit(&lf->lights[chosen], r->gel, p);   /* the root, for the logs */
     float keep = powf(0.85f, dt * 60.0f); if (!inst->l_init) keep = 0;          /* Ldir *= 0.85 per frame [0x4aa3d8] */
-    inst->ldir.x *= keep; inst->ldir.y *= keep; inst->ldir.z *= keep;
-    inst->l_seen = seen; inst->light = chosen; inst->l_init = 1;
-    if (seen) {
-        const LitLight *L = &lf->lights[chosen]; float k = (1.0f - keep) * (1.0f - cd / L->range) / (cd > 1e-3f ? cd : 1.0f);
-        inst->ldir.x += (L->pos.x - p.x) * k; inst->ldir.y += (L->pos.y - p.y) * k; inst->ldir.z += (L->pos.z - p.z) * k;
+    inst->light = chosen; inst->l_init = 1;
+    if (!inst->plight || !inst->node_world) return;
+    const LitLight *L = chosen >= 0 ? &lf->lights[chosen] : NULL;
+    for (uint32_t k = 0; k < m->nmesh_nodes; k++) {
+        uint32_t ni = m->mesh_nodes[k] - 1; if (ni >= m->nnodes || m->nodes[ni].type_code == 2) continue;   /* 0x43b6c2 */
+        float *pl = &inst->plight[ni * 6]; const Mat4 *M = &inst->node_world[ni];
+        pl[0] *= keep; pl[1] *= keep; pl[2] *= keep;
+        Vec3 t = { M->m[12], M->m[13], M->m[14] }, q;
+        if (!L || !lit_point_lit(L, r->gel, t) || !affine_inv_apply(M, L->pos, &q)) continue;
+        q.x -= m->nodes[ni].pivot.x; q.y -= m->nodes[ni].pivot.y; q.z -= m->nodes[ni].pivot.z;
+        float d = sqrtf(q.x * q.x + q.y * q.y + q.z * q.z); if (d >= L->range || d < 1e-6f) continue;
+        float f = (1.0f - keep) * (1.0f - d / L->range) / d;                      /* 0.15 [0x4aa1c8] x normalize(q) x (1 - d/R) */
+        pl[0] += q.x * f; pl[1] += q.y * f; pl[2] += q.z * f;
+        pl[3] = L->colour[0]; pl[4] = L->colour[1]; pl[5] = L->colour[2];
     }
-    if (inst->light >= 0) for (int q = 0; q < 3; q++) inst->lcol[q] = lf->lights[inst->light].colour[q];
+    if (wenv("WOODY_LITLOG") && inst->drawn && m->nmesh_nodes) { const float *pl = &inst->plight[(m->mesh_nodes[0] - 1) * 6];   /* testing: the first part */
+        printf("LITLOG idx %u at %.0f %.0f %.0f light %d root seen %d cd %.0f part0 ldir %.3f %.3f %.3f col %.0f %.0f %.0f\n", inst->index, inst->position.x, inst->position.y, inst->position.z, inst->light, inst->l_seen, cd, pl[0], pl[1], pl[2], pl[3], pl[4], pl[5]); }
 }
 /* Who casts a shadow: the player, SetFlags bit 1 (0x42b3cc); the other types are our addition */
 static int shadow_caster(const Instance *inst)
@@ -1188,7 +1222,7 @@ static void instance_dyn(const Renderer *r, const Instance *inst)
     }
 }
 
-/* vertex colour: vcol * 0.3 + max(0, N.Ldir) * C, drawn MODULATE2X.
+/* vertex colour: vcol * 0.3 + max(0, N.Ldir) * C, clamped at 255 (0x43be20) and drawn MODULATE2X: 0..2 x texture (bt_flush).
  * Except on a blended face: 0x43d91d tests the flag 0x43d7cf raises for polygon flags 0x20/0x40 (group flag bit 1,
  * copied into the polygon at load by 0x428020) and jumps straight past the lit RGB at v+0x24..0x2c. It writes
  * 0x00iiiiii with i = (int)(alpha * 0.5) (0x43d9a4) and alpha = (1 - inst->fade) * 255 (0x43b504), so i = 128 for an
@@ -1201,20 +1235,22 @@ static void tint_apply(const Instance *inst, float *c, const float base[3])
     if (inst->tint_mode == 1) for (int q = 0; q < 3; q++) c[q] *= inst->tint_rgb[q];
     else if (inst->tint_mode == 2) for (int q = 0; q < 3; q++) { c[q] += inst->tint_rgb[q] * base[q]; if (c[q] > base[q]) c[q] = base[q]; }
 }
-static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat4 *M, const InsPoint *pt, const float base[3])
+static void lit_vertex_colour(const Renderer *r, const Instance *inst, const Mat4 *M, int ni, const InsPoint *pt, const float base[3])
 {
     if (g_mat_blended) { float a = 1.0f - inst->fade; bt_color(base[0] * a, base[1] * a, base[2] * a); return; }
     float ts = inst->tint_scale > 0 ? inst->tint_scale : 1.0f;   /* 0x451a40: [0x5ac850] = 1, [0x5ac854..5c] = 0.1 times the lit colour (0x43bdfc) */
     if (!r->lit || !r->show_light) { float c[3] = { ts * base[0] * pt->colour.x / 128.0f, ts * base[1] * pt->colour.y / 128.0f, ts * base[2] * pt->colour.z / 128.0f }; tint_apply(inst, c, base); bt_color(c[0], c[1], c[2]); return; }
     const float *a = M->m; Vec3 n = pt->normal;
     Vec3 w = { a[0] * n.x + a[4] * n.y + a[8] * n.z, a[1] * n.x + a[5] * n.y + a[9] * n.z, a[2] * n.x + a[6] * n.y + a[10] * n.z };
-    float l = sqrtf(w.x * w.x + w.y * w.y + w.z * w.z), ndl = l > 1e-6f ? (w.x * inst->ldir.x + w.y * inst->ldir.y + w.z * inst->ldir.z) / l : 0; if (ndl < 0) ndl = 0;
+    const Model *m = inst->model; if (ni < 0 && m->nmesh_nodes) ni = (int)m->mesh_nodes[0] - 1;   /* a point no part owns: the first part's light */
+    const float *pl = ni >= 0 && (uint32_t)ni < m->nnodes && inst->plight ? &inst->plight[ni * 6] : NULL;
+    float l = sqrtf(w.x * w.x + w.y * w.y + w.z * w.z), ndl = pl ? n.x * pl[0] + n.y * pl[1] + n.z * pl[2] : 0; if (ndl < 0) ndl = 0;   /* the rest normal P+0x10 against the part's own vector (0x43bce4) */
     float vc[3] = { pt->colour.x, pt->colour.y, pt->colour.z }, c[3], dyn[3] = { 0, 0, 0 };
     for (int i = 0; i < g_idyn_n && l > 1e-6f; i++) {                            /* WOODY_DYNLIGHT: the same N.L term per dynamic light */
         float nd = (w.x * g_idyn_dir[i][0] + w.y * g_idyn_dir[i][1] + w.z * g_idyn_dir[i][2]) / l;
         if (nd > 0) for (int q = 0; q < 3; q++) dyn[q] += 2.0f * nd * g_idyn_col[i][q];
     }
-    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + 2.0f * ndl * inst->lcol[q] + dyn[q]) / 255.0f; if (c[q] > 1) c[q] = 1; c[q] *= base[q] * ts; if (q && inst->tint_red) c[q] = 0; }
+    for (int q = 0; q < 3; q++) { c[q] = (vc[q] * 0.6f + (pl ? 2.0f * ndl * pl[3 + q] : 0) + dyn[q]) / 255.0f; if (c[q] > 2) c[q] = 2; c[q] *= base[q] * ts; if (q && inst->tint_red) c[q] = 0; }
     tint_apply(inst, c, base); bt_color(c[0], c[1], c[2]);
 }
 
@@ -1659,7 +1695,7 @@ static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int 
             Vec3 lp = { pt->pos.x - n->pivot.x, pt->pos.y - n->pivot.y, pt->pos.z - n->pivot.z };
             Vec3 wp = mat4_apply(&inst->node_world[ni], lp);
             if (mat) { float u, v; node_poly_uv(inst, helper, mat, lp, wp, &u, &v); if (scroll) { u += du; v += dv; } bt_texcoord(u, v); }
-            { float base[3] = { 1, 1, 1 }; if (!mat && (p->material & 0x8000)) argb1555_to_rgb(p->material, base); if (mat || (p->material & 0x8000)) lit_vertex_colour(r, inst, &inst->node_world[ni], pt, base); }
+            { float base[3] = { 1, 1, 1 }; if (!mat && (p->material & 0x8000)) argb1555_to_rgb(p->material, base); if (mat || (p->material & 0x8000)) lit_vertex_colour(r, inst, &inst->node_world[ni], (int)ni, pt, base); }
             bt_vertex(wp.x, wp.y, wp.z);
         }
         bt_end();
@@ -1702,7 +1738,7 @@ static void draw_instance(const Renderer *r, Instance *inst, int pass)   /* pass
             }
             for (int c = 0; c < 3; c++) {
                 InsPoint *pt = &m->points[idx[c]];
-                if (mat || (tr->material & 0x8000)) lit_vertex_colour(r, inst, MM[c], pt, base);
+                if (mat || (tr->material & 0x8000)) lit_vertex_colour(r, inst, MM[c], own[idx[c]], pt, base);
                 if (mat) bt_texcoord(mat->m[6 - 3 * c], mat->m[7 - 3 * c]);   /* explicit UVs: the material holds three UV pairs, file vertex j = (m[3j], m[3j+1]) and i0 is the third file vertex (0x43e39a) */
                 bt_vertex(wp[c].x, wp[c].y, wp[c].z);
             }

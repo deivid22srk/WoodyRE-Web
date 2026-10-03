@@ -149,7 +149,8 @@ typedef struct Instance {
     int tint_red;                               /* render colour hook vtbl[26]: vertex colours times (1,0,0) (the rocket's warning blink 0x4537d0) */
     float tint_scale;                           /* the same hook as a factor on the lit colour, 0 = off: 0.1 = a locked figure of the world-select carousel (0x451a40) */
     int tint_mode; float tint_rgb[3];            /* the same hook in general: [0x5ac850] 1 = lit vertex colour times rgb, 2 = plus rgb (1.0 = 255), 0 = off: the bomb, black with red flashes (0x44d9a0) */
-    Vec3 ldir; float lcol[3]; int l_init, light, l_seen;   /* model lighting: smoothed light vector, light colour, chosen light, seen by it (0x43b912, 0x42e3e4) */
+    int l_init, light, l_seen;                  /* model lighting: initialised, chosen light, root seen by it (0x42e3e4) */
+    float *plight;                              /* per node: light vector in the node's own space + light colour, 6 floats (inst+0xf4, 0x18 B per mesh part; 0x43b912) */
     int tex_mode; float tex_t0, tex_fac;                   /* +0xd8 bits 0-2, +0xdc, +0xe0: texture frame override, messages 16 / 18 / 19 (docs/INSTANCE.md 2) */
     int uv_mode; float uv_t0, uv_fac, uv_t2;               /* +0xd8 bits 3-5, +0xe4, +0xe8, +0xec: UV scroll override, messages 15 / 17 / 19 (docs/INSTANCE.md 2) */
     int drawn;                                             /* set by the renderer each frame: this instance survived the visibility pass */

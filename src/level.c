@@ -789,6 +789,7 @@ static int read_model(Rd *r, Model *m)
         in->nids = nids; in->ids = ru32s(r, nids);
         in->visible = 1; in->anim = 0; in->anim_speed = 1.0f;
         in->node_world = (Mat4 *)calloc(m->nnodes ? m->nnodes : 1, sizeof(Mat4));
+        in->plight = (float *)calloc(m->nnodes ? m->nnodes : 1, 6 * sizeof(float));
         mat4_from_trs(&in->world, in->position, in->quat, in->scale);
     }
     return r->err;
@@ -831,7 +832,7 @@ void ins_free(InsFile *f)
     for (uint32_t i = 0; i < f->nmodels; i++) {
         Model *m = &f->models[i];
         for (uint32_t j = 0; j < m->nnodes; j++) { InsNode *n = &m->nodes[j]; for (uint32_t k = 0; k < n->npolys && n->polys; k++) free(n->polys[k].indices); free(n->polys); free(n->pos_refs); free(n->rot_refs); free(n->event_refs); }
-        for (uint32_t j = 0; j < m->ninstances; j++) { free(m->instances[j].ids); free(m->instances[j].traj.points); free(m->instances[j].node_world); }
+        for (uint32_t j = 0; j < m->ninstances; j++) { free(m->instances[j].ids); free(m->instances[j].traj.points); free(m->instances[j].node_world); free(m->instances[j].plight); }
         free(m->owner); free(m->helper); free(m->coll); free(m->nodes); free(m->anims); free(m->points); free(m->tris); free(m->instances); free(m->volume_nodes); free(m->mesh_nodes);
     }
     for (uint32_t i = 0; i < f->ncameras; i++) free(f->cameras[i].traj.points);
