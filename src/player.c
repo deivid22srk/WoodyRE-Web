@@ -939,12 +939,39 @@ static void jumper_force_fall(Jumper *j, int force)                             
     if ((j->state == 3 || j->state == 4 || j->state == 5) && !force) return;
     j->coyote = 0; jumper_start_fall(j, 1); j->v_down = 0; j->state = 4;
 }
+typedef struct { int kind; float t; const Instance *in; const InsNode *node; Vec3 n; } InsRayHit;
+static int ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b, float t_world, InsRayHit *h);
+/* 0x464e00(p, inst): may he hang in this wall? inst = the hit instance when the polygon is peckable, else NULL. No new grab
+ * while the let-go timer +0x524 runs or when dead (+0x26c); the wall must be (nearly) vertical, |n.y| <= 0.05 (0x4ab7d0) */
+static int climb_grab(Player *p, Vec3 n, const Instance *inst)
+{
+    if (p->regrab > 0 || p->dead_kind || !inst || fabsf(n.y) > 0.05f) return 0;
+    float l = sqrtf(n.x * n.x + n.z * n.z);
+    p->wall_n = l > 0 ? (Vec3){ n.x / l, 0, n.z / l } : (Vec3){ n.x, 0, n.z }; p->wall_inst = inst;   /* +0x510..0x518, +0x51c */
+    return 1;
+}
+/* 0x4575b0: ONE ray 0x4359b0 from the feet + 5 along v, world and instances (the last instance polygon tested wins and
+ * replaces a world hit, as everywhere). Any hit sparks; a peckable press node (type code 4) that 0x464e00 accepts sticks the
+ * beak in (substate 8, docs/PERSO_JUMP.md 2.4), anything else bounces him off (6 / 7). Before the grab came only from the
+ * ground grab ray of 0x464ef0 (feet + 40, 169 ahead) every frame of the dash, so he grabbed up to 100 units out from the wall
+ * and 35 higher than the original can; a grab just below the top then went straight into the climb-over that far out, which
+ * set him down in front of the wall instead of on it (and into the pit below in a side section) */
 static int attack_probe(Player *p, Vec3 v)                                                          /* 0x4575b0 */
 {
     Vec3 a = { p->pos.x, p->pos.y + 5.0f, p->pos.z }, b = { a.x + v.x, a.y + v.y, a.z + v.z }, face_n;
-    float f = gel_ray_hit(p->gel, a, b, &face_n); if (f > 1.0f) return 0;
+    float f = gel_ray_hit(p->gel, a, b, &face_n); InsRayHit h;
+    int k = ray_instances(p, NULL, a, b, f <= 1.0f ? f : 2.0f, &h);
+    if (k) { f = h.t; face_n = h.n; if (k == 3) { float l = sqrtf(vdot(v, v)); face_n = l > 1e-6f ? (Vec3){ -v.x / l, -v.y / l, -v.z / l } : (Vec3){ 0, 1, 0 }; } }
+    if (f > 1.0f) return 0;
     /* 0x4575b0 fires the impact on ANY hit: kind 1, no normal, a 0.05 s flash (docs/PARTICLES.md 4) */
     game_peck_fx(1, (Vec3){ a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f }, &face_n);
+    if (climb_grab(p, face_n, k == 2 && h.node->type_code == 4 ? h.in : NULL)) {   /* 0x4576a0..0x4576e8 */
+        p->atk = 8; p->atk_t = anim_len(p, 0xf, 0); lock_move(p, p->atk_t);     /* 0x4576ee..0x457726 */
+        p->yaw = atan2f(-p->wall_n.x, -p->wall_n.z); p->speed = 0; p->ramp_phase = 0; p->vel = (Vec3){ 0, 0, 0 };   /* RampA.dir = M.velDir = M.dir = -n */
+        rumble(p, 0.5f, 0.5f);
+        printf("  CLIMB beak in instance %u (substate 8)\n", h.in->index);
+        return 1;
+    }
     int found; const Instance *hi; const InsNode *hn;
     float gy = world_ground(p, (Vec3){ p->pos.x, p->pos.y + 1.0f, p->pos.z }, &found, &hi, &hn);
     int n = (found && p->pos.y - gy > 100.0f) ? 0xe : 0xd;
@@ -1094,6 +1121,10 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
         if (p->atk_t <= 0) { p->pos.y = p->floor_y; p->on_ground = 1; p->atk = 0; }  /* 0x462990 snap to ground */
         return;
     case 7: jumper_reset(&p->jumper); if ((p->atk_t -= dt) <= 0) { p->atk = 0; jumper_force_fall(&p->jumper, 0); } return;
+    case 8:                                                               /* 0x458524: the beak sticks in the wall for AnimLen(0xf), then */
+        jumper_reset(&p->jumper);                                         /* SetState(4), anim 0x15, climbing (+0x50c = 2), grip 0.8 */
+        if ((p->atk_t -= dt) <= 0) { p->atk = 0; p->climb_sub = 2; p->grip = 0.8f; p->peck_t = 0.3f; anim_request(p, 0x15, 1.0f); }
+        return;
     case 9:
         if (p->steep_edge) {                                               /* 0x457abe: a ledge ahead ends the windup, before the aim */
             if (in->jump) { lock_move(p, 0); p->atk = 0; }                 /* 0x457ae1: action 4 held => LockMove(0, 1), the jump follows */
@@ -1346,7 +1377,6 @@ static float g_climb_frac;   /* fraction of the last climb_ray hit */
  * can win (t < 0 is impossible, [0x53a554] != 0), but a later inside node overwrites the instance again (last inside wins).
  * The normal of a kind-2 hit is M.n normalised (0x432f94..0x433054, press_normal), which faces a. Returns 0, 2 or 3.
  * `skip` (a bomb itself: flag 0x40 during its own ray, 0x449da2) and the player's own instance take no part. */
-typedef struct { int kind; float t; const Instance *in; const InsNode *node; Vec3 n; } InsRayHit;
 static int ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b, float t_world, InsRayHit *h)
 {
     const GelFile *g = p->gel; const InsFile *ins = p->ins; Vec3 v[32], ab = vsub(b, a); int inside = 0;
@@ -1417,18 +1447,21 @@ static int climb_ray(const Player *p, Vec3 from, Vec3 to, Vec3 *n_out, const Ins
 }
 static Vec3 climb_probe_to(const Player *p, Vec3 from) { Vec3 to = { from.x + sinf(p->yaw) * (P_RADIUS + 100.0f), from.y, from.z + cosf(p->yaw) * (P_RADIUS + 100.0f) }; return to; }
 
-/* 0x464e00: grab when the attack meets a peckable, (nearly) vertical wall */
-static int climb_try(Player *p)
+/* 0x464ef0, the grab of a fresh press (before the attack controller 0x457a50 in the Perso frame, so on the ground and in the
+ * air alike): attack JUST pressed, attack substate 0 or 10 (the charge run), not climbing yet; the ray of 0x4359b0 from the
+ * feet + 40 along the facing over P+4 + 100 = 169 must end on a peckable press node that 0x464e00 accepts. Then SetState(4)
+ * with +0x50c = 1 (anim 0x14 first, both from the ground and from the air), grip 0.8, Mover_SetDir(NULL), jumper reset,
+ * attack window closed (0x457560(0, 1)), facing the wall. No spark here (only the dash probe 0x4575b0 sparks). The grab out
+ * of a running dash is attack_probe's (substate 8). */
+static int climb_try(Player *p, const PlayerInput *in)
 {
-    if (p->regrab > 0 || p->climb_sub) return 0;
+    if (!(in->action && !p->action_prev) || (p->atk != 0 && p->atk != 10) || p->climb_sub || p->look || p->state6) return 0;
     Vec3 from = { p->pos.x, p->pos.y + 40.0f, p->pos.z }, to = climb_probe_to(p, from), n; const Instance *wi; int peck = 0;
-    if (!climb_ray(p, from, to, &n, &wi, &peck) || !peck || fabsf(n.y) > 0.05f) return 0;
-    float l = sqrtf(n.x * n.x + n.z * n.z); if (l < 1e-4f) return 0;
-    p->wall_n = (Vec3){ n.x / l, 0, n.z / l }; p->wall_inst = wi; p->yaw = atan2f(-p->wall_n.x, -p->wall_n.z);
-    p->climb_sub = p->on_ground ? 1 : 2; p->grip = 0.8f; p->peck_t = 0.3f; jumper_reset(&p->jumper);   /* 0x462c90 at 0x4650ce */
-    p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->vel = (Vec3){ 0, 0, 0 }; p->use_atk_disp = 0;
-    /* the hit that grabs is a probe hit (0x4575b0), so it pecks too; the wall normal is the one climb_ray just measured */
-    { float f = g_climb_frac * 0.95f; game_peck_fx(1, (Vec3){ from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f, from.z + (to.z - from.z) * f }, &n); }
+    if (!climb_ray(p, from, to, &n, &wi, &peck) || !climb_grab(p, n, peck ? wi : NULL)) return 0;
+    p->yaw = atan2f(-p->wall_n.x, -p->wall_n.z);
+    p->climb_sub = 1; p->grip = 0.8f; jumper_reset(&p->jumper);         /* 0x4650af..0x4650ce */
+    p->air_win = 0;                                                       /* 0x4650d9: 0x457560(0, 1) */
+    p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->vel = (Vec3){ 0, 0, 0 }; p->use_atk_disp = 0;   /* SetState clears +0x5b4 */
     printf("  CLIMB grab on instance %u\n", wi->index);
     return 1;
 }
@@ -2239,7 +2272,12 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     }
     if (p->dead_kind) { p->climb_sub = 0; p->use_root = 0; }
     int racing = p->race_char && !p->dead_kind;                           /* Perso state 1: no attacks, no Mover (0x44b530) */
-    if (!p->dead_kind && !racing) { attack_update(p, in, dt); attack_trigger(p, in, dt); p->steep_edge = 0; if (p->atk && climb_try(p)) { p->climb_act_prev = in->action; perso_keys_tail(p, in, dt); player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return; } duck_update(p, in, dt, 0, p->on_ground); }
+    if (!p->dead_kind && !racing && climb_try(p, in)) {                  /* 0x464ef0 (0x44b753) before 0x457a50 / 0x44ba70 */
+        p->action_prev = p->climb_act_prev = in->action; perso_keys_tail(p, in, dt); player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return; }
+    if (!p->dead_kind && !racing) { attack_update(p, in, dt);
+        if (p->climb_sub) {                                                /* substate 8 ended in SetState(4): state 4 from now on, no jumper / move in this frame */
+            p->action_prev = p->climb_act_prev = in->action; perso_keys_tail(p, in, dt); player_apply_transform(p); perso_mask200(p, vm, 0); player_volumes(p, vm); return; }
+        attack_trigger(p, in, dt); p->steep_edge = 0; duck_update(p, in, dt, 0, p->on_ground); }
     perso_keys_tail(p, in, dt);                                           /* 0x44b980, 0x458bf0, 0x459c70 after 0x457a50 / 0x44ba70 / 0x465b10 (0x44b7a8) */
     Vec3 disp;
     if (racing) { race_crouch(p, in, dt); disp = race_ride(p, in, dt); }

@@ -3838,7 +3838,7 @@ int main(int argc, char **argv)
              * clock of --shot, so a sequence that spans a level change stays in step (testing: drives the menu pages and walks) */
             static const char *keys; static double held_until[256]; static unsigned char fired[64]; if (!keys) keys = wenv("WOODY_KEYS") ? wenv("WOODY_KEYS") : "";
             static const struct { const char *n; int vk; } kn[] = { {"RET",VK_RETURN}, {"ESC",VK_ESCAPE}, {"UP",VK_UP}, {"DOWN",VK_DOWN}, {"LEFT",VK_LEFT}, {"RIGHT",VK_RIGHT}, {"SPACE",VK_SPACE}, {"CTRL",VK_CONTROL}, {"BACK",VK_BACK}, {"RCTRL",VK_RCONTROL}, {"SHIFT",VK_SHIFT}, {"NUM0",VK_NUMPAD0} };
-            double wt = win_time(), tn = wt - t0; int e = 0;
+            double wt = wenv("WOODY_FIXDT") ? t0 + g_clock : win_time(), tn = wt - t0; int e = 0;   /* with WOODY_FIXDT the game clock, like the other hooks */
             for (const char *s = keys; *s && e < 64; e++) {
                 char name[16] = ""; double t = 0; int used = 0;
                 if (sscanf(s, " %lf:%15[A-Z0-9]%n", &t, name, &used) < 2 || !used) break;
@@ -4221,6 +4221,7 @@ int main(int argc, char **argv)
         }
         { static int posat_done; float pa[4]; const char *e = wenv("WOODY_POSAT"); int k = 0, used;   /* testing: WOODY_POSAT="T x y z [T x y z ...]" = --pos, but T s into the level (moving platforms, carrying a bomb somewhere) */
             while (e && L.have_player && sscanf(e, "%f %f %f %f%n", &pa[0], &pa[1], &pa[2], &pa[3], &used) == 4) { if (!(posat_done >> k & 1) && now - t0 >= pa[0]) { posat_done |= 1 << k; L.player.pos = (Vec3){ pa[1], pa[2], pa[3] }; L.player.floor_y = pa[2] - 1000.0f; L.player.on_ground = 0; } e += used; k++; } }
+        { static int aw_done; if (wenv("WOODY_AIRWIN") && !aw_done && L.have_player && now - t0 >= atof(wenv("WOODY_AIRWIN"))) { aw_done = 1; L.player.air_win = 0.5f; } }   /* testing: open the air attack window (an air peck without a jump, after WOODY_POSAT) */
         { static int setvar_done; float sv[3]; const char *e = wenv("WOODY_SETVAR"); int k = 0, used;   /* testing: WOODY_SETVAR="T var val [...]" = SetVar T s into the level (W2B boss fight: "1 1 1") */
             while (e && L.have_player && sscanf(e, "%f %f %f%n", &sv[0], &sv[1], &sv[2], &used) == 3) { if (!(setvar_done >> k & 1) && now - t0 >= sv[0]) { setvar_done |= 1 << k; game_var_set((uint32_t)sv[1], (int)sv[2]); } e += used; k++; } }
         if (wenv("WOODY_DOLLAR")) { double a = 0, b = 0; sscanf(wenv("WOODY_DOLLAR"), "%lf %lf", &a, &b); if (now - t0 >= a && now - t0 < b) g_hud_ext = 1; }   /* testing: WOODY_DOLLAR="T0 T1" = message 1172 every frame between T0 and T1 s (the Jackpot door) */

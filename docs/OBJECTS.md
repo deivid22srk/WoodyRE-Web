@@ -152,6 +152,10 @@ Conditions to grab, `0x464e00(p, inst)` (PERSO_JUMP §2.4): `p+0x524 < 0`, `p+0x
 Entry: from the ground `0x464f42` → `SetState(4)`, `+0x50c = 1`, `+0x520 = 0.8`; from the air via attack substate 8
 (`0x458524`, after `AnimLen(0xf,0)`): `SetState(4)`, anim 0x15, `+0x50c = 2`, `+0x520 = 0.8`. In both cases the Perso looks
 at the wall (`RampA.dir = M.velDir = M.dir = −n`).
+The two grabs are different rays: the fresh press (`0x464ef0`) casts from the feet + 40 over 169, the dash probe (`0x4575b0`)
+from the feet + 5, 50 along the dash and then 100 level. Port: `climb_try` and `attack_probe` (+ attack substate 8) in
+`src/player.c`; until 2026-10-03 the port grabbed out of the dash with the 169 ray, up to 100 units out from the wall,
+so a grab just below the top climbed over in mid-air and the ground snap dropped him in front of the wall.
 
 State 4, every frame (`0x4651d0`, called from `0x44b847`; jump table `0x465728` on `+0x50c − 1`):
 ```c
@@ -376,7 +380,8 @@ The function itself is decompiled in **PARTICLES.md §4** and ported (`game_peck
   and then fading in 4 s.
 
 While climbing this leaves a column of small holes, one every ~75 units (250 units/s upward, a peck every 0.3 s). The
-peck he uses to **grab on** (`climb_try`, via the attack ray) is kind 1: a flash only. `WOODY_FXLOG=1` logs every peck.
+peck he uses to **grab on** out of the air dash (`attack_probe`, `0x4575b0`) is kind 1: a flash only; the grab of a fresh press
+(`climb_try`, `0x464ef0`) makes none. `WOODY_FXLOG=1` logs every peck.
 The glowing "peck here" faces of the climb wall itself are something different: those are model faces with texture-group
 flag bit 1 (§1.3), which since LIGHTING.md recipe 5 (issue #5) are drawn unlit and additive.
 
