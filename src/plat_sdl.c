@@ -67,10 +67,32 @@ void (*plat_gl_proc(const char *name))(void) { return gles_proc(name); }   /* eg
 #else
 void (*plat_gl_proc(const char *name))(void) { return (void (*)(void))SDL_GL_GetProcAddress(name); }
 #endif
+#ifdef __ANDROID__
+#include <jni.h>
+/* WoodyActivity.dialog: a scrolling message with up to three buttons that stay on the screen (SDL's message box does
+ * not scroll, and in landscape its buttons end up below a phone's screen). Blocks until one is pressed. */
+int plat_dialog(const char *text, const char *b1, const char *b2, const char *b3)
+{
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv(); jobject act = (jobject)SDL_AndroidGetActivity(); int r = -1;
+    if (!env || !act) { fprintf(stderr, "%s\n", text); return -1; }
+    jclass c = (*env)->GetObjectClass(env, act);
+    jmethodID m = (*env)->GetStaticMethodID(env, c, "dialog", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I");
+    if (m) {
+        jstring s[4] = { (*env)->NewStringUTF(env, text), b1 ? (*env)->NewStringUTF(env, b1) : NULL, b2 ? (*env)->NewStringUTF(env, b2) : NULL, b3 ? (*env)->NewStringUTF(env, b3) : NULL };
+        r = (*env)->CallStaticIntMethod(env, c, m, s[0], s[1], s[2], s[3]);
+        for (int i = 0; i < 4; i++) if (s[i]) (*env)->DeleteLocalRef(env, s[i]);
+    }
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); r = -1; }
+    (*env)->DeleteLocalRef(env, c); (*env)->DeleteLocalRef(env, act);
+    return r;
+}
+void plat_message(const char *text, int warn) { (void)warn; printf("%s\n", text); plat_dialog(text, "OK", NULL, NULL); }
+#else
 void plat_message(const char *text, int warn)
 {
     if (SDL_ShowSimpleMessageBox(warn ? SDL_MESSAGEBOX_WARNING : SDL_MESSAGEBOX_INFORMATION, "WoodyRE", text, NULL)) fprintf(stderr, "%s\n", text);
 }
+#endif
 
 #ifdef __ANDROID__
 /* stdout (woodyre.log, WOODY_GUI) also to logcat: adb logcat -s WoodyRE */

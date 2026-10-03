@@ -103,9 +103,34 @@ public class WoodyActivity extends SDLActivity {
         if (a == null) return;
         a.runOnUiThread(() -> {
             if (text == null) { if (sProgress != null) { sProgress.dismiss(); sProgress = null; } return; }
-            if (sProgress == null) { sProgress = new AlertDialog.Builder(a).setTitle("WoodyRE").setMessage(text).setCancelable(false).create(); sProgress.show(); }
+            if (sProgress == null) { sProgress = new AlertDialog.Builder(a, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("WoodyRE").setMessage(text).setCancelable(false).create(); sProgress.show(); }
             else sProgress.setMessage(text);
         });
+    }
+
+    /** the game's questions and messages (plat_dialog in src/plat_sdl.c): the text scrolls, the buttons stay on the
+     *  screen. Returns 1 for b1, 0 for b2, -1 for b3 (or when there is no activity). Blocks until a button is pressed. */
+    public static int dialog(final String text, final String b1, final String b2, final String b3) {
+        final Activity a = (Activity) SDLActivity.getContext();
+        if (a == null) return -1;
+        final Object lock = new Object();
+        final int[] r = { -2 };
+        a.runOnUiThread(() -> {
+            AlertDialog.Builder d = new AlertDialog.Builder(a, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("WoodyRE").setMessage(text).setCancelable(false);
+            if (b1 != null) d.setPositiveButton(b1, (x, w) -> answer(lock, r, 1));
+            if (b2 != null) d.setNeutralButton(b2, (x, w) -> answer(lock, r, 0));
+            if (b3 != null) d.setNegativeButton(b3, (x, w) -> answer(lock, r, -1));
+            d.show();
+        });
+        synchronized (lock) {
+            while (r[0] == -2) try { lock.wait(); } catch (InterruptedException e) { return -1; }
+        }
+        return r[0];
+    }
+
+    private static void answer(Object lock, int[] r, int v) {
+        synchronized (lock) { r[0] = v; lock.notifyAll(); }
     }
 
     private static void picked(Uri u) {

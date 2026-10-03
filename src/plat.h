@@ -31,6 +31,9 @@ int plat_exists(const char *path);
 int plat_vsc_to_vk(int scancode);                      /* a DirectInput (set 1) scan code -> VK on a US layout (Woody.cfg import) */
 void (*plat_gl_proc(const char *name))(void);
 void plat_message(const char *text, int warn);
+#ifdef __ANDROID__
+int plat_dialog(const char *text, const char *b1, const char *b2, const char *b3);   /* Android's own dialog: 1 = b1, 0 = b2, -1 = b3 */
+#endif
 enum {                                                 /* the Windows virtual-key codes (winuser.h) */
     VK_BACK = 0x08, VK_TAB = 0x09, VK_RETURN = 0x0D, VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_PAUSE = 0x13,
     VK_CAPITAL = 0x14, VK_ESCAPE = 0x1B, VK_SPACE = 0x20, VK_PRIOR = 0x21, VK_NEXT = 0x22, VK_END = 0x23, VK_HOME = 0x24,

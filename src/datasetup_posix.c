@@ -85,6 +85,9 @@ static void make_dirs(char *path)                           /* every parent dire
 static const char *enter(const char *home, const char *rel) { return chdir(home) ? NULL : rel; }
 static int ask(const char *text, const char *yes, const char *no)   /* 1 = yes, 0 = no, -1 = cancel */
 {
+#ifdef __ANDROID__
+    return plat_dialog(text, yes, no, "Cancel");
+#endif
     const SDL_MessageBoxButtonData b[3] = { { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, yes }, { 0, 0, no }, { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, -1, "Cancel" } };
     const SDL_MessageBoxData m = { SDL_MESSAGEBOX_INFORMATION, NULL, "WoodyRE", text, no ? 3 : 2, no ? b : (const SDL_MessageBoxButtonData[]){ b[0], b[2] }, NULL };
     int r = -1; if (SDL_ShowMessageBox(&m, &r)) { fprintf(stderr, "%s\n", text); return -1; }
