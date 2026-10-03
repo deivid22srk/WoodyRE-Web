@@ -297,6 +297,12 @@ the Mover).
   Woody red while the game runs (`WOODY_PADNOLIGHT=1` leaves it alone) and goes back to the system's at exit.
   Testing: `WOODY_PAD="T:LX:LY:BUTTONS[:D] ..."` (as `WOODY_JOY`, buttons `1 << PAD_*` of `src/pad.h`), `WOODY_PADLOG=1`
   logs every rumble call.
+- **Linux / SDL2 build (`src/pad_sdl.c`, `src/plat_sdl.c`, docs/PLATFORM.md)**: the same `pad.h` on SDL's game controller
+  API (DualSense / DualShock 4 with rumble, light bar and player light, Xbox pads, the Steam Deck through Steam Input), the
+  same merge, focus pause and rumble mixing; no WinMM joystick. Keys arrive as SDL scancodes and are stored as the VK codes
+  above (letters by the layout), so bindings, woodyre.cfg and the Controls page are the same on both. Testing:
+  `WOODY_VPAD="T:LX:LY:BUTTONS[:D] ..."` attaches an SDL virtual controller (buttons `1 << SDL_CONTROLLER_BUTTON_*`), the
+  whole SDL path; `WOODY_KEYLOG=1` prints every key event.
 - **Controls page and woodyre.cfg bindings (PORT EXTRA)**: Options → Controls (menu page 0x41, the list class of the Display
   page 0x40) shows a device choice (Keyboard / Controller) and a row per action: walk forward / back / left / right, jump,
   attack, special, duck (actions 5 and 8 together), look around, camera behind, pause. Confirm on a row waits for a key or

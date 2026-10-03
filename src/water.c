@@ -6,7 +6,7 @@
  * The model of a water volume (W2A model 25) is a box: mesh node, collision box, press node. The box itself is never
  * drawn and never collides (Init sets inst+8 |= 0x40); what the player sees is a grid laid over the top face of the mesh
  * node, drawn twice with the interior vertices circling in opposite directions. */
-#include <windows.h>
+#include "plat.h"
 #include <GL/gl.h>
 #include <math.h>
 #include <stdio.h>

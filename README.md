@@ -16,6 +16,13 @@ included in this repository or its releases.
    is no longer needed. No CD drive? Choose a folder with a copy of the CD's files instead, or copy `Data`, `Common`,
    `Logo`, `Game` and `Music.bf` from the CD into `data\` yourself.
 
+**Linux and Steam Deck:** download the `linux-x86_64.tar.gz` from the Releases page (or run `./build.sh`), unpack it and
+start `woodyre`. It needs SDL2 (`libsdl2-2.0-0`; SteamOS and most desktops have it). At the first start it looks for the
+CD under `/media`, `/run/media` and `/mnt` and copies the game files into `~/.local/share/WoodyRE/data` (the window opens
+when the copy is done); or copy `Data`, `Common`, `Logo`, `Game` and `Music.bf` there yourself. `woodyre.cfg`, `woodyre.sav`
+and `mods/` then live in `~/.local/share/WoodyRE`. On the Steam Deck add `woodyre` to Steam as a non-Steam game; the
+Windows `WoodyRE.exe` under Proton should work as well.
+
 **Supported version:** the English PC CD-ROM, version 1.00 (October 2001). Other releases, such as the later Brazilian
 "Pica-Pau" CD, contain changed levels and are not supported. `WoodyRE.exe --verify` checks your copy (output in `woodyre.log`).
 
@@ -36,7 +43,7 @@ Menus: Enter or Jump confirms, Esc or Duck goes back. Options → Controls chang
 
 Controllers: a DualSense (PS5) or DualShock 4 (PS4) works over USB or Bluetooth without extra software, and so do Xbox
 controllers and other XInput pads; all with rumble (Options, Vibration sets its strength). Any other joystick works as in
-the original (WinMM).
+the original (WinMM). On Linux every pad SDL2 knows works, the Steam Deck's own controls included.
 
 ### Settings and files
 Everything the game writes stays next to `WoodyRE.exe` (or in `%LOCALAPPDATA%\WoodyRE` when that folder is read-only):
@@ -64,6 +71,9 @@ This builds `WoodyRE.exe` in the repository folder. The C compiler is [Zig](http
 or `pip install ziglang` is used when present, otherwise `build.bat` downloads the official Zig 0.16.0 for Windows
 (about 95 MB) into `tools\zig` once and checks its SHA-256.
 
+- Linux: `./build.sh` builds `woodyre` with the system's C compiler and SDL2 (Debian / Ubuntu:
+  `sudo apt install build-essential libsdl2-dev`). The engine is the same; only the window, input, sound, pads
+  (`src/plat_sdl.c`, `src/pad_sdl.c`) and the first-start copy (`src/datasetup_posix.c`) are SDL / POSIX code.
 - `build.bat dev`: the developer build `out\woody.exe`, which logs to the console and keeps the developer keys
   (F1-F5, Tab, `[ ]`, P, PgUp/PgDn, End; in `WoodyRE.exe` they need `WOODY_DEBUGKEYS=1`).
 - `make_standalone.bat`: packs `WoodyRE.exe` and **your** game files from `data\` into a single

@@ -4,13 +4,20 @@
  * has the same hash, so one PNG replaces it everywhere. A replacement may be any size: the game keeps every size and
  * texture coordinate of the original and only samples the bigger image. Files: mods\textures\ (any subfolders) in the
  * game's folder next to woodyre.cfg, named <anything>_<16 hex digits>.png - the dump names them <w>x<h>_<hash>.png. */
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <wchar.h>
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <GL/gl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wchar.h>
+#include <stdint.h>
 #include "texpack.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -22,10 +29,33 @@
 #define STBI_WRITE_NO_STDIO
 #include "stb/stb_image_write.h"
 
-typedef struct { uint64_t hash; wchar_t *path; } Entry;
+/* paths: wide on Windows (a user name the ANSI code page cannot spell), UTF-8 bytes elsewhere */
+#ifdef _WIN32
+typedef wchar_t PathC;
+#define PMAX MAX_PATH
+#define PF "%ls"
+static void p_join(PathC *out, const PathC *a, const char *b) { _snwprintf(out, PMAX, L"%ls\\%hs", a, b); out[PMAX - 1] = 0; }
+static void p_home(PathC *out) { DWORD n = GetCurrentDirectoryW(PMAX, out); if (!n || n >= PMAX - 8) wcscpy(out, L"."); }
+static FILE *p_open(const PathC *p, const char *mode) { wchar_t m[8]; mbstowcs(m, mode, 8); return _wfopen(p, m); }
+static int p_exists(const PathC *p) { return GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES; }
+static void p_mkdir(const PathC *p) { CreateDirectoryW(p, NULL); }
+#define p_dup _wcsdup
+#else
+typedef char PathC;
+#define PMAX 4096
+#define PF "%s"
+static void p_join(PathC *out, const PathC *a, const char *b) { snprintf(out, PMAX, "%s/%s", a, b); }
+static void p_home(PathC *out) { if (!getcwd(out, PMAX - 8)) strcpy(out, "."); }
+static FILE *p_open(const PathC *p, const char *mode) { return fopen(p, mode); }
+static int p_exists(const PathC *p) { struct stat st; return stat(p, &st) == 0; }
+static void p_mkdir(const PathC *p) { mkdir(p, 0755); }
+#define p_dup strdup
+#endif
+
+typedef struct { uint64_t hash; PathC *path; } Entry;
 static struct {
     int scanned, dump, ndumped, nreplaced; char scope[64];
-    wchar_t root[MAX_PATH];          /* <exe dir>\mods */
+    PathC root[PMAX];                /* <game folder>/mods */
     Entry *tab; uint32_t cap, n;     /* open addressing, hash 0 = empty */
 } T = { .scope = "Common" };
 
@@ -41,7 +71,7 @@ void tp_scope(const char *name) { snprintf(T.scope, sizeof T.scope, "%s", name &
 const char *tp_scope_get(void) { return T.scope; }
 void tp_set_dump(int on) { T.dump = on; }
 
-static void put(uint64_t hash, const wchar_t *path)
+static void put(uint64_t hash, const PathC *path)
 {
     if ((T.n + 1) * 2 > T.cap) {                           /* grow at half full */
         Entry *old = T.tab; uint32_t oc = T.cap; T.cap = oc ? oc * 2 : 256; T.tab = (Entry *)calloc(T.cap, sizeof *T.tab); T.n = 0;
@@ -50,27 +80,31 @@ static void put(uint64_t hash, const wchar_t *path)
     }
     uint32_t k = (uint32_t)hash & (T.cap - 1);
     while (T.tab[k].hash) { if (T.tab[k].hash == hash) return; k = (k + 1) & (T.cap - 1); }   /* two files for one texture: the first one found wins */
-    T.tab[k].hash = hash; T.tab[k].path = _wcsdup(path); T.n++;
+    T.tab[k].hash = hash; T.tab[k].path = p_dup(path); T.n++;
 }
-static const wchar_t *find(uint64_t hash)
+static const PathC *find(uint64_t hash)
 {
     if (!T.cap) return NULL;
     for (uint32_t k = (uint32_t)hash & (T.cap - 1); T.tab[k].hash; k = (k + 1) & (T.cap - 1)) if (T.tab[k].hash == hash) return T.tab[k].path;
     return NULL;
 }
-static int name_hash(const wchar_t *name, uint64_t *out)   /* <anything>_<16 hex>.png or <16 hex>.png */
+static int name_hash(const PathC *name, uint64_t *out)   /* <anything>_<16 hex>.png or <16 hex>.png */
 {
-    size_t n = wcslen(name); if (n < 20 || _wcsicmp(name + n - 4, L".png")) return 0;
-    const wchar_t *h = name + n - 20; if (h > name && h[-1] != L'_') return 0;
+    size_t n = 0; while (name[n]) n++;
+    if (n < 20) return 0;
+    const PathC *e = name + n - 4;
+    if (e[0] != '.' || (e[1] | 0x20) != 'p' || (e[2] | 0x20) != 'n' || (e[3] | 0x20) != 'g') return 0;
+    const PathC *h = name + n - 20; if (h > name && h[-1] != '_') return 0;
     uint64_t v = 0;
     for (int i = 0; i < 16; i++) {
-        wchar_t c = h[i]; int d = c >= L'0' && c <= L'9' ? c - L'0' : c >= L'a' && c <= L'f' ? c - L'a' + 10 : c >= L'A' && c <= L'F' ? c - L'A' + 10 : -1;
+        int c = (int)h[i], d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
         if (d < 0) return 0;
         v = v << 4 | (uint64_t)d;
     }
     *out = v ? v : 1; return 1;
 }
-static void scan_dir(const wchar_t *dir, int depth)
+#ifdef _WIN32
+static void scan_dir(const PathC *dir, int depth)
 {
     wchar_t pat[MAX_PATH]; WIN32_FIND_DATAW fd;
     if (_snwprintf(pat, MAX_PATH, L"%ls\\*", dir) >= MAX_PATH) return;
@@ -84,20 +118,33 @@ static void scan_dir(const wchar_t *dir, int depth)
     } while (FindNextFileW(h, &fd));
     FindClose(h);
 }
+#else
+static void scan_dir(const PathC *dir, int depth)
+{
+    DIR *d = opendir(dir); struct dirent *de; if (!d) return;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] == '.') continue;
+        char p[PMAX]; if (snprintf(p, PMAX, "%s/%s", dir, de->d_name) >= PMAX) continue;
+        struct stat st; uint64_t hv; if (stat(p, &st)) continue;
+        if (S_ISDIR(st.st_mode)) { if (depth < 8) scan_dir(p, depth + 1); }
+        else if (name_hash(de->d_name, &hv)) put(hv, p);
+    }
+    closedir(d);
+}
+#endif
 static void scan(void)
 {
     T.scanned = 1;
-    DWORD n = GetCurrentDirectoryW(MAX_PATH, T.root);     /* the game's home with woodyre.cfg and data\ (datasetup.c makes it current) */
-    if (!n || n >= MAX_PATH - 8) wcscpy(T.root, L".");
-    wcsncat(T.root, L"\\mods", MAX_PATH - wcslen(T.root) - 1);
-    wchar_t dir[MAX_PATH]; _snwprintf(dir, MAX_PATH, L"%ls\\textures", T.root); dir[MAX_PATH - 1] = 0;
+    PathC home[PMAX]; p_home(home);                      /* the game's home with woodyre.cfg and data (datasetup makes it current) */
+    p_join(T.root, home, "mods");
+    PathC dir[PMAX]; p_join(dir, T.root, "textures");
     scan_dir(dir, 0);
-    if (T.n) printf("texture pack: %u replacement textures in %ls\n", T.n, dir);
+    if (T.n) printf("texture pack: %u replacement textures in " PF "\n", T.n, dir);
 }
 
-static uint8_t *read_file(const wchar_t *path, int *size)
+static uint8_t *read_file(const PathC *path, int *size)
 {
-    FILE *f = _wfopen(path, L"rb"); if (!f) return NULL;
+    FILE *f = p_open(path, "rb"); if (!f) return NULL;
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     uint8_t *d = n > 0 ? (uint8_t *)malloc((size_t)n) : NULL;
     if (d && fread(d, 1, (size_t)n, f) != (size_t)n) { free(d); d = NULL; }
@@ -106,11 +153,11 @@ static uint8_t *read_file(const wchar_t *path, int *size)
 int tp_replace(uint64_t hash, int alpha_mode)
 {
     if (!T.scanned) scan();
-    const wchar_t *path = find(hash); if (!path) return 0;
+    const PathC *path = find(hash); if (!path) return 0;
     int size, w, h, ch; uint8_t *file = read_file(path, &size); if (!file) return 0;
     uint8_t *px = stbi_load_from_memory(file, size, &w, &h, &ch, 4); free(file);
     GLint max = 0; glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max);
-    if (!px || w > max || h > max) { printf("texture pack: cannot use %ls (%s)\n", path, px ? "too big for this card" : stbi_failure_reason()); if (px) stbi_image_free(px); return 0; }
+    if (!px || w > max || h > max) { printf("texture pack: cannot use " PF " (%s)\n", path, px ? "too big for this card" : stbi_failure_reason()); if (px) stbi_image_free(px); return 0; }
     size_t n = (size_t)w * h;
     for (size_t i = 0; i < n; i++) {
         uint8_t *p = px + i * 4;
@@ -146,13 +193,13 @@ void tp_dump(uint64_t hash, const uint8_t *rgba, int w, int h)
 {
     if (!T.dump) return;
     if (!T.scanned) scan();
-    wchar_t dir[MAX_PATH], path[MAX_PATH];
-    _snwprintf(dir, MAX_PATH, L"%ls\\dump\\%hs", T.root, T.scope); dir[MAX_PATH - 1] = 0;
-    if (_snwprintf(path, MAX_PATH, L"%ls\\%dx%d_%016llx.png", dir, w, h, (unsigned long long)hash) >= MAX_PATH) return;
-    if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) return;
-    CreateDirectoryW(T.root, NULL); wchar_t d2[MAX_PATH]; _snwprintf(d2, MAX_PATH, L"%ls\\dump", T.root); d2[MAX_PATH - 1] = 0; CreateDirectoryW(d2, NULL); CreateDirectoryW(dir, NULL);
-    FILE *f = _wfopen(path, L"wb"); if (!f) return;
+    PathC d1[PMAX], dir[PMAX], path[PMAX]; char name[64];
+    p_join(d1, T.root, "dump"); p_join(dir, d1, T.scope);
+    snprintf(name, sizeof name, "%dx%d_%016llx.png", w, h, (unsigned long long)hash); p_join(path, dir, name);
+    if (p_exists(path)) return;
+    p_mkdir(T.root); p_mkdir(d1); p_mkdir(dir);
+    FILE *f = p_open(path, "wb"); if (!f) return;
     stbi_write_png_to_func(write_cb, f, w, h, 4, rgba, w * 4);
     fclose(f);
-    if (++T.ndumped % 100 == 1) printf("texture dump: %d files so far (%ls)\n", T.ndumped, dir);
+    if (++T.ndumped % 100 == 1) printf("texture dump: %d files so far (" PF ")\n", T.ndumped, dir);
 }

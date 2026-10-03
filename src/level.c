@@ -1,5 +1,8 @@
 /* level.c - loaders for .gel / .tex / .ins and the skeletal pose evaluation (0x43a3a0). */
 #include "level.h"
+#ifndef _WIN32
+#include "plat.h"                                   /* fopen: the data names ignoring case (plat_sdl.c) */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

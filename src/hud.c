@@ -2,7 +2,7 @@
  * Everything in 640x480 virtual coordinates, origin top left. Colours are 0xAARRGGBB with RGB 0x80 = 1.0 (docs/HUD_TEXT.md 5.2). */
 #include "hud.h"
 #include "texpack.h"
-#include <windows.h>
+#include "plat.h"
 #include <GL/gl.h>
 #include <stdio.h>
 #include <stdlib.h>

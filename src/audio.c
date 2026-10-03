@@ -1,14 +1,23 @@
-/* audio.c - software mixer on waveOut: .rck sound banks, 2D/3D voices, streams from Music.bf. See audio.h, docs/SOUND.md. */
+/* audio.c - software mixer on waveOut (Windows) or SDL2 audio (elsewhere): .rck sound banks, 2D/3D voices, streams from
+ * Music.bf. See audio.h, docs/SOUND.md. */
 #include "audio.h"
-#include <windows.h>
+#include "plat.h"
+#ifdef _WIN32
 #include <mmsystem.h>
+#define LOCK() EnterCriticalSection(&A.cs)
+#define UNLOCK() LeaveCriticalSection(&A.cs)
+#else
+#include <SDL.h>
+#define LOCK() SDL_LockMutex(A.mx)
+#define UNLOCK() SDL_UnlockMutex(A.mx)
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
 #define MIX_RATE   44100
-#define BLOCK      1024                     /* frames per waveOut buffer (23 ms) */
+#define BLOCK      1024                     /* frames per mixed block (23 ms): one waveOut buffer, one SDL callback */
 #define NBLOCKS    4
 #define NVOICES    512                      /* the original's logical pool (mgr+0x908, 512 entries); 24 physical. Out-of-range and
                                              * unprocessed voices keep their entry (loops forever), so 96 ran full in W3B and new
@@ -51,8 +60,13 @@ static const char *k_tracks[49] = {         /* table 0x4b73a0 */
 };
 
 static struct {
-    int ok; HWAVEOUT wo; HANDLE ev, th; volatile LONG quit; CRITICAL_SECTION cs;
+    int ok;
+#ifdef _WIN32
+    HWAVEOUT wo; HANDLE ev, th; volatile LONG quit; CRITICAL_SECTION cs;
     WAVEHDR hdr[NBLOCKS]; int16_t buf[NBLOCKS][BLOCK * 2];
+#else
+    SDL_AudioDeviceID dev; SDL_mutex *mx; int16_t rest[BLOCK * 2]; int nrest;   /* rest: mixed frames the last callback did not take */
+#endif
     Bank bank[AUDIO_BANKS]; Voice v[NVOICES]; int next_handle, paused;
     int last2d, log; unsigned seq;          /* last2d: index+1 of the newest 2D voice (mgr+0x30, tail of the 2D queue); log: WOODY_SNDLOG */
     int reverse;                            /* reverse stereo [0x5e81c0] = Woody.cfg +0x74, Detect's "Invert Left/Right" (0x46b7e0) */
@@ -174,7 +188,7 @@ static void voice_unlink(Voice *v) {
 static void mix_block(int16_t *out) {
     static float acc[BLOCK * 2];
     memset(acc, 0, sizeof acc);
-    EnterCriticalSection(&A.cs);
+    LOCK();
     stream_mix(&A.s[0], acc, A.m_mus);
     stream_mix(&A.s[1], acc, A.m_mus);
     if (A.pcm.on) {                                                                 /* film sound (audio_pcm_push) */
@@ -216,11 +230,12 @@ static void mix_block(int16_t *out) {
             v->pos += step;
         }
     }
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
     for (int i = 0; i < BLOCK * 2; i++) { float x = acc[i]; out[i] = (int16_t)(x > 32767.0f ? 32767 : x < -32768.0f ? -32768 : (int)x); }
     if (A.dump) fwrite(out, 2, BLOCK * 2, A.dump);                                  /* WOODY_AUDIODUMP=file: raw s16 stereo 44.1 kHz */
 }
 
+#ifdef _WIN32
 static DWORD WINAPI audio_thread(LPVOID arg) {
     (void)arg;
     while (!A.quit) {
@@ -265,6 +280,41 @@ void audio_shutdown(void) {
     if (A.dump) fclose(A.dump);
     A.dump = NULL; free(A.bf); A.bf = NULL; A.ok = 0;
 }
+#else
+static void sdl_fill(void *user, Uint8 *stream, int len)   /* the device's thread: whole blocks of the mixer, the remainder kept for the next call */
+{
+    (void)user; int16_t *out = (int16_t *)stream; int frames = len / 4;
+    while (frames > 0) {
+        if (!A.nrest) { mix_block(A.rest); A.nrest = BLOCK; }
+        int n = frames < A.nrest ? frames : A.nrest;
+        memcpy(out, A.rest + (BLOCK - A.nrest) * 2, (size_t)n * 4);
+        out += n * 2; frames -= n; A.nrest -= n;
+    }
+}
+int audio_init(void) {
+    if (A.ok) return 0;
+    A.m_sfx = 1.0f; A.m_mus = 0.7f; A.lright[0] = 1.0f; A.s[0].track = A.s[1].track = -1; A.log = getenv("WOODY_SNDLOG") != NULL;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO)) { fprintf(stderr, "audio: %s\n", SDL_GetError()); return -1; }
+    SDL_AudioSpec want, got; memset(&want, 0, sizeof want);
+    want.freq = MIX_RATE; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = BLOCK; want.callback = sdl_fill;
+    A.mx = SDL_CreateMutex();
+    A.dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);   /* no changes allowed: SDL converts to the device's format */
+    if (!A.dev) { fprintf(stderr, "audio: %s\n", SDL_GetError()); SDL_DestroyMutex(A.mx); A.mx = NULL; return -1; }
+    if (getenv("WOODY_AUDIODUMP")) A.dump = fopen(getenv("WOODY_AUDIODUMP"), "wb");
+    A.ok = 1; A.nrest = 0;
+    SDL_PauseAudioDevice(A.dev, 0);
+    return 0;
+}
+void audio_shutdown(void) {
+    if (!A.ok) return;
+    SDL_CloseAudioDevice(A.dev); A.dev = 0;
+    for (int b = 0; b < AUDIO_BANKS; b++) audio_bank_free(b);
+    stream_close(&A.s[0]); stream_close(&A.s[1]);
+    if (A.dump) fclose(A.dump);
+    A.dump = NULL; free(A.bf); A.bf = NULL; A.ok = 0;
+    SDL_DestroyMutex(A.mx); A.mx = NULL;
+}
+#endif
 
 /* ---------------------------------------------------------------- banks */
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -290,17 +340,17 @@ int audio_bank_load(int bank, const char *path) {
         fseek(f, size - 16 - nbytes, SEEK_CUR);
     }
     fclose(f);
-    EnterCriticalSection(&A.cs); A.bank[bank].snd = snd; A.bank[bank].count = count; LeaveCriticalSection(&A.cs);
+    LOCK(); A.bank[bank].snd = snd; A.bank[bank].count = count; UNLOCK();
     return count;
 }
 
 void audio_bank_free(int bank) {
     if (!A.ok || bank < 0 || bank >= AUDIO_BANKS) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     for (int n = 0; n < NVOICES; n++) if (A.v[n].snd && A.v[n].bank == bank) { if (A.v[n].wait) voice_unlink(&A.v[n]); else voice_free(&A.v[n]); }
     Sound *snd = A.bank[bank].snd; int count = A.bank[bank].count;
     A.bank[bank].snd = NULL; A.bank[bank].count = 0;
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
     for (int i = 0; i < count; i++) free(snd[i].pcm);
     free(snd);
 }
@@ -331,7 +381,7 @@ static Voice *queue_tail(const void *owner, int is3d) {
 int audio_play_q(uint32_t ref, const void *owner, int queue, int loop, float vol, float f, const float *pos, float dmin, float maxdur) {
     if (!A.ok) return 0;
     int h = 0, after = 0; float dist = 0, pan = 0, gain = 1;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     Sound *s = sound_of(ref);
     float fade = A.next_fade; A.next_fade = 0;                                      /* cleared by every Play (0x469c23) */
     if (s && s->frames) {
@@ -352,7 +402,7 @@ int audio_play_q(uint32_t ref, const void *owner, int queue, int loop, float vol
             if (pos) gain = voice_geom(v, &dist, &pan);
         }
     }
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
     if (A.log) {
         printf("  SND play ref 0x%x owner %p loop %d vol %.0f f %.2f %s dmin %.1f -> %d", ref, owner, loop, vol, f, pos ? "3D" : "2D", dmin, h);
         if (pos && h) printf("  dist %.1f m gain %.3f pan %+.2f L %.2f R %.2f%s", dist, gain, pan, gain * (pan > 0 ? 1 - pan : 1), gain * (pan < 0 ? 1 + pan : 1), dist > 10.0f * (dmin > 0 ? dmin : 1) ? " (out of range)" : "");
@@ -376,20 +426,20 @@ static void voice_fade_out(Voice *v, float fade) {
  * owner not processed) and queued nodes of that sample are removed outright */
 void audio_stop3d(uint32_t ref, const void *owner, float fade) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     for (int n = 0; n < NVOICES; n++) {
         Voice *v = &A.v[n]; if (!v->snd || v->ref != ref || v->owner != owner) continue;
         if (v->wait) voice_unlink(v); else if (v->is3d && v->rg <= 0.0f) voice_free(v); else voice_fade_out(v, fade);
     }
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
 }
 
 /* 0x46c390 walks the logical and the physical 2D voices only: a 2D voice parked behind another one (+0x40) is not seen */
 void audio_stop2d(uint32_t ref, float fade, int mask) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     for (int n = 0; n < NVOICES; n++) { Voice *v = &A.v[n]; if (v->snd && !v->wait && v->ref == ref && !v->is3d && (mask & (v->loop ? 1 : 2))) voice_fade_out(v, fade); }
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
 }
 
 /* per frame after the world draw: which 3D owners the original would still process. Update gets the per-frame
@@ -398,29 +448,29 @@ void audio_stop2d(uint32_t ref, float fade, int mask) {
  * processed", 0x46b19c), a one-shot stops (0x46b4b4) and only 0x46bcf0 - which walks that same list - restarts them. */
 void audio_update(int (*active)(const void *owner)) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     for (int n = 0; n < NVOICES; n++) {
         Voice *v = &A.v[n]; if (!v->snd || !v->is3d) continue;
         int p = !v->owner || !active || active(v->owner);
         if (p != v->proc && A.log) printf("  SND %d ref 0x%x owner %p %s\n", v->handle, v->ref, v->owner, p ? "processed again" : "not processed: silenced");
         v->proc = p;
     }
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
 }
 
 void audio_stop_all(void) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     for (int n = 0; n < NVOICES; n++) { A.v[n].snd = NULL; A.v[n].next = A.v[n].wait = 0; }
     A.last2d = 0;
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
 }
 
 void audio_set_volume(uint32_t ref, const void *owner, float vol) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     for (int n = 0; n < NVOICES; n++) { Voice *v = &A.v[n]; if (v->snd && v->ref == ref && v->owner == owner) v->vol = vol; }
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
 }
 
 /* SoundFx [0x5e48c8]: the engine's own effects, table 0x5e5b28 built by 0x4661a0 (docs/SOUND.md 5): id -> {ref in the character bank, vol, loop} */
@@ -444,7 +494,7 @@ void audio_fx_stop(int id, const void *owner, int is3d) {                       
 
 void audio_listener(const float *pos, const float *right) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs); memcpy(A.lpos, pos, sizeof A.lpos); memcpy(A.lright, right, sizeof A.lright); LeaveCriticalSection(&A.cs);
+    LOCK(); memcpy(A.lpos, pos, sizeof A.lpos); memcpy(A.lright, right, sizeof A.lright); UNLOCK();
 }
 void audio_pause(int paused) { A.paused = paused; }
 void audio_master(float sfx, float music) { A.m_sfx = sfx; A.m_mus = music; }
@@ -486,52 +536,52 @@ int audio_bf_open(const char *path) {
 
 void audio_music(int track) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     if (!(A.s[0].f && A.s[0].track == track && !A.s[0].stop_at_zero)) stream_open(&A.s[0], track, 1);   /* no crossfade (0x46c850) */
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
 }
 void audio_music_stop(float fade) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     if (fade < 0.01f) stream_close(&A.s[0]); else { A.s[0].target = 0; A.s[0].grate = 1.0f / fade; A.s[0].stop_at_zero = 1; }
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
 }
 void audio_music_pause(int paused, float fade) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     Stream *s = &A.s[0];
     if (s->f && !s->stop_at_zero) { s->paused = paused; s->target = paused ? 0.0f : 1.0f; s->grate = fade > 0.01f ? 1.0f / fade : 1000.0f; }
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
 }
 int audio_music_track(void) { return A.ok && A.s[0].f ? A.s[0].track : -1; }
 void audio_rtc(int track) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     if (track < 0) stream_close(&A.s[1]); else stream_open(&A.s[1], track, 0);
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
 }
 
 /* ---------------------------------------------------------------- film sound (docs/HNM.md) */
 int audio_pcm_open(int rate, int channels) {
     if (!A.ok || rate <= 0 || channels < 1 || channels > 2) return -1;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     if (!A.pcm.buf) { A.pcm.cap = MIX_RATE * 4; A.pcm.buf = malloc((size_t)A.pcm.cap * 2 * sizeof *A.pcm.buf); }
     A.pcm.head = A.pcm.count = 0; A.pcm.pos = 0; A.pcm.rate = rate; A.pcm.channels = channels; A.pcm.on = A.pcm.buf != NULL;
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
     return A.pcm.on ? 0 : -1;
 }
 int audio_pcm_push(const int16_t *pcm, int frames) {
     if (!A.ok || !A.pcm.on) return 0;
-    EnterCriticalSection(&A.cs);
+    LOCK();
     if (frames > A.pcm.cap - A.pcm.count) frames = A.pcm.cap - A.pcm.count;
     for (int i = 0, t = (A.pcm.head + A.pcm.count) % A.pcm.cap; i < frames; i++, t = (t + 1) % A.pcm.cap) {
         A.pcm.buf[2 * t] = pcm[i * A.pcm.channels]; A.pcm.buf[2 * t + 1] = pcm[i * A.pcm.channels + A.pcm.channels - 1];
     }
     A.pcm.count += frames;
-    LeaveCriticalSection(&A.cs);
+    UNLOCK();
     return frames;
 }
 void audio_pcm_close(void) {
     if (!A.ok) return;
-    EnterCriticalSection(&A.cs); A.pcm.on = 0; A.pcm.count = 0; LeaveCriticalSection(&A.cs);
+    LOCK(); A.pcm.on = 0; A.pcm.count = 0; UNLOCK();
 }

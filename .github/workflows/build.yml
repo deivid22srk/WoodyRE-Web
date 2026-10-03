@@ -1,5 +1,6 @@
-# Builds WoodyRE.exe with build.bat on every push and pull request (no game data involved: the exe holds only the port's own
-# code). A pushed tag v* also publishes a GitHub release with WoodyRE-<tag>.zip (WoodyRE.exe, README.md, LICENSE).
+# Builds WoodyRE.exe with build.bat (Windows) and woodyre with build.sh (Linux, SDL2) on every push and pull request (no game
+# data involved: the programs hold only the port's own code). A pushed tag v* also publishes a GitHub release with
+# WoodyRE-<tag>.zip (WoodyRE.exe, README.md, LICENSE) and WoodyRE-<tag>-linux-x86_64.tar.gz (woodyre, README.md, LICENSE).
 name: build
 
 on:
@@ -38,19 +39,54 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: WoodyRE
+          name: WoodyRE-windows
           path: ${{ env.ZIP }}
 
-      # The release notes: the annotated tag's message (what is new; its first line is the title of the tag), then how to start.
+  # Ubuntu 22.04: glibc 2.35 and SDL 2.0.20, so the binary also runs on older distributions and on SteamOS.
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install SDL2
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsdl2-dev libgl-dev
+
+      - name: Build
+        run: sh build.sh woodyre && ls -l woodyre && ldd woodyre
+
+      - name: Package
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name="WoodyRE-$GITHUB_REF_NAME"; else name="WoodyRE-${GITHUB_SHA:0:7}"; fi
+          mkdir -p "pkg/$name" && cp woodyre README.md LICENSE "pkg/$name/"
+          tar -C pkg -czf "$name-linux-x86_64.tar.gz" "$name"
+          echo "TGZ=$name-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: WoodyRE-linux
+          path: ${{ env.TGZ }}
+
+  # The release notes: the annotated tag's message (what is new; its first line is the title of the tag), then how to start.
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Release
-        if: github.ref_type == 'tag'
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --force origin "refs/tags/${env:GITHUB_REF_NAME}:refs/tags/${env:GITHUB_REF_NAME}"
-          $new = (git tag -l --format='%(contents)' "$env:GITHUB_REF_NAME" | Out-String).Trim()
-          $start = "Unzip, start WoodyRE.exe and point it to your Woody Woodpecker CD (or a mounted ISO image of it). The game files are not included - see README.md."
-          $notes = if ($new) { "$new`n`n$start" } else { $start }
-          Set-Content -Encoding utf8 notes.md $notes
-          gh release create "$env:GITHUB_REF_NAME" "$env:ZIP" --title "WoodyRE $env:GITHUB_REF_NAME" --notes-file notes.md
+          git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          new=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | sed -e 's/[[:space:]]*$//')
+          start="Windows: unzip, start WoodyRE.exe and point it to your Woody Woodpecker CD (or a mounted ISO image of it). Linux / Steam Deck: unpack the .tar.gz and start woodyre (needs SDL2). The game files are not included - see README.md."
+          if [ -n "$new" ]; then printf '%s\n\n%s\n' "$new" "$start" > notes.md; else printf '%s\n' "$start" > notes.md; fi
+          gh release create "$GITHUB_REF_NAME" dist/* --title "WoodyRE $GITHUB_REF_NAME" --notes-file notes.md

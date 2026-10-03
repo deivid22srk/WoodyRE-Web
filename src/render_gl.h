@@ -1,4 +1,5 @@
-/* render_gl.h - minimal Win32 + OpenGL 1.1 renderer for the reimplemented engine. */
+/* render_gl.h - minimal OpenGL 1.1 renderer for the reimplemented engine; the window is Win32 + WGL (render_gl.c) on Windows
+ * and SDL2 (plat_sdl.c) elsewhere. */
 #ifndef WOODY_RENDER_GL_H
 #define WOODY_RENDER_GL_H
 #include "level.h"
@@ -15,9 +16,9 @@ typedef struct {
     int mouse_dx, mouse_dy, mouse_right;      /* window pixels moved with the right button held (the F5 free camera) */
     int raw_dx, raw_dy;                       /* relative mouse counts since the last win_poll (WM_INPUT, only while the window is in the
                                                * foreground), the port's stand-in for DirectInput's DIMOUSESTATE lX / lY (docs/INPUT.md 1.3) */
-    int quit;
+    int quit, focused;                        /* focused: the window is in front (pads and the mouse only count then) */
     unsigned dev_changes;                     /* counts WM_DEVICECHANGE: a pad may have come or gone (src/pad.c looks again) */
-    void *hwnd, *hdc, *hglrc;
+    void *hwnd, *hdc, *hglrc;                 /* Win32: HWND, HDC, HGLRC; SDL: SDL_Window *, -, SDL_GLContext */
     int vx, vy;                               /* port extra (docs/DISPLAY.md 3): rnd_frame draws into the box vx, vy, width, height of the real window */
 } Window;
 
@@ -29,6 +30,7 @@ int  win_vsync(int interval);
 void win_poll(Window *w);                     /* pumps messages, updates keys/mouse */
 void win_swap(Window *w);
 void win_close(Window *w);
+void win_title(Window *w, const char *title);
 double win_time(void);                        /* seconds, high resolution */
 
 /* One texture group's share of the world, baked once. `idx` is what the current frame actually draws out of it:

@@ -9,8 +9,10 @@
  *       P = pause VM. Script messages are printed to the console.
  */
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "plat.h"
+#ifdef _WIN32
 #include <mmsystem.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -540,7 +542,7 @@ static struct {
     int mode;                         /* app+0x104 (0x44fc05): 0 keyboard only (cfg+0x114 == 1), 1 / 2 joystick (cfg+0x110 != 0 / == 0): the
                                        * keyboard gives no directions then (0x40301e); 3 = port, no Woody.cfg: keyboard and joystick both */
     int have_cfg;
-    int joy; UINT jxmin, jxmax, jymin, jymax; double joy_scan;   /* the WinMM device (the original: the first attached DirectInput joystick, 0x4678d0) */
+    int joy; unsigned jxmin, jxmax, jymin, jymax; double joy_scan;   /* the WinMM device (the original: the first attached DirectInput joystick, 0x4678d0) */
     float jx, jy; uint32_t jbtn; int jok;                        /* this frame: axes after the dead zone (-1..1), buttons */
     int down[14], prev[14]; float val[14];                       /* the controller: held this frame / last frame, value (0x467460) */
     int pbind[12][4];                 /* PORT EXTRA: the pad buttons per action (PAD_* + 1 of pad.h, 0 ends the list); Woody.cfg does not know them */
@@ -554,7 +556,7 @@ static int in_dik_vk(int d)                                      /* DIK scan cod
         {0x4d,VK_NUMPAD6}, {0x4f,VK_NUMPAD1}, {0x50,VK_NUMPAD2}, {0x51,VK_NUMPAD3}, {0x52,VK_NUMPAD0}, {0x53,VK_DECIMAL}, {0x37,VK_MULTIPLY},
         {0x4a,VK_SUBTRACT}, {0x4e,VK_ADD}, {0xb5,VK_DIVIDE}, {0x45,VK_NUMLOCK}, {0xdb,VK_LWIN}, {0xdc,VK_RWIN}, {0xdd,VK_APPS}, {0xc5,VK_PAUSE}, {0xb7,VK_SNAPSHOT} };
     for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) if (T[i][0] == d) return T[i][1];
-    return d > 0 && d < 0x80 ? (int)MapVirtualKeyA((UINT)d, 1 /* MAPVK_VSC_TO_VK */) : 0;
+    return d > 0 && d < 0x80 ? plat_vsc_to_vk(d) : 0;
 }
 /* Woody.cfg (0x401000 at boot, 0x405e0f): u32 0x19072001, then 0x11c bytes into cfg 0x4c2bd0 (docs/INPUT.md 2). The keys are cfg+0xac (config 1)
  * and +0xdc (config 2), 12 each in the order up, down, left, right, 5, 6, 4, 8, 7, 9, 10, 11 (0x44fbd0); the mode flags cfg+0x110 / +0x114.
@@ -643,6 +645,7 @@ static void in_joy_poll(double now, double tl)                   /* 0x467a40 pol
 {
     g_in.jx = g_in.jy = 0; g_in.jbtn = 0; g_in.jok = 0;
     if (g_in.mode == 0) return;                                  /* keyboard only: the joystick object exists but 0x402d39 never polls it */
+#ifdef _WIN32
     if (g_in.pad.kind != PADK_NONE) g_in.joy = -1;               /* a pad of src/pad.c is there: the WinMM device would be the same pad once more */
     else if (g_in.joy < 0 && now >= g_in.joy_scan) {             /* no device yet: look again every 3 s (the original enumerates once, at boot) */
         g_in.joy_scan = now + 3.0;
@@ -650,6 +653,7 @@ static void in_joy_poll(double now, double tl)                   /* 0x467a40 pol
             if (joyGetPosEx(id, &ji) == JOYERR_NOERROR && joyGetDevCapsA(id, &jc, sizeof jc) == JOYERR_NOERROR && jc.wMid != 0x054c /* Sony: src/pad.c reads those */) {
                 g_in.joy = (int)id; g_in.jxmin = jc.wXmin; g_in.jxmax = jc.wXmax; g_in.jymin = jc.wYmin; g_in.jymax = jc.wYmax; printf("input: joystick %u \"%s\"\n", id, jc.szPname); } }
     }
+#endif
     const char *e = wenv("WOODY_JOY");                         /* testing: WOODY_JOY="T:X:Y:BUTTONS[:D] ...": stick at X,Y (-1..1, before the dead
                                                                   * zone) and the button mask for D s (default 0.08) from T s on the clock of --shot */
     if (e) { float x = 0, y = 0; unsigned m = 0; const char *s = e; int used;
@@ -659,11 +663,13 @@ static void in_joy_poll(double now, double tl)                   /* 0x467a40 pol
         if (g_in.jok) goto deadzone;
     }
     if (g_in.joy < 0) return;
+#ifdef _WIN32                                                    /* elsewhere every pad is SDL's (pad_sdl.c) and g_in.joy stays -1 */
     { JOYINFOEX ji = { sizeof ji, JOY_RETURNX | JOY_RETURNY | JOY_RETURNBUTTONS };
       if (joyGetPosEx((UINT)g_in.joy, &ji) != JOYERR_NOERROR) { printf("input: joystick %d lost\n", g_in.joy); g_in.joy = -1; return; }   /* unplugged: scan again */
       float rx = g_in.jxmax > g_in.jxmin ? (float)g_in.jxmax - g_in.jxmin : 65535.0f, ry = g_in.jymax > g_in.jymin ? (float)g_in.jymax - g_in.jymin : 65535.0f;
       g_in.jx = ((float)ji.dwXpos - g_in.jxmin) / rx * 2.0f - 1.0f; g_in.jy = ((float)ji.dwYpos - g_in.jymin) / ry * 2.0f - 1.0f;   /* DIPROP_RANGE -4096..4096 (0x4677db) */
       g_in.jbtn = (uint32_t)ji.dwButtons; g_in.jok = 1; }
+#endif
 deadzone:
     g_in.jx = in_deadzone(g_in.jx, 0.3f); g_in.jy = in_deadzone(g_in.jy, 0.3f);
 }
@@ -678,7 +684,7 @@ static void in_set(int a, float v) { g_in.down[a] = 1; g_in.val[a] = v; }   /* 0
 static void in_pad_poll(const Window *w, double tl)              /* PORT EXTRA: the pads of src/pad.c */
 {
     pad_set_strength(g_opt.vib * 0.01f);                         /* the Vibration option */
-    pad_poll(&g_in.pad, w->hwnd && GetForegroundWindow() == (HWND)w->hwnd, w->dev_changes);
+    pad_poll(&g_in.pad, w->focused, w->dev_changes);
     /* testing: WOODY_PAD="T:LX:LY:BUTTONS[:D] ...": a pad with the left stick at LX,LY (-1..1, before the dead zone) and the
      * buttons 1 << PAD_* (pad.h) for D s (default 0.08) from T s on the level clock, as WOODY_JOY */
     for (const char *s = wenv("WOODY_PAD"); s && *s; ) {
@@ -3713,7 +3719,7 @@ int main(int argc, char **argv)
     /* [data dir] [level] [options]: the data dir is a path (it has a / \ or :, or exists); without one data_find() looks for the
      * game files and asks for the CD at the first start (datasetup.h). No level: boot to the title (House, level 0) */
     int ai = 1; const char *dir = NULL, *lvl = "House";
-    if (argc > ai && argv[ai][0] != '-' && (strpbrk(argv[ai], "/\\:") || GetFileAttributesA(argv[ai]) != INVALID_FILE_ATTRIBUTES)) dir = argv[ai++];
+    if (argc > ai && argv[ai][0] != '-' && (strpbrk(argv[ai], "/\\:") || plat_exists(argv[ai]))) dir = argv[ai++];
     if (argc > ai && argv[ai][0] != '-') lvl = argv[ai++];
     if (!dir && !(dir = data_find())) return 1;
 #ifdef WOODY_GUI
@@ -3771,11 +3777,13 @@ int main(int argc, char **argv)
 #ifdef WOODY_GUI
         char m[200] = "All game files equal the English 1.00 CD.";
         if (bad) snprintf(m, sizeof m, "%d game files are missing or differ from the English 1.00 CD (the list is in woodyre.log).", bad);
-        MessageBoxA(NULL, m, "WoodyRE", bad ? MB_ICONWARNING : MB_ICONINFORMATION); return 0;
+        plat_message(m, bad); return 0;
 #endif
         return bad != 0;
     }
+#ifdef _WIN32
     SetProcessDPIAware();                                                              /* port extra: real pixels on a scaled desktop, so 4K is 4K */
+#endif
     opt_read();                                                                        /* woodyre.cfg: the volumes (applied at sound start) and the display */
     setup_import(dir);                                                                 /* the Setup keys woodyre.cfg lacks: from Woody.cfg (docs/SETUP.md) */
     {   /* the display that runs: the cfg's, but a screenshot run keeps the fixed default (1280x800 window, wide, vsync) whatever the
@@ -4267,7 +4275,7 @@ int main(int argc, char **argv)
             lvl = L.name; continue;
         }
         if (now - fps_t > 2.0 && wenv("WOODY_FPSLOG")) printf("fps %.1f\n", frames / (now - fps_t));   /* testing: the frame cap / vsync */
-        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE%s - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", g_level == 0 ? " - TITLE: Enter = new game, L = continue" : "", lvl, frames / (now - fps_t), L.vm.time, L.vm.frame, L.vm.stat_msgs_total, fly ? "fly" : "play", L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.on_ground ? "ground" : "air", L.player.events_sent, L.player.health, L.player.lives, L.player.bonus_got, L.player.bonus_total); if (WOODY_DEBUG_TITLE) SetWindowTextA((HWND)win.hwnd, title); if (L.have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.vel.x, L.player.vel.y, L.player.vel.z, L.player.on_ground ? (L.player.floor_is_hull ? "hull" : "ground") : "air", L.player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
+        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE%s - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", g_level == 0 ? " - TITLE: Enter = new game, L = continue" : "", lvl, frames / (now - fps_t), L.vm.time, L.vm.frame, L.vm.stat_msgs_total, fly ? "fly" : "play", L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.on_ground ? "ground" : "air", L.player.events_sent, L.player.health, L.player.lives, L.player.bonus_got, L.player.bonus_total); if (WOODY_DEBUG_TITLE) win_title(&win, title); if (L.have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.vel.x, L.player.vel.y, L.player.vel.z, L.player.on_ground ? (L.player.floor_is_hull ? "hull" : "ground") : "air", L.player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
     }
     opt_write(); level_free(&L); audio_shutdown(); win_close(&win);   /* 0x401130: the cfg is written back at exit */
     return 0;

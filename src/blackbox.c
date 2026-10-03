@@ -10,7 +10,7 @@
 #include "hud.h"
 #include "audio.h"
 #include "texpack.h"
-#include <windows.h>
+#include "plat.h"
 #include <GL/gl.h>
 #include <stdio.h>
 #include <stdlib.h>

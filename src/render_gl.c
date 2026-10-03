@@ -1,8 +1,10 @@
-/* render_gl.c - Win32 window + OpenGL 1.1 fixed-function renderer.
+/* render_gl.c - Win32 window (the SDL2 one is plat_sdl.c) + OpenGL 1.1 fixed-function renderer.
  * The game data is left-handed (D3D). We keep world coordinates untouched and mirror z in the
  * projection, so a camera with yaw 0 looks along +z like the original. */
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#endif
+#include "plat.h"
 #include <GL/gl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +14,7 @@
 #include "player.h"                                   /* volume_contains (0x4300c0) */
 #include "texpack.h"
 
+#ifdef _WIN32
 static Window *g_win;
 
 static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
@@ -66,7 +69,8 @@ int win_open(Window *w, const char *title, int width, int height)
     printf("OpenGL: %s / %s\n", (const char *)glGetString(GL_RENDERER), (const char *)glGetString(GL_VERSION));
     return 0;
 }
-void win_poll(Window *w) { MSG m; w->mouse_dx = w->mouse_dy = 0; w->raw_dx = w->raw_dy = 0; while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageA(&m); } }
+void win_poll(Window *w) { MSG m; w->mouse_dx = w->mouse_dy = 0; w->raw_dx = w->raw_dy = 0; while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageA(&m); } w->focused = GetForegroundWindow() == (HWND)w->hwnd; }
+void win_title(Window *w, const char *title) { SetWindowTextA((HWND)w->hwnd, title); }
 void win_swap(Window *w) { SwapBuffers((HDC)w->hdc); }
 void win_mode(Window *w, int width, int height, int full)
 {
@@ -89,6 +93,9 @@ int win_vsync(int interval)
     SwapFn f = (SwapFn)(void (*)(void))wglGetProcAddress("wglSwapIntervalEXT");
     return f && f(interval) ? 0 : -1;
 }
+void win_close(Window *w) { wglMakeCurrent(NULL, NULL); wglDeleteContext((HGLRC)w->hglrc); ReleaseDC((HWND)w->hwnd, (HDC)w->hdc); DestroyWindow((HWND)w->hwnd); }
+double win_time(void) { static LARGE_INTEGER f; LARGE_INTEGER c; if (!f.QuadPart) QueryPerformanceFrequency(&f); QueryPerformanceCounter(&c); return (double)c.QuadPart / (double)f.QuadPart; }
+#endif
 
 /* screen brightness like the original's fader 0x4776d0: 1 = normal, 0 = black */
 void rnd_fade(float brightness)
@@ -102,8 +109,6 @@ void rnd_fade(float brightness)
     glColor4f(1, 1, 1, 1); glDepthMask(GL_TRUE); glDisable(GL_BLEND); glEnable(GL_DEPTH_TEST);
     glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW); glPopMatrix();
 }
-void win_close(Window *w) { wglMakeCurrent(NULL, NULL); wglDeleteContext((HGLRC)w->hglrc); ReleaseDC((HWND)w->hwnd, (HDC)w->hdc); DestroyWindow((HWND)w->hwnd); }
-double win_time(void) { static LARGE_INTEGER f; LARGE_INTEGER c; if (!f.QuadPart) QueryPerformanceFrequency(&f); QueryPerformanceCounter(&c); return (double)c.QuadPart / (double)f.QuadPart; }
 
 static uint8_t col2x(uint32_t v) { v = (v & 0xff) * 2; return v > 255 ? 255 : (uint8_t)v; }
 Vec3 cam_forward(const FreeCamera *c) { Vec3 v = { sinf(c->yaw) * cosf(c->pitch), sinf(c->pitch), cosf(c->yaw) * cosf(c->pitch) }; return v; }
@@ -1934,8 +1939,8 @@ static void draw_dyn_world(Renderer *r)
 {
     static int init; static PFN_ActiveTex act; static PFN_MultiTC2f mtc; static uint32_t *stamp, nstamp, gen;
     if (!init) { init = 1;
-        act = (PFN_ActiveTex)wglGetProcAddress("glActiveTexture"); if (!act) act = (PFN_ActiveTex)wglGetProcAddress("glActiveTextureARB");
-        mtc = (PFN_MultiTC2f)wglGetProcAddress("glMultiTexCoord2f"); if (!mtc) mtc = (PFN_MultiTC2f)wglGetProcAddress("glMultiTexCoord2fARB"); }
+        act = (PFN_ActiveTex)plat_gl_proc("glActiveTexture"); if (!act) act = (PFN_ActiveTex)plat_gl_proc("glActiveTextureARB");
+        mtc = (PFN_MultiTC2f)plat_gl_proc("glMultiTexCoord2f"); if (!mtc) mtc = (PFN_MultiTC2f)plat_gl_proc("glMultiTexCoord2fARB"); }
     if (!act || !mtc || !r->light_tex[0]) return;
     const GelFile *g = r->gel; const TexFile *tx = r->tex;
     if (nstamp < g->npolys) { free(stamp); nstamp = g->npolys; stamp = (uint32_t *)calloc(nstamp, 4); gen = 0; }

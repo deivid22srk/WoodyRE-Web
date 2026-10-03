@@ -6,6 +6,9 @@
  * tree of an inter frame 0x1000119c or a key frame 0x100022ac. The DLL hard-codes the 640-pixel pitch (0x500
  * bytes); here the pitch is the frame width. */
 #include "hnm.h"
+#ifndef _WIN32
+#include "plat.h"                                   /* fopen: the data names ignoring case (plat_sdl.c) */
+#endif
 #include <stdlib.h>
 #include <string.h>
 
