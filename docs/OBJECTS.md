@@ -426,7 +426,11 @@ enemies are not hit**: their models have no press node (W1A model 0 and 42), so 
   W3C 100..149 (model 5, ≈ 395), W2B 370/371 (model 39, 1279), K3A 120..131 (model 22) and 169/291 (model 31), W3D 1/2/3 and 853/854.
   Before, with the world alone, those beams went through the far post into the rock behind it (W2D: clearly visible).
 - Moving platforms cut beams while they pass: W1B laser 150 by the shuttle (model 42), W3D 220/251/252/449 by the lifts of model 8.
-- The own housing is not hit because the marker starts just outside it (W1A model 33: marker start z −62.9, tip of the press node z −60.4).
+- The own housing is not hit: the W1A model 33 marker starts just outside it (marker start z −62.9, tip of the press node z −60.4), and
+  where a marker starts INSIDE its housing (W3B laser 737, model 47, eight rotating beams) the instance tests are one-sided: `0x431de0`
+  (`0x432169`) and `0x432ab0` take a polygon only when the ray start lies on the front side of the loader's plane (R−Q)×(R−P), so a
+  ray leaving a press node never hits it. The port's `inst_ray_press` was two-sided until 2026-10-03, which cut those eight beams to
+  1-3 units most of the time (they looked switched off).
 Port: `laser_segment` (main_engine.c) = `gel_ray_frac` + `inst_ray_press` (instance.c; the instance half of `0x4359b0`, the same test as
 `player_ray_instances` in player.c but without its 4000-unit horizontal reject, so an endless beam also finds a post far away).
 

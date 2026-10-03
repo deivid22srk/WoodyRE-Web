@@ -178,8 +178,9 @@ void inst_tick(Instance *I, float now, float dt)
  * 5.2); a hidden instance (message 6: no cell) and a non-collidable one (+8 & 0x40, the fade) take no part. The actors do not
  * take part either: the Perso and enemy models have no press node. The instances are the ones the original tests - those
  * registered (.col) in the cells along a->b, then the dynamic list (level.c gel_col_instances) - but the test stays the
- * port's: two-sided like gel_ray_frac, the nearest polygon (the original's vt[5] 0x432ab0 is one-sided and lets the last
- * polygon tested win, player.c ray_instances; the lasers, shots and bombs of main_engine.c keep this approximation).
+ * port's: one-sided like the original (front side of the loader's plane, see below), the nearest polygon (the original's
+ * vt[5] 0x432ab0 lets the last polygon tested win, player.c ray_instances; the lasers, shots and bombs of main_engine.c take
+ * the nearest, as the endless test vt[6] 0x431de0 does).
  * Returns 1 on a hit with the fraction of a->b, the normal turned towards a and the instance. */
 static Vec3 v3sub(Vec3 a, Vec3 b) { Vec3 r = { a.x - b.x, a.y - b.y, a.z - b.z }; return r; }
 static float v3dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -202,7 +203,10 @@ int inst_ray_press(const GelFile *g, const InsFile *ins, const Instance *skip, V
                     for (uint32_t c = 0; c < pl->nverts; c++) v[c] = ins_point_world(in, pl->indices[c]);
                     Vec3 nrm = v3cross(v3sub(v[1], v[0]), v3sub(v[2], v[0])); float l = sqrtf(v3dot(nrm, nrm)); if (l < 1e-6f) continue;
                     nrm.x /= l; nrm.y /= l; nrm.z /= l;
-                    float da = v3dot(v3sub(a, v[0]), nrm), db = v3dot(v3sub(b, v[0]), nrm); if ((da > 0) == (db > 0)) continue;
+                    /* one-sided like 0x431de0 / 0x432ab0: the loader's plane (R-Q) x (R-P) is -nrm here, and a polygon counts only
+                     * when the start lies on that front side (0x432169) and the ray crosses it inwards - a ray that starts inside a
+                     * press node leaves it without a hit (the W3B laser 737's beams start inside its own housing) */
+                    float da = v3dot(v3sub(a, v[0]), nrm), db = v3dot(v3sub(b, v[0]), nrm); if (da > 0 || !(db > 0)) continue;
                     float t = da / (da - db); if (t >= best) continue;
                     Vec3 q = { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
                     int sign = 0, in_poly = 1;                                  /* inside: every edge turns the same way round the normal */
@@ -212,7 +216,7 @@ int inst_ray_press(const GelFile *g, const InsFile *ins, const Instance *skip, V
                         if (sg) { if (!sign) sign = sg; else if (sg != sign) in_poly = 0; }
                     }
                     if (!in_poly) continue;
-                    if (da < 0) { nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z; }
+                    nrm.x = -nrm.x; nrm.y = -nrm.y; nrm.z = -nrm.z;                    /* towards a */
                     best = t; hit = 1; if (n_out) *n_out = nrm; if (inst_out) *inst_out = in;
                 }
             }
