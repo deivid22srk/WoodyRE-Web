@@ -51,7 +51,7 @@ times, once per enemy added. `src/geltest.c` checks those queries on synthetic d
 and sectors remain, and `WOODY_NOKD=1` makes the queries walk the whole level again.
 ```bash
 python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c src/main_engine.c src/player.c src/instance.c src/enemy.c src/boss.c src/water.c src/storm.c src/ekovm.c src/audio.c src/hud.c src/hnm.c src/ambient.c src/blackbox.c -lopengl32 -lgdi32 -luser32 -lwinmm
-./out/woody.exe extract/Data                     # without a level: the three logo films (Esc skips, --nologo), then the title screen (House, level 0); Enter starts, then the hub
+./out/woody.exe extract/Data                     # without a level: the three logo films (each press of Esc / Enter / Space skips one; --nologo, or logos=0 in woodyre.cfg, plays none), then the title screen (House, level 0); Enter starts, then the hub
 ./out/woody.exe extract/Data W1A                 # arrow keys/WASD walk (relative to camera), space jumps, Enter (or V) looks around (release toggles; arrows turn the view; the mouse only with WOODY_LOOKMOUSE=1, the original never polls it; docs/PERSO_LOOK.md), F5 free camera (then WASD + right mouse button), [ ] animation, Tab instance, F1-F4 toggles (F4 = culling)
 ./out/woody.exe extract/Data W1A --shot out/s.ppm 3   # screenshot after 3 s and stop
 ./out/woody.exe extract/Data W1A --res 1920x1080 --aspect 4:3   # display (port extras, docs/DISPLAY.md): --res WxH, --windowed / --fullscreen, --aspect 4:3|wide; WOODY_VSYNC=0/1, WOODY_FPSCAP=N; F11 = fullscreen; Options > Display saves them in woodyre.cfg (which also has reverse_stereo= / film_sound=, docs/SETUP.md; WOODY_REVSTEREO=0/1)

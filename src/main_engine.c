@@ -458,6 +458,7 @@ static void opt_apply(void) { audio_master(g_opt.sfx * 0.01f, g_opt.music * 0.01
  * a key woodyre.cfg does not have yet comes from Woody.cfg when its sound section is live (setup_import), else the Setup
  * defaults (0x100032a0: invert 0, cinematic 1). -1 = not in woodyre.cfg. vsync: the same for the display page's key. */
 static struct { int rev, film, vsync; } g_setup = { -1, -1, -1 };
+static int g_logos = 1;                                 /* woodyre.cfg logos=0: never play the logo films (PORT EXTRA) */
 /* ---- display (docs/DISPLAY.md; everything here is a PORT EXTRA). The original runs exclusive fullscreen at the Woody.cfg mode
  * (Detect's list, default 640x480), always 4:3 in the layout, and paces itself only by Flip(DDFLIP_WAIT) = vsync (0x47ee90);
  * no frame cap, dt clamped to 0.1 s (0x40185b). The port: a window of any size or borderless fullscreen, 4:3 pillarboxed or a
@@ -479,6 +480,7 @@ static void opt_read(void)
         else if (sscanf(line, "window=%dx%d", &v, &v2) == 2) { if (v >= 320 && v2 >= 240 && v <= 7680 && v2 <= 4320) { g_disp.w = v; g_disp.h = v2; } }
         else if (sscanf(line, "fullscreen=%d", &v) == 1) g_disp.full = v != 0; else if (sscanf(line, "vsync=%d", &v) == 1) g_disp.vsync = g_setup.vsync = v != 0;
         else if (sscanf(line, "reverse_stereo=%d", &v) == 1) g_setup.rev = v != 0; else if (sscanf(line, "film_sound=%d", &v) == 1) g_setup.film = v != 0;
+        else if (sscanf(line, "logos=%d", &v) == 1) g_logos = v != 0;
         else if (sscanf(line, "fpscap=%d", &v) == 1) g_disp.cap = v < 0 ? 0 : v > 1000 ? 1000 : v; } fclose(f); }
     int *o[3] = { &g_opt.sfx, &g_opt.music, &g_opt.vib }; for (int i = 0; i < 3; i++) { if (*o[i] < 0) *o[i] = 0; if (*o[i] > 100) *o[i] = 100; }
 }
@@ -487,7 +489,7 @@ static void opt_write(void)
     FILE *f = fopen("woodyre.cfg", "w"); if (!f) return;
     fprintf(f, "sfx=%d\nmusic=%d\nvibration=%d\n", g_opt.sfx, g_opt.music, g_opt.vib);
     fprintf(f, "aspect=%s\nwindow=%dx%d\nfullscreen=%d\nvsync=%d\nfpscap=%d\n", g_disp.wide ? "wide" : "4:3", g_disp.w, g_disp.h, g_disp.full, g_disp.vsync, g_disp.cap);
-    fprintf(f, "reverse_stereo=%d\nfilm_sound=%d\n", g_setup.rev > 0, g_setup.film != 0);
+    fprintf(f, "reverse_stereo=%d\nfilm_sound=%d\nlogos=%d\n", g_setup.rev > 0, g_setup.film != 0, g_logos);
     fclose(f);
 }
 /* the 3D view in the window (GL origin bottom left): narrower than 4:3 = letterboxed in both modes, wider = pillarboxed in 4:3 mode */
@@ -1257,7 +1259,8 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
         break;
     case 0x1f: {                                                       /* 0x40508c */
         int v = iv ? *iv : 4;
-        if (v != 4 && !k->atk_rel && !k->esc_rel && !k->syn) break;   /* the attack key or Esc, RELEASED; Enter does not skip */
+        if (v != 4 && !k->atk_rel && !k->esc_rel && !k->syn && !k->ok) break;   /* the attack key or Esc, RELEASED; Enter does not skip in the
+                                                                       * original - PORT EXTRA: confirm (Enter released / jump pressed) skips too */
         M.attract = 35.0f;
         if (M.newgame) { save_reset(); g_slot = -1; menu_off(); request_level(1, v == 4 ? 0.0f : 0.5f); break; }   /* 0x44ffa0 in memory only, no write */
         if (v != 4) {                                                  /* the attract was broken off: stop the script, the cinematic and its stream */
@@ -3416,14 +3419,23 @@ static int level_load(Level *L, const char *dir, const char *lvl)
 /* App state 2 = 0x401500: the films of table 0x4b3960 one after the other, 0x445d00(i) starts one (path = game dir + "\Logo\..."),
  * 0x445de0 asks the player whether it still runs; action 9 held (0x467400(9): Esc in the shipped Woody.cfg) stops the running one
  * (0x445da0) and the next one starts in the same frame, so holding Esc skips them all. After the third: House + title (0x404e30).
+ * PORT EXTRA: one press of Esc, Enter, Space or the jump / attack key ends the running film and the next one starts, so each press
+ * skips one film; Esc counts per press too, holding it no longer runs through all three (woodyre.cfg logos=0: no films at all).
  * Test hooks: WOODY_LOGOSHOT="file.ppm T" = screenshot T s after the first film started; WOODY_LOGOESC="T ..." = Esc at those times. */
+static int logo_skip_pressed(const Window *w, int *kp)                    /* Esc / Enter / Space went down, or the jump / attack action; kp = the keys of the last call */
+{
+    int r = in_pressed(4) || in_pressed(6) || in_pressed(9) || in_pressed(12);
+    static const int sk[3] = { VK_ESCAPE, VK_RETURN, VK_SPACE };
+    for (int i = 0; i < 3; i++) if (w->keys[sk[i]] && !kp[sk[i]]) r = 1;
+    memcpy(kp, w->keys, sizeof w->keys); return r;
+}
 static void logos_play(Window *w, const char *dir)
 {
     static const char *k_logo[3] = { "Cryo", "Eko", "Universal" };                 /* \Logo\Cryo.hnm, \Logo\Eko.hnm, \Logo\Universal.hnm */
     char shot[260] = ""; double shot_at = -1, esc[8]; int nesc = 0, esc_i = 0;
     { const char *e = wenv("WOODY_LOGOSHOT"); if (e && sscanf(e, "%259s %lf", shot, &shot_at) != 2) shot_at = -1; }
     { const char *e = wenv("WOODY_LOGOESC"); while (e && *e && nesc < 8) { char *q; double v = strtod(e, &q); if (q == e) break; esc[nesc++] = v; e = q; } }
-    double T0 = win_time();
+    double T0 = win_time(); int kp[256]; memcpy(kp, w->keys, sizeof kp);
     for (int k = 0; k < 3 && !w->quit; k++) {
         char path[600]; snprintf(path, sizeof path, "%s/../Logo/%s.hnm", dir, k_logo[k]);
         HnmFile h; if (hnm_open(&h, path)) { printf("logo: %s missing\n", path); continue; }
@@ -3437,7 +3449,7 @@ static void logos_play(Window *w, const char *dir)
             for (;;) {
                 win_poll(w); double now = win_time(); in_frame(w, 0, now, now);
                 if (esc_i < nesc && now - T0 >= esc[esc_i]) { esc_i++; stop = 1; }
-                if (in_held(9)) stop = 1;
+                if (logo_skip_pressed(w, kp)) stop = 1;                                  /* port extra: a press (not holding, as 0x445da0 on action 9 does) ends this film */
                 if (stop || w->quit || now >= due) break;
                 Sleep(1);
             }
@@ -3446,7 +3458,7 @@ static void logos_play(Window *w, const char *dir)
             if (shot_at >= 0 && win_time() - T0 >= shot_at) { rnd_screenshot(w, shot); printf("logo shot %s at %.2f s: film %d frame %d\n", shot, win_time() - T0, k, h.frame - 1); shot_at = -1; }
             win_swap(w);
         }
-        for (double end = t0 + h.frame * h.frame_time; !stop && !w->quit && win_time() < end; Sleep(1)) { win_poll(w); double now = win_time(); in_frame(w, 0, now, now); if (in_held(9)) stop = 1; }   /* the last frame's time */
+        for (double end = t0 + h.frame * h.frame_time; !stop && !w->quit && win_time() < end; Sleep(1)) { win_poll(w); double now = win_time(); in_frame(w, 0, now, now); if (logo_skip_pressed(w, kp)) stop = 1; }   /* the last frame's time */
         if (snd) audio_pcm_close();
         printf("logo %d (%s): %d of %d frames%s%s\n", k, k_logo[k], h.frame, h.frames, stop ? ", skipped" : "", r < 0 ? ", bad data" : "");
         hnm_close(&h);
@@ -3531,7 +3543,7 @@ int main(int argc, char **argv)
     opt_apply();                                                                       /* 0x4691e2: the volumes from the cfg at sound start */
     audio_reverse_stereo(wenv("WOODY_REVSTEREO") ? atoi(wenv("WOODY_REVSTEREO")) != 0 : g_setup.rev);   /* 0x4691f4: [0x5e81c0] = cfg +0x74 */
     in_read_cfg(dir);                                                                  /* 0x405e0f: Woody.cfg (key bindings, controller mode) */
-    if (logo < 0) logo = !(argc > 2 && argv[2][0] != '-') && !wenv("WOODY_NOLOGO") && !shot_path && enter_at < 0 && !wenv("WOODY_KEYS") && !wenv("WOODY_SHOTSEQ");
+    if (logo < 0) logo = !(argc > 2 && argv[2][0] != '-') && !wenv("WOODY_NOLOGO") && !shot_path && enter_at < 0 && !wenv("WOODY_KEYS") && !wenv("WOODY_SHOTSEQ") && g_logos;
     if (logo) logos_play(&win, dir);                                                   /* boot state 2 (0x402649): only when booting to the title; a level on the command line or a scripted run skips them */
     static Level L; g_level = level_index(lvl); if (level_load(&L, dir, lvl)) return 1;
 

@@ -22,6 +22,10 @@ Port: `src/hnm.c` / `src/hnm.h` (decoder, plain C99), `logos_play` in `src/main_
   (IsPlaying); when it is over: `0x445da0`, and index 0 → `0x445d00(1)`, 1 → `0x445d00(2)`, 2 → `LoadLevel(0)` + title
   (`0x404e30`) (the `vt[1]() == 2` console branch is dead, docs/GAMEFLOW.md 3). The next film starts in the frame the
   previous one was stopped, so holding Esc for a few frames skips all three; Enter does not skip.
+  *Port extra:* each press of Esc, Enter, Space or the jump / attack key ends the running film and the next one starts
+  (one press = one film; Esc is counted per press as well, so holding it no longer runs through all three), and `logos=0`
+  in woodyre.cfg leaves them out altogether. Likewise Enter / jump also skip the New-game intro and the title's attract
+  cinematic (page 0x1f), which the original only lets the attack key or Esc break off.
 - Order: **Cryo, Eko, Universal** (`0x4b3960` = `0x4b3990` `\Logo\Cryo.hnm`, `0x4b3980` `\Logo\Eko.hnm`, `0x4b396c`
   `\Logo\Universal.hnm`). Durations: 25.5 s, 9.7 s, 20.7 s.
 
