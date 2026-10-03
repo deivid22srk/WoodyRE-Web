@@ -358,8 +358,8 @@ step like every other ground follower (its terminal speed `g/0.2` = 1000 u/s doe
 behaviour's knock timer `Behav+0x1c` (and `+0x20..+0x28`). The switches to Stand (states 3, 5, 9, 10, 12) do not. So the knock
 timer a peck puts on the Chase (§6.2, `AnimLen(8/25)`) is frozen through state 9 (Stand is active) and the wander, and cleared by the
 next chase start in state 2. Without that clear (the port before this was fixed) the chase spends the leftover 2.1 / 2.4 s with a zero
-direction and a step > 0, so the Chase's stuck hook `0x41bdf0` (moved < 0.01 ⇒ ±16 random in x and z, new target angle) fires every
-frame: Buzz shakes after rising from a hit, and a peck while the timer still runs costs no hp.
+direction and a step > 0, so the Chase's stuck hook `0x41bdf0` (moved < 0.01 ⇒ a random new target angle, ENEMY.md §5.1) fires every
+frame: Buzz spins in place after rising from a hit, and a peck while the timer still runs costs no hp.
 
 ## 4. Animation
 
@@ -509,8 +509,8 @@ void Sweep(vec3 *res, vec3 *from, vec3 *to, float up, float sub /*30*/) {      /
   Buzz stays ≈ 200 away from him in state 3 (measured in the port: Woody (−7983, −7567), Buzz (−7855, 2430, −7717)). That is the "hiding
   behind the lanterns" trick from the original.
 * The sweep runs **every frame**, even with step 0 (Stand, shaking, the fall in state 7): the sphere then pushes him out of place from whatever it touches.
-* After the sweep (`0x41b4dd..0x41b69c`, decompiled round 30): the behaviour hook `[2]` (Chase `0x41bdf0`: movement < 0.01 ⇒ ±16 random in
-  x and z, unstick); subtype ≥ 9 ⇒ `res.y = from.y`; `0x436d10` clears the probe's platform; `drop = res.y − [0x53a568]`. **Free** if
+* After the sweep (`0x41b4dd..0x41b69c`, decompiled round 30): the behaviour hook `[2]` (Chase `0x41bdf0`: movement < 0.01 ⇒ a new target angle from a
+  point ±16 off in x and z, unstick by heading only - the position is not moved); subtype ≥ 9 ⇒ `res.y = from.y`; `0x436d10` clears the probe's platform; `drop = res.y − [0x53a568]`. **Free** if
   `[0x4b310c] >= 0.8` (`0x4a987c`, NaN = blocked) and `drop < P+0x2c` (15000): then (with `drop < 1` and hit kind 2 the platform attach
   `0x436d80`) `pos = res`, collision centre `res + (0, h/2, 0)`, re-cell. Otherwise **blocked**: `pos += platform delta`, re-attach if
   the probe had a platform, re-cell, and the behaviour's `vtbl[3]` OnBlocked (Wander `0x41c420`: widest free sensor direction, action 5;

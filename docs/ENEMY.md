@@ -227,7 +227,7 @@ speed (0 = done), `+0x10/+0x14/+0x18` same for the **look angle** (the model), `
 | # | code | name | behavior (`+0x11c`) | what happens / transition |
 |---|---|---|---|---|
 | 0 | `0x418e69` | **PATROL** (path) | Pad | if `cool < 0` and `FindTarget(1,0)` ⇒ home point `+0x134` = own position, `Wander.0x41c140(1, &home)`, → **2** |
-| 1 | `0x418f23` | **CHASE** | Chase | no target ⇒ **7**. `T = AnimLen(8) + 0.5·AnimLen(10)` → `+0x1d4`; if xz distance ≤ `P+0x5c·T` (800·T) **and** `dot(movement direction, normalize(target−pos)) > 0.95` (`0x4a9c9c`) ⇒ speed := 800 (direct), → **4** |
+| 1 | `0x418f23` | **CHASE** | Chase | no target ⇒ **7**. `T = AnimLen(8) + 0.5·AnimLen(10)` → `+0x1d4`; if xz distance ≤ `P+0x5c·T` (800·T) **and** `dot(movement direction, normalize(target−pos)) > 0.95` (`0x4a9c9c`; `target − pos` is the **3D** vector `0x440040`, normalised in 3D at `0x418fc8`, so a player high above - e.g. rising from an air peck - is not charged) ⇒ speed := 800 (direct), → **4** |
 | 2 | `0x418ee0` | NOTICED | | target ⇒ behavior = Chase (`vtbl[6]()`, `0x41bc80(target)`), → **1** (and immediately the code of 1); no target ⇒ **7** |
 | 3 | `0x419245` | ATTACK MISSED | Stand still | `+0x1cc -= dt`; ≤ 0 ⇒ `cool = P+0x38`, → **7** |
 | 4 | `0x4190af` | **CHARGE RUN** | Chase | no target or `+0x1d4 ≤ 0` ⇒ **5**; `+0x1d4 -= dt`; if `Touch(1,0)` (distance < 30 + player radius): `hit = player->vtbl[39](this, P+0x3c /*1.0*/, &dir, &point, 0)` with `dir = normalize_xz(player−pos)`, `point = pos + dir·P+4 + (0, h/2, 0)`; `hit` (player dead) ⇒ **10**, otherwise `+0x1cc = AnimLen(10)`, behavior = Stand still, → **3** |
@@ -332,8 +332,10 @@ Read instruction by instruction (round 33, `0x41b2c0..0x41b6a0`, sweep `0x437580
   For the ordinary enemies (`r` 30, `up` 10) the sphere spans feet + 11 .. feet + 71; the thrower (60 / 10) + 11 .. + 131; the ghost (30 / 70)
   + 71 .. + 131; Buzz (240 / 75) + 76 .. + 556; Boss2 (50 / 10) + 11 .. + 111; class 16 (50 / 70) + 71 .. + 171.
 * Hook `[2](&res, &from, step)` (`step` = the normal step or the knock `v`): only Chase's `0x41bdf0` does something: `|res − from| < 0.01` (3D,
-  `0x4a94f8`) and `step > 0` ⇒ `res.x += (rand() & 31) − 16`, `res.z += (rand() & 31) − 16`, then `0x41ba60(&res, &from, 0)` = the H target angle
-  from `res` back to `from` (the next Steer `0x41bd00` turns one frame toward it and then retargets the player).
+  `0x4a94f8`) and `step > 0` ⇒ `from.x += (rand() & 31) − 16`, `from.z += (rand() & 31) − 16` on the hook's argument (`0x41be56`/`0x41be74`: `esi` =
+  arg 2 = the caller's local copy of `from`), then `0x41ba60(&from, &res, 0)` = the H target angle from that jittered point to `res` (the next Steer
+  `0x41bd00` turns one frame toward it and then retargets the player). The jitter never reaches the position: `0x41b586` stores `res`, which the hook
+  leaves alone, so a stuck or knocked (zero knock direction, e.g. the air peck) chaser only gets a random heading, it does not shake.
 * Subtype ≥ 9 (types 13, 14, 15, 16) `res.y = from.y`; `0x436d10` clears the probe's platform (`probe+0 = 0`); `drop = res.y − [0x53a568]`;
   **free** = `[0x4b310c] ≥ 0.8` (NaN blocked) and `drop < P+0x2c` (NaN free). Free: with `drop < 1` and `[0x53a554] == 2` the probe is attached
   to the instance floor at `res` (`0x436d80`) - but the ground follower's `0x436dc0` of the same Update attaches or clears the probe every
@@ -366,8 +368,8 @@ Read instruction by instruction (round 33, `0x41b2c0..0x41b6a0`, sweep `0x437580
   16 directions). Returns the remaining angle difference.
 * Tick `0x41bee0`: `Steer()`; timer ≤ 0 and not yet moving ⇒ `+0x30 = 1`; otherwise timer −= dt; then `0x41b2c0`.
   Step `[0]` = `+0x30 ? dt·H.speed : 0`; direction `[1]` = `(cos, 0, sin)` of the movement angle.
-* Hook `[2]` (`0x41bdf0`): if the sweep displacement < 0.01 (`0x4a94f8`) ⇒ result ± random (−16..15) in x and z
-  (wriggle loose). OnBlocked `[3]` (`0x41be90`): target angle = free sensor direction, timer 0.
+* Hook `[2]` (`0x41bdf0`): if the sweep displacement < 0.01 (`0x4a94f8`) ⇒ a new target angle from a point ± random (−16..15) in x and z
+  off the start toward the result (wriggle loose by heading only; the position is not moved, §5.1). OnBlocked `[3]` (`0x41be90`): target angle = free sensor direction, timer 0.
 
 ### 5.4 Wander (`0x41bf30(enemy, leash, &home)`, vtable `0x4aa118`) — **ported** (`wander_*` in `src/enemy.c`; see the decompilation after the summary)
 `+0x30..0x4c` = 8 actions `(kind<<16)|weight`: actions 0..5 weight **10**, 6 and 7 weight **25**, kind 1
@@ -878,7 +880,7 @@ void enemy_update(Enemy *e, float dt) {
     case E_CHASE:  if (!p) { e->st = E_WANDER; break; }
         steer(e, angle_to(e,p), 6.2832f, dt); if ((e->turnT -= dt) <= 0) move(e, e->speed*dt);  /* sweep, no drop-off > 10 */
         e->atkT = animlen(8) + 0.5f*animlen(10);
-        if (dist_xz(e,p) <= DASH*e->atkT && dot(dirvec(e->ang), norm_xz(p->pos - e->pos)) > 0.95f) { e->speed = DASH; e->st = E_DASH; }
+        if (dist_xz(e,p) <= DASH*e->atkT && dot(dirvec(e->ang), norm3(p->pos - e->pos)) > 0.95f) { e->speed = DASH; e->st = E_DASH; }
         break;
     case E_DASH:   steer(...); move(e, e->speed*dt);
         if (!p || e->atkT <= 0) { e->t = animlen(9); e->st = E_BRAKE; break; }   e->atkT -= dt;

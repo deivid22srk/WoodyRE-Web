@@ -408,8 +408,9 @@ static Vec3 enemy_sweep(Enemy *e, struct Player *pl, Vec3 from, Vec3 to, float u
  *   from = pos; up = min(P+0x30, h/2) (0x41b33b); knockT (Behav+0x1c) > 0 ? knockT = max(0, knockT - dt), to = from + knockDir
  *   * dt * P+0x44 * knockT : to = from + vtbl[1]() * vtbl[0]() (direction * step); to += the platform delta 0x436d20; the
  *   Probe2 push-out 0x437040 (dead: its sphere queries 0x435b60 are a stub, zero); Sweep; hook vtbl[2](res, from, step) (only
- *   Chase has one, 0x41bdf0: moved less than 0.01 (3D) with a step > 0 => res.xz += (rand() & 31) - 16 each and the target angle
- *   from res back to from); subtype >= 9 (types 13..16) res.y = from.y; 0x436d10 clears the probe's platform; free when the
+ *   Chase has one, 0x41bdf0: moved less than 0.01 (3D) with a step > 0 => from.xz += (rand() & 31) - 16 each on its local copy
+ *   and the target angle from that point to res - only a new heading, the position is not moved); subtype >= 9 (types
+ *   13..16) res.y = from.y; 0x436d10 clears the probe's platform; free when the
  *   floor normal y >= 0.8 (0x4a987c, NaN = blocked) and res.y - floor < P+0x2c (NaN = free): pos = res, collision centre, re-cell
  *   (with a drop < 1 on an instance floor it attaches the probe to it, 0x41b566 - overwritten by the ground follower's probe
  *   0x436dc0 of the same Update, which attaches or clears every frame; not ported); blocked: pos += platform delta, re-attach
@@ -424,9 +425,9 @@ int enemy_common_move(Enemy *e, struct Player *pl, Vec3 delta, float *knock_t, V
     Vec3 res = enemy_sweep(e, pl, from, to, up, &gy, &ny);                     /* 0x41b4d8 */
     if (behav == 1) {                                                           /* Chase hook 0x41bdf0 */
         float mx = res.x - from.x, my = res.y - from.y, mz = res.z - from.z;
-        if (sqrtf(mx * mx + my * my + mz * mz) < 0.01f && step > 0) {
-            res.x += (float)((rand() & 31) - 16); res.z += (float)((rand() & 31) - 16);
-            e->want_ang = atan2f(from.z - res.z, from.x - res.x);               /* 0x41ba60(res, from, 0) */
+        if (sqrtf(mx * mx + my * my + mz * mz) < 0.01f && step > 0) {          /* the ±16 goes onto the hook's copy of FROM (0x41be56 / 0x41be74), */
+            float jx = (float)((rand() & 31) - 16), jz = (float)((rand() & 31) - 16);   /* which 0x41b2c0 never stores: pos = res (0x41b586) */
+            e->want_ang = atan2f(res.z - (from.z + jz), res.x - (from.x + jx)); /* 0x41ba60(from', res, 0): the target angle from the jittered point to res */
         }
     }
     if (e->type >= 13) res.y = from.y;                                          /* 0x41b4fe: subtypes 9 (ghost), 11..13 (bosses) */
@@ -573,7 +574,10 @@ static void enemy_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
             e->reload += e->P.reload; e->hand ^= 1;
             break;
         }
-        if (dxz <= e->P.dash * e->atk_t && dxz > 1e-3f && (cosf(e->ang) * dx + sinf(e->ang) * dz) / dxz > 0.95f) { e->speed = e->want_speed = e->P.dash; e->st = 4; }
+        /* 0x41901b: xz distance <= P+0x5c * T, then 0x440160: H direction (cos, 0, sin) . the 3D-normalised (player - pos)
+         * (0x440040 + 0x418fc8) > 0.95, so a player high above (after an air peck's recoil) is not charged */
+        { float d3 = sqrtf(dx * dx + dy * dy + dz * dz);
+          if (dxz <= e->P.dash * e->atk_t && d3 > 1e-3f && (cosf(e->ang) * dx + sinf(e->ang) * dz) / d3 > 0.95f) { e->speed = e->want_speed = e->P.dash; e->st = 4; } }
         break;
     case 4:                                                       /* dash: the only state that hurts the player */
         anim = EA_DASH;
