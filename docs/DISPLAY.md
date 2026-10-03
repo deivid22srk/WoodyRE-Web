@@ -169,7 +169,10 @@ the key is missing, §3). The same file also keeps `reverse_stereo=` and `film_s
 `--res WxH`, `--windowed`, `--fullscreen`, `--aspect 4:3|wide`, `WOODY_VSYNC=0/1`, `WOODY_FPSCAP=N`. A screenshot run
 (`--shot`, `WOODY_SHOTSEQ`, `WOODY_LOGOSHOT`) ignores the cfg's display keys and starts from the defaults, so test images
 stay 1280x800 wide unless the command line says otherwise. `WOODY_FPS=N` (testing: frame-rate dependent code) still
-takes precedence over the cap. `WOODY_FPSLOG=1` prints the frame rate every 2 s.
+takes precedence over the cap. `WOODY_FPSLOG=1` prints the frame rate every 2 s. `WOODY_FIXDT=N` (testing) advances the
+game clock by exactly 1/N s per frame whatever the wall clock says, and the hooks timed from the level start (`--shot`,
+`WOODY_SHOTSEQ`, `WOODY_KEYS`) follow that clock, so two builds produce the same frames: diff their screenshots pixel for
+pixel (renderer changes that must not change the picture).
 
 ## 6. Uncertain
 

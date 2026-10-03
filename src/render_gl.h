@@ -46,6 +46,8 @@ typedef struct {
     const LitFile *lit; struct WorldBatch *litb;      /* lit faces per texture group (same count as batches) */
     struct WorldBatch lightb[16]; uint32_t light_tex[16];   /* light polygons per generated radial texture */
     int show_light; float *face_bound;                 /* per world face: centre xyz + radius (cast shadow receivers) */
+    uint32_t *face_fan;                                /* per world face: first index in fan_idx of its (nverts - 2) triangles */
+    uint32_t *fan_idx;                                 /* the triangle fans of every face as GL_TRIANGLES indices into gel->verts */
     float last_time;
     int have_sky; uint32_t sky_tex[5]; float sky_hu, sky_hv;   /* sky cube (docs/SKY.md): +z, +x, -z, -x, top */
     int show_world, show_instances, wireframe;

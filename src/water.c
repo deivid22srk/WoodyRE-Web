@@ -126,7 +126,7 @@ static void build(Water *w, const TexFile *tex)
     in->noncollide = 1;                                            /* 0x473876: inst+8 |= 0x40 */
     w->wake_t = rnd01() * 5.0f;                                    /* 0x4a9884 */
     w->ready = 1;
-    if (getenv("WOODY_WATERLOG")) printf("water: instance %u grid %d x %d, edges %.0f %.0f, cell %.0f, amp %.1f, alpha %.2f, group %d, centre %.0f %.0f %.0f",
+    if (wenv("WOODY_WATERLOG")) printf("water: instance %u grid %d x %d, edges %.0f %.0f, cell %.0f, amp %.1f, alpha %.2f, group %d, centre %.0f %.0f %.0f",
                                          in->index, w->nc, w->nr, w->len1, w->len2, w->cell, w->amp, w->alpha, w->group, w->centre.x, w->centre.y, w->centre.z), puts("");
 }
 
@@ -199,7 +199,7 @@ void water_update(float dt, struct Player *pl)
         }
     }
     for (int q = 0; q < 512; q++) if (g_mark[q].on && (g_mark[q].age += dt) >= 0.5f) g_mark[q].on = 0;
-    static float logt; if (getenv("WOODY_WATERLOG") && (logt += dt) >= 1.0f) { int nw = 0, nm = 0; logt = 0;
+    static float logt; if (wenv("WOODY_WATERLOG") && (logt += dt) >= 1.0f) { int nw = 0, nm = 0; logt = 0;
         for (int e = 0; e < 64; e++) nw += g_wake[e].on;
         for (int q = 0; q < 512; q++) nm += g_mark[q].on;
         printf("water: %d wakes, %d marks", nw, nm), puts(""); }

@@ -91,7 +91,7 @@ static void gel_build_queries(GelFile *g)
 {
     g->q = (struct GelQuery *)calloc(1, sizeof *g->q);
     g->q->stamp = (uint32_t *)calloc(g->npolys ? g->npolys : 1, 4);
-    g->q->off = getenv("WOODY_NOKD") != NULL;      /* fall back to scanning the whole level, to tell a tree bug from a collision bug */
+    g->q->off = wenv("WOODY_NOKD") != NULL;      /* fall back to scanning the whole level, to tell a tree bug from a collision bug */
     g->col = (struct GelCol *)calloc(1, sizeof *g->col);
     g->col->cstamp = (uint32_t *)calloc(g->ncells ? g->ncells : 1, 4);
     /* A kd leaf that lies above every sector root belongs to no sector, and a polygon can miss every cell list.
@@ -434,7 +434,7 @@ void gel_col_dynamic(const GelFile *g, Instance *const *list, uint32_t n)
         if (C->ndyn >= C->dyn_cap) { C->dyn_cap = C->dyn_cap ? C->dyn_cap * 2 : 64; C->dyn = (Instance **)realloc(C->dyn, C->dyn_cap * sizeof *C->dyn); }
         C->dyn[C->ndyn++] = in;
     }
-    if (getenv("WOODY_CELLCOL")) {                                             /* testing: the dynamic list whenever it changes */
+    if (wenv("WOODY_CELLCOL")) {                                             /* testing: the dynamic list whenever it changes */
         static uint32_t last_n = 0xffffffffu, last_sum;
         uint32_t sum = 0; for (uint32_t i = 0; i < C->ndyn; i++) sum = sum * 31 + C->dyn[i]->index;
         if (C->ndyn != last_n || sum != last_sum) {
@@ -605,7 +605,7 @@ uint32_t gel_col_instances(const GelFile *g, const InsFile *ins, const GelColRef
         for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins->models[mi].instances[k].col_stamp = 0;
         C->igen = 1;
     }
-    static int all = -1; if (all < 0) all = getenv("WOODY_COLALL") != NULL;   /* testing: the port's old selection (every instance) */
+    static int all = -1; if (all < 0) all = wenv("WOODY_COLALL") != NULL;   /* testing: the port's old selection (every instance) */
     if (!C->have || all || g_col_all) {                                        /* port fallback without a .col: every instance, model order */
         for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
             Instance *in = &ins->models[mi].instances[k];
@@ -832,7 +832,7 @@ void ins_free(InsFile *f)
         Model *m = &f->models[i];
         for (uint32_t j = 0; j < m->nnodes; j++) { InsNode *n = &m->nodes[j]; for (uint32_t k = 0; k < n->npolys && n->polys; k++) free(n->polys[k].indices); free(n->polys); free(n->pos_refs); free(n->rot_refs); free(n->event_refs); }
         for (uint32_t j = 0; j < m->ninstances; j++) { free(m->instances[j].ids); free(m->instances[j].traj.points); free(m->instances[j].node_world); }
-        free(m->owner); free(m->coll); free(m->nodes); free(m->anims); free(m->points); free(m->tris); free(m->instances); free(m->volume_nodes); free(m->mesh_nodes);
+        free(m->owner); free(m->helper); free(m->coll); free(m->nodes); free(m->anims); free(m->points); free(m->tris); free(m->instances); free(m->volume_nodes); free(m->mesh_nodes);
     }
     for (uint32_t i = 0; i < f->ncameras; i++) free(f->cameras[i].traj.points);
     free(f->models); free(f->cameras); free(f->slots); free(f->cam_slots); free(f->data); memset(f, 0, sizeof *f);
@@ -1142,4 +1142,19 @@ Vec3 ins_anim_centre(const Instance *inst)
     if (i < 0 || (uint32_t)i >= m->nnodes) return p;
     p.x = inst->node_world[i].m[12]; p.y = inst->node_world[i].m[13]; p.z = inst->node_world[i].m[14];
     return p;
+}
+
+/* getenv with a cache. The UCRT getenv scans the whole environment, and the WOODY_* test switches are read in the frame
+ * loop, per instance and per collision polygon - dozens to hundreds of scans a frame. The environment does not change
+ * while the engine runs, so the first call per name reads it and later calls return that. Keyed by the address of the
+ * name (every caller passes a literal); main thread only. */
+const char *wenv(const char *name)
+{
+    static struct { const char *k, *v; } t[1024]; static unsigned n;
+    unsigned h = (unsigned)(((uintptr_t)name >> 2) * 2654435761u) & 1023;
+    for (unsigned i = 0; i < 1024; i++, h = (h + 1) & 1023) {
+        if (t[h].k == name) return t[h].v;
+        if (!t[h].k) { if (n >= 768) break; t[h].k = name; t[h].v = getenv(name); n++; return t[h].v; }
+    }
+    return getenv(name);
 }

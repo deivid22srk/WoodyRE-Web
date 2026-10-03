@@ -39,7 +39,7 @@ static uint32_t g_upd;                                             /* logic fram
 static float g_rod_dt;
 
 static float rnd01(void) { g_seed = g_seed * 214013u + 2531011u; return (float)((g_seed >> 16) & 0x7fff) / 32767.0f; }   /* 0x43ff40 */
-static int log_on(void) { if (g_log < 0) g_log = getenv("WOODY_STORMLOG") != NULL; return g_log; }
+static int log_on(void) { if (g_log < 0) g_log = wenv("WOODY_STORMLOG") != NULL; return g_log; }
 static Vec3 v3(float x, float y, float z) { return (Vec3){ x, y, z }; }
 static Vec3 vadd(Vec3 a, Vec3 b) { return v3(a.x + b.x, a.y + b.y, a.z + b.z); }
 static Vec3 vsub(Vec3 a, Vec3 b) { return v3(a.x - b.x, a.y - b.y, a.z - b.z); }

@@ -171,6 +171,7 @@ typedef struct Instance {
     uint32_t link_seq;                          /* > 0: SetTypeInstance 1200 replaced the object and 0x403e7a linked the new one in front (rnd_note_link) */
     /* +0x20 as the collision queries use it: the stamp [0x4c4c08] of the query that already tested this instance (level.c gel_col_instances) */
     uint32_t col_stamp;
+    int sh_slot; uint32_t sh_gen;                /* render_gl.c: its cast-shadow cache (slot + 1) and the generation it belongs to */
 } Instance;
 
 typedef struct Model {
@@ -183,7 +184,7 @@ typedef struct Model {
     uint32_t ninstances; Instance *instances;
     uint32_t nvolume_nodes, *volume_nodes; uint32_t nmesh_nodes, *mesh_nodes;
     uint32_t ncollision_ids;
-    int32_t *owner; float cull_r;                             /* per point: owning node (built lazily, ins_point_owner) */
+    int32_t *owner, *helper; float cull_r;                             /* per point: owning node (built lazily, ins_point_owner); per node: its helper child (render_gl.c) */
     uint32_t ncoll, *coll; int coll_ok;                       /* the press nodes (kind 1), built lazily */
 } Model;
 
@@ -276,5 +277,8 @@ void mat4_from_trs(Mat4 *m, Vec3 t, Quat q, Vec3 s);
 Vec3 mat4_apply(const Mat4 *m, Vec3 v);
 void rgb565_to_rgba(const uint16_t *src, uint8_t *dst, uint32_t n, int colour_key);
 void argb1555_to_rgb(uint32_t v, float rgb[3]);
+
+/* getenv with a cache, for the WOODY_* test switches read on hot paths (level.c). Callers pass string literals. */
+const char *wenv(const char *name);
 
 #endif

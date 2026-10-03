@@ -293,8 +293,10 @@ static int gel_face_invisible(const GelFile *g, const TexFile *t, uint32_t i)
     return (mat & 0x8000) || (mat & 0x7fff) >= t->nmaterials || t->materials[mat & 0x7fff].group >= t->ngroups;
 }
 
+static void sh_reset(void);
 int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFile *lit, const VisFile *vis)
 {
+    sh_reset();
     memset(r, 0, sizeof *r); r->tex = tex; r->gel = gel; r->ins = ins; r->show_world = r->show_instances = r->show_light = 1;
     r->lit = (lit && lit->nlights) ? lit : NULL;
     r->vis = (vis && vis->nsectors == gel->nsectors) ? vis : NULL;
@@ -378,6 +380,14 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
             for (uint32_t k = 0; k < p->nverts; k++) { const GelVert *v = &gel->verts[p->indices[k]]; fb[0] += v->x; fb[1] += v->y; fb[2] += v->z; }
             fb[0] /= p->nverts; fb[1] /= p->nverts; fb[2] /= p->nverts;
             for (uint32_t k = 0; k < p->nverts; k++) { const GelVert *v = &gel->verts[p->indices[k]]; float dx = v->x - fb[0], dy = v->y - fb[1], dz = v->z - fb[2], d = sqrtf(dx * dx + dy * dy + dz * dz); if (d > fb[3]) fb[3] = d; }
+        }
+        {   /* shadow receivers (port, speed only): every face's fan as GL_TRIANGLES indices, for the stencil marks of cast_shadow */
+            uint32_t np = gel->npolys, nfan = 0;
+            r->face_fan = (uint32_t *)calloc(np + 1, sizeof *r->face_fan);
+            for (uint32_t i = 0; i < np; i++) { r->face_fan[i] = nfan; if (gel->polys[i].nverts >= 3) nfan += (gel->polys[i].nverts - 2) * 3; }
+            r->face_fan[np] = nfan; r->fan_idx = (uint32_t *)malloc((nfan + 1) * sizeof *r->fan_idx);
+            for (uint32_t i = 0; i < np; i++) { const GelPoly *p = &gel->polys[i]; uint32_t *o = &r->fan_idx[r->face_fan[i]];
+                for (uint32_t k = 2; k < p->nverts; k++) { *o++ = p->indices[0]; *o++ = p->indices[k - 1]; *o++ = p->indices[k]; } }
         }
         uint32_t lcap[16] = { 0 }; light_textures(r);
         for (uint32_t l = 0; l < r->lit->nlights; l++) {
@@ -478,7 +488,7 @@ static void world_visibility(Renderer *r, const FreeCamera *cam, const float pl[
             r->race_entry = E; r->race_sky = sky; r->sec_dirty = 1;
         }
         r->sky_on = r->race_sky;
-        if ((z != r->race_prev[0] || z2 != r->race_prev[1]) && getenv("WOODY_RACEVISLOG"))
+        if ((z != r->race_prev[0] || z2 != r->race_prev[1]) && wenv("WOODY_RACEVISLOG"))
             printf("  RACEVIS camera (%.0f %.0f %.0f) sector %d entry id %u (%u pairs): groups %d + %d, sky %d\n", cam->pos.x, cam->pos.y, cam->pos.z, cs, E->id, E->npairs, z, z2, r->race_sky);
     } else if (cs >= 0 && (uint32_t)cs < r->vis->nsectors) {                   /* 0x42a980: the .vis list of that sector */
         const VisSector *S = &r->vis->sectors[cs];
@@ -563,8 +573,9 @@ void rnd_film_frame(const Window *w, const uint16_t *px, int width, int height)
 
 void rnd_free(Renderer *r)
 {
+    sh_reset();
     for (uint32_t i = 0; i < r->nbatches; i++) { free(r->batches[i].pos); free(r->batches[i].uv); free(r->batches[i].col); free(r->batches[i].idx); free(r->litb[i].pos); free(r->litb[i].uv); free(r->litb[i].col); free(r->litb[i].idx); }
-    free(r->batches); free(r->litb); free(r->face_bound);
+    free(r->batches); free(r->litb); free(r->face_bound); free(r->face_fan); free(r->fan_idx);
     free(r->face_batch); free(r->face_stamp); free(r->sec_vis); free(r->sec_prev); free(r->model_blend); free(r->links); r->links = NULL; r->nlinks = r->links_cap = 0;
     free(r->list); free(r->list_sec); free(r->list_grp); free(r->chain);
     for (int t = 0; t < 16; t++) { free(r->lightb[t].pos); free(r->lightb[t].uv); free(r->lightb[t].col); free(r->lightb[t].idx); free(r->lightb[t].face); if (r->light_tex[t]) { GLuint id = r->light_tex[t]; glDeleteTextures(1, &id); } }
@@ -806,7 +817,7 @@ static int link_inside(const Instance *v, Vec3 eye)                      /* 0x43
 }
 static void links_hide(Renderer *r, Vec3 eye)
 {
-    static int log = -1; if (log < 0) log = getenv("WOODY_LINKLOG") != NULL;
+    static int log = -1; if (log < 0) log = wenv("WOODY_LINKLOG") != NULL;
     const Instance *last = NULL; int inside = 0, hidden = 0;
     for (uint32_t i = 0; i < r->nlinks; i++) {
         Instance *v = r->links[2 * i], *o = r->links[2 * i + 1];
@@ -986,7 +997,7 @@ static void chains_sync(Renderer *r)
 void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, const int32_t *race)
 {
     const GelFile *g = r->gel; InsFile *ins = r->ins;
-    static int log = -1; if (log < 0) { const char *e = getenv("WOODY_VISLOG"); log = e ? atoi(e) : 0; if (e && !log) log = 1; }
+    static int log = -1; if (log < 0) { const char *e = wenv("WOODY_VISLOG"); log = e ? atoi(e) : 0; if (e && !log) log = 1; }
     if (!r->list_sec && g->nsectors) r->list_sec = (uint8_t *)calloc(g->nsectors, 1);
     if (!r->list_grp && g->ngroups) r->list_grp = (uint8_t *)calloc(g->ngroups, 1);
     r->nlist = 0; r->list_on = 1;                                               /* 0x42a98f: +0x60 = 0 */
@@ -1127,13 +1138,13 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
  * callers do). */
 typedef struct { Vec3 pos; float rgb[3], radius; int kind; } DynLight;
 static DynLight g_dyn[16]; static int g_ndyn, g_dyn_draw = -1;
-static int dyn_draw(void) { if (g_dyn_draw < 0) { const char *e = getenv("WOODY_DYNLIGHT"); g_dyn_draw = e && atoi(e) > 0; } return g_dyn_draw; }
+static int dyn_draw(void) { if (g_dyn_draw < 0) { const char *e = wenv("WOODY_DYNLIGHT"); g_dyn_draw = e && atoi(e) > 0; } return g_dyn_draw; }
 int rnd_light_add(int kind, Vec3 pos, const float rgb[3], float radius)
 {
     if (g_ndyn >= 16 || !(radius > 0)) return 0;                    /* 0x4987bc: table full -> 0; a radius <= 0 lights nothing */
     DynLight *d = &g_dyn[g_ndyn++]; d->pos = pos; d->radius = radius; d->kind = kind;
     for (int q = 0; q < 3; q++) d->rgb[q] = rgb[q];
-    if (getenv("WOODY_DYNLOG")) printf("  DYNLIGHT %d kind %d at %.0f %.0f %.0f rgb %.0f %.0f %.0f r %.1f", g_ndyn - 1, kind, pos.x, pos.y, pos.z, rgb[0], rgb[1], rgb[2], radius), puts("");
+    if (wenv("WOODY_DYNLOG")) printf("  DYNLIGHT %d kind %d at %.0f %.0f %.0f rgb %.0f %.0f %.0f r %.1f", g_ndyn - 1, kind, pos.x, pos.y, pos.z, rgb[0], rgb[1], rgb[2], radius), puts("");
     return 1;
 }
 /* per drawn instance: the dynamic lights in range of its reference point, as light vectors scaled by the linear
@@ -1192,11 +1203,138 @@ static void sh_push(Vec3 a, Vec3 b, Vec3 c)
     if (g_sh_n + 1 > g_sh_cap) { g_sh_cap = g_sh_cap * 2 + 1024; g_sh = (float *)realloc(g_sh, (size_t)g_sh_cap * 9 * sizeof(float)); }
     float *o = &g_sh[(size_t)g_sh_n * 9]; o[0] = a.x; o[1] = a.y; o[2] = a.z; o[3] = b.x; o[4] = b.y; o[5] = b.z; o[6] = c.x; o[7] = c.y; o[8] = c.z; g_sh_n++;
 }
-static int g_shlog;                                                         /* WOODY_SHLOG=1: one line per second per instance that reaches the caster test */
-static void cast_shadow(const Renderer *r, Instance *inst)
+/* Per caster, the cone from the light around each caster triangle (unit axis, cos and sin of its half angle; cos = -2:
+ * never culled) and around each chunk of SH_CHUNK consecutive triangles, and per receiving face the cone around its
+ * bounding sphere. A triangle whose cone misses the face's cannot project onto any point of the face, so it is neither
+ * projected nor drawn: the stencil would have rejected every one of its pixels. A cone only bounds the spherical
+ * triangle while it is narrower than a half sphere, so wider ones are never culled. A speed-up of the port only; the
+ * pixels are the same. */
+#define SH_CHUNK 16
+static float *g_shc, *g_shk; static uint32_t g_shc_cap;
+static void sh_cone_close(float *o, float cx, float cy, float cz, const float (*u)[3], uint32_t nu)
 {
-    int fading = inst->fade > 0.01f;                                        /* 0x42e69a/0x42eb7a: [0x4a94f8] = 0.01 -> 0x4388e0, else 0x4385f0 */
-    Model *m = inst->model; const LitLight *L = &r->lit->lights[inst->light]; const int32_t *own = model_owner(m);
+    float cl = sqrtf(cx * cx + cy * cy + cz * cz); if (cl < 1e-3f) { o[3] = -2.0f; return; }
+    cx /= cl; cy /= cl; cz /= cl;
+    float ct = 1.0f; for (uint32_t v = 0; v < nu; v++) { float d = cx * u[v][0] + cy * u[v][1] + cz * u[v][2]; if (d < ct) ct = d; }
+    ct -= 1e-4f;                                                                  /* a hair wider against rounding */
+    if (ct < 0.05f) { o[3] = -2.0f; return; }
+    o[0] = cx; o[1] = cy; o[2] = cz; o[3] = ct; o[4] = sqrtf(1.0f - ct * ct);
+}
+static void sh_cones(const LitLight *L)
+{
+    uint32_t nk = (g_sh_n + SH_CHUNK - 1) / SH_CHUNK;
+    if (g_shc_cap < g_sh_n) { g_shc_cap = g_sh_n + 1024; g_shc = (float *)realloc(g_shc, (size_t)g_shc_cap * 5 * sizeof(float)); g_shk = (float *)realloc(g_shk, (size_t)(g_shc_cap / SH_CHUNK + 1) * 5 * sizeof(float)); }
+    static float u[SH_CHUNK * 3][3];
+    for (uint32_t k = 0; k < nk; k++) {
+        uint32_t t0 = k * SH_CHUNK, t1 = t0 + SH_CHUNK < g_sh_n ? t0 + SH_CHUNK : g_sh_n, nu = 0; float kx = 0, ky = 0, kz = 0; int kbad = 0;
+        for (uint32_t t = t0; t < t1; t++) {
+            const float *tv = &g_sh[(size_t)t * 9]; float *o = &g_shc[(size_t)t * 5], cx = 0, cy = 0, cz = 0; int bad = 0;
+            for (int v = 0; v < 3; v++) {
+                float ex = tv[v * 3] - L->pos.x, ey = tv[v * 3 + 1] - L->pos.y, ez = tv[v * 3 + 2] - L->pos.z, l = sqrtf(ex * ex + ey * ey + ez * ez);
+                if (l < 1e-3f) { bad = 1; break; }
+                float *w = u[nu + v]; w[0] = ex / l; w[1] = ey / l; w[2] = ez / l; cx += w[0]; cy += w[1]; cz += w[2];
+            }
+            if (bad) { o[3] = -2.0f; kbad = 1; continue; }
+            sh_cone_close(o, cx, cy, cz, (const float (*)[3])&u[nu], 3);
+            kx += cx; ky += cy; kz += cz; nu += 3;
+        }
+        float *ko = &g_shk[(size_t)k * 5];
+        if (kbad) ko[3] = -2.0f; else sh_cone_close(ko, kx, ky, kz, (const float (*)[3])u, nu);
+    }
+}
+static int sh_cone_miss(const float *cn, const float *fd, float cf, float sf)       /* the two caps are disjoint */
+{
+    return cn[3] > -2.0f && cf >= -cn[3]                                              /* the half angles add up to less than pi */
+        && cn[0] * fd[0] + cn[1] * fd[1] + cn[2] * fd[2] < cn[3] * cf - cn[4] * sf;   /* angle between the axes > their sum */
+}
+/* the caster triangles g_sh projected from the light onto one plane (dl = the light's distance to it); triangles with a
+ * vertex on the wrong side are dropped, and with fb (centre + radius of the receiving face) those whose cone misses it.
+ * Returns the number written to out (9 floats each). */
+static uint32_t sh_project(const LitLight *L, const float *pl, float dl, const float *fb, float *out)
+{
+    float fd[3] = { 0, 0, 0 }, cf = -2.0f, sf = 0;                                    /* cf = -2: no culling */
+    if (fb) {
+        float fx = fb[0] - L->pos.x, fy = fb[1] - L->pos.y, fz = fb[2] - L->pos.z, D = sqrtf(fx * fx + fy * fy + fz * fz), rr = fb[3] * 1.02f + 1.0f;
+        if (D > rr) { fd[0] = fx / D; fd[1] = fy / D; fd[2] = fz / D; sf = rr / D; cf = sqrtf(1.0f - sf * sf); }
+    }
+    uint32_t np = 0;
+    for (uint32_t t = 0; t < g_sh_n; t++) {
+        if (cf > -2.0f) {
+            if (t % SH_CHUNK == 0 && sh_cone_miss(&g_shk[(size_t)(t / SH_CHUNK) * 5], fd, cf, sf)) { t += SH_CHUNK - 1; continue; }
+            if (sh_cone_miss(&g_shc[(size_t)t * 5], fd, cf, sf)) continue;
+        }
+        const float *tv = &g_sh[(size_t)t * 9]; float *o = &out[(size_t)np * 9]; int ok = 1;
+        for (int v = 0; v < 3 && ok; v++) {
+            float ex = tv[v * 3] - L->pos.x, ey = tv[v * 3 + 1] - L->pos.y, ez = tv[v * 3 + 2] - L->pos.z, nd = pl[0] * ex + pl[1] * ey + pl[2] * ez;
+            if (nd > -1e-3f) { ok = 0; break; }
+            float k = -dl / nd; if (k < 1.0f || k > 100.0f) { ok = 0; break; }   /* k < 1: the vertex is behind the plane */
+            o[v * 3] = L->pos.x + ex * k; o[v * 3 + 1] = L->pos.y + ey * k; o[v * 3 + 2] = L->pos.z + ez * k;
+        }
+        if (ok) np++;
+    }
+    return np;
+}
+/* receiving faces as triangles (fan indices into gel->verts), for the stencil marks */
+static void sh_faces(const Renderer *r, const uint32_t *idx, uint32_t n)
+{
+    glVertexPointer(3, GL_FLOAT, sizeof(GelVert), r->gel->verts);
+    glDrawElements(GL_TRIANGLES, (GLsizei)n, GL_UNSIGNED_INT, idx);
+}
+/* an opaque caster's receiving faces, up to 255 at a time, each with its own stencil value: face i is marked with i + 1 and
+ * its projection drawn where the stencil holds i + 1, face after face, and only then are all marks cleared with one draw.
+ * Marking face by face keeps the per-face result exactly (a pixel two faces share gets the shadow of either), while the
+ * per-face clear of the old loop - and a third of its GL calls - goes. */
+#define SH_BATCH 255
+typedef struct { uint32_t face, off, n; } ShQ;
+static void sh_flush(const Renderer *r, const float *proj, const ShQ *q, uint32_t nq)
+{
+    if (!nq) return;
+    static uint32_t *idx; static uint32_t icap; uint32_t ni = 0;
+    for (uint32_t i = 0; i < nq; i++) {
+        uint32_t f = q[i].face, k = r->face_fan[f + 1] - r->face_fan[f];
+        glEnable(GL_DEPTH_TEST); glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, (GLint)(i + 1), 0xff); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        glVertexPointer(3, GL_FLOAT, sizeof(GelVert), r->gel->verts);
+        glDrawElements(GL_TRIANGLES, (GLsizei)k, GL_UNSIGNED_INT, &r->fan_idx[r->face_fan[f]]);   /* stencil = i + 1 on the visible part of face i */
+        glColorMask(1, 1, 1, 1); glDisable(GL_DEPTH_TEST); glStencilFunc(GL_EQUAL, (GLint)(i + 1), 0xff); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        glVertexPointer(3, GL_FLOAT, 0, proj);
+        glDrawArrays(GL_TRIANGLES, (GLint)(q[i].off * 3), (GLsizei)(q[i].n * 3));
+        if (ni + k > icap) { icap = (ni + k) * 2 + 1024; idx = (uint32_t *)realloc(idx, icap * sizeof *idx); }
+        memcpy(&idx[ni], &r->fan_idx[r->face_fan[f]], k * sizeof *idx); ni += k;
+    }
+    glEnable(GL_DEPTH_TEST); glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 0, 0xff); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    glVertexPointer(3, GL_FLOAT, sizeof(GelVert), r->gel->verts);
+    glDrawElements(GL_TRIANGLES, (GLsizei)ni, GL_UNSIGNED_INT, idx);
+    glColorMask(1, 1, 1, 1);
+}
+/* the receiving faces of one light: lists A then B in their order, without the faces that can never show a shadow (no
+ * polygon, never drawn, the light not in front of them), with what the caster tests read packed per face: plane,
+ * bounding sphere, the light's distance. Built on first use per light; whether a face is drawn this frame is the
+ * caller's test. */
+typedef struct { int built; uint32_t n; uint32_t *f; float *d; } ShRecv;
+static ShRecv *g_rcv; static uint32_t g_nrcv;
+static const ShRecv *sh_receivers(const Renderer *r, int li)
+{
+    if ((uint32_t)li >= g_nrcv) { uint32_t n = r->lit->nlights > (uint32_t)li ? r->lit->nlights : (uint32_t)li + 1; g_rcv = (ShRecv *)realloc(g_rcv, n * sizeof *g_rcv); memset(&g_rcv[g_nrcv], 0, (n - g_nrcv) * sizeof *g_rcv); g_nrcv = n; }
+    ShRecv *c = &g_rcv[li]; if (c->built) return c;
+    const LitLight *L = &r->lit->lights[li]; c->built = 1; c->n = 0;
+    c->f = (uint32_t *)malloc((L->na + L->nb + 1) * sizeof *c->f); c->d = (float *)malloc((size_t)(L->na + L->nb + 1) * 9 * sizeof *c->d);
+    for (int list = 0; list < 2; list++) {
+        const uint32_t *faces = list ? L->b : L->a; uint32_t nf = list ? L->nb : L->na;
+        for (uint32_t fi = 0; fi < nf; fi++) {
+            uint32_t f = faces[fi]; if (f >= r->gel->npolys) continue;
+            if (r->gel->polys[f].nverts < 3 || gel_face_invisible(r->gel, r->tex, f)) continue;                   /* nor a shadow on one */
+            const float *pl = r->gel->polys[f].plane, dl = pl[0] * L->pos.x + pl[1] * L->pos.y + pl[2] * L->pos.z + pl[3];
+            if (dl <= 1.0f) continue;                                                                              /* the light behind the plane */
+            float *d = &c->d[(size_t)c->n * 9]; memcpy(d, pl, 4 * sizeof *d); memcpy(d + 4, &r->face_bound[4 * f], 4 * sizeof *d); d[8] = dl;
+            c->f[c->n++] = f;
+        }
+    }
+    return c;
+}
+/* The caster's triangles in world space (g_sh) and their bounding sphere */
+static void sh_caster(const Renderer *r, Instance *inst, float c[3], float *rad)
+{
+    Model *m = inst->model; const int32_t *own = model_owner(m);
     g_sh_n = 0;
     for (uint32_t ni = 0; ni < m->nnodes; ni++) {
         InsNode *n = &m->nodes[ni]; if (n->kind != 0 || !n->polys || n->type_code == 2) continue;
@@ -1216,91 +1354,167 @@ static void cast_shadow(const Renderer *r, Instance *inst)
         for (int c = 0; c < 3; c++) { int o = own[idx[c]]; Vec3 lp = m->points[idx[c]].pos; if (o >= 0) { lp.x -= m->nodes[o].pivot.x; lp.y -= m->nodes[o].pivot.y; lp.z -= m->nodes[o].pivot.z; } w[c] = mat4_apply(o >= 0 ? &inst->node_world[o] : &inst->world, lp); }
         sh_push(w[0], w[1], w[2]);
     }
-    if (!g_sh_n) return;
     float lo[3] = { 1e30f, 1e30f, 1e30f }, hi[3] = { -1e30f, -1e30f, -1e30f };
     for (uint32_t i = 0; i < g_sh_n * 3; i++) for (int q = 0; q < 3; q++) { float v = g_sh[i * 3 + q]; if (v < lo[q]) lo[q] = v; if (v > hi[q]) hi[q] = v; }
-    float c[3] = { (lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f, (lo[2] + hi[2]) * 0.5f };
-    float rad = 0.5f * sqrtf((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
-    static float *proj; static uint32_t proj_cap; if (proj_cap < g_sh_n) { proj_cap = g_sh_n + 1024; proj = (float *)realloc(proj, (size_t)proj_cap * 9 * sizeof(float)); }
-    int n_plane = 0, n_scale = 0, n_reach = 0, n_drawn = 0;
-    for (int list = 0; list < 2; list++) {
-        const uint32_t *faces = list ? L->b : L->a; uint32_t nf = list ? L->nb : L->na;
-        for (uint32_t fi = 0; fi < nf; fi++) {
-            uint32_t f = faces[fi]; if (f >= r->gel->npolys) continue;
-            const GelPoly *gp = &r->gel->polys[f]; const float *pl = gp->plane, *fb = &r->face_bound[4 * f];
-            if (gp->nverts < 3 || gel_face_invisible(r->gel, r->tex, f)) continue;                               /* nor a shadow on one */
-            if (r->cull && r->face_stamp[f] != r->stamp_gen) continue;                                             /* a face not drawn this frame cannot show one */
-            float dl = pl[0] * L->pos.x + pl[1] * L->pos.y + pl[2] * L->pos.z + pl[3], dc = pl[0] * c[0] + pl[1] * c[1] + pl[2] * c[2] + pl[3];
-            if (dl <= 1.0f || dc >= dl || dc < -rad) continue;                 /* caster must be between the light and the plane */
-            n_plane++;
-            float den = dl - dc; if (den < 1.0f) continue;
-            float s = dl / den; if (s > 40.0f) continue;                      /* projection scale; huge = grazing */
-            n_scale++;
-            float pc[3] = { L->pos.x + (c[0] - L->pos.x) * s, L->pos.y + (c[1] - L->pos.y) * s, L->pos.z + (c[2] - L->pos.z) * s };
-            float dx = pc[0] - fb[0], dy = pc[1] - fb[1], dz = pc[2] - fb[2], reach = rad * s * 1.5f + fb[3];
-            if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
-            n_reach++;
-            uint32_t np = 0;
-            for (uint32_t t = 0; t < g_sh_n; t++) {
-                const float *tv = &g_sh[(size_t)t * 9]; float *o = &proj[(size_t)np * 9]; int ok = 1;
-                for (int v = 0; v < 3 && ok; v++) {
-                    float ex = tv[v * 3] - L->pos.x, ey = tv[v * 3 + 1] - L->pos.y, ez = tv[v * 3 + 2] - L->pos.z, nd = pl[0] * ex + pl[1] * ey + pl[2] * ez;
-                    if (nd > -1e-3f) { ok = 0; break; }
-                    float k = -dl / nd; if (k < 1.0f || k > 100.0f) { ok = 0; break; }   /* k < 1: the vertex is behind the plane */
-                    o[v * 3] = L->pos.x + ex * k; o[v * 3 + 1] = L->pos.y + ey * k; o[v * 3 + 2] = L->pos.z + ez * k;
-                }
-                if (ok) np++;
-            }
-            if (!np) continue;
-            /* stencil = 1 on the visible part of the receiving face */
-            glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-            glBegin(GL_TRIANGLE_FAN); for (uint32_t k = 0; k < gp->nverts; k++) { const GelVert *v = &r->gel->verts[gp->indices[k]]; glVertex3f(v->x, v->y, v->z); } glEnd();
-            glColorMask(1, 1, 1, 1); glDisable(GL_DEPTH_TEST);
-            glVertexPointer(3, GL_FLOAT, 0, proj);
-            if (!fading) { glStencilFunc(GL_EQUAL, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3); }
-            else {
-                /* 0x4388e0 (bucket 2: blend off, z-write off, SPECULAR on): out = light texture x diffuse + specular, with
-                 * specular = AMB ([0x5e86ac]+0x1b0, 0x438c75) and diffuse = (int)(C' * k) per channel (0x438b65..0x438bc5),
-                 * C' = the light's colour (light+0x30) x inst+0x6c (0x42e6b7..0x42e6e2), k = 1 - |n.L + d|/R of the receiving
-                 * plane (0x498830 at 0x42ebaf, 0 outside the sphere), texture [0x5e8678] + 0x74 (15 - round(k * 15.49))
-                 * (0x438ba9..0x438bf3), u/v = the two rows of the sphere projection applied to the projected points
-                 * (0x438a32..0x438a6f). So the shaded area gets back fade x this light's own contribution: at fade 0.01 a
-                 * full shadow, at 0.98 almost none. Port: two passes through the stencil, AMB (1 -> 2) and then the textured
-                 * term added ONE/ONE (2 -> 3), so overlapping caster triangles still write every pixel once, as the
-                 * original's blend-off overwrite does. */
-                glStencilFunc(GL_EQUAL, 1, 3); glStencilOp(GL_KEEP, GL_KEEP, GL_INCR); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
-                float R = L->range, kk = dl < R ? 1.0f - dl / R : 0.0f, col[3];
-                for (int q = 0; q < 3; q++) col[q] = (float)(int)(L->colour[q] * inst->fade * kk) / 255.0f;
-                const GelVert *v2 = &r->gel->verts[gp->indices[2]];                          /* 0x498890: U towards the third vertex */
-                float F[3] = { L->pos.x - pl[0] * dl, L->pos.y - pl[1] * dl, L->pos.z - pl[2] * dl }, U[3] = { v2->x - F[0], v2->y - F[1], v2->z - F[2] };
-                float ul = sqrtf(U[0] * U[0] + U[1] * U[1] + U[2] * U[2]);
-                if (kk > 0 && ul > 1e-4f && (col[0] > 0 || col[1] > 0 || col[2] > 0)) {
-                    int ti = 15 - (int)(kk * 15.49f + 0.5f); if (ti < 0) ti = 0; if (ti > 15) ti = 15;
-                    float sc = 0.5f / sqrtf(R * R - dl * dl);
-                    for (int q = 0; q < 3; q++) U[q] /= ul;
-                    float W[3] = { pl[1] * U[2] - pl[2] * U[1], pl[2] * U[0] - pl[0] * U[2], pl[0] * U[1] - pl[1] * U[0] };
-                    static float *uv; static uint32_t uv_cap; if (uv_cap < np) { uv_cap = np + 1024; uv = (float *)realloc(uv, (size_t)uv_cap * 6 * sizeof(float)); }
-                    for (uint32_t i = 0; i < np * 3; i++) {
-                        float d[3] = { proj[i * 3] - F[0], proj[i * 3 + 1] - F[1], proj[i * 3 + 2] - F[2] };
-                        uv[i * 2] = 0.5f + sc * (d[0] * W[0] + d[1] * W[1] + d[2] * W[2]); uv[i * 2 + 1] = 0.5f + sc * (d[0] * U[0] + d[1] * U[1] + d[2] * U[2]);
-                    }
-                    glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->light_tex[ti]); glEnableClientState(GL_TEXTURE_COORD_ARRAY); glTexCoordPointer(2, GL_FLOAT, 0, uv);
-                    glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE); glColor3f(col[0], col[1], col[2]);
-                    glStencilFunc(GL_EQUAL, 2, 3); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
-                    glDisable(GL_BLEND); glDisable(GL_TEXTURE_2D); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glColor3f(LIT_AMB, LIT_AMB, LIT_AMB);
-                }
-            }
-            n_drawn++;
-            glEnable(GL_DEPTH_TEST); glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 0, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-            glBegin(GL_TRIANGLE_FAN); for (uint32_t k = 0; k < gp->nverts; k++) { const GelVert *v = &r->gel->verts[gp->indices[k]]; glVertex3f(v->x, v->y, v->z); } glEnd();
-            glColorMask(1, 1, 1, 1);
-        }
+    for (int q = 0; q < 3; q++) c[q] = (lo[q] + hi[q]) * 0.5f;
+    *rad = 0.5f * sqrtf((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+}
+/* can the caster (centre c, radius rad) shade the receiving face d (sh_receivers record) at all? n counts the tests passed */
+static int sh_face_test(const LitLight *L, const float *d, const float c[3], float rad, int n[3])
+{
+    const float *pl = d, *fb = d + 4, dl = d[8], dc = pl[0] * c[0] + pl[1] * c[1] + pl[2] * c[2] + pl[3];
+    if (dc >= dl || dc < -rad) return 0;                                       /* caster must be between the light and the plane */
+    n[0]++;
+    float den = dl - dc; if (den < 1.0f) return 0;
+    float s = dl / den; if (s > 40.0f) return 0;                              /* projection scale; huge = grazing */
+    n[1]++;
+    float pc[3] = { L->pos.x + (c[0] - L->pos.x) * s, L->pos.y + (c[1] - L->pos.y) * s, L->pos.z + (c[2] - L->pos.z) * s };
+    float dx = pc[0] - fb[0], dy = pc[1] - fb[1], dz = pc[2] - fb[2], reach = rad * s * 1.5f + fb[3];
+    if (dx * dx + dy * dy + dz * dz > reach * reach) return 0;
+    n[2]++;
+    return 1;
+}
+/* A caster that has not moved since the previous frame (same light, same node and instance matrices: the world triangles
+ * and so every projection are the same) keeps its result: per receiving face, drawn or not this frame, the projected
+ * triangles. Built on the second frame in the same pose, so a moving caster never pays for it; each frame only the faces
+ * drawn this frame are replayed, in the same order. A speed-up of the port only. */
+typedef struct {
+    int light, built; uint32_t nn; Mat4 *key;                                  /* key: node_world[nn] + world */
+    uint32_t nf, fcap, *f, *off, *cnt; float *proj; size_t pn, pcap;           /* faces, their triangle ranges in proj */
+    uint32_t sh_n; int st[3];                                                  /* WOODY_SHLOG */
+} ShCache;
+static ShCache *g_shcache; static uint32_t g_nshcache, g_shcache_cap, g_sh_gen = 1;
+static void sh_reset(void)                                                     /* a level is unloaded: every list belongs to it */
+{
+    for (uint32_t i = 0; i < g_nrcv; i++) { free(g_rcv[i].f); free(g_rcv[i].d); }
+    free(g_rcv); g_rcv = NULL; g_nrcv = 0;
+    for (uint32_t i = 0; i < g_nshcache; i++) { ShCache *c = &g_shcache[i]; free(c->key); free(c->f); free(c->off); free(c->cnt); free(c->proj); }
+    free(g_shcache); g_shcache = NULL; g_nshcache = g_shcache_cap = 0;
+    if (++g_sh_gen == 0) g_sh_gen = 1;                                         /* every Instance.sh_slot is stale */
+}
+static ShCache *sh_cache_of(Instance *inst)
+{
+    if (inst->sh_gen != g_sh_gen || !inst->sh_slot) {
+        if (g_nshcache == g_shcache_cap) { g_shcache_cap = g_shcache_cap * 2 + 32; g_shcache = (ShCache *)realloc(g_shcache, g_shcache_cap * sizeof *g_shcache); }
+        memset(&g_shcache[g_nshcache], 0, sizeof *g_shcache); g_shcache[g_nshcache].light = -1;
+        inst->sh_gen = g_sh_gen; inst->sh_slot = (int)++g_nshcache;
     }
-    if (g_shlog) printf("    tris %u light %d at %.0f %.0f %.0f range %.0f faces A %u B %u -> plane %d scale %d reach %d drawn %d", g_sh_n, inst->light, L->pos.x, L->pos.y, L->pos.z, L->range, L->na, L->nb, n_plane, n_scale, n_reach, n_drawn), puts("");
+    return &g_shcache[inst->sh_slot - 1];
+}
+static void sh_cache_build(const Renderer *r, Instance *inst, ShCache *cc)
+{
+    const LitLight *L = &r->lit->lights[inst->light]; float c[3], rad;
+    cc->built = 1; cc->nf = 0; cc->pn = 0; cc->st[0] = cc->st[1] = cc->st[2] = 0;
+    sh_caster(r, inst, c, &rad); cc->sh_n = g_sh_n;
+    if (!g_sh_n) return;
+    sh_cones(L);
+    const ShRecv *rv = sh_receivers(r, inst->light);
+    for (uint32_t fi = 0; fi < rv->n; fi++) {
+        const float *d = &rv->d[(size_t)fi * 9];
+        if (!sh_face_test(L, d, c, rad, cc->st)) continue;
+        if (cc->pn + g_sh_n > cc->pcap) { cc->pcap = (cc->pn + g_sh_n) * 2; cc->proj = (float *)realloc(cc->proj, cc->pcap * 9 * sizeof(float)); }
+        uint32_t np = sh_project(L, d, d[8], d + 4, cc->proj + cc->pn * 9);
+        if (!np) continue;
+        if (cc->nf == cc->fcap) { cc->fcap = cc->fcap * 2 + 64; cc->f = (uint32_t *)realloc(cc->f, cc->fcap * 4); cc->off = (uint32_t *)realloc(cc->off, cc->fcap * 4); cc->cnt = (uint32_t *)realloc(cc->cnt, cc->fcap * 4); }
+        cc->f[cc->nf] = rv->f[fi]; cc->off[cc->nf] = (uint32_t)cc->pn; cc->cnt[cc->nf] = np; cc->nf++; cc->pn += np;
+    }
+}
+static int g_shlog;                                                         /* WOODY_SHLOG=1: one line per second per instance that reaches the caster test */
+static void cast_shadow(const Renderer *r, Instance *inst)
+{
+    int fading = inst->fade > 0.01f;                                        /* 0x42e69a/0x42eb7a: [0x4a94f8] = 0.01 -> 0x4388e0, else 0x4385f0 */
+    Model *m = inst->model; const LitLight *L = &r->lit->lights[inst->light];
+    int st[3] = { 0, 0, 0 }, n_drawn = 0; uint32_t n_tris = 0;
+    static ShQ q[SH_BATCH]; uint32_t nq = 0;
+    if (!fading) {                                                          /* opaque: the per-pose cache */
+        ShCache *cc = sh_cache_of(inst);
+        size_t kn = m->nnodes + 1;
+        int same = cc->light == inst->light && cc->nn == m->nnodes && cc->key && !memcmp(cc->key, inst->node_world, m->nnodes * sizeof(Mat4)) && !memcmp(&cc->key[m->nnodes], &inst->world, sizeof(Mat4));
+        if (same) {
+            if (!cc->built) sh_cache_build(r, inst, cc);
+            for (uint32_t i = 0; i < cc->nf; i++) {
+                uint32_t f = cc->f[i]; if (r->cull && r->face_stamp[f] != r->stamp_gen) continue;    /* a face not drawn this frame cannot show one */
+                q[nq].face = f; q[nq].off = cc->off[i]; q[nq].n = cc->cnt[i]; nq++; n_drawn++; n_tris += cc->cnt[i];
+                if (nq == SH_BATCH) { sh_flush(r, cc->proj, q, nq); nq = 0; }
+            }
+            sh_flush(r, cc->proj, q, nq);
+            if (g_shlog) printf("    tris %u light %d at %.0f %.0f %.0f range %.0f faces A %u B %u -> plane %d scale %d reach %d drawn %d (%u tris, cached)", cc->sh_n, inst->light, L->pos.x, L->pos.y, L->pos.z, L->range, L->na, L->nb, cc->st[0], cc->st[1], cc->st[2], n_drawn, n_tris), puts("");
+            return;
+        }
+        if (cc->nn != m->nnodes || !cc->key) { free(cc->key); cc->key = (Mat4 *)malloc(kn * sizeof(Mat4)); cc->nn = m->nnodes; }
+        memcpy(cc->key, inst->node_world, m->nnodes * sizeof(Mat4)); cc->key[m->nnodes] = inst->world;
+        cc->light = inst->light; cc->built = 0;                             /* moved: drawn the plain way below, cached if it holds still */
+    }
+    float c[3], rad; sh_caster(r, inst, c, &rad);
+    if (!g_sh_n) return;
+    static float *proj; static uint32_t proj_cap; if (proj_cap < g_sh_n) { proj_cap = g_sh_n + 1024; proj = (float *)realloc(proj, (size_t)proj_cap * 9 * sizeof(float)); }
+    sh_cones(L);
+    static float *bproj; static size_t bcap; uint32_t boff = 0;            /* the opaque batch */
+    const ShRecv *rv = sh_receivers(r, inst->light);
+    for (uint32_t fi = 0; fi < rv->n; fi++) {
+        uint32_t f = rv->f[fi]; if (r->cull && r->face_stamp[f] != r->stamp_gen) continue;            /* a face not drawn this frame cannot show one */
+        const float *pl = &rv->d[(size_t)fi * 9], *fb = pl + 4, dl = pl[8];
+        if (!sh_face_test(L, pl, c, rad, st)) continue;
+        if (!fading) {
+            if ((size_t)(boff + g_sh_n) * 9 > bcap) { bcap = (size_t)(boff + g_sh_n) * 9 * 2; bproj = (float *)realloc(bproj, bcap * sizeof(float)); }
+            uint32_t np = sh_project(L, pl, dl, fb, bproj + (size_t)boff * 9);
+            if (!np) continue;
+            q[nq].face = f; q[nq].off = boff; q[nq].n = np; nq++; boff += np; n_drawn++; n_tris += np;
+            if (nq == SH_BATCH) { sh_flush(r, bproj, q, nq); nq = 0; boff = 0; }
+            continue;
+        }
+        uint32_t np = sh_project(L, pl, dl, fb, proj);
+        if (!np) continue;
+        const GelPoly *gp = &r->gel->polys[f];
+        /* stencil = 1 on the visible part of the receiving face */
+        uint32_t nfi = r->face_fan[f + 1] - r->face_fan[f]; const uint32_t *fan = &r->fan_idx[r->face_fan[f]];
+        glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 1, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        sh_faces(r, fan, nfi);
+        glColorMask(1, 1, 1, 1); glDisable(GL_DEPTH_TEST);
+        glVertexPointer(3, GL_FLOAT, 0, proj);
+        {
+            /* 0x4388e0 (bucket 2: blend off, z-write off, SPECULAR on): out = light texture x diffuse + specular, with
+             * specular = AMB ([0x5e86ac]+0x1b0, 0x438c75) and diffuse = (int)(C' * k) per channel (0x438b65..0x438bc5),
+             * C' = the light's colour (light+0x30) x inst+0x6c (0x42e6b7..0x42e6e2), k = 1 - |n.L + d|/R of the receiving
+             * plane (0x498830 at 0x42ebaf, 0 outside the sphere), texture [0x5e8678] + 0x74 (15 - round(k * 15.49))
+             * (0x438ba9..0x438bf3), u/v = the two rows of the sphere projection applied to the projected points
+             * (0x438a32..0x438a6f). So the shaded area gets back fade x this light's own contribution: at fade 0.01 a
+             * full shadow, at 0.98 almost none. Port: two passes through the stencil, AMB (1 -> 2) and then the textured
+             * term added ONE/ONE (2 -> 3), so overlapping caster triangles still write every pixel once, as the
+             * original's blend-off overwrite does. */
+            glStencilFunc(GL_EQUAL, 1, 3); glStencilOp(GL_KEEP, GL_KEEP, GL_INCR); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
+            float R = L->range, kk = dl < R ? 1.0f - dl / R : 0.0f, col[3];
+            for (int k = 0; k < 3; k++) col[k] = (float)(int)(L->colour[k] * inst->fade * kk) / 255.0f;
+            const GelVert *v2 = &r->gel->verts[gp->indices[2]];                          /* 0x498890: U towards the third vertex */
+            float F[3] = { L->pos.x - pl[0] * dl, L->pos.y - pl[1] * dl, L->pos.z - pl[2] * dl }, U[3] = { v2->x - F[0], v2->y - F[1], v2->z - F[2] };
+            float ul = sqrtf(U[0] * U[0] + U[1] * U[1] + U[2] * U[2]);
+            if (kk > 0 && ul > 1e-4f && (col[0] > 0 || col[1] > 0 || col[2] > 0)) {
+                int ti = 15 - (int)(kk * 15.49f + 0.5f); if (ti < 0) ti = 0; if (ti > 15) ti = 15;
+                float sc = 0.5f / sqrtf(R * R - dl * dl);
+                for (int k = 0; k < 3; k++) U[k] /= ul;
+                float W[3] = { pl[1] * U[2] - pl[2] * U[1], pl[2] * U[0] - pl[0] * U[2], pl[0] * U[1] - pl[1] * U[0] };
+                static float *uv; static uint32_t uv_cap; if (uv_cap < np) { uv_cap = np + 1024; uv = (float *)realloc(uv, (size_t)uv_cap * 6 * sizeof(float)); }
+                for (uint32_t i = 0; i < np * 3; i++) {
+                    float d[3] = { proj[i * 3] - F[0], proj[i * 3 + 1] - F[1], proj[i * 3 + 2] - F[2] };
+                    uv[i * 2] = 0.5f + sc * (d[0] * W[0] + d[1] * W[1] + d[2] * W[2]); uv[i * 2 + 1] = 0.5f + sc * (d[0] * U[0] + d[1] * U[1] + d[2] * U[2]);
+                }
+                glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->light_tex[ti]); glEnableClientState(GL_TEXTURE_COORD_ARRAY); glTexCoordPointer(2, GL_FLOAT, 0, uv);
+                glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE); glColor3f(col[0], col[1], col[2]);
+                glStencilFunc(GL_EQUAL, 2, 3); glDrawArrays(GL_TRIANGLES, 0, (GLsizei)np * 3);
+                glDisable(GL_BLEND); glDisable(GL_TEXTURE_2D); glDisableClientState(GL_TEXTURE_COORD_ARRAY); glColor3f(LIT_AMB, LIT_AMB, LIT_AMB);
+            }
+        }
+        n_drawn++; n_tris += np;
+        glEnable(GL_DEPTH_TEST); glColorMask(0, 0, 0, 0); glStencilFunc(GL_ALWAYS, 0, 1); glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        sh_faces(r, fan, nfi);
+        glColorMask(1, 1, 1, 1);
+    }
+    sh_flush(r, bproj, q, nq);
+    if (g_shlog) printf("    tris %u light %d at %.0f %.0f %.0f range %.0f faces A %u B %u -> plane %d scale %d reach %d drawn %d (%u tris)", g_sh_n, inst->light, L->pos.x, L->pos.y, L->pos.z, L->range, L->na, L->nb, st[0], st[1], st[2], n_drawn, n_tris), puts("");
 }
 static void draw_cast_shadows(const Renderer *r)
 {
-    { static int last = -1; int s = (int)g_tex_now; g_shlog = getenv("WOODY_SHLOG") && (s != last || atoi(getenv("WOODY_SHLOG")) == 2); if (g_shlog) last = s; }
+    { static int last = -1; int s = (int)g_tex_now; g_shlog = wenv("WOODY_SHLOG") && (s != last || atoi(wenv("WOODY_SHLOG")) == 2); if (g_shlog) last = s; }
     glDisable(GL_TEXTURE_2D); glDisable(GL_BLEND); glDisableClientState(GL_COLOR_ARRAY); glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glEnable(GL_STENCIL_TEST); glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.0f, -1.0f); glColor3f(LIT_AMB, LIT_AMB, LIT_AMB);
     /* bucket 2 (fading casters, 0x4388e0) is flushed before bucket 5 (opaque, 0x4385f0) in 0x4293f0 (0x42960e, 0x42966c):
@@ -1396,10 +1610,14 @@ static void node_poly_uv(const Instance *inst, int helper, const Material *mat, 
 }
 /* the helper child of a mesh node, or -1: the renderer looks for a helper (kind 0x10) whose parent is this mesh
  * (0x43b716-0x43b746) */
-static int node_helper(const Model *m, uint32_t ni)
+static int node_helper(const Model *m, uint32_t ni)          /* the first helper child (kind 0x10) of node ni, -1 = none; per model, built once */
 {
-    for (uint32_t j = 0; j < m->nnodes; j++) if (m->nodes[j].kind == 0x10 && m->nodes[j].parent == (int32_t)ni) return (int)j;
-    return -1;
+    if (!m->helper) {
+        Model *w = (Model *)m; w->helper = (int32_t *)malloc((m->nnodes + 1) * sizeof *w->helper);
+        for (uint32_t i = 0; i < m->nnodes; i++) w->helper[i] = -1;
+        for (uint32_t j = m->nnodes; j-- > 0; ) if (m->nodes[j].kind == 0x10 && m->nodes[j].parent >= 0 && (uint32_t)m->nodes[j].parent < m->nnodes) w->helper[m->nodes[j].parent] = (int32_t)j;
+    }
+    return ni < m->nnodes ? m->helper[ni] : -1;
 }
 
 static void draw_node_polys(const Renderer *r, Instance *inst, uint32_t ni, int pass, uint32_t frame, int helper)
@@ -1554,7 +1772,7 @@ static void draw_outline(const Renderer *r, Instance *inst)
         printf("  OL inst %u type %d setflags %x d %.0f: no outline (%s)", inst->index, inst->type, inst->setflags, d,
                !(inst->setflags & 0x20) ? "no SetFlags bit 0x20" : "further than 1500"), puts("");
     if (!(inst->setflags & 0x20) || !inst->node_world || w <= 0) return;        /* 0x43b423; the second gate is the cfg detail level, 2 in the shipped Woody.cfg */
-    { const char *e = getenv("WOODY_OLW"); if (e) w *= (float)atof(e); }     /* test helper: scale the rim */
+    { const char *e = wenv("WOODY_OLW"); if (e) w *= (float)atof(e); }     /* test helper: scale the rim */
     Model *m = inst->model; const int32_t *own = model_owner(m); const Vec3 zero = { 0, 0, 0 };
     g_ol_n = 0;
     /* Which corners move out: 0x43b3f0 first stamps 0xffff0000 into v+0x40 of the vertex records of every back face -
@@ -1697,7 +1915,7 @@ static void draw_dyn_world(Renderer *r)
             }
             glEnd();
         }
-        if (getenv("WOODY_DYNLOG")) printf("  DYNWORLD light %d: %u faces in its box, %d drawable, %d drawn this frame, %d lit", li, set.n, ndbg[1], ndbg[2], ndbg[3]), puts("");
+        if (wenv("WOODY_DYNLOG")) printf("  DYNWORLD light %d: %u faces in its box, %d drawable, %d drawn this frame, %d lit", li, set.n, ndbg[1], ndbg[2], ndbg[3]), puts("");
     }
     act(GL_TEX1); glDisable(GL_TEXTURE_2D); act(GL_TEX0);
     glDisable(GL_POLYGON_OFFSET_FILL); glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDepthFunc(GL_LESS);
@@ -1829,7 +2047,9 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             Model *m = &r->ins->models[mi];
             for (uint32_t k = 0; k < m->ninstances; k++) {
                 Instance *inst = &m->instances[k]; if (!inst->drawn || inst_fading(inst)) continue;   /* a fading instance's opaque parts go to the fade list below */
-                { static double mt[512]; static int mn; double b0 = win_time(); draw_instance(r, inst, 0); draw_outline(r, inst); if (mi < 512) mt[mi] += win_time() - b0; if (getenv("WOODY_PROF2") && mi == r->ins->nmodels - 1 && k == m->ninstances - 1 && ++mn == 120) { for (uint32_t z = 0; z < r->ins->nmodels && z < 512; z++) if (mt[z] / 120 * 1000 > 0.3) { printf("   model %u: %.2f ms (%u nodes, %u tris, %u inst)", z, mt[z] / 120 * 1000, r->ins->models[z].nnodes, r->ins->models[z].ntris, r->ins->models[z].ninstances); puts(""); } } }
+                static int prof2 = -1; if (prof2 < 0) prof2 = wenv("WOODY_PROF2") != NULL;
+                if (!prof2) { draw_instance(r, inst, 0); draw_outline(r, inst); }
+                else { static double mt[512]; static int mn; double b0 = win_time(); draw_instance(r, inst, 0); draw_outline(r, inst); if (mi < 512) mt[mi] += win_time() - b0; if (mi == r->ins->nmodels - 1 && k == m->ninstances - 1 && ++mn == 120) { for (uint32_t z = 0; z < r->ins->nmodels && z < 512; z++) if (mt[z] / 120 * 1000 > 0.3) { printf("   model %u: %.2f ms (%u nodes, %u tris, %u inst)", z, mt[z] / 120 * 1000, r->ins->models[z].nnodes, r->ins->models[z].ntris, r->ins->models[z].ninstances); puts(""); } } }
             }
         }
         bt_flush(); g_last_material = 0xffffffffu;
@@ -1900,7 +2120,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     set_blend(0);
     g_ndyn = 0; g_idyn_n = 0;                                      /* the dynamic lights of this frame are used up */
     T[4] += win_time() - q0;
-    if (getenv("WOODY_PROF") && ++TN == 60) { printf("  RND ms: pose %.2f cull %.2f shadows %.2f instances %.2f total %.2f | world %u/%u tris, %u/%u sectors%s", T[0] / 60 * 1000, T[5] / 60 * 1000, T[2] / 60 * 1000, T[3] / 60 * 1000, T[4] / 60 * 1000, r->drawn_tris, r->total_tris, r->nsec_vis, r->gel->nsectors, r->pvs_on ? " (.vis)" : ""); puts(""); T[0] = T[2] = T[3] = T[4] = T[5] = 0; TN = 0; }
+    if (wenv("WOODY_PROF") && ++TN == 60) { printf("  RND ms: pose %.2f cull %.2f shadows %.2f instances %.2f total %.2f | world %u/%u tris, %u/%u sectors%s", T[0] / 60 * 1000, T[5] / 60 * 1000, T[2] / 60 * 1000, T[3] / 60 * 1000, T[4] / 60 * 1000, r->drawn_tris, r->total_tris, r->nsec_vis, r->gel->nsectors, r->pvs_on ? " (.vis)" : ""); puts(""); T[0] = T[2] = T[3] = T[4] = T[5] = 0; TN = 0; }
     (void)time_s;
 }
 
@@ -1965,7 +2185,7 @@ void rnd_sorted(Renderer *r)
     for (uint32_t i = 0; i < fn; i++) { fb[i] = (int)lrintf(fd[i] * 254.0f / dmax); if (fb[i] < 0) fb[i] = 0; if (fb[i] > bmax) bmax = fb[i]; }
     for (uint32_t i = 0; i < an; i++) { ab[i] = (int)lrintf(ad[i] * 254.0f / dmax); if (ab[i] < 0) ab[i] = 0; if (ab[i] > bmax) bmax = ab[i]; }
     for (int i = 0; i < nq; i++) { if (!(qk[i] & 4)) { qb[i] = -1; continue; } qb[i] = (int)lrintf(qd[i] * 254.0f / dmax); if (qb[i] < 0) qb[i] = 0; if (qb[i] > bmax) bmax = qb[i]; }
-    if (getenv("WOODY_SORTLOG")) {
+    if (wenv("WOODY_SORTLOG")) {
         static int fr; if (fr++ % 60 == 0) {
             printf("  SORT deepest %.0f | fade %u, glow %u, sprites %d:", dmax, fn, an, nq);
             for (int i = 0; i < nq && i < 40; i++) if (qb[i] >= 0) printf(" %s%d@%.0f", (qk[i] & 1) ? "b" : "a", qb[i], qd[i]);
@@ -2027,8 +2247,8 @@ void rnd_set_race(Renderer *r, const Trajectory *path)
     if (!path || !path->npoints) { for (int k = 0; k < 6; k++) r->race[k] = -1; }
     else gel_race_regions(r->gel, path->points, path->npoints, r->race);   /* 0x455f3d..0x455fed -> renderer+0xc0..+0xd4 */
     r->sec_dirty = 1; r->race_entry = NULL;
-    if (getenv("WOODY_RACEVISLOG")) printf("  RACEVIS region list %d %d %d %d %d (%u points)\n", r->race[0], r->race[1], r->race[2], r->race[3], r->race[4], path ? path->npoints : 0);
-    if (path && getenv("WOODY_RACEVISLOG")) for (uint32_t i = 0; i < path->npoints; i++) { Vec3 q = path->points[i];
+    if (wenv("WOODY_RACEVISLOG")) printf("  RACEVIS region list %d %d %d %d %d (%u points)\n", r->race[0], r->race[1], r->race[2], r->race[3], r->race[4], path ? path->npoints : 0);
+    if (path && wenv("WOODY_RACEVISLOG")) for (uint32_t i = 0; i < path->npoints; i++) { Vec3 q = path->points[i];
         int32_t f = gel_floor_poly(r->gel, q); const float *pl = f >= 0 ? r->gel->polys[f].plane : NULL;
         printf("    point %2u (%.0f %.0f %.0f): floor group %d at y %.0f\n", i, q.x, q.y, q.z, gel_floor_group(r->gel, q),
                pl && pl[1] > 0 ? -(pl[0] * q.x + pl[2] * q.z + pl[3]) / pl[1] : q.y); }

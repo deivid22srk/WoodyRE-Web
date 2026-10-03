@@ -303,6 +303,23 @@ receiving face with `U` towards its third vertex (the light textures are radiall
 Test: W1B, slots 273..277 (type 70, SetFlags 1, the casting platforms at (−6818, 1775, −1359) ff.):
 `--cam -7000 3200 -1100 0 -60`, `WOODY_MSGAT="0.3 57 273 800; 0.3 56 273 50; …"` (same for 274, 275, 277).
 
+**Port speed-ups of the shadow pass** (2026-10-03; all pixel-identical to the plain per-face loop, checked with `WOODY_FIXDT=60`
+screenshot diffs in 14 scenes; together they halve the shadow time, W1A 1.5 → 0.8 ms, W2A 1.7 → 1.0 ms):
+- *Receiver lists per light* (`sh_receivers`): lists A + B once per level without the faces that can never take a shadow (no
+  polygon, never drawn, light behind the plane), plane + bounding sphere + light distance packed per face. Whether a face is
+  drawn this frame (`face_stamp`) stays a per-frame test.
+- *Cone culling* (`sh_cones` / `sh_project`): per caster the cone from the light around each triangle and each chunk of 16, per
+  face the cone around its bounding sphere; a caster triangle whose cone misses the face's cannot project onto it, so it is
+  neither projected nor drawn (the stencil would have rejected all its pixels). Cones wider than a half sphere are never culled.
+- *Stencil ids* (`sh_flush`): an opaque caster's faces get stencil values 1..255, each face is marked and its projection drawn
+  in turn, and one draw clears all marks at the end, instead of mark / draw / clear per face. Marking face after face (not all
+  first) keeps a pixel two faces share shaded by either, as before - marking all first lost seam pixels.
+- *Per-pose cache* (`ShCache`, `Instance.sh_slot`): an opaque caster whose node matrices, instance matrix and light are those of
+  the previous frame keeps its projected triangles per receiving face (built on the second still frame, so moving casters never
+  pay for it); each frame only the faces drawn this frame are replayed, in the same order. About half the casters of W2A are still.
+- Grouping coplanar faces to project once per plane was tried and dropped: the stored planes are almost never bit-identical
+  (565 faces → 545 planes in W1A) and even a 0.5-unit tolerance merges only about 2x in W1A and 1.2x in W2A.
+
 ## 9. The additive list `+0x1cc` in `0x428d00`, and the 16-bit texture surfaces
 
 **Sorting.** Every model polygon of a blended group (polygon flags `0x60`) goes to mode 3 (`0x43d7c8`), i.e. list

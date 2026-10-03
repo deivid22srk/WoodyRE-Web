@@ -74,7 +74,7 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     e->behav = 2;                                                                /* Stand: the thrower (PostLoad 0x410f80 makes only that one), bosses 15 / 16 */
     if (e->st == 0) { Vec3 a = inst->traj.points[0], b = inst->traj.points[1]; e->ang = atan2f(b.z - a.z, b.x - a.x); e->behav = 3; }
     else if (type >= 4 && type <= 13 && type != 12) { wander_restart(e, -1); e->behav = 0; }   /* Reset: behaviour Wander, vtbl[6]() */
-    if (type == 12) { e->st = 0; e->nlong = 4; e->idle_a = 9; e->idle_t = 0; game_msgmask(inst, 0x10, 0); if (getenv("WOODY_BOSSHP")) e->hp = (float)atof(getenv("WOODY_BOSSHP"));   /* testing */ Vec3 f = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); e->ang = atan2f(f.z - inst->position.z, f.x - inst->position.x); }   /* Reset 0x411020: Stilstaan, timers 0, idle 9, state 0 (it clears msgmask 0x10); he keeps his .ins facing */
+    if (type == 12) { e->st = 0; e->nlong = 4; e->idle_a = 9; e->idle_t = 0; game_msgmask(inst, 0x10, 0); if (wenv("WOODY_BOSSHP")) e->hp = (float)atof(wenv("WOODY_BOSSHP"));   /* testing */ Vec3 f = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); e->ang = atan2f(f.z - inst->position.z, f.x - inst->position.x); }   /* Reset 0x411020: Stilstaan, timers 0, idle 9, state 0 (it clears msgmask 0x10); he keeps his .ins facing */
     inst->scripted = 0;
     if (type == 14) boss_init(e);
     if (type == 15) boss15_init(e);
@@ -170,7 +170,7 @@ void enemy_sensor_tick(Enemy *e, struct Player *pl)                        /* 0x
     S->s = sqrtf(S->r * S->r * 2.0f);
     sensor_probe(e, pl);
     for (int i = 0; i < 17; i++) S->free[i] = (unsigned char)sens_pass(S->kind[i]);   /* 0x41d430 */
-    if (S->i == 0 && getenv("WOODY_SENSLOG")) {                            /* testing: the 16 kinds once per sweep, direction 0 = +x, counter-clockwise seen from above is +z */
+    if (S->i == 0 && wenv("WOODY_SENSLOG")) {                            /* testing: the 16 kinds once per sweep, direction 0 = +x, counter-clockwise seen from above is +z */
         char m[17]; for (int i = 0; i < 16; i++) m[i] = (char)('0' + S->kind[i]); m[16] = 0;
         printf("  SENS %u (type %d, st %d) at %.0f %.0f %.0f ang %.0f: %s", e->inst->index, e->type, e->st, e->pos.x, e->pos.y, e->pos.z, e->ang * 57.2958f, m), puts("");
     }
@@ -296,7 +296,7 @@ static void wander_set(Enemy *e, int a)                                         
     e->w_act = a;
     if (a == 10) e->w_dur = e->P.turn > 0 ? fabsf(ang_diff(e->want_ang, e->ang)) / e->P.turn : 0;
     else e->w_dur = wander_len(e, a);
-    if (getenv("WOODY_WANDERLOG")) printf("  WANDER %u (type %d st %d) action %d for %.2f s at %.0f %.0f %.0f ang %.0f -> %.0f", e->inst->index, e->type, e->st, a, e->w_dur, e->pos.x, e->pos.y, e->pos.z, e->ang * 57.2958f, e->want_ang * 57.2958f), puts("");
+    if (wenv("WOODY_WANDERLOG")) printf("  WANDER %u (type %d st %d) action %d for %.2f s at %.0f %.0f %.0f ang %.0f -> %.0f", e->inst->index, e->type, e->st, a, e->w_dur, e->pos.x, e->pos.y, e->pos.z, e->ang * 57.2958f, e->want_ang * 57.2958f), puts("");
 }
 static void wander_choose(Enemy *e, int a)                                      /* 0x41c180 */
 {
@@ -370,7 +370,7 @@ static void enemy_blocked(Enemy *e)
 {
     if (e->behav == 0) wander_blocked(e);
     else if (e->behav == 1) { e->want_ang = enemy_sensor_nearest_free(e, e->ang); e->turn_t = 0; }
-    if (getenv("WOODY_SENSLOG") && e->behav < 2) printf("  SENS %u blocked at %.0f %.0f %.0f ang %.0f -> %.0f (%s)", e->inst->index, e->pos.x, e->pos.y, e->pos.z, e->ang * 57.2958f, e->want_ang * 57.2958f, e->behav ? "chase" : "wander"), puts("");
+    if (wenv("WOODY_SENSLOG") && e->behav < 2) printf("  SENS %u blocked at %.0f %.0f %.0f ang %.0f -> %.0f (%s)", e->inst->index, e->pos.x, e->pos.y, e->pos.z, e->ang * 57.2958f, e->want_ang * 57.2958f, e->behav ? "chase" : "wander"), puts("");
 }
 
 /* platform delta 0x436d20 of the probe +0x178: where the attached point (node space) is now, minus where it was attached */
@@ -433,7 +433,7 @@ int enemy_common_move(Enemy *e, struct Player *pl, Vec3 delta, float *knock_t, V
     e->plat_inst = NULL;                                                        /* 0x41b514 */
     float drop = res.y - gy;
     int ok = ny >= 0.8f && !(drop >= e->P.drop);                               /* 0x41b519..0x41b54a */
-    if (getenv("WOODY_SWEEPLOG") && (!ok || fabsf(res.x - to.x) + fabsf(res.z - to.z) > 0.5f))
+    if (wenv("WOODY_SWEEPLOG") && (!ok || fabsf(res.x - to.x) + fabsf(res.z - to.z) > 0.5f))
         printf("  SWEEP %u (type %d st %d) %s at %.0f %.0f %.0f: wanted %.1f %.1f got %.1f %.1f, floor %.1f below, normal y %.2f", e->inst->index, e->type, e->st, ok ? "pushed" : "blocked", from.x, from.y, from.z, to.x - from.x, to.z - from.z, res.x - from.x, res.z - from.z, drop, ny), puts("");
     if (ok) { e->pos = res; return 1; }
     e->pos.x += pd.x; e->pos.y += pd.y; e->pos.z += pd.z;                       /* 0x41b601 */
@@ -851,7 +851,7 @@ static void bomber_blast(Enemy *e, Vec3 c, float r)                    /* vtbl[4
     if (e->knock_t > 0) return;
     e->knock_dir = (Vec3){ 0, 0, 0 }; e->knock_t = ba_len(e, BA_HIT);
     e->hp -= 1.0f; game_hit_star(c);
-    if (getenv("WOODY_BOSSLOG")) printf("  THROWER %u blast: hp %.0f", e->inst->index, e->hp), puts("");
+    if (wenv("WOODY_BOSSLOG")) printf("  THROWER %u blast: hp %.0f", e->inst->index, e->hp), puts("");
 }
 /* actor list 1 (0x4c52d8, max 8, double-buffered by 0x40bf60): besides the Perso only two enemy Updates call RegisterActor 0x40c080 --
  * the bomb thrower 0x4110e6 (every Update) and Boss2 0x40dd58 (once message 61 has linked his crushers). An Update only runs after
@@ -990,7 +990,7 @@ static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
         float fuse; if (e->nlong) { fuse = 7.5f; e->nlong--; } else { fuse = 1.3f; e->nlong = 4; }   /* P+0x94 / P+0x90 / P+0x98 */
         if (!game_enemy_bomb(e, m0, (Vec3){ d.x / l, d.y / l, d.z / l }, 800.0f, fuse)) break;   /* no free bomb: the fuse count is spent anyway */
         e->reload = ba_len(e, BA_THROW); e->st = 3; audio_fx(50, NULL, NULL);
-        if (getenv("WOODY_BOSSLOG")) printf("  THROWER %u throws a bomb (fuse %.1f)", in->index, fuse), puts("");
+        if (wenv("WOODY_BOSSLOG")) printf("  THROWER %u throws a bomb (fuse %.1f)", in->index, fuse), puts("");
         break; }
     case 3:                                                             /* throw 0x411341 */
         anim = g_ba[BA_THROW].anim;
@@ -1026,7 +1026,7 @@ static void bomber_update(Enemy *e, struct Player *pl, Vec3 cam, float dt)
           if (e->dead_t > L * 0.5f) { in->fade = (e->dead_t - L * 0.5f) / (L * 0.5f); if (in->fade > 1) in->fade = 1; }   /* Enemy::Update 0x41a3e0: fades out in the second half */
           if (e->dead_t >= L && !e->done) {                              /* flags10c |= 1 -> 0x40bf60 -> vtbl[29] 0x41aff0: [0x4c532c]++, 0x407850 = out of the world */
               e->done = 1; game_msgmask(in, 0x10, 1); e->removed = 1; in->visible = 0; g_eset->killed++;
-              if (getenv("WOODY_BOSSLOG")) printf("  THROWER %u dead: msgmask 0x10, removed", in->index), puts(""); } }
+              if (wenv("WOODY_BOSSLOG")) printf("  THROWER %u dead: msgmask 0x10, removed", in->index), puts(""); } }
         break;
     case 14:                                                            /* hit by a blast 0x411759 */
         anim = g_ba[BA_HIT].anim;
@@ -1127,7 +1127,7 @@ void enemies_msg11(EnemySet *s, Instance *inst, int n, int v)
     case 37: e->P.active_d = (float)v; break;                         /* P+0xc0 */
     default: break;                                                   /* 11, 16, 17, 28, 29 and > 37: ignored (0x41ac2a) */
     }
-    if (getenv("WOODY_MSG11LOG")) printf("  MSG11 inst %u (type %d) n %d v %d", inst->index, e->type, n, v), puts("");
+    if (wenv("WOODY_MSG11LOG")) printf("  MSG11 inst %u (type %d) n %d v %d", inst->index, e->type, n, v), puts("");
 }
 
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt)

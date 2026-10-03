@@ -156,7 +156,7 @@ static void behav_move(Enemy *e, Player *pl, float step, float dt)
         float a = enemy_sensor_widest_free(e); if (a >= 0) e->want_ang = a;
         b->w_act = 5; int n = wander_rec(e, 5); b->w_t = n < 0 ? 0 : anim_len(e, n);
     } else if (b->behav == 1) { e->want_ang = enemy_sensor_nearest_free(e, e->ang); b->c_turn_t = 0; }   /* Chase OnBlocked 0x41be90 */
-    if (getenv("WOODY_BOSSLOG")) printf("  boss blocked at %.0f %.0f %.0f (behav %d)", e->pos.x, e->pos.y, e->pos.z, b->behav), puts("");
+    if (wenv("WOODY_BOSSLOG")) printf("  boss blocked at %.0f %.0f %.0f (behav %d)", e->pos.x, e->pos.y, e->pos.z, b->behav), puts("");
 }
 static void behav_tick(Enemy *e, Player *pl, float dt)
 {
@@ -263,7 +263,7 @@ void boss_reset(Enemy *e)                                            /* vtbl[17]
     if (in->position.x != e->pos.x || in->position.y != e->pos.y || in->position.z != e->pos.z) {   /* +0xc IS the instance position in the original */
         in->position = e->pos; mat4_from_trs(&in->world, in->position, in->quat, in->scale);
     }
-    e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp; e->hit_t = 0;   /* WOODY_BOSSHP: testing */ in->visible = 1;   /* 0x407790: back in the world */
+    e->hp = wenv("WOODY_BOSSHP") ? (float)atof(wenv("WOODY_BOSSHP")) : e->P.hp; e->hit_t = 0;   /* WOODY_BOSSHP: testing */ in->visible = 1;   /* 0x407790: back in the world */
     enemy_reset_probe(e); game_msgmask(in, 0x10, 0);                /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
     wander_start(e); b->grav = 0; b->st = 0; b->t1d8 = 0; b->high = 1; b->acc = 0;
     b->bob_down = 1; b->bob_max = 150.0f; b->bob = 0; b->fall_v = 0;
@@ -274,7 +274,7 @@ void boss_reset(Enemy *e)                                            /* vtbl[17]
     if (b->mode == 1) { e->P.run = 900; e->P.walk = 400; e->P.fall_g = 400; }
     else if (b->mode == 2) { e->P.run = 400; e->P.walk = 390; e->P.fall_g = 800; }
     loop_stop(e);                                                    /* 0x468e10: a new source */
-    if (getenv("WOODY_BOSSLOG")) printf("  BOSS %u reset: pos %.0f %.0f %.0f ang %.3f hp %.0f mode %d", in->index, e->pos.x, e->pos.y, e->pos.z, e->ang, e->hp, b->mode), puts("");
+    if (wenv("WOODY_BOSSLOG")) printf("  BOSS %u reset: pos %.0f %.0f %.0f ang %.3f hp %.0f mode %d", in->index, e->pos.x, e->pos.y, e->pos.z, e->ang, e->hp, b->mode), puts("");
 }
 
 void boss_init(Enemy *e)
@@ -411,11 +411,11 @@ void boss_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         printf("  BOSS %u beaten: var %u := 3", in->index, b->mail_var & 0xffffff), puts("");
         break;
     }
-    if (getenv("WOODY_BOSSHIT") && b->mode && !b->high && b->st == 3 && e->hit_t <= 0 && dist_xz(e->pos, pl->pos) < 400.0f)   /* testing: a peck as soon as he is low and near */
+    if (wenv("WOODY_BOSSHIT") && b->mode && !b->high && b->st == 3 && e->hit_t <= 0 && dist_xz(e->pos, pl->pos) < 400.0f)   /* testing: a peck as soon as he is low and near */
         printf("  BOSSHIT test peck: %s", boss_take_damage(e, NULL, 0) ? "beaten" : "done"), puts("");
     sync_link(e);
     game_boss_bar(1, (int)e->hp, (int)e->P.hp);                      /* 0x40fd82 */
-    if (getenv("WOODY_BOSSLOG")) printf("  boss st %d high %d mode %d pos %.0f %.0f %.0f hp %.0f rec %d anim %d behav %d act %d knock %.2f %.2f %.2f t %.3f", b->st, b->high, b->mode, e->pos.x, e->pos.y, e->pos.z, e->hp, b->rec, in->anim, b->behav, b->w_act, b->knock[0], b->knock[1], b->knock[2], game_time()), puts("");
+    if (wenv("WOODY_BOSSLOG")) printf("  boss st %d high %d mode %d pos %.0f %.0f %.0f hp %.0f rec %d anim %d behav %d act %d knock %.2f %.2f %.2f t %.3f", b->st, b->high, b->mode, e->pos.x, e->pos.y, e->pos.z, e->hp, b->rec, in->anim, b->behav, b->w_act, b->knock[0], b->knock[1], b->knock[2], game_time()), puts("");
 }
 
 /* every frame, updated or not: the render colour hook vtbl[26] 0x40fde0 (also the link's, through its owner) and the
@@ -552,7 +552,7 @@ void boss15_reset(Enemy *e)                                          /* vtbl[17]
     BossBState *b = &e->bb;
     e->pos = e->home; e->vfall = 0; e->inst->visible = 1;           /* 0x407790: back in the world */
     enemy_reset_probe(e); game_msgmask(e->inst, 0x10, 0);           /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
-    e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
+    e->hp = wenv("WOODY_BOSSHP") ? (float)atof(wenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
     b->st = 1; e->hit_t = 1.0f; b->t_intro = 0; b->row = 0; b->phase = 0; b->t_taunt = 5.0f; b->phase_flag = 0;
     if (b->crush[0]) for (int i = 0; i < 4; i++) {
         const float *T = g_T15[i];
@@ -644,7 +644,7 @@ void boss15_update(Enemy *e, Player *pl, Vec3 cam, float dt)
                 link_place(b->crush[idx], frame_pt(b, T[0], T[1], T[2]));
                 if (b->step < b->nstep - 1) { b->step++; b->t_down = b->t_up = 0; }
             }
-            if (getenv("WOODY_BOSSLOG")) printf("  Boss2 -> Vie:%f   AttackPhase:%d  (t %.2f crusher %d down %.2f up %.2f cycle %.2f)", e->hp, b->phase, game_time(), idx, b->t_down, b->t_up, b->t_cycle), puts("");   /* 0x4b1934 */
+            if (wenv("WOODY_BOSSLOG")) printf("  Boss2 -> Vie:%f   AttackPhase:%d  (t %.2f crusher %d down %.2f up %.2f cycle %.2f)", e->hp, b->phase, game_time(), idx, b->t_down, b->t_up, b->t_cycle), puts("");   /* 0x4b1934 */
         }
         break;
     case 2: {                                                        /* the crushers spin 0x40de59: a turn in 2.4 s, a quarter back in 0.6 s */
@@ -668,7 +668,7 @@ void boss15_update(Enemy *e, Player *pl, Vec3 cam, float dt)
         break;
     }
     ac_tick(in, g_r15, b);
-    if (getenv("WOODY_BOSSLOG") && b->st != 4) printf("  boss15 st %d hp %.0f pos %.0f %.0f %.0f rec %d anim %d", b->st, e->hp, e->pos.x, e->pos.y, e->pos.z, b->rec, in->anim), puts("");
+    if (wenv("WOODY_BOSSLOG") && b->st != 4) printf("  boss15 st %d hp %.0f pos %.0f %.0f %.0f rec %d anim %d", b->st, e->hp, e->pos.x, e->pos.y, e->pos.z, b->rec, in->anim), puts("");
 }
 
 /* ---- class 16 ------------------------------------------------------------------------------------------------------ */
@@ -689,7 +689,7 @@ void boss16_reset(Enemy *e)                                          /* vtbl[17]
     BossBState *b = &e->bb; float now = game_time();
     e->pos = e->home; e->vfall = 0; e->inst->visible = 1;
     enemy_reset_probe(e); game_msgmask(e->inst, 0x10, 0);           /* Enemy::Reset 0x41a010: the probe 0x41a148, msgmask 0x10 cleared 0x41a167 */
-    e->hp = getenv("WOODY_BOSSHP") ? (float)atof(getenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
+    e->hp = wenv("WOODY_BOSSHP") ? (float)atof(wenv("WOODY_BOSSHP")) : e->P.hp;   /* WOODY_BOSSHP: testing */
     b->st = 1; b->cur = 0; b->interval = 2.0f;
     for (int i = 0; i < 7; i++) {
         float a = (float)i * 0.8975979f, x = b->C.x + cosf(a) * b->radius, z = b->C.z + sinf(a) * b->radius;   /* 2 pi / 7 (0x4a9744) */
@@ -809,7 +809,7 @@ void boss16_update(Enemy *e, Player *pl, Vec3 cam, float dt)
     }
     wave_tick(e, dt);
     ac_tick(in, g_r16, b);
-    if (getenv("WOODY_BOSSLOG")) printf("  boss16 t %.2f st %d cur %d hp %.0f fade %.2f pos %.0f %.0f %.0f rec %d anim %d", game_time(), b->st, b->cur, e->hp, in->fade, e->pos.x, e->pos.y, e->pos.z, b->rec, in->anim), puts("");
+    if (wenv("WOODY_BOSSLOG")) printf("  boss16 t %.2f st %d cur %d hp %.0f fade %.2f pos %.0f %.0f %.0f rec %d anim %d", game_time(), b->st, b->cur, e->hp, in->fade, e->pos.x, e->pos.y, e->pos.z, b->rec, in->anim), puts("");
 }
 
 /* messages 61 (class 15, 0x40e749) and 62 (class 16, 0x40d55d): every linked instance gets +8 |= 0x20 (no re-cell on

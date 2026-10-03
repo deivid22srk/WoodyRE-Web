@@ -159,7 +159,7 @@ static void amb_butterfly(int ai, Vec3 w)
  * Every mote moves along the world image of the local normal of the polygon that faces most along local +z (0x472a47). */
 static void amb_think_spawn(Amb *a, int ai)
 {
-    if (a->off && !getenv("WOODY_AMBON")) return;                                /* 0x4727d3; WOODY_AMBON=1 (test hook) ignores 1511 and hiding */
+    if (a->off && !wenv("WOODY_AMBON")) return;                                /* 0x4727d3; WOODY_AMBON=1 (test hook) ignores 1511 and hiding */
     if (a->live == 0) a->fill = 1;
     if (a->live >= a->count) { a->fill = 0; return; }
     int ni = amb_node(a->in); if (ni < 0 || !a->in->node_world) return;
@@ -175,7 +175,7 @@ static void amb_think_spawn(Amb *a, int ai)
         }
     }
     Vec3 N = m_dir(M, up);                                                       /* not normalised: a scaled node scales the speed */
-    if (getenv("WOODY_AMBLOG") && !a->logged) {
+    if (wenv("WOODY_AMBLOG") && !a->logged) {
         a->logged = 1;
         printf("ambient: inst %u mode %d count %d life %.2f rgb %.2f %.2f %.2f box x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f up %.2f %.2f %.2f world %.0f %.0f %.0f floor %.0f\n",
                a->in->index, a->mode, a->count, a->life0, a->rgb[0], a->rgb[1], a->rgb[2], lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], N.x, N.y, N.z, M->m[12], M->m[13], M->m[14], a->floor_y);
@@ -212,7 +212,7 @@ static void amb_think_rain(Amb *a, int ai, float dt)
     int ni = amb_node(a->in); if (ni < 0 || !a->in->node_world || !a->grid_ok || a->interval <= 0) return;
     const Mat4 *M = &a->in->node_world[ni];
     a->acc += dt;
-    if (getenv("WOODY_AMBLOG") && !a->logged) {
+    if (wenv("WOODY_AMBLOG") && !a->logged) {
         float lo[3], hi[3]; amb_box(a->in, ni, lo, hi); a->logged = 1;
         static const float dl[3] = { 0.05f, 0.05f, -0.8f }; Vec3 d = m_dir(M, dl);
         printf("ambient: inst %u mode 2 force %d interval %.2f box x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f fall %.2f %.2f %.2f world %.0f %.0f %.0f\n",
@@ -236,12 +236,12 @@ void ambient_update(float dt)
 {
     g_frame++;
     g_flylog = 0;
-    if (getenv("WOODY_FLYLOG") && (int)(g_flyt + dt) != (int)g_flyt) { g_flylog = 1; printf("  FLY t %.0f\n", g_flyt + dt); }
+    if (wenv("WOODY_FLYLOG") && (int)(g_flyt + dt) != (int)g_flyt) { g_flylog = 1; printf("  FLY t %.0f\n", g_flyt + dt); }
     g_flyt += dt;
     for (int i = 0; i < g_namb; i++) {                                           /* think 0x472560 (vt[3]): only for the instances of this frame's list world+0x64 (0x42b400) */
         Amb *a = &g_amb[i];
         if (a->in->type != 90) continue;
-        if ((!a->in->visible || !game_enemy_thinks(a->in)) && !getenv("WOODY_AMBON")) continue;   /* hidden = out of the world (0x407850); a stationary volume also drops out with its sphere off screen (0x42a8b4) */
+        if ((!a->in->visible || !game_enemy_thinks(a->in)) && !wenv("WOODY_AMBON")) continue;   /* hidden = out of the world (0x407850); a stationary volume also drops out with its sphere off screen (0x42a8b4) */
         a->stamp = g_frame;                                                      /* +0x104 (0x472576) */
         if (a->mode == 0 || a->mode == 1) amb_think_spawn(a, i);
         else if (a->mode == 2) amb_think_rain(a, i, dt);

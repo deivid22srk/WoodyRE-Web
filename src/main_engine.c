@@ -95,7 +95,7 @@ static void cam_side_init(void)
 }
 static void cam_set_mode(int mode)                               /* SetMode 0x41f410 + 0x41eaa0 */
 {
-    if (getenv("WOODY_CAMLOG") && mode != g_cam.mode) printf("  CAM mode %d -> %d (%s)\n", g_cam.mode, mode, g_cam.cut ? "cut" : "travelling");
+    if (wenv("WOODY_CAMLOG") && mode != g_cam.mode) printf("  CAM mode %d -> %d (%s)\n", g_cam.mode, mode, g_cam.cut ? "cut" : "travelling");
     if (!g_cam.cut) {
         g_cam.look_from = g_cam.active ? g_cam.look_cur : g_cam.look_off; g_cam.from_pos = g_cam.pos;
         g_cam.active = 1; if (g_cam.dur <= 0) g_cam.dur = 2.0f; g_cam.elapsed = 0; g_cam.t = 0;
@@ -127,7 +127,7 @@ static void cam_side_start(Instance *in, int v)                   /* Perso::0x45
 /* WOODY_MSGUNK=1: every message id the port does not handle, once per id (with the args of that first send) */
 static void msg_unknown(const EkoMsg *m, const char *what)
 {
-    static uint8_t seen[2048 / 8]; if (!getenv("WOODY_MSGUNK") || m->id >= 2048 || (seen[m->id >> 3] >> (m->id & 7) & 1)) return;
+    static uint8_t seen[2048 / 8]; if (!wenv("WOODY_MSGUNK") || m->id >= 2048 || (seen[m->id >> 3] >> (m->id & 7) & 1)) return;
     seen[m->id >> 3] |= (uint8_t)(1 << (m->id & 7));
     printf("  MSGUNK %u (%s) [", m->id, what); for (uint32_t i = 0; i < m->nargs; i++) printf("%s0x%x", i ? ", " : "", m->args[i]); printf("]\n");
 }
@@ -139,7 +139,7 @@ static void cam_msg(const EkoMsg *m, const Camera *c)
     case 510: case 520: {
         Instance *t = m->nargs > 2 ? slot_instance(0x1000000 | (m->args[2] & 0xffffff)) : NULL; if (!t) break;
         g_cam.fix_pos = c->position; g_cam.fix_f = (float)a1; g_cam.fix_target = t; cam_set_mode(m->id == 510 ? 2 : 4); break; }
-    case 540: if (getenv("WOODY_CAMLOG")) for (uint32_t i = 0; i < c->traj.npoints; i++) printf("rail %u: %.0f %.0f %.0f closed %d", i, c->traj.points[i].x, c->traj.points[i].y, c->traj.points[i].z, c->traj.closed), puts("");
+    case 540: if (wenv("WOODY_CAMLOG")) for (uint32_t i = 0; i < c->traj.npoints; i++) printf("rail %u: %.0f %.0f %.0f closed %d", i, c->traj.points[i].x, c->traj.points[i].y, c->traj.points[i].z, c->traj.closed), puts("");
         if (c->traj.npoints >= 2) { g_cam.rail = &c->traj; g_cam.rail_d = (float)a1; g_cam.rail_first = 1; cam_set_mode(8); } break;
     case 560: g_cam.speed = (float)a1; g_cam.dur_from_speed = 1; break;
     case 570: g_cam.dur = a1 * 0.01f; g_cam.dur_from_speed = 0; break;
@@ -285,7 +285,7 @@ static void cam_update(Player *p, FreeCamera *cam, float dt, int behind_key)
         Vec3 ahead = d; sv_ahead(&ahead, p->side_flip, q[6], dt);                                              /* 0x4250b0 */
         Vec3 C = { p->pos.x + ahead.x, p->pos.y + ahead.y + g_cam.sv_h, p->pos.z + ahead.z };                  /* 0x424e30 / 0x424e35 */
         P = (Vec3){ C.x + sidev.x * lat, C.y, C.z + sidev.z * lat }; T = p->pos; g_cam.look_off = (Vec3){ C.x - T.x, C.y - T.y, C.z - T.z };
-        if (getenv("WOODY_SIDELOG") && (p->side_flip || (int)(p->play_time * 10) != (int)((p->play_time - dt) * 10)))
+        if (wenv("WOODY_SIDELOG") && (p->side_flip || (int)(p->play_time * 10) != (int)((p->play_time - dt) * 10)))
             printf("  SIDE t %.2f flip %d A %.1f H %.1f Lat %.1f blend %.3f sign %d s %+.3f ahead %.1f %.1f\n", p->play_time, p->side_flip, g_cam.sv_a, g_cam.sv_h, g_cam.sv_lat,
                    g_cam.sv_blend, g_cam.sv_bsign, g_cam.sv_bsign ? g_cam.sv_blend : -g_cam.sv_blend, ahead.x, ahead.z);
     } else if (g_cam.mode == 8 && g_cam.rail) {
@@ -546,7 +546,7 @@ static void in_defaults(void)
 /* the Woody.cfg file (magic + 0x11c bytes) into b[0x120]: 1 = read, 0 = none, -1 = obsolete; *used = the path */
 static int wcfg_read(const char *data_dir, unsigned char *b, const char **used)
 {
-    static char alt[600]; const char *try_[3] = { getenv("WOODY_CFG"), "Woody.cfg", alt }; snprintf(alt, sizeof alt, "%s/../Woody.cfg", data_dir);
+    static char alt[600]; const char *try_[3] = { wenv("WOODY_CFG"), "Woody.cfg", alt }; snprintf(alt, sizeof alt, "%s/../Woody.cfg", data_dir);
     FILE *f = NULL; int k;
     for (k = 0; k < 3 && !f; k++) if (try_[k]) f = fopen(try_[k], "rb");
     if (!f) return 0;
@@ -611,7 +611,7 @@ static void in_joy_poll(double now, double tl)                   /* 0x467a40 pol
             if (joyGetPosEx(id, &ji) == JOYERR_NOERROR && joyGetDevCapsA(id, &jc, sizeof jc) == JOYERR_NOERROR) {
                 g_in.joy = (int)id; g_in.jxmin = jc.wXmin; g_in.jxmax = jc.wXmax; g_in.jymin = jc.wYmin; g_in.jymax = jc.wYmax; printf("input: joystick %u \"%s\"\n", id, jc.szPname); } }
     }
-    const char *e = getenv("WOODY_JOY");                         /* testing: WOODY_JOY="T:X:Y:BUTTONS[:D] ...": stick at X,Y (-1..1, before the dead
+    const char *e = wenv("WOODY_JOY");                         /* testing: WOODY_JOY="T:X:Y:BUTTONS[:D] ...": stick at X,Y (-1..1, before the dead
                                                                   * zone) and the button mask for D s (default 0.08) from T s on the clock of --shot */
     if (e) { float x = 0, y = 0; unsigned m = 0; const char *s = e; int used;
         for (double t, d; sscanf(s, " %lf:%f:%f:%i%n", &t, &x, &y, (int *)&m, &used) == 4; ) { float xx = x, yy = y; unsigned mm = m; s += used; d = 0.08;
@@ -1120,7 +1120,7 @@ static void title_music_next(void) { if (++M.title_music == 2) M.title_music = 0
 static void menu_enter(int page)
 {
     M.page = page; M.delay = 0; hud_menu_blink(0);
-    if (getenv("WOODY_MENULOG")) printf("menu: page 0x%x at %.2f s\n", page, g_now);
+    if (wenv("WOODY_MENULOG")) printf("menu: page 0x%x at %.2f s\n", page, g_now);
     switch (page) {
     case 1:                                                            /* 0x460070 */
         M.sel = 0; audio_fx(63, NULL, NULL);
@@ -1430,7 +1430,7 @@ static int laser_segment(const Laser *z, uint32_t marker, const GelFile *gel, Ve
                                                                                     * rec+0x2c = 1 and the normal 0x4b3108 stays stale: no beam, only the impact at a. The
                                                                                     * endless test 0x431de0 (vtbl[6], type 50) has no such answer */
             g_hit_frac = 0; *b = *a; *kind = 1;
-            if (getenv("WOODY_FXLOG")) { static const Instance *last3[64][8]; int zi = (int)(z - g_lasers); if (zi >= 0 && zi < 64 && marker < 8 && last3[zi][marker] != hi) { last3[zi][marker] = hi; printf("laser %u marker %u starts inside instance %u (hit kind 3)", z->inst->index, marker, hi->index), puts(""); } }
+            if (wenv("WOODY_FXLOG")) { static const Instance *last3[64][8]; int zi = (int)(z - g_lasers); if (zi >= 0 && zi < 64 && marker < 8 && last3[zi][marker] != hi) { last3[zi][marker] = hi; printf("laser %u marker %u starts inside instance %u (hit kind 3)", z->inst->index, marker, hi->index), puts(""); } }
             return 1;
         }
         float t = gel_ray_frac(gel, *a, *b), tw = t < 1.0f ? t : 1.0f, ti;       /* the instances only up to the wall: a small box to cull with */
@@ -1439,10 +1439,10 @@ static int laser_segment(const Laser *z, uint32_t marker, const GelFile *gel, Ve
         if (t <= 1.0f) { b->x = a->x + (b->x - a->x) * t; b->y = a->y + (b->y - a->y) * t; b->z = a->z + (b->z - a->z) * t; *kind = 1; g_hit_frac = z->type == 50 ? t * len : t; }   /* [0x53a558]: 50 = the distance (unit dir) */
         else if (z->type == 50) {                                                   /* 0x4511a2: nothing hit, b = a + dir * [0x53a558] with the STALE value (the last writer's) */
             b->x = a->x + d.x / l * g_hit_frac; b->y = a->y + d.y / l * g_hit_frac; b->z = a->z + d.z / l * g_hit_frac;
-            if (getenv("WOODY_FXLOG")) printf("laser %u marker %u: the endless ray finds nothing, stale length %.1f", z->inst->index, marker, g_hit_frac), puts("");
+            if (wenv("WOODY_FXLOG")) printf("laser %u marker %u: the endless ray finds nothing, stale length %.1f", z->inst->index, marker, g_hit_frac), puts("");
         }
         if (z->type == 50) *kind = 1;                                               /* 0x45122d: rec+0x2c = 1 whether or not the ray found anything */
-        if (hi && getenv("WOODY_FXLOG")) { static const Instance *last[64][8]; int zi = (int)(z - g_lasers); if (zi >= 0 && zi < 64 && marker < 8 && last[zi][marker] != hi) { last[zi][marker] = hi; printf("laser %u (type %d) marker %u stops on instance %u (model %d) at %.0f %.0f %.0f, %.0f long", z->inst->index, z->type, marker, hi->index, (int)(hi->model - g_ins.models), b->x, b->y, b->z, sqrtf((b->x - a->x) * (b->x - a->x) + (b->y - a->y) * (b->y - a->y) + (b->z - a->z) * (b->z - a->z))), puts(""); } }
+        if (hi && wenv("WOODY_FXLOG")) { static const Instance *last[64][8]; int zi = (int)(z - g_lasers); if (zi >= 0 && zi < 64 && marker < 8 && last[zi][marker] != hi) { last[zi][marker] = hi; printf("laser %u (type %d) marker %u stops on instance %u (model %d) at %.0f %.0f %.0f, %.0f long", z->inst->index, z->type, marker, hi->index, (int)(hi->model - g_ins.models), b->x, b->y, b->z, sqrtf((b->x - a->x) * (b->x - a->x) + (b->y - a->y) * (b->y - a->y) + (b->z - a->z) * (b->z - a->z))), puts(""); } }
         return 1;
     }
     return 0;
@@ -1600,10 +1600,10 @@ static Missile *missile_take(Vec3 pos, Vec3 dir)                                
         for (int k = 0; k < MISSILE_MARKS; k++) mi->has_prev[k] = 0;               /* +0x2c[i] = 0: the trail starts here */
         mi->inst->visible = 1; mi->inst->noncollide = 1;                           /* 0x4077f0 puts it back in the cells; a missile model has no hull nodes, so nothing can walk into it */
         missile_place(mi, pos, dir);
-        if (getenv("WOODY_FXLOG")) printf("missile %u (model %d, %d nozzle%s) takes off at %.0f %.0f %.0f", mi->inst->index, (int)(mi->inst->model - g_ins.models), mi->nmark, mi->nmark == 1 ? "" : "s", pos.x, pos.y, pos.z), puts("");
+        if (wenv("WOODY_FXLOG")) printf("missile %u (model %d, %d nozzle%s) takes off at %.0f %.0f %.0f", mi->inst->index, (int)(mi->inst->model - g_ins.models), mi->nmark, mi->nmark == 1 ? "" : "s", pos.x, pos.y, pos.z), puts("");
         return mi;
     }
-    if (getenv("WOODY_FXLOG")) printf("missile pool (%d) empty: this shot flies without a model", g_nmissiles), puts("");
+    if (wenv("WOODY_FXLOG")) printf("missile pool (%d) empty: this shot flies without a model", g_nmissiles), puts("");
     return NULL;                                                                   /* the rest of the visual runs anyway */
 }
 static void missile_release(Missile *mi) { if (mi && mi->taken) { mi->taken = 0; mi->inst->visible = 0; } }   /* 0x472370 -> 0x407850 */
@@ -1666,7 +1666,7 @@ static Bomb *bomb_of(const Instance *in) { for (int i = 0; i < g_nbombs; i++) if
 static void bomb_place(Bomb *b) { Instance *in = b->inst; mat4_from_trs(&in->world, in->position, in->quat, in->scale); ins_pose(in, in->anim, in->anim_time); }
 static void bomb_reset(Bomb *b)                                                    /* vtbl[17] 0x44d320: out of the cells, back in the pool */
 {
-    if (getenv("WOODY_BOMBLOG") && b->state != 6) printf("  BOMB %u reset in state %d", b->inst->index, b->state), puts("");
+    if (wenv("WOODY_BOMBLOG") && b->state != 6) printf("  BOMB %u reset in state %d", b->inst->index, b->state), puts("");
     b->p_active = 0; b->state = 0; b->in_use = b->held = b->ridden = 0; b->inst->visible = 0; b->inst->noncollide = 0; b->inst->tint_mode = 0;
 }
 static void bombs_discard_all(void)                                                /* 0x44db10 from the Perso reset: no explosion, the variables say "done" */
@@ -1687,7 +1687,7 @@ static Bomb *bomb_start(const BombT *T, Vec3 pos, Vec3 dir, int ground, int32_t 
     b->p_active = 1; b->press = b->grounded = b->bounced = 0; b->n = (Vec3){ 0, 1, 0 };
     b->col_cur = 0xffffffffu;                                                      /* a new projectile 0x449130: probe ctor 0x436cf0 (a throw 0x4492d0 keeps it) */
     bomb_place(b);
-    if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u start at %.0f %.0f %.0f dir %.2f %.2f %.2f speed %.0f fuse %.2f kind %d var %d", b->inst->index, pos.x, pos.y, pos.z, dir.x, dir.y, dir.z, T->speed, b->fuse, kind, var), puts("");
+    if (wenv("WOODY_BOMBLOG")) printf("  BOMB %u start at %.0f %.0f %.0f dir %.2f %.2f %.2f speed %.0f fuse %.2f kind %d var %d", b->inst->index, pos.x, pos.y, pos.z, dir.x, dir.y, dir.z, T->speed, b->fuse, kind, var), puts("");
     return b;
 }
 /* 0x44d3a0 + 0x4492d0: start the carrying projectile again from where the bomb is (the throw / the drop from Woody's hands) */
@@ -1709,7 +1709,7 @@ struct Bomb *game_bomb_pick(Vec3 pos, float r)
 {
     for (int i = 0; i < g_nbombs; i++) { Bomb *b = &g_bombs[i]; if (!b->in_use || b->ridden || b->state == 6) continue;
         Vec3 d = { b->inst->position.x - pos.x, b->inst->position.y - pos.y, b->inst->position.z - pos.z };
-        if (d.x * d.x + d.y * d.y + d.z * d.z < r * r) { b->held = 1; if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u picked up", b->inst->index), puts(""); return b; } }
+        if (d.x * d.x + d.y * d.y + d.z * d.z < r * r) { b->held = 1; if (wenv("WOODY_BOMBLOG")) printf("  BOMB %u picked up", b->inst->index), puts(""); return b; } }
     return NULL;
 }
 void game_bomb_hold(struct Bomb *b, Vec3 pos, Quat q) { b->inst->position = pos; b->p = pos; b->inst->quat = q; bomb_place(b); }   /* 0x46371c..0x463794 */
@@ -1720,7 +1720,7 @@ static void bomb_explode(Bomb *b)
     if (b->state == 6) return; b->state = 6;
     if (b->var >= 0) game_var_set((uint32_t)b->var, 1);
     Vec3 c = b->inst->position; Player *pl = g_player;                              /* 0x44d650: radius 400, 3D, through walls */
-    if (pl && !pl->dead_kind && pl->inst && !getenv("WOODY_GOD")) {                /* Perso vtbl[40] 0x44d040 */
+    if (pl && !pl->dead_kind && pl->inst && !wenv("WOODY_GOD")) {                /* Perso vtbl[40] 0x44d040 */
         Vec3 d = { pl->inst->position.x - c.x, pl->inst->position.y - c.y, pl->inst->position.z - c.z };
         if (d.x * d.x + d.y * d.y + d.z * d.z < 400.0f * 400.0f && pl->invuln_respawn <= 0) { float l = sqrtf(d.x * d.x + d.z * d.z);
             player_hit(pl, 0, l > 1e-3f ? (Vec3){ d.x / l, 0, d.z / l } : (Vec3){ 0, 0, 1 }); player_kill(pl, 6);
@@ -1733,7 +1733,7 @@ static void bomb_explode(Bomb *b)
     if (b->kind == 1) game_explosion(e);
     else { Vec3 bn = b->bounced ? b->n : (Vec3){ 0, 1, 0 }; bombfx_add(e, bn, 0); fx_explode(0, e, bn); }   /* 0x477060(kind, pos, plane of the last bounce) */
     b->p_active = 0; b->t = 0; b->inst->fade = b->inst->fade_target = 1.0f;       /* not drawn from now on (> 0.98) */
-    if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u explodes at %.0f %.0f %.0f", b->inst->index, c.x, c.y, c.z), puts("");
+    if (wenv("WOODY_BOMBLOG")) printf("  BOMB %u explodes at %.0f %.0f %.0f", b->inst->index, c.x, c.y, c.z), puts("");
 }
 /* render colour vtbl[26] 0x44d9a0: black, with 0.1 s flashes of +128 red that come faster as the fuse runs out, every
  * other frame in the last 2 s and red for good once it is spent */
@@ -1797,12 +1797,12 @@ static void bombs_fly(float dt, const GelFile *gel)
             if (hit) {
                 if (!b->owner_e && !b->owner_pl) enemy_hit(hit, b->T.damage, (Vec3){ 0, 0, 0 }, e, 0);   /* a launcher's or nobody's bomb: vtbl[39](0, 1000) = his "pecked" stun; owner Perso / enemy: carried, no damage */
                 b->p = e; b->inst->position = (Vec3){ e.x, e.y + 1.0f, e.z }; bomb_explode(b);
-                if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u hits the thrower %u", b->inst->index, hit->inst->index), puts("");
+                if (wenv("WOODY_BOMBLOG")) printf("  BOMB %u hits the thrower %u", b->inst->index, hit->inst->index), puts("");
                 continue;
             }
         }
         { const Instance *hi = NULL;                                               /* hit kind 3: the start inside a press node (not its own) -> projectile gone -> CheckProj ignites */
-          if (inst_point_in_press(gel, &g_ins,b->inst, a, &hi)) { b->p_active = 0; if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u inside instance %u (hit kind 3): projectile gone", b->inst->index, hi->index), puts(""); continue; } }
+          if (inst_point_in_press(gel, &g_ins,b->inst, a, &hi)) { b->p_active = 0; if (wenv("WOODY_BOMBLOG")) printf("  BOMB %u inside instance %u (hit kind 3): projectile gone", b->inst->index, hi->index), puts(""); continue; } }
         float f = gel_ray_hit(gel, a, e, &n);
         if (g_player && player_ray_instances(g_player, b->inst, a, e, &fi, &ni, NULL) && fi < f) { f = fi; n = ni; }   /* a press node: the same bounce */
         if (f <= 1.0f) {                                                           /* Bounce 0x449eb0: mirror the end point in the plane, keep the speed */
@@ -1821,7 +1821,7 @@ static void bombs_fly(float dt, const GelFile *gel)
         b->grounded = b->press >= 5; if (b->grounded) { b->vel.y = 0; b->p.y = gy; }
         b->inst->position = (Vec3){ b->p.x, b->p.y + 1.0f, b->p.z };
         bomb_place(b);
-        if (getenv("WOODY_BOMBLOG") && getenv("WOODY_BOMBLOG")[0] == '2' && (int)(b->t * 8) != (int)((b->t - dt) * 8)) printf("  BOMB %u t %.2f state %d at %.0f %.0f %.0f vel %.0f %.0f %.0f ground %d", b->inst->index, b->t, b->state, b->p.x, b->p.y, b->p.z, b->vel.x, b->vel.y, b->vel.z, b->grounded), puts("");
+        if (wenv("WOODY_BOMBLOG") && wenv("WOODY_BOMBLOG")[0] == '2' && (int)(b->t * 8) != (int)((b->t - dt) * 8)) printf("  BOMB %u t %.2f state %d at %.0f %.0f %.0f vel %.0f %.0f %.0f ground %d", b->inst->index, b->t, b->state, b->p.x, b->p.y, b->p.z, b->vel.x, b->vel.y, b->vel.z, b->grounded), puts("");
     }
 }
 /* per frame for every bomb in use: its colour, and in fuse states 2/3 the fuse (0x478b70): a line along the bomb's own marker
@@ -2032,13 +2032,13 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
         }
         if (!end) {                                                                /* the other members of actor list 1: the bomb thrower (type 12) and Boss2 (15) */
             Enemy *h = enemies_bomb_contact(&g_enemies, s->enemy, a, b, s->T.radius);
-            if (h) { enemy_hit(h, s->damage, s->dir, b, 0); end = 1; if (getenv("WOODY_FXLOG")) printf("shot %d hits enemy %u", i, h->inst->index), puts(""); }
+            if (h) { enemy_hit(h, s->damage, s->dir, b, 0); end = 1; if (wenv("WOODY_FXLOG")) printf("shot %d hits enemy %u", i, h->inst->index), puts(""); }
         }
         if (!end) {                                                                /* Move 0x449cc0 -> Ray 0x4359b0(old, pos, -1), the laser's ray: world polygons (hit kind 1) and
                                                                                     * the press nodes of instances (2), the launcher's own included; kind 3 = the start point
                                                                                     * lies inside a press node (0x4330c0): the projectile is gone */
             const Instance *hi = NULL; Vec3 n, ni; float fi;
-            if (inst_point_in_press(gel, &g_ins,NULL, a, &hi)) { end = 1; b = a; if (getenv("WOODY_FXLOG")) printf("shot %d starts inside instance %u (hit kind 3)", i, hi->index), puts(""); }
+            if (inst_point_in_press(gel, &g_ins,NULL, a, &hi)) { end = 1; b = a; if (wenv("WOODY_FXLOG")) printf("shot %d starts inside instance %u (hit kind 3)", i, hi->index), puts(""); }
             else {
                 float f = gel_ray_hit(gel, a, b, &n);
                 if (inst_ray_press(gel, &g_ins,NULL, a, b, &fi, &ni, &hi) && fi < f) { f = fi; n = ni; } else hi = NULL;
@@ -2050,10 +2050,10 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
                         float q = 2.0f * ((b.x - h.x) * n.x + (b.y - h.y) * n.y + (b.z - h.z) * n.z); Vec3 r = { b.x - q * n.x, b.y - q * n.y, b.z - q * n.z };
                         Vec3 u = { r.x - h.x, r.y - h.y, r.z - h.z }; if (v3len(u) > 1e-6f) { s->dir = v3scale_to(u, 1.0f); s->vel = (Vec3){ s->dir.x * s->speed, s->dir.y * s->speed, s->dir.z * s->speed }; }
                         b = h; s->bounces++;
-                        if (getenv("WOODY_FXLOG")) printf("shot %d bounces (%d) at %.0f %.0f %.0f", i, s->bounces, h.x, h.y, h.z), puts("");
+                        if (wenv("WOODY_FXLOG")) printf("shot %d bounces (%d) at %.0f %.0f %.0f", i, s->bounces, h.x, h.y, h.z), puts("");
                     }
                 }
-                if (hi && end && getenv("WOODY_FXLOG")) printf("shot %d (owner %u) stops on instance %u (model %d) after %.2f s at %.0f %.0f %.0f", i, s->owner ? s->owner->index : 0u, hi->index, (int)(hi->model - g_ins.models), s->age, b.x, b.y, b.z), puts("");
+                if (hi && end && wenv("WOODY_FXLOG")) printf("shot %d (owner %u) stops on instance %u (model %d) after %.2f s at %.0f %.0f %.0f", i, s->owner ? s->owner->index : 0u, hi->index, (int)(hi->model - g_ins.models), s->age, b.x, b.y, b.z), puts("");
             }
         }
         s->pos = b;
@@ -2068,7 +2068,7 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
          * this step); the bolt only leaves the flash of 0x46f36d. Either way the trail goes on shrinking for a moment. */
         if (shot_is_missile(s)) { blast_add(b, 400.0f); missile_release(s->missile); s->missile = NULL; } else if (s->visual == 3) blast_add(a, 400.0f); else if (s->visual == 2) flash_add(b, 0);
         s->dying = shot_fade_len(s);
-        if (getenv("WOODY_FXLOG")) printf("shot %d (visual %d) ends at %.0f %.0f %.0f age %.2f from %.0f %.0f %.0f", i, s->visual, b.x, b.y, b.z, s->age, s->origin.x, s->origin.y, s->origin.z), puts("");
+        if (wenv("WOODY_FXLOG")) printf("shot %d (visual %d) ends at %.0f %.0f %.0f age %.2f from %.0f %.0f %.0f", i, s->visual, b.x, b.y, b.z, s->age, s->origin.x, s->origin.y, s->origin.z), puts("");
     }
     for (int i = 0; i < 64; i++) if (g_flashes[i].t > 0) { g_flashes[i].t += dt; if (g_flashes[i].t >= (g_flashes[i].kind == 2 ? 1.0f : 0.4f)) g_flashes[i].t = 0; }
 }
@@ -2087,7 +2087,7 @@ void game_msgmask(Instance *in, uint32_t bits, int on) { if (g_vm && in) { if (o
 void game_col_probe(uint32_t *cur, int on, uint32_t col, const Instance *actor)
 {
     if (!g_vm || !actor) return;
-    const char *lg = getenv("WOODY_COLLOG");
+    const char *lg = wenv("WOODY_COLLOG");
     if (on && col != 0xffffffffu) {
         if (*cur == col) { eko_col_in(g_vm, col, actor->id); return; }                                     /* 0x436e75 */
         eko_col_press(g_vm, col, actor->id); *cur = col;                                                    /* 0x436e8d */
@@ -2114,7 +2114,7 @@ void game_bombs_crush(Vec3 c, float r)                                         /
 {
     for (int i = 0; i < g_nbombs; i++) { Bomb *b = &g_bombs[i]; if (!b->in_use || b->state != 2) continue;
         Vec3 d = { b->inst->position.x - c.x, b->inst->position.y - c.y, b->inst->position.z - c.z };
-        if (d.x * d.x + d.y * d.y + d.z * d.z < r * r) { if (getenv("WOODY_BOMBLOG")) printf("  BOMB %u crushed", b->inst->index), puts(""); bomb_explode(b); } }
+        if (d.x * d.x + d.y * d.y + d.z * d.z < r * r) { if (wenv("WOODY_BOMBLOG")) printf("  BOMB %u crushed", b->inst->index), puts(""); bomb_explode(b); } }
 }
 void game_bombs_discard(void) { bombs_discard_all(); }
 /* the smoke plume 0x475f30(inst, n): an emitter record in the effect pool (life 100000 s, callback 0x475d90) on the
@@ -2149,7 +2149,7 @@ static void game_msg1509(Instance *in, int mode, int x)
     if (!in) return;
     if (mode == 5) { Vec3 p, d; if (!inst_vector_at(in, 0, (uint32_t)x, &p, &d)) return; game_explosion(p); }
     else if (mode == 4) { if (x == 1) { smoke_attach(in, 0); smoke_attach(in, 1); smoke_attach(in, 2); } else game_boss_smoke(NULL, -1, 0); }
-    if (getenv("WOODY_FXLOG")) printf("  1509 inst %u mode %d x %d (plumes %d on %d%d%d)\n", in->index, mode, x, g_nbplume, g_smoke_on[0], g_smoke_on[1], g_smoke_on[2]);
+    if (wenv("WOODY_FXLOG")) printf("  1509 inst %u mode %d x %d (plumes %d on %d%d%d)\n", in->index, mode, x, g_nbplume, g_smoke_on[0], g_smoke_on[1], g_smoke_on[2]);
 }
 static void boss_fx_draw(float dt)
 {
@@ -2212,7 +2212,7 @@ void game_bubble(Instance *inst, int kind, float dur, float offy, float offx, co
     for (int i = 0; i < 8; i++) if (!g_bubbles[i].inst) {
         g_bubbles[i].inst = inst; g_bubbles[i].age = 0; g_bubbles[i].dur = dur; g_bubbles[i].offy = offy; g_bubbles[i].offx = offx;
         memcpy(g_bubbles[i].img, k_img[kind], sizeof g_bubbles[i].img); g_bubbles[i].n = k_n[kind]; g_bubbles[i].side = -1; g_bubbles[i].live = live;
-        if (getenv("WOODY_BUBLOG")) printf("  BUBBLE kind %d dur %.2f off %.0f/%.0f%s\n", kind, dur, offy, offx, live ? " (live)" : "");
+        if (wenv("WOODY_BUBLOG")) printf("  BUBBLE kind %d dur %.2f off %.0f/%.0f%s\n", kind, dur, offy, offx, live ? " (live)" : "");
         return;
     }
 }
@@ -2337,7 +2337,7 @@ static void torch_add(Instance *in)
     int n = 0; Vec3 p, d;
     while (n < 4 && inst_vector_at(in, 0, (uint32_t)n, &p, &d)) g_torch[g_ntorch].p[n++] = p;   /* 0x47ce0f: count, then read (only P0 is used) */
     g_torch[g_ntorch].in = in; g_torch[g_ntorch].n = n; memset(g_torch[g_ntorch].t, 0, sizeof g_torch[g_ntorch].t); g_ntorch++;
-    if (getenv("WOODY_FXLOG")) printf("torch: inst %u, %d marker%s at %.0f %.0f %.0f", in->index, n, n == 1 ? "" : "s", n ? g_torch[g_ntorch - 1].p[0].x : 0, n ? g_torch[g_ntorch - 1].p[0].y : 0, n ? g_torch[g_ntorch - 1].p[0].z : 0), puts("");
+    if (wenv("WOODY_FXLOG")) printf("torch: inst %u, %d marker%s at %.0f %.0f %.0f", in->index, n, n == 1 ? "" : "s", n ? g_torch[g_ntorch - 1].p[0].x : 0, n ? g_torch[g_ntorch - 1].p[0].y : 0, n ? g_torch[g_ntorch - 1].p[0].z : 0), puts("");
 }
 static void torch_update(float dt)                                           /* 0x47cf10 per node */
 {
@@ -2500,7 +2500,7 @@ void game_footstep(Vec3 pos, Vec3 normal, Vec3 dir, int foot, int kind)
         if (r) { r->n = normal; r->dir = dir; r->foot = foot; }
     }
     if (kind & 2) { FxRec *r = fx_new(0.2f, pos, FX_STEP_EMIT); if (r) { r->n = normal; r->dir = dir; r->foot = foot; } }   /* 0x47e660 */
-    if (getenv("WOODY_FXLOG")) printf("footstep foot %d kind %d at %.0f %.0f %.0f", foot, kind, pos.x, pos.y, pos.z), puts("");
+    if (wenv("WOODY_FXLOG")) printf("footstep foot %d kind %d at %.0f %.0f %.0f", foot, kind, pos.x, pos.y, pos.z), puts("");
 }
 /* 0x476140(pos, normal, kind, t0, life): a ring of clouds that spreads out in the plane across `normal`. Table 0x4b7c60
  * per kind: radius, image, cloud size, alpha, alpha blended; kinds 1 and 2 have no caller in the exe. t0 is the age the
@@ -2520,7 +2520,7 @@ void game_smoke_ring(Vec3 pos, Vec3 normal, int kind, float t0, float life)
         r->age = t0; r->dir = (Vec3){ X.x * c + Y.x * s, X.y * c + Y.y * s, X.z * c + Y.z * s };
         r->size = fx_rnd() * q * 2.0f - q; r->rot = (i * 5000) & 511; r->shape = kind;
     }
-    if (getenv("WOODY_FXLOG")) printf("smoke ring kind %d (%d clouds) at %.0f %.0f %.0f", kind, (int)ceilf(n), pos.x, pos.y, pos.z), puts("");
+    if (wenv("WOODY_FXLOG")) printf("smoke ring kind %d (%d clouds) at %.0f %.0f %.0f", kind, (int)ceilf(n), pos.x, pos.y, pos.z), puts("");
 }
 void game_land_dust(Vec3 pos, Vec3 normal) { game_smoke_ring(pos, normal, 3, 0.25f, 1.5f); }   /* 0x464486 */
 static void fx_explode(int kind, Vec3 pos, Vec3 n)
@@ -2528,7 +2528,7 @@ static void fx_explode(int kind, Vec3 pos, Vec3 n)
     if (kind == 1) fx_new(0.2f, pos, FX_BURN_EMIT);                          /* 0x4770bf */
     if (kind == 0 || kind == 1) fx_new(0.2f, pos, FX_DEBRIS_EMIT);           /* 0x47710b / 0x4772d6 */
     if (kind == 0) game_smoke_ring(pos, n, 0, 0.25f, 1.5f);                  /* 0x47733b */
-    if (getenv("WOODY_FXLOG")) printf("explosion kind %d at %.0f %.0f %.0f", kind, pos.x, pos.y, pos.z), puts("");
+    if (wenv("WOODY_FXLOG")) printf("explosion kind %d at %.0f %.0f %.0f", kind, pos.x, pos.y, pos.z), puts("");
 }
 /* 0x479c80(kind, point, normal): kind 1 (every hit of the attack probe 0x4575b0) is one yellow flash of 0.05 s; kind 0 (the
  * climb, every 0.3 s) is an emitter of 0.2 s that throws splinters, keeps the flash lit and leaves one hole in the wall. */
@@ -2536,7 +2536,7 @@ void game_peck_fx(int kind, Vec3 pos, const Vec3 *n)
 {
     if (kind == 1) fx_new(0.05f, pos, FX_PECK_FLASH);
     else if (kind == 0) { FxRec *r = fx_new(0.2f, pos, FX_PECK_EMIT); if (r) r->n = n ? *n : (Vec3){ 0, 1, 0 }; }
-    if (getenv("WOODY_FXLOG")) printf("peck kind %d at %.0f %.0f %.0f", kind, pos.x, pos.y, pos.z), puts("");
+    if (wenv("WOODY_FXLOG")) printf("peck kind %d at %.0f %.0f %.0f", kind, pos.x, pos.y, pos.z), puts("");
 }
 /* 0x477e40, Kill 2 and 9 (the laser and the lightning, docs/PERSO_DEATH.md 4.2; also the race kill 2 at 0x44c59d): the
  * position argument is never read. The record keeps the Perso's fade (+0x10 = old +0x6c) to give it back at the end, and
@@ -2626,7 +2626,7 @@ void game_skeleton(void)
     FxRec *r = fx_new(1.5f, p->pos, FX_SKELETON); if (!r) return;
     r->R = p->inst->fade; r->shape = g_char == 0; r->dir = (Vec3){ p->pos.x, p->pos.y + 96.0f, p->pos.z };
     if (fabsf(g_fx_fwd.x) + fabsf(g_fx_fwd.z) > 1e-4f) p->yaw = atan2f(-g_fx_fwd.x, -g_fx_fwd.z);
-    if (getenv("WOODY_FXLOG")) printf("skeleton flash at %.0f %.0f %.0f", p->pos.x, p->pos.y, p->pos.z), puts("");
+    if (wenv("WOODY_FXLOG")) printf("skeleton flash at %.0f %.0f %.0f", p->pos.x, p->pos.y, p->pos.z), puts("");
 }
 static void fx_particle(FxRec *e, float u, float dt)
 {
@@ -2931,7 +2931,7 @@ static void rockets_update(float dt, Player *pl, int have_player)               
         case 7: if (r->type == 21) { r->q0 = in->quat; r->q1 = r->start_q; r->t = 0; r->state = 8; break; }   /* 0x453613: turn back to the start rotation */
                                                                                    /* blast 600 on actor list 1 (0x453560, ROCKET.md 4.3): first the player (0x44d040) */
             if (have_player && !pl->dead_kind) { Vec3 d = { pl->inst->position.x - in->position.x, pl->inst->position.y - in->position.y, pl->inst->position.z - in->position.z };
-                if (d.x * d.x + d.y * d.y + d.z * d.z < 600.0f * 600.0f && !getenv("WOODY_GOD")) { float l = sqrtf(d.x * d.x + d.z * d.z); Vec3 away = l > 1e-3f ? (Vec3){ d.x / l, 0, d.z / l } : (Vec3){ 0, 0, 1 };
+                if (d.x * d.x + d.y * d.y + d.z * d.z < 600.0f * 600.0f && !wenv("WOODY_GOD")) { float l = sqrtf(d.x * d.x + d.z * d.z); Vec3 away = l > 1e-3f ? (Vec3){ d.x / l, 0, d.z / l } : (Vec3){ 0, 0, 1 };
                     player_hit(pl, 0, away); player_kill(pl, 6); printf("  ROCKET %u blast kills the player", in->index), puts(""); } }
             enemies_actor_blast(&g_enemies, in->position, 600.0f);                 /* the rest of list 1: the thrower (0x4119b0) and Boss2 (0x40e800) */
             in->fade = in->fade_target = 1.0f; r->t = 0; r->state = 9; break;
@@ -2941,10 +2941,10 @@ static void rockets_update(float dt, Player *pl, int have_player)               
         }
         if (r->exhaust == 1 && (r->ex_t += dt) >= 1.0f) r->exhaust = 2;
         if (r->state) rocket_place(r);
-        if (getenv("WOODY_ROCKETLOG") && r->state) { const float *m = in->world.m;   /* the model axes in world space = the rows +0x28 of the original (tools/wverify.py --probe rocket) */
+        if (wenv("WOODY_ROCKETLOG") && r->state) { const float *m = in->world.m;   /* the model axes in world space = the rows +0x28 of the original (tools/wverify.py --probe rocket) */
             printf("rocket %u state %d t %.3f pos %.1f %.1f %.1f rows %.4f %.4f %.4f | %.4f %.4f %.4f | %.4f %.4f %.4f", in->index, r->state, r->t, in->position.x, in->position.y, in->position.z,
                    m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]), puts(""); }
-        if (getenv("WOODY_FXLOG") && r->state >= 5 && r->state <= 7) printf("rocket %u state %d t %.2f pos %.0f %.0f %.0f speed %.0f", in->index, r->state, r->t, in->position.x, in->position.y, in->position.z, r->speed), puts("");
+        if (wenv("WOODY_FXLOG") && r->state >= 5 && r->state <= 7) printf("rocket %u state %d t %.2f pos %.0f %.0f %.0f speed %.0f", in->index, r->state, r->t, in->position.x, in->position.y, in->position.z, r->speed), puts("");
     }
     if (have_player && pl->ride) { Rocket *r = rocket_of(pl->ride); Vec3 d;
         if (r) { pl->ride_state = r->state; pl->ride_q = r->inst->quat;                   /* seat 0x452bd0: marker 0; type 21 in states 5..7 the bomb, 8/0 leave it where it was */
@@ -3021,7 +3021,7 @@ static void snd_msg(const EkoMsg *m, Instance *in)
     case 1649: case 1650:                                                           /* 0x46864f / 0x468660: no arguments, [0x4c737c] = CamMgr: 0x41fa40 sets +0x290 = 1,
                                                                                      * 0x41fa50 clears it (also on every camera mode switch, 0x41f50c..0x41f5dc). Nothing
                                                                                      * reads CamMgr+0x290 (docs/SOUND.md 8.5), and no script sends either: a flag, no effect */
-        g_cam_hold = m->id == 1649; if (getenv("WOODY_SNDLOG")) printf("  SND %d: camera flag CamMgr+0x290 = %d (unread)\n", m->id, g_cam_hold); break;
+        g_cam_hold = m->id == 1649; if (wenv("WOODY_SNDLOG")) printf("  SND %d: camera flag CamMgr+0x290 = %d (unread)\n", m->id, g_cam_hold); break;
     default: break;
     }
     if (!in) return;
@@ -3088,7 +3088,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
      * authentic: Woody in Blackbox/Credits/Lang, the W2B end boss (type 12) and the W3B ghosts (type 13). The port used
      * to set the bit here on every actor class because Buzz came out without a rim, but that was the outline distance
      * being measured from the .ins position instead of the animated root inst+0x60 (issue #35, ins_anim_centre). */
-    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || (in->type >= 12 && in->type <= 16)) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if ((in->type == 20 || in->type == 21) && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->type = in->type; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890; 21 = the bomb cannon */ if (in->type == 40 && !bomb_of(in) && g_nbombs < 16) { Bomb *b = &g_bombs[g_nbombs++]; memset(b, 0, sizeof *b); b->inst = in; b->var = -1; }   /* ctor 0x44d250: into the pool, parked visible where the .ins has it */ if ((in->type == 120 || in->type == 121) && g_nchests < 32) { int k = 0; while (k < g_nchests && g_chests[k] != in) k++; if (k == g_nchests) g_chests[g_nchests++] = in; }   /* ctor 0x451650, list 0x5e581c */ if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 80) storm_add(in);   /* the lightning rod (storm.c, docs/STORM.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->t = PROJ_T[1]; l->T = 1.0f; l->anim = -1; }   /* ctor 0x452140 -> 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (getenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (getenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
+    case 1200: if (in && m->nargs > 1) { in->type = (int)m->args[1]; if (g_player && (in->type == 1 || in->type == 2 || in->type == 3 || in->type == 18 || in->type == 19) && g_player->inst != in) { g_player->inst->scripted = 1; player_bind(g_player, in); in->scripted = 0; printf("player: instance %u (type %d) at %.0f %.0f %.0f\n", in->index, in->type, in->position.x, in->position.y, in->position.z); } if ((in->type >= 4 && in->type <= 9) || (in->type >= 12 && in->type <= 16)) enemies_add(&g_enemies, in, in->type); if (in->type == 34 && g_player) { g_player->bonus_total++; } if (in->type == 37 && g_player) { g_player->race_total++; } if ((in->type == 20 || in->type == 21) && !rocket_of(in) && g_nrockets < 8) { Rocket *rk = &g_rockets[g_nrockets++]; memset(rk, 0, sizeof *rk); rk->inst = in; rk->type = in->type; rk->start_pos = in->position; rk->start_q = in->quat; rk->fly_time = 10.0f; rk->vmax = 1000.0f; in->scripted = 0; }   /* 0x452890; 21 = the bomb cannon */ if (in->type == 40 && !bomb_of(in) && g_nbombs < 16) { Bomb *b = &g_bombs[g_nbombs++]; memset(b, 0, sizeof *b); b->inst = in; b->var = -1; }   /* ctor 0x44d250: into the pool, parked visible where the .ins has it */ if ((in->type == 120 || in->type == 121) && g_nchests < 32) { int k = 0; while (k < g_nchests && g_chests[k] != in) k++; if (k == g_nchests) g_chests[g_nchests++] = in; }   /* ctor 0x451650, list 0x5e581c */ if (in->type == 41) missile_add(in);   /* 0x403b5d: into the missile pool, hidden (0x472530) */ if (in->type == 60) water_add(in);   /* the water volume (water.c, docs/WATER.md) */ if (in->type == 80) storm_add(in);   /* the lightning rod (storm.c, docs/STORM.md) */ if (in->type == 110) in->visible = 0;   /* 0x489210 (vtable[3]) puts these where the world-select carousel wants them every frame, so the original never draws them at their .ins position; only page 3 shows them (carousel_frame) */ if (in->type == 42 && !launcher_of(in) && g_nlaunchers < 32) { Launcher *l = &g_launchers[g_nlaunchers++]; memset(l, 0, sizeof *l); l->inst = in; l->kind = 1; l->t = PROJ_T[1]; l->T = 1.0f; l->anim = -1; }   /* ctor 0x452140 -> 0x452330(1): template 1 */ if (in->type >= 50 && in->type <= 52 && !laser_of(in) && g_nlasers < 64) { Laser *z = &g_lasers[g_nlasers++]; memset(z, 0, sizeof *z); z->inst = in; z->type = in->type; z->len = 400.0f; z->phase = (float)in->id; for (int k = 0; k < 8; k++) laser_fx_init(&z->fx[k]); } if (wenv("WOODY_TYPELOG")) printf("  TYPE %d inst %u model %d visible %d fade %.2f pos %.0f %.0f %.0f", in->type, in->index, (int)(in->model - g_ins.models), in->visible, in->fade, in->position.x, in->position.y, in->position.z), puts(""); if (wenv("WOODY_VECLOG") && (in->type >= 1 && in->type <= 3)) for (uint32_t q = 0; q < g_ins.nslots; q++) { Vec3 vp, vd; Instance *w = g_ins.slots[q]; if (w && inst_vector(w, 5, &vp, &vd)) printf("  slot %u inst %u: vector5 at %.0f %.0f %.0f dir %.0f %.0f %.0f", q, w->index, vp.x, vp.y, vp.z, vd.x, vd.y, vd.z), puts(""); }   /* door / switch markers */ } break;   /* SetTypeInstance; [0x5e54e4] = Woody bonus total */
     /* sent by shipped scripts, nothing to do in the port (docs/MESSAGES.md): 51 = laser rec+0x18 (0x451059, no reader in the exe),
      * 58 = carousel registration (0x451960 -> 0x45e6f0; the port takes the fixed House slots 105..114), 63 = class 17 +0x114 = v
      * + Reset (0x40c5e0; v = 1 = no typecode-9 smoke emitter, which the ctor 0x40c3f8 already set), 1010 = debug print 0x462c60 */
@@ -3191,7 +3191,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
             memset(&g_player->bfx, 0, sizeof g_player->bfx); g_player->bfx.inst = in; g_player->bfx.mode = 2; g_player->bfx.size_idx = 3;   /* the spray emitter (0x34 B) */
             { Vec3 p0, d; while (g_player->bfx.n < 4 && inst_vector_at(in, 9, (uint32_t)g_player->bfx.n, &p0, &d)) g_player->bfx.n++; }   /* its type-9 markers (0x455e58) */
             printf("  RACE board = instance %u, path = camera %u (%u points), %d spray markers\n", in->index, pc->index, pc->traj.npoints, g_player->bfx.n);
-            if (g_rnd && g_player->race_char && !getenv("WOODY_NORACEVIS")) rnd_set_race((Renderer *)g_rnd, &pc->traj);   /* 0x455f10: region list -> renderer+0xc0, read by 0x42a980 for subtypes 4/5 only (0x401c36) */
+            if (g_rnd && g_player->race_char && !wenv("WOODY_NORACEVIS")) rnd_set_race((Renderer *)g_rnd, &pc->traj);   /* 0x455f10: region list -> renderer+0xc0, read by 0x42a980 for subtypes 4/5 only (0x401c36) */
         }
         break;
     case 1040:                                                                                              /* scripted Perso action 0x44dda0: 17 = walk into the door, 18 = come out of it (docs/PERSO_DEATH.md 2) */
@@ -3269,7 +3269,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
                 ok = d <= (float)(int)m->args[1] && c > cosf((float)(int)m->args[2] * 3.14159265f / 180.0f);   /* 0x445341: `dist` is raw, not x0.01 */
                 if (ok) player_brake_charge(g_player);
             }
-            if (getenv("WOODY_SWLOG") && in)
+            if (wenv("WOODY_SWLOG") && in)
                 printf("  1042 inst %u marker %d dist %.0f/%d angle %.0f/%d deg state %s atk %d -> %d", in->index, have, d, (int)m->args[1],
                        acosf(c < -1 ? -1 : c > 1 ? 1 : c) * 180.0f / 3.14159265f, (int)m->args[2],
                        !g_player ? "-" : !player_state_free(g_player) ? "busy" : !g_player->on_ground ? "air" : "free", atk, ok), puts("");
@@ -3279,7 +3279,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 1048: case 1049: case 1050:                                                                        /* key tests on actions 0, 1, 6 */
         if (m->nargs > 1) { int k = m->id - 1048, mode = (int)m->args[1], now = g_act_now[k], prev = g_act_prev[k];
                             int v = mode == 0 ? now : mode == 1 ? (now && !prev) : (!now && prev);            /* 0x467400 held, 0x467420 just pressed, 0x467440 just released */
-                            if (getenv("WOODY_SWLOG") && v) printf("  %u action %d mode %d -> 1", m->id, k == 2 ? 6 : k, mode), puts("");
+                            if (wenv("WOODY_SWLOG") && v) printf("  %u action %d mode %d -> 1", m->id, k == 2 ? 6 : k, mode), puts("");
                             eko_set_var(vm, m->args[0], v); }
         break;
     case 1141: g_pose = in; break;
@@ -3380,7 +3380,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     printf("%s: %u polys, %u verts, %u textures, %u models, %u slots, %u script objects\n", lvl, L->gel.npolys, L->gel.nverts, L->tex.ngroups, g_ins.nmodels, g_ins.nslots, L->vm.nobj);
     snprintf(path, sizeof path, "%s/%s/%s.lit", dir, lvl, lvl); L->have_lit = lit_load(&L->lit, path) == 0;
     snprintf(path, sizeof path, "%s/%s/%s.vis", dir, lvl, lvl); L->have_vis = vis_load(&L->vis, path, L->gel.nsectors) == 0;   /* 0x408260: what each sector can see */
-    if (getenv("WOODY_CELLLOG")) printf("  gel: %u cells, %u sectors, %u kd nodes | lit: %u lights, %u sector light lists\n", L->gel.ncells, L->gel.nsectors, L->gel.nkd, L->lit.nlights, L->lit.nsectors);
+    if (wenv("WOODY_CELLLOG")) printf("  gel: %u cells, %u sectors, %u kd nodes | lit: %u lights, %u sector light lists\n", L->gel.ncells, L->gel.nsectors, L->gel.nkd, L->lit.nlights, L->lit.nsectors);
     rnd_init(&L->rnd, &L->tex, &L->gel, &g_ins, L->have_lit ? &L->lit : NULL, L->have_vis ? &L->vis : NULL);
     water_reset(&L->tex); L->rnd.post_models = water_draw;   /* class 60 (water.c) */
     L->rnd.spr_count = hud_wq_count; L->rnd.spr_quad = hud_wq_quad; L->rnd.spr_draw = hud_wq_draw; L->rnd.spr_done = hud_wq_done;   /* the world sprites (hud.c) */
@@ -3404,7 +3404,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     eko_msg_reset(&L->vm);
     if (L->have_player) { SaveChar *sc = &g_save.chr[g_char]; L->player.lives = sc->lives; L->player.health = sc->health > 0 ? sc->health : 1.0f;
                           L->player.unique_items = sc->unique; L->player.special_charges = sc->charges;
-                          if (getenv("WOODY_LIVES")) L->player.lives = atoi(getenv("WOODY_LIVES"));   /* testing: 1 = the next death is game over */
+                          if (wenv("WOODY_LIVES")) L->player.lives = atoi(wenv("WOODY_LIVES"));   /* testing: 1 = the next death is game over */
                           player_race_start(&L->player);     /* 0x44ab20 -> 0x456150 SurfEnter with the board of 1120 (docs/RACE.md 3.1) */
                           player_ground_snap(&L->player); }   /* 0x44a6a0 / 0x44a759; 0x44a7ee: he starts standing on the floor, not falling onto it */
     if (g_level == 25 && bb_init(dir)) printf("BlackBox: not available, the level runs as a plain set\n");   /* 0x4042c1: level 0x19 -> new 0x484420, App state 3 */
@@ -3421,8 +3421,8 @@ static void logos_play(Window *w, const char *dir)
 {
     static const char *k_logo[3] = { "Cryo", "Eko", "Universal" };                 /* \Logo\Cryo.hnm, \Logo\Eko.hnm, \Logo\Universal.hnm */
     char shot[260] = ""; double shot_at = -1, esc[8]; int nesc = 0, esc_i = 0;
-    { const char *e = getenv("WOODY_LOGOSHOT"); if (e && sscanf(e, "%259s %lf", shot, &shot_at) != 2) shot_at = -1; }
-    { const char *e = getenv("WOODY_LOGOESC"); while (e && *e && nesc < 8) { char *q; double v = strtod(e, &q); if (q == e) break; esc[nesc++] = v; e = q; } }
+    { const char *e = wenv("WOODY_LOGOSHOT"); if (e && sscanf(e, "%259s %lf", shot, &shot_at) != 2) shot_at = -1; }
+    { const char *e = wenv("WOODY_LOGOESC"); while (e && *e && nesc < 8) { char *q; double v = strtod(e, &q); if (q == e) break; esc[nesc++] = v; e = q; } }
     double T0 = win_time();
     for (int k = 0; k < 3 && !w->quit; k++) {
         char path[600]; snprintf(path, sizeof path, "%s/../Logo/%s.hnm", dir, k_logo[k]);
@@ -3458,12 +3458,12 @@ static void *read_all(const char *path, size_t *sz) { FILE *f = fopen(path, "rb"
 
 int main(int argc, char **argv)
 {
-    if (getenv("WOODY_UNBUF")) setvbuf(stdout, NULL, _IONBF, 0);                  /* debugging a crash: every line reaches the log */
+    if (wenv("WOODY_UNBUF")) setvbuf(stdout, NULL, _IONBF, 0);                  /* debugging a crash: every line reaches the log */
     const char *dir = argc > 1 ? argv[1] : "extract/Data", *lvl = argc > 2 && argv[2][0] != '-' ? argv[2] : "House";   /* no level: boot to the title (House, level 0) */
     const char *shot_path = NULL; double shot_after = 0;                          /* --shot file.ppm seconds: screenshot then quit */
     int have_cam = 0; float cam_args[5] = {0, 0, 0, 0, 0};                          /* --cam x y z yaw pitch (degrees) */
     double jump_at = -1; float max_y = -1e30f, start_y = 0;                       /* --jump T: hold jump from T s for 1 s (testing), reports the apex */
-    double jump_len = 1.0, jump2_at = -1, jump2_len = getenv("WOODY_J2LEN") ? atof(getenv("WOODY_J2LEN")) : 0.15;                                         /* --jump2 LEN T2: first press lasts LEN s, second press (0.15 s) at T2 */
+    double jump_len = 1.0, jump2_at = -1, jump2_len = wenv("WOODY_J2LEN") ? atof(wenv("WOODY_J2LEN")) : 0.15;                                         /* --jump2 LEN T2: first press lasts LEN s, second press (0.15 s) at T2 */
     double peck_at = -1, peck_len = 0.1, duck_at = -1, duck_len = 0.1, special_at = -1;   /* --special T: release the special attack key (RCtrl / E) at T s */   /* --peck / --duck T LEN: hold the attack / duck key (X) from T s for LEN s (testing) */
     int have_pos = 0; float pos_args[3] = {0, 0, 0};                               /* --pos x y z: start the player there (testing) */
     int have_yaw = 0; float yaw_arg = 0;
@@ -3471,7 +3471,7 @@ int main(int argc, char **argv)
     int pick_type = 0, pre_bonus = -1; float pre_health = -1; double pick_at = 0;   /* --pickup TYPE T, --bonus N, --health N (testing) */
     int door_inst = -1, door_act = 17; double door_at = -1;                        /* --door INST ACT T (testing) */
     int new_game = 0, logo = -1; const char *next_name = NULL; double next_at = 0;   /* --nologo / --logo: the logo films off / on even for a scripted run */                              /* --next LVL T: change to level LVL after T s (testing) */
-    double walk_for = 0, walk_at = getenv("WOODY_WALKAT") ? atof(getenv("WOODY_WALKAT")) : 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
+    double walk_for = 0, walk_at = wenv("WOODY_WALKAT") ? atof(wenv("WOODY_WALKAT")) : 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     int res_w = 0, res_h = 0, full_arg = -1, wide_arg = -1;                          /* --res WxH, --windowed / --fullscreen, --aspect 4:3|wide (port extras) */
     for (int i = (argc > 2 && argv[2][0] != '-') ? 3 : 2; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
@@ -3510,12 +3510,12 @@ int main(int argc, char **argv)
     {   /* the display that runs: the cfg's, but a screenshot run keeps the fixed default (1280x800 window, wide, vsync) whatever the
          * cfg says; the command line and WOODY_VSYNC / WOODY_FPSCAP override both */
         static const Display def = { 1, 1280, 800, 0, 1, 0 };
-        g_dnow = shot_path || getenv("WOODY_SHOTSEQ") || getenv("WOODY_LOGOSHOT") ? def : g_disp;
+        g_dnow = shot_path || wenv("WOODY_SHOTSEQ") || wenv("WOODY_LOGOSHOT") ? def : g_disp;
         if (res_w) { g_dnow.w = res_w; g_dnow.h = res_h; }
         if (full_arg >= 0) g_dnow.full = full_arg;
         if (wide_arg >= 0) g_dnow.wide = wide_arg;
-        if (getenv("WOODY_VSYNC")) g_dnow.vsync = atoi(getenv("WOODY_VSYNC")) != 0;
-        if (getenv("WOODY_FPSCAP")) g_dnow.cap = atoi(getenv("WOODY_FPSCAP")) < 0 ? 0 : atoi(getenv("WOODY_FPSCAP"));
+        if (wenv("WOODY_VSYNC")) g_dnow.vsync = atoi(wenv("WOODY_VSYNC")) != 0;
+        if (wenv("WOODY_FPSCAP")) g_dnow.cap = atoi(wenv("WOODY_FPSCAP")) < 0 ? 0 : atoi(wenv("WOODY_FPSCAP"));
     }
     Window win; if (win_open(&win, "WoodyRE", 1280, 800)) return 1;
     if (g_dnow.full || g_dnow.w != 1280 || g_dnow.h != 800) disp_apply(&win);
@@ -3523,15 +3523,15 @@ int main(int argc, char **argv)
     if (g_stats.have) g_stats.level = g_prev_level;                                    /* --stats belongs to the level --prev says we came from */
     save_reset(); if (file_read() <= 0) file_reset();                                     /* boot: the active struct is a reset one (0x402587); the slots come from woodyre.sav */
     if (!new_game && level_index(lvl) != 0) {                                          /* testing: straight into a level plays with a saved slot (WOODY_SLOT=1..4, else the first used one) */
-        int s = getenv("WOODY_SLOT") ? atoi(getenv("WOODY_SLOT")) - 1 : -1;
+        int s = wenv("WOODY_SLOT") ? atoi(wenv("WOODY_SLOT")) - 1 : -1;
         for (int i = 0; i < 4 && s < 0; i++) if (slot_pct(&g_file.slot[i])) s = i;
         if (s >= 0 && s < 4) { g_save = g_file.slot[s]; g_slot = s; }
     }
-    if (!getenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
+    if (!wenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
     opt_apply();                                                                       /* 0x4691e2: the volumes from the cfg at sound start */
-    audio_reverse_stereo(getenv("WOODY_REVSTEREO") ? atoi(getenv("WOODY_REVSTEREO")) != 0 : g_setup.rev);   /* 0x4691f4: [0x5e81c0] = cfg +0x74 */
+    audio_reverse_stereo(wenv("WOODY_REVSTEREO") ? atoi(wenv("WOODY_REVSTEREO")) != 0 : g_setup.rev);   /* 0x4691f4: [0x5e81c0] = cfg +0x74 */
     in_read_cfg(dir);                                                                  /* 0x405e0f: Woody.cfg (key bindings, controller mode) */
-    if (logo < 0) logo = !(argc > 2 && argv[2][0] != '-') && !getenv("WOODY_NOLOGO") && !shot_path && enter_at < 0 && !getenv("WOODY_KEYS") && !getenv("WOODY_SHOTSEQ");
+    if (logo < 0) logo = !(argc > 2 && argv[2][0] != '-') && !wenv("WOODY_NOLOGO") && !shot_path && enter_at < 0 && !wenv("WOODY_KEYS") && !wenv("WOODY_SHOTSEQ");
     if (logo) logos_play(&win, dir);                                                   /* boot state 2 (0x402649): only when booting to the title; a level on the command line or a scripted run skips them */
     static Level L; g_level = level_index(lvl); if (level_load(&L, dir, lvl)) return 1;
 
@@ -3540,7 +3540,7 @@ int main(int argc, char **argv)
     Instance *sel = (g_ins.nmodels && g_ins.models[0].ninstances) ? &g_ins.models[0].instances[0] : NULL;
     if (sel) { cam.pos = sel->position; cam.pos.y += 120; cam.pos.z -= 350; }
     if (have_cam) { cam.pos.x = cam_args[0]; cam.pos.y = cam_args[1]; cam.pos.z = cam_args[2]; cam.yaw = cam_args[3] * 3.14159265f / 180; cam.pitch = cam_args[4] * 3.14159265f / 180; }
-    if (have_cam && getenv("WOODY_CAMFOV")) cam.fov_deg = (float)atof(getenv("WOODY_CAMFOV"));   /* testing: the free camera's vertical fov (70 by default; the game camera's is 83.97, docs/CAMERA.md 5.1) */
+    if (have_cam && wenv("WOODY_CAMFOV")) cam.fov_deg = (float)atof(wenv("WOODY_CAMFOV"));   /* testing: the free camera's vertical fov (70 by default; the game camera's is 83.97, docs/CAMERA.md 5.1) */
     else { cam.pos.x = (L.gel.bbox[0] + L.gel.bbox[1]) / 2; cam.pos.y = L.gel.bbox[3]; cam.pos.z = (L.gel.bbox[4] + L.gel.bbox[5]) / 2; cam.pitch = -1.2f; }
 
     if (!L.have_player) fly = 1;
@@ -3552,7 +3552,7 @@ int main(int argc, char **argv)
         {   /* WOODY_KEYS="T:KEY T:KEY:D ...": each entry holds KEY (RET ESC UP DOWN LEFT RIGHT SPACE CTRL RCTRL SHIFT BACK NUM0, a
              * letter, or a VK number) for 0.08 s (or D seconds), once, as soon as the level that is running has been up for T seconds - the
              * clock of --shot, so a sequence that spans a level change stays in step (testing: drives the menu pages and walks) */
-            static const char *keys; static double held_until[256]; static unsigned char fired[64]; if (!keys) keys = getenv("WOODY_KEYS") ? getenv("WOODY_KEYS") : "";
+            static const char *keys; static double held_until[256]; static unsigned char fired[64]; if (!keys) keys = wenv("WOODY_KEYS") ? wenv("WOODY_KEYS") : "";
             static const struct { const char *n; int vk; } kn[] = { {"RET",VK_RETURN}, {"ESC",VK_ESCAPE}, {"UP",VK_UP}, {"DOWN",VK_DOWN}, {"LEFT",VK_LEFT}, {"RIGHT",VK_RIGHT}, {"SPACE",VK_SPACE}, {"CTRL",VK_CONTROL}, {"BACK",VK_BACK}, {"RCTRL",VK_RCONTROL}, {"SHIFT",VK_SHIFT}, {"NUM0",VK_NUMPAD0} };
             double wt = win_time(), tn = wt - t0; int e = 0;
             for (const char *s = keys; *s && e < 64; e++) {
@@ -3565,7 +3565,7 @@ int main(int argc, char **argv)
             }
             for (int k = 0; k < 256; k++) if (held_until[k] > 0 && wt >= held_until[k]) { win.keys[k] = 0; held_until[k] = 0; }
         }
-        { static double cap = -1; if (cap < 0) cap = getenv("WOODY_FPS") ? atof(getenv("WOODY_FPS")) : 0;   /* WOODY_FPS=N: testing, frame-rate dependent code at N fps */
+        { static double cap = -1; if (cap < 0) cap = wenv("WOODY_FPS") ? atof(wenv("WOODY_FPS")) : 0;   /* WOODY_FPS=N: testing, frame-rate dependent code at N fps */
           if (cap > 0) while (win_time() - last < 1.0 / cap) Sleep(0);
           else if (g_dnow.cap > 0) { double due = last + 1.0 / g_dnow.cap, tn; while ((tn = win_time()) < due) if (due - tn > 0.002) Sleep(1); } }   /* port extra: the frame cap of the Display page / WOODY_FPSCAP (the original has none) */
         if (win.keys[VK_F11] && !f11_prev) { g_dnow.full ^= 1; g_disp_dirty = 1; }   /* port extra: F11 = fullscreen / window for this run (the Display page saves it) */
@@ -3573,8 +3573,11 @@ int main(int argc, char **argv)
         if (g_disp_dirty) disp_apply(&win);
         double now = win_time(); float dt = (float)(now - last); last = now;
         if (dt > 0.1f) dt = 0.1f;
+        static double fixdt = -1; if (fixdt < 0) fixdt = wenv("WOODY_FIXDT") ? atof(wenv("WOODY_FIXDT")) : 0;   /* WOODY_FIXDT=N: testing, every frame advances 1/N s whatever */
+        if (fixdt > 0) dt = (float)(1.0 / fixdt);                                       /* the wall clock says, so --shot frames repeat exactly (before/after diffs) */
         g_clock += dt; g_now = (float)g_clock;         /* 0x401880: everything (Perso timers, animations, the script VM) runs on this one clock, so a hitch cannot make script delays
                                                         * run ahead of the action timers - a door would then teleport while action 17 is still running and 0x44a650 refuses the move */
+        if (fixdt > 0) now = t0 + g_clock;             /* ... and the test hooks timed from the level start (--shot, WOODY_SHOTSEQ, WOODY_KEYS) follow the same clock */
         if (win.keys[VK_F5] && !f5_prev && L.have_player) { fly ^= 1; if (!fly) L.player.cam_init = 0; }
         f5_prev = win.keys[VK_F5];
         /* camera */
@@ -3605,7 +3608,7 @@ int main(int argc, char **argv)
         {
             #define PRS(k) (win.keys[k] && !key_prev[k])
             #define REL(k) (!win.keys[k] && key_prev[k])
-            int synth = enter_at >= 0 && ((now - t0 >= enter_at && now - t0 < enter_at + 0.1) || (getenv("WOODY_ENTER2") && now - t0 >= enter_at + 2 && now - t0 < enter_at + 2.1));
+            int synth = enter_at >= 0 && ((now - t0 >= enter_at && now - t0 < enter_at + 0.1) || (wenv("WOODY_ENTER2") && now - t0 >= enter_at + 2 && now - t0 < enter_at + 2.1));
             mk.syn = synth && !l_prev; l_prev = synth;                              /* --enter T: New game at once (testing) */
             mk.ok = REL(VK_RETURN) || in_pressed(12); mk.back = REL(VK_ESCAPE) || in_pressed(5) || PRS(VK_BACK);   /* 0x4033fb / 0x4464f0: Enter and Esc are fixed (DIK codes) */
             mk.up = in_pressed(2); mk.dn = in_pressed(3); mk.left = in_pressed(0); mk.right = in_pressed(1);
@@ -3640,15 +3643,15 @@ int main(int argc, char **argv)
         if (L.have_player && !paused) {
             PlayerInput pin = { 0 };
             pin.forward = in_held(2) || (now - t0 >= walk_at && now - t0 < walk_at + walk_for);
-            if (getenv("WOODY_INSTLOG") && (getenv("WOODY_INSTLOG2") || (int)(now - t0) != (int)(now - t0 - dt))) { Instance *qi = slot_instance((uint32_t)atoi(getenv("WOODY_INSTLOG"))); if (qi) printf("instlog %u: visible %d fade %.2f type %d scripted %d anim %d pos %.0f %.0f %.0f model %d", qi->index, qi->visible, qi->fade, qi->type, qi->scripted, qi->anim, qi->position.x, qi->position.y, qi->position.z, (int)(qi->model - g_ins.models)), printf(" nw0 %.0f %.0f %.0f cull_r %.0f anim_time %.2f speed %.2f alpha? setflags %x", qi->node_world[0].m[12], qi->node_world[0].m[13], qi->node_world[0].m[14], qi->model->cull_r, qi->anim_time, qi->anim_speed, qi->setflags), printf(" quat %.2f %.2f %.2f %.2f", qi->quat.x, qi->quat.y, qi->quat.z, qi->quat.w), puts(""); }
+            if (wenv("WOODY_INSTLOG") && (wenv("WOODY_INSTLOG2") || (int)(now - t0) != (int)(now - t0 - dt))) { Instance *qi = slot_instance((uint32_t)atoi(wenv("WOODY_INSTLOG"))); if (qi) printf("instlog %u: visible %d fade %.2f type %d scripted %d anim %d pos %.0f %.0f %.0f model %d", qi->index, qi->visible, qi->fade, qi->type, qi->scripted, qi->anim, qi->position.x, qi->position.y, qi->position.z, (int)(qi->model - g_ins.models)), printf(" nw0 %.0f %.0f %.0f cull_r %.0f anim_time %.2f speed %.2f alpha? setflags %x", qi->node_world[0].m[12], qi->node_world[0].m[13], qi->node_world[0].m[14], qi->model->cull_r, qi->anim_time, qi->anim_speed, qi->setflags), printf(" quat %.2f %.2f %.2f %.2f", qi->quat.x, qi->quat.y, qi->quat.z, qi->quat.w), puts(""); }
             /* WOODY_UVLOG=<slot> or =stand (the instance the player is standing on, Perso+0x298): one UV report per
              * instance, to tell a wrong texture from a wrong projection on a surface that looks untextured */
-            if (getenv("WOODY_UVLOG")) {
-                const char *e = getenv("WOODY_UVLOG"); static const Instance *uv_done;
+            if (wenv("WOODY_UVLOG")) {
+                const char *e = wenv("WOODY_UVLOG"); static const Instance *uv_done;
                 const Instance *qi = e[0] >= '0' && e[0] <= '9' ? slot_instance((uint32_t)atoi(e)) : L.player.att_inst;
                 if (qi && qi != uv_done) { uv_done = qi; rnd_uv_report(&L.rnd, qi); }
             }
-            if (getenv("WOODY_POSLOG") && (int)((now - t0) * 4) != (int)((now - t0 - dt) * 4)) {
+            if (wenv("WOODY_POSLOG") && (int)((now - t0) * 4) != (int)((now - t0 - dt) * 4)) {
                 /* dev = angle between the camera->player direction and his facing: 0 = camera exactly behind him, +-180 = in front of him */
                 float ax = L.player.pos.x - cam.pos.x, az = L.player.pos.z - cam.pos.z, fx = sinf(L.player.yaw), fz = cosf(L.player.yaw);
                 printf("pos t %.2f: %.0f %.0f %.0f yaw %.0f ground %d | cam %.0f %.0f %.0f yaw %.0f dev %.0f mode %d", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.yaw * 57.3f, L.player.on_ground,
@@ -3665,9 +3668,9 @@ int main(int argc, char **argv)
                  * does nothing: the port gives 0 too. WOODY_LOOKMOUSE=1 (port extra) feeds the raw relative counts of this frame in
                  * instead, through the original's formula; WOODY_MOUSE="T:DX:DY[:D] ..." adds DX, DY counts per frame for D s (default
                  * 0.5) from T s on (testing, implies WOODY_LOOKMOUSE) */
-                static int lm = -1; if (lm < 0) lm = (getenv("WOODY_LOOKMOUSE") && atoi(getenv("WOODY_LOOKMOUSE"))) || getenv("WOODY_MOUSE");
+                static int lm = -1; if (lm < 0) lm = (wenv("WOODY_LOOKMOUSE") && atoi(wenv("WOODY_LOOKMOUSE"))) || wenv("WOODY_MOUSE");
                 if (lm) { pin.mouse_dx = win.raw_dx; pin.mouse_dy = win.raw_dy; }
-                for (const char *e = getenv("WOODY_MOUSE"); e && *e; ) {
+                for (const char *e = wenv("WOODY_MOUSE"); e && *e; ) {
                     double t, d = 0.5; int dx, dy, n = 0;
                     if (sscanf(e, "%lf:%d:%d%n", &t, &dx, &dy, &n) < 3) break;
                     e += n; if (*e == ':') { int n2 = 0; sscanf(e + 1, "%lf%n", &d, &n2); e += 1 + n2; }
@@ -3676,7 +3679,7 @@ int main(int argc, char **argv)
                 }
             }
             {   /* WOODY_PECKS="T1 T2 ...": more attack taps of 0.1 s (testing: dispenser, pick up, throw) */
-                static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = getenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
+                static double pk[16]; static int npk = -1; if (npk < 0) { npk = 0; const char *e = wenv("WOODY_PECKS"); while (e && *e && npk < 16) { char *q; double v = strtod(e, &q); if (q == e) break; pk[npk++] = v; e = q; } }
                 for (int k = 0; k < npk; k++) if (now - t0 >= pk[k] && now - t0 < pk[k] + 0.1) pin.action = 1;
             }
             /* Perso state 9 (the results sequence, docs/PERSO_STATE9.md) keeps its input, as in the original: the Perso is in a scripted action
@@ -3882,7 +3885,7 @@ int main(int argc, char **argv)
             }
             if (L.have_player && !fly)                                   /* 0x448450: 1 on the pause pages (extended HUD), 2 hidden on every other page and the results (0x404e9d) */
                 hud_state(g_res.on ? 2 : M.page < 0 ? 0 : (M.page == 0x18 || M.page == 0x19) ? 1 : 2, L.player.inst->type == 18 || L.player.inst->type == 19);
-            if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && !g_res.on && (M.page < 0 || M.page == 0x18 || M.page == 0x19) && (!g_cam.death_cam || g_hud_ext) && !getenv("WOODY_NOHUD")) {
+            if (L.have_player && !fly && g_level >= 1 && g_level <= 24 && !cin_running() && !g_res.on && (M.page < 0 || M.page == 0x18 || M.page == 0x19) && (!g_cam.death_cam || g_hud_ext) && !wenv("WOODY_NOHUD")) {
                 const Player *pl = &L.player; int race = pl->inst->type == 18 || pl->inst->type == 19;
                 HudState hs = { g_char, race, pl->lives, race ? pl->race_bonus : pl->bonus_count, race ? pl->race_bonus : pl->bonus_got, race ? pl->race_total : pl->bonus_total,   /* 0x4477dc: [0x5e54f4] in race mode */
                                 g_level != 1 && g_level != 11 && g_level != 18, pl->unique_items, pl->special_charges, g_hud_ext, pl->health, pl->charge * (2.0f / 3.0f) };
@@ -3905,11 +3908,11 @@ int main(int argc, char **argv)
         }
         /* level change: PgUp / PgDn cycle through the levels (debug); a request fades out, swaps the level, fades in */
         for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
-        { static int side_done; if (getenv("WOODY_SIDE") && now - t0 >= 1.0 && !side_done && L.have_player) { side_done = 1; Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(getenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); } }   /* testing: force the side view on a marker instance */
+        { static int side_done; if (wenv("WOODY_SIDE") && now - t0 >= 1.0 && !side_done && L.have_player) { side_done = 1; Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(wenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); } }   /* testing: force the side view on a marker instance */
         {   /* WOODY_SIDECHECK="slot:v slot:v ..." (testing, the 1088 pairs of the level script): for five points along the marker A-B, is the
              * line from the side camera (A..B + 340 up, 1000 to the side, the sign of 0x424bf0) to the body (+100) blocked by the world - and
              * for the opposite sign? The side the level design means is the one the walls leave open. */
-            static int sc_done; const char *e = getenv("WOODY_SIDECHECK");
+            static int sc_done; const char *e = wenv("WOODY_SIDECHECK");
             if (e && !sc_done && now - t0 >= 0.5 && L.have_player) { sc_done = 1;
                 for (const char *s = e; *s; ) { char *q; long slot = strtol(s, &q, 0); if (q == s) break; long v = *q == ':' ? strtol(q + 1, &q, 0) : 2; s = q; while (*s == ' ') s++;
                     Instance *in = slot_instance(0x1000000 | (uint32_t)slot); if (!in) continue; const Model *mo = in->model; int node = -1;
@@ -3928,14 +3931,14 @@ int main(int argc, char **argv)
                 }
             }
         }
-        { static int posat_done; float pa[4]; const char *e = getenv("WOODY_POSAT"); int k = 0, used;   /* testing: WOODY_POSAT="T x y z [T x y z ...]" = --pos, but T s into the level (moving platforms, carrying a bomb somewhere) */
+        { static int posat_done; float pa[4]; const char *e = wenv("WOODY_POSAT"); int k = 0, used;   /* testing: WOODY_POSAT="T x y z [T x y z ...]" = --pos, but T s into the level (moving platforms, carrying a bomb somewhere) */
             while (e && L.have_player && sscanf(e, "%f %f %f %f%n", &pa[0], &pa[1], &pa[2], &pa[3], &used) == 4) { if (!(posat_done >> k & 1) && now - t0 >= pa[0]) { posat_done |= 1 << k; L.player.pos = (Vec3){ pa[1], pa[2], pa[3] }; L.player.floor_y = pa[2] - 1000.0f; L.player.on_ground = 0; } e += used; k++; } }
-        { static int setvar_done; float sv[3]; const char *e = getenv("WOODY_SETVAR"); int k = 0, used;   /* testing: WOODY_SETVAR="T var val [...]" = SetVar T s into the level (W2B boss fight: "1 1 1") */
+        { static int setvar_done; float sv[3]; const char *e = wenv("WOODY_SETVAR"); int k = 0, used;   /* testing: WOODY_SETVAR="T var val [...]" = SetVar T s into the level (W2B boss fight: "1 1 1") */
             while (e && L.have_player && sscanf(e, "%f %f %f%n", &sv[0], &sv[1], &sv[2], &used) == 3) { if (!(setvar_done >> k & 1) && now - t0 >= sv[0]) { setvar_done |= 1 << k; game_var_set((uint32_t)sv[1], (int)sv[2]); } e += used; k++; } }
-        if (getenv("WOODY_DOLLAR")) { double a = 0, b = 0; sscanf(getenv("WOODY_DOLLAR"), "%lf %lf", &a, &b); if (now - t0 >= a && now - t0 < b) g_hud_ext = 1; }   /* testing: WOODY_DOLLAR="T0 T1" = message 1172 every frame between T0 and T1 s (the Jackpot door) */
+        if (wenv("WOODY_DOLLAR")) { double a = 0, b = 0; sscanf(wenv("WOODY_DOLLAR"), "%lf %lf", &a, &b); if (now - t0 >= a && now - t0 < b) g_hud_ext = 1; }   /* testing: WOODY_DOLLAR="T0 T1" = message 1172 every frame between T0 and T1 s (the Jackpot door) */
         {   /* testing: WOODY_MSGAT="T id a0 a1 ...[; T id ...]" = send a script message T s into the level, once (a0 = slot number or
              * reference, e.g. "2 17 216 255 1 100" = message 17 to slot 216: messages no level script sends, like 15/17) */
-            static int msgat_done; const char *e = getenv("WOODY_MSGAT"); int k = 0;
+            static int msgat_done; const char *e = wenv("WOODY_MSGAT"); int k = 0;
             while (e && *e && k < 31) {
                 char *end; float T = strtof(e, &end); if (end == e) break; e = end;
                 EkoMsg em; memset(&em, 0, sizeof em); em.id = (uint32_t)strtol(e, &end, 0); e = end;
@@ -3946,16 +3949,16 @@ int main(int argc, char **argv)
             } }
         {   /* testing: WOODY_KILLAT="T" = the pit message 1020 (Kill(1) + death camera) T s into the level, once; for the respawn.
              * WOODY_KILLAT="T K" calls Kill(K) itself instead (K = 2: the laser death with its skeleton flash) */
-            static int killat_done; if (getenv("WOODY_KILLAT") && !killat_done && L.have_player && now - t0 >= atof(getenv("WOODY_KILLAT"))) {
-                int kk = 0; const char *ks = strchr(getenv("WOODY_KILLAT"), ' '); if (ks) kk = atoi(ks + 1);
+            static int killat_done; if (wenv("WOODY_KILLAT") && !killat_done && L.have_player && now - t0 >= atof(wenv("WOODY_KILLAT"))) {
+                int kk = 0; const char *ks = strchr(wenv("WOODY_KILLAT"), ' '); if (ks) kk = atoi(ks + 1);
                 killat_done = 1; if (kk > 0) player_kill(&L.player, kk); else { EkoMsg em; memset(&em, 0, sizeof em); em.id = 1020; on_msg(&L.vm, &em, NULL); } } }
         {   /* testing: WOODY_ENEMYAT="T inst x y z" puts that enemy (start, home and position) on x y z T s into the level, once:
              * for the Press / UnPress of enemies on a world_collision (WOODY_COLLOG) */
             static int enat_done; float T, x, y, z; unsigned ii;
-            if (getenv("WOODY_ENEMYAT") && !enat_done && sscanf(getenv("WOODY_ENEMYAT"), "%f %u %f %f %f", &T, &ii, &x, &y, &z) == 5 && now - t0 >= T) {
+            if (wenv("WOODY_ENEMYAT") && !enat_done && sscanf(wenv("WOODY_ENEMYAT"), "%f %u %f %f %f", &T, &ii, &x, &y, &z) == 5 && now - t0 >= T) {
                 enat_done = 1; for (int i = 0; i < g_enemies.n; i++) if (g_enemies.e[i].inst->index == ii) { Enemy *en = &g_enemies.e[i]; en->pos = en->home = en->start = (Vec3){ x, y, z }; en->vfall = 0; enemy_place(en); printf("  ENEMYAT %u -> %.0f %.0f %.0f", ii, x, y, z), puts(""); } }
             /* WOODY_BOMBAT="T x y z": a bomb of the pool dropped there (template 0, 8 s fuse, no floor snap) T s into the level, once */
-            static int bat_done; if (getenv("WOODY_BOMBAT") && !bat_done && sscanf(getenv("WOODY_BOMBAT"), "%f %f %f %f", &T, &x, &y, &z) == 4 && now - t0 >= T) {
+            static int bat_done; if (wenv("WOODY_BOMBAT") && !bat_done && sscanf(wenv("WOODY_BOMBAT"), "%f %f %f %f", &T, &x, &y, &z) == 4 && now - t0 >= T) {
                 BombT bt = BOMB_T0; bt.life = 8.0f; bt.speed = 0; bat_done = 1; bomb_start(&bt, (Vec3){ x, y, z }, (Vec3){ 0, -1, 0 }, 0, -1, 0); } }
         if ((next_name && now - t0 >= next_at && !strcmp(next_name, "END")) || (win.keys[VK_END] && !end_prev)) {   /* End key / --next END T: finish the level as its exit door does (message 1083) */
             EkoMsg em; memset(&em, 0, sizeof em); em.id = 1083; on_msg(&L.vm, &em, NULL); if (next_name && !strcmp(next_name, "END")) next_name = NULL;
@@ -3969,14 +3972,14 @@ int main(int argc, char **argv)
           if (f < 1.0f) rnd_fade(f); }
         hud_bars(win.width, win.height, vx, vy, vw, vh);                              /* port extra: the pillar- / letterbox bars black */
         {   /* WOODY_SHOTSEQ="prefix start step count": a burst of screenshots prefix_NNN.ppm (testing: popping, flicker) */
-            static char pre[200]; static double st, sp; static int cnt = -1, k; if (cnt < 0) { cnt = 0; if (getenv("WOODY_SHOTSEQ")) sscanf(getenv("WOODY_SHOTSEQ"), "%199s %lf %lf %d", pre, &st, &sp, &cnt); }
+            static char pre[200]; static double st, sp; static int cnt = -1, k; if (cnt < 0) { cnt = 0; if (wenv("WOODY_SHOTSEQ")) sscanf(wenv("WOODY_SHOTSEQ"), "%199s %lf %lf %d", pre, &st, &sp, &cnt); }
             if (k < cnt && now - t0 >= st + k * sp) { char fn[256]; snprintf(fn, sizeof fn, "%s_%03d.ppm", pre, k); rnd_screenshot(&win, fn); k++; }
         }
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
         double pt3 = win_time();
         win_swap(&win);
         frames++;
-        if (prof && getenv("WOODY_PROF")) { double pt4 = win_time(); pf[0] += pt1 - pt0; pf[1] += pt2 - pt1; pf[2] += pt3 - pt2; pf[3] += pt4 - pt3; if (++pfn == 60) { printf("PROF ms/frame: player+enemies+camera %.2f  vm+instances %.2f  render+2D %.2f  swap %.2f", pf[0] / 60 * 1000, pf[1] / 60 * 1000, pf[2] / 60 * 1000, pf[3] / 60 * 1000); puts(""); pf[0] = pf[1] = pf[2] = pf[3] = 0; pfn = 0; } }
+        if (prof && wenv("WOODY_PROF")) { double pt4 = win_time(); pf[0] += pt1 - pt0; pf[1] += pt2 - pt1; pf[2] += pt3 - pt2; pf[3] += pt4 - pt3; if (++pfn == 60) { printf("PROF ms/frame: player+enemies+camera %.2f  vm+instances %.2f  render+2D %.2f  swap %.2f", pf[0] / 60 * 1000, pf[1] / 60 * 1000, pf[2] / 60 * 1000, pf[3] / 60 * 1000); puts(""); pf[0] = pf[1] = pf[2] = pf[3] = 0; pfn = 0; } }
         if (g_next_level >= 0 && g_switch_fade <= 0) {
             if (g_stats.have && g_stats.level == g_level) g_stats.stats[2] = g_enemies.killed;   /* 0x40177c: App::Frame copies [0x4c532c] to app+0x7c again right before the unload 0x4049a0,
                                                                                     * so an enemy that finishes dying during the 0.5 s EndLevel fade still counts */
@@ -3988,7 +3991,7 @@ int main(int argc, char **argv)
             t0 = L.t0; last = win_time(); sel = (g_ins.nmodels && g_ins.models[0].ninstances) ? &g_ins.models[0].instances[0] : NULL;
             lvl = L.name; continue;
         }
-        if (now - fps_t > 2.0 && getenv("WOODY_FPSLOG")) printf("fps %.1f\n", frames / (now - fps_t));   /* testing: the frame cap / vsync */
+        if (now - fps_t > 2.0 && wenv("WOODY_FPSLOG")) printf("fps %.1f\n", frames / (now - fps_t));   /* testing: the frame cap / vsync */
         if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE%s - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", g_level == 0 ? " - TITLE: Enter = new game, L = continue" : "", lvl, frames / (now - fps_t), L.vm.time, L.vm.frame, L.vm.stat_msgs_total, fly ? "fly" : "play", L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.on_ground ? "ground" : "air", L.player.events_sent, L.player.health, L.player.lives, L.player.bonus_got, L.player.bonus_total); SetWindowTextA((HWND)win.hwnd, title); if (L.have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.vel.x, L.player.vel.y, L.player.vel.z, L.player.on_ground ? (L.player.floor_is_hull ? "hull" : "ground") : "air", L.player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
     }
     opt_write(); level_free(&L); audio_shutdown(); win_close(&win);   /* 0x401130: the cfg is written back at exit */

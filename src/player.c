@@ -302,13 +302,13 @@ static Vec3 body_push(const Player *p, Vec3 c, float r, float up, float down, in
                     float pl[4] = { nw.x, nw.y, nw.z, -(nw.x * v[0].x + nw.y * v[0].y + nw.z * v[0].z) };
                     float before[4] = { acc[0], acc[1], acc[2], acc[3] };
                     any |= cyl_poly(v, ip->nverts, pl, c, r, up, down, acc);
-                    if (getenv("WOODY_PUSHLOG") && (before[0] != acc[0] || before[1] != acc[1] || before[2] != acc[2] || before[3] != acc[3])) printf("push: inst %u model %d node %u type %d fade %.2f at %.0f %.0f %.0f", in->index, (int)mi, ni, in->type, in->fade, c.x, c.y, c.z), puts("");
+                    if (wenv("WOODY_PUSHLOG") && (before[0] != acc[0] || before[1] != acc[1] || before[2] != acc[2] || before[3] != acc[3])) printf("push: inst %u model %d node %u type %d fade %.2f at %.0f %.0f %.0f", in->index, (int)mi, ni, in->type, in->fade, c.x, c.y, c.z), puts("");
                 }
             }
         }
     }
     *hit = any;
-    if (getenv("WOODY_CELLCHECK") && ins) {                               /* testing: the same with every instance (the old selection) */
+    if (wenv("WOODY_CELLCHECK") && ins) {                               /* testing: the same with every instance (the old selection) */
         static int depth; if (!depth) { depth = 1; gel_col_force_all(1); int h2; Vec3 o = body_push(p, c, r, up, down, &h2); gel_col_force_all(0); depth = 0;
             if (fabsf(o.x - (acc[0] + acc[1])) > 0.01f || fabsf(o.z - (acc[2] + acc[3])) > 0.01f || h2 != any)
                 printf("CELLCHECK push at %.0f %.0f %.0f: cells %.1f %.1f (%d) | all %.1f %.1f (%d)", c.x, c.y, c.z, acc[0] + acc[1], acc[2] + acc[3], any, o.x, o.z, h2), puts(""); }
@@ -333,7 +333,7 @@ static void actor_push(const Player *p, float r, float h, float dt, Vec3 *disp)
         float s = sqrtf(d2), t = s, n = dt * P_REF_FPS; if (s < 1e-6f) continue;   /* 0x433d40 returns (0, 0) for coincident centres */
         for (int it = 0; n > 0 && it < 64; it++, n -= 1.0f) t += t * (1.0f - t / R) * (n < 1.0f ? n : 1.0f);
         float k = (t - s) / s; disp->x += dx * k; disp->z += dz * k;
-        if (getenv("WOODY_ACTORLOG")) printf("  ACTOR push from inst %u (type %d): dist %.1f of %.1f -> %.1f %.1f\n", e->inst->index, e->type, s, R, dx * k, dz * k);
+        if (wenv("WOODY_ACTORLOG")) printf("  ACTOR push from inst %u (type %d): dist %.1f of %.1f -> %.1f %.1f\n", e->inst->index, e->type, s, R, dx * k, dz * k);
     }
 }
 
@@ -459,7 +459,7 @@ static float world_ground(const Player *p, Vec3 pt, int *found, const Instance *
     gel_walk_down(g, pt, f1, y1);                                        /* the cells 0x498520 visited: pt's cell down to the floor's */
     float bi0 = bi;
     f2 = ins_floor_below(g, p->ins, pt, &bi, g_ground_skip ? g_ground_skip : p->inst, hit_inst, hit_node);
-    if (getenv("WOODY_CELLCHECK")) {                                     /* testing: what every instance (the old selection) would give */
+    if (wenv("WOODY_CELLCHECK")) {                                     /* testing: what every instance (the old selection) would give */
         float b2 = bi0; const Instance *h2; const InsNode *n2; Vec3 keep_n = g_ins_n;
         gel_col_force_all(1); int w2 = ins_floor_below(g, p->ins, pt, &b2, g_ground_skip ? g_ground_skip : p->inst, &h2, &n2); gel_col_force_all(0); g_ins_n = keep_n;
         if (w2 != f2 || h2 != *hit_inst || fabsf(b2 - bi) > 0.01f)
@@ -532,7 +532,7 @@ int player_landing_ring(Player *p, float dt, Vec3 *pos, Vec3 *normal, float *alp
  * polygons have one: a floor made by an instance node, a polygon without a material (bit 15) or a missing .tex is 0. */
 static int ground_type(const Player *p, int32_t mat)
 {
-    if (getenv("WOODY_ICE")) return 1;                                  /* testing: every floor slippery (no shipped level has one) */
+    if (wenv("WOODY_ICE")) return 1;                                  /* testing: every floor slippery (no shipped level has one) */
     if (mat < 0 || (mat & 0x8000) || !p->tex) return 0;
     uint32_t mi = (uint32_t)mat; if (mi >= p->tex->nmaterials) return 0;
     uint32_t g = p->tex->materials[mi].group; if (g >= p->tex->ngroups) return 0;
@@ -644,7 +644,7 @@ static void air_move_start(Player *p, const PlayerInput *in)
         p->am_dir = (Vec3){ 0, 1, 0 }; p->am_t = 0; p->am_dur = 0.25f; p->am_speed = 1200.0f;
     } else { p->am_on = 0; return; }                                     /* 0x465fcf */
     audio_fx(0x3a, NULL, NULL);
-    if (getenv("WOODY_JUMPLOG")) printf("  AIR MOVE %s (jumper %d t %.3f, %.0f above the floor, anim %d)\n", p->subtype == 3 ? "dash" : "double jump", p->jumper.state, p->jumper.t, p->pos.y - p->floor_y, p->lanim);
+    if (wenv("WOODY_JUMPLOG")) printf("  AIR MOVE %s (jumper %d t %.3f, %.0f above the floor, anim %d)\n", p->subtype == 3 ? "dash" : "double jump", p->jumper.state, p->jumper.t, p->pos.y - p->floor_y, p->lanim);
 }
 /* 0x465fe0, the head of Perso_Move (states 0/6/2/3): the window runs down; while active, +0x204 = dir * step * speed with
  * step = the part of this frame inside the length, the direction keeping the last displacement; returns 1 = Perso_Move stops */
@@ -735,7 +735,7 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex)
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) ins_pose(&ins->models[mi].instances[k], 0, 0);
     p->spawn_pos = p->pos; p->spawn_yaw = p->yaw;
     printf("player: start (%.0f %.0f %.0f) yaw %.1f deg, %u trigger volumes\n", p->pos.x, p->pos.y, p->pos.z, p->yaw * 57.2958f, p->nvol);
-    if (getenv("WOODY_VOLDUMP")) for (uint32_t v = 0; v < p->nvol; v++)   /* id of every trigger volume (VOL_FLAG5 in the level script) and the instance carrying it */
+    if (wenv("WOODY_VOLDUMP")) for (uint32_t v = 0; v < p->nvol; v++)   /* id of every trigger volume (VOL_FLAG5 in the level script) and the instance carrying it */
         printf("  VOL 0x%x: inst %u at %.0f %.0f %.0f", p->vol_id[v], p->vol_inst[v]->index, p->vol_inst[v]->position.x, p->vol_inst[v]->position.y, p->vol_inst[v]->position.z), puts("");
     return 0;
 }
@@ -879,7 +879,7 @@ static void ctl_request(Instance *wi, int *lanim, int *lsub, int n, float rate, 
 {
     const LogAnim *a = log_anim(n); const Model *m = wi->model;
     if (n != *lanim) {
-        if (getenv("WOODY_ANIMLOG")) { if (log) printf("  lanim %d -> %d (jumper %d t %.3f)\n", *lanim, n, log->jumper.state, log->jumper.t); else printf("  board lanim %d -> %d\n", *lanim, n); }
+        if (wenv("WOODY_ANIMLOG")) { if (log) printf("  lanim %d -> %d (jumper %d t %.3f)\n", *lanim, n, log->jumper.state, log->jumper.t); else printf("  board lanim %d -> %d\n", *lanim, n); }
         *lanim = n; *lsub = 0;
         if ((uint32_t)a->sub[0] < m->nanims && (a->restart || wi->anim != a->sub[0])) { wi->anim = a->sub[0]; wi->anim_time = 0; }
     }
@@ -1042,7 +1042,7 @@ static void check_steep(Player *p)
     Vec3 a = { p->pos.x, p->pos.y + P_PROBE_Y, p->pos.z }, dir = { sinf(p->yaw) * P_EDGE_LOOK, -P_PROBE_Y, cosf(p->yaw) * P_EDGE_LOOK };
     float t; int k = player_ray_endless(p, a, dir, &t);
     if ((k == 3 || k == 4) && t > P_EDGE_T) p->steep_edge = 1;          /* 0x44b43e..0x44b45b */
-    if (getenv("WOODY_EDGELOG") && (p->atk == 9 || p->atk == 10))
+    if (wenv("WOODY_EDGELOG") && (p->atk == 9 || p->atk == 10))
         printf("  EDGE atk %d pos %.0f %.0f %.0f kind %d t %.2f -> %d\n", p->atk, p->pos.x, p->pos.y, p->pos.z, k, t, p->steep_edge);
 }
 
@@ -1135,7 +1135,7 @@ static void carry_frame(Player *p, float dt)
         if (thrown) { Vec3 f = { sinf(p->yaw), 1.0f, cosf(p->yaw) }; float l = sqrtf(vdot(f, f)); dir = (Vec3){ f.x / l, f.y / l, f.z / l }; sp = 1000.0f; }   /* 0x46380f: 45 degrees up */
         game_bomb_launch(p->bomb, dir, sp); p->bomb = NULL; p->carrying = 0; p->bsub = 0; p->state6 = 0;
         p->throw_hold = thrown ? p->bt : 0;                                 /* state 0 at once; the throw plays on under its move lock */
-        if (getenv("WOODY_BOMBLOG")) printf("  BOMB leaves Woody's hands (%s)\n", thrown ? "thrown" : "dropped");
+        if (wenv("WOODY_BOMBLOG")) printf("  BOMB leaves Woody's hands (%s)\n", thrown ? "thrown" : "dropped");
         return;
     }
     const Model *m = p->inst->model; Vec3 hand, tgt;
@@ -1148,7 +1148,7 @@ static void carry_frame(Player *p, float dt)
     case 2: if (p->carry_pressed && !p->duck) p->bsub = p->on_ground ? 3 : 5; break;   /* 0x463963: no throw while ducking */
     case 3: p->bt = anim_len(p, 0x43, 0); lock_move(p, p->bt); p->bsub = 4; break;
     case 5: p->bt = anim_len(p, 0x44, 0); p->bsub = 6; break;
-    case 4: case 6: if ((p->bt -= dt) <= 0) { bomb_drop(p); if (getenv("WOODY_BOMBLOG")) puts("  BOMB throw over: state 0"); } break;   /* no release moment reached (landed during an air throw, or an empty throw): SetState(0) drops it */
+    case 4: case 6: if ((p->bt -= dt) <= 0) { bomb_drop(p); if (wenv("WOODY_BOMBLOG")) puts("  BOMB throw over: state 0"); } break;   /* no release moment reached (landed during an air throw, or an empty throw): SetState(0) drops it */
     }
     p->carry_pressed = 0;
 }
@@ -1231,7 +1231,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
 }
 int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39] Hit 0x44ca00: returns 1 when health ran out */
 {
-    if (p->dead_kind || p->invuln_respawn > 0 || p->invuln_hit > 0 || getenv("WOODY_GOD")) return 0;   /* WOODY_GOD: testing */
+    if (p->dead_kind || p->invuln_respawn > 0 || p->invuln_hit > 0 || wenv("WOODY_GOD")) return 0;   /* WOODY_GOD: testing */
     jumper_force_fall(&p->jumper, 0);
     /* knockback 0x45a140: RampC to 500 u/s (0.1 s up), held 0.2 s, 0.5 s out; the player turns to face the attacker */
     float l = sqrtf(dir.x * dir.x + dir.z * dir.z);
@@ -1242,7 +1242,7 @@ int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39
     p->hit_anim = p->on_ground ? (p->duck ? 0x23 : 0x1f) : 0x20; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->lanim = -1;   /* 0x464b70: priority 5110, plays out over walking / jumping; 0x23 lying down (he stays down) */
     if (p->state6 && p->bomb) { p->hit_anim = p->on_ground ? (p->duck ? 0x24 : 0x21) : 0x22; p->hit_anim_t = anim_len(p, p->hit_anim, 0); p->bsub = 2; }   /* with a bomb: he keeps it, a throw or pick-up is broken off */
     else if (p->state6) p->hit_anim_t = 0;                               /* 0x464b84: state 6 with empty hands (the look-around bug) requests no hit animation */
-    if (getenv("WOODY_ONEHIT")) damage = 99;                             /* testing: every hit kills */
+    if (wenv("WOODY_ONEHIT")) damage = 99;                             /* testing: every hit kills */
     p->health -= damage; if (p->health < 0) p->health = 0;
     printf("  PLAYER hit, health %.0f\n", p->health);
     if (p->health <= 0) { p->health = 0; return 1; }
@@ -1373,7 +1373,7 @@ static int ray_instances(const Player *p, const Instance *skip, Vec3 a, Vec3 b, 
             if (nd->npolys && behind == nd->npolys) { inside = 1; h->kind = 3; h->t = 0; h->in = in; h->node = nd; }   /* 0x4330c8 */
         }
     }
-    if (getenv("WOODY_CELLCHECK")) {                                     /* testing: the same with every instance (the old set, model order) */
+    if (wenv("WOODY_CELLCHECK")) {                                     /* testing: the same with every instance (the old set, model order) */
         static int depth; if (!depth) { depth = 1; InsRayHit h2; gel_col_force_all(1); ray_instances(p, skip, a, b, t_world, &h2); gel_col_force_all(0); depth = 0;
             if (h2.kind != h->kind || h2.in != h->in || fabsf(h2.t - h->t) > 0.001f)
                 printf("CELLCHECK ray %.0f %.0f %.0f -> %.0f %.0f %.0f: cells kind %d inst %d t %.3f | all kind %d inst %d t %.3f", a.x, a.y, a.z, b.x, b.y, b.z, h->kind, h->in ? (int)h->in->index : -1, h->t, h2.kind, h2.in ? (int)h2.in->index : -1, h2.t), puts(""); }
@@ -1429,7 +1429,7 @@ static Vec3 climb_update(Player *p, const PlayerInput *in, float dt)
 {
     Vec3 disp = { 0, 0, 0 };
     int tap = in->action && !p->climb_act_prev; p->climb_act_prev = in->action;
-    if (getenv("WOODY_TAP")) { static float tt; tt += dt; if (tt > 0.3f) { tt = 0; tap = 1; } }   /* testing: tap the attack key automatically */
+    if (wenv("WOODY_TAP")) { static float tt; tt += dt; if (tt > 0.3f) { tt = 0; tap = 1; } }   /* testing: tap the attack key automatically */
     if (p->grip > 0) p->grip -= dt;
     if (tap && p->grip < 0.5f) p->grip = 0.5f;                          /* tapping keeps him on the wall */
     if (p->grip <= 0 && p->climb_sub != 3) p->climb_sub = 4;
@@ -1540,7 +1540,7 @@ void player_sync_board(Player *p)
     Instance *b = p->board, *r = p->inst;
     if (!b || !r || b == r) return;
     b->position = r->position; b->quat = r->quat; b->world = r->world;
-    if (getenv("WOODY_BOARDLOG")) printf("  BOARD inst %u vis %d pos %.0f %.0f %.0f anim %d t %.2f | rider inst %u pos %.0f %.0f %.0f anim %d t %.2f\n", b->index, b->visible, b->position.x, b->position.y, b->position.z, b->anim, b->anim_time, r->index, r->position.x, r->position.y, r->position.z, r->anim, r->anim_time);
+    if (wenv("WOODY_BOARDLOG")) printf("  BOARD inst %u vis %d pos %.0f %.0f %.0f anim %d t %.2f | rider inst %u pos %.0f %.0f %.0f anim %d t %.2f\n", b->index, b->visible, b->position.x, b->position.y, b->position.z, b->anim, b->anim_time, r->index, r->position.x, r->position.y, r->position.z, r->anim, r->anim_time);
 }
 
 void player_place(Player *p, Vec3 pos, float yaw)
@@ -1560,9 +1560,9 @@ void player_volumes_actor(Player *p, EkoVM *vm, Vec3 pt, uint32_t actor)
     for (uint32_t v = 0; v < p->nvol; v++) {
         Instance *in2 = p->vol_inst[v]; if (!in2->visible) continue;                   /* 0x430210: cell -1 = no test at all */
         int now = volume_contains(in2, p->vol_node[v], pt), was = eko_vol_has_actor_f1(vm, p->vol_id[v] & 0xffffff, actor);
-        if (!was) { if (now) { eko_vol_enter(vm, p->vol_id[v], actor); if (getenv("WOODY_CAMVOL")) printf("  CAMVOL enter 0x%x (inst %u)\n", p->vol_id[v], in2->index); } }
+        if (!was) { if (now) { eko_vol_enter(vm, p->vol_id[v], actor); if (wenv("WOODY_CAMVOL")) printf("  CAMVOL enter 0x%x (inst %u)\n", p->vol_id[v], in2->index); } }
         else if (now) eko_vol_in(vm, p->vol_id[v], actor);
-        else { eko_vol_leave(vm, p->vol_id[v], actor); if (getenv("WOODY_CAMVOL")) printf("  CAMVOL leave 0x%x (inst %u)\n", p->vol_id[v], in2->index); }
+        else { eko_vol_leave(vm, p->vol_id[v], actor); if (wenv("WOODY_CAMVOL")) printf("  CAMVOL leave 0x%x (inst %u)\n", p->vol_id[v], in2->index); }
     }
 }
 
@@ -1763,14 +1763,14 @@ static void duck_update(Player *p, const PlayerInput *in, float dt, int anim_own
             if (!in->duck) {                                                /* 0x4359b0 from feet + P+0x10 to feet + P+0x0c - P+0x10: any hit keeps him down */
                 Vec3 a = { p->pos.x, p->pos.y + P_DUCK_H, p->pos.z }, e = { p->pos.x, p->pos.y + (P_BODY_H - P_DUCK_H), p->pos.z }; float f;
                 const Instance *hi = NULL; int kind = ray_4359b0(p, a, e, &f, &hi), blocked = kind != 0;   /* 0x465d0b / 0x465d18: [0x53a554] != 0 */
-                if (getenv("WOODY_DUCKLOG") && blocked) printf("  DUCK blocked: kind %d inst %u f %.3f\n", kind, hi ? hi->index : 0u, f);
+                if (wenv("WOODY_DUCKLOG") && blocked) printf("  DUCK blocked: kind %d inst %u f %.3f\n", kind, hi ? hi->index : 0u, f);
                 if (!blocked) { p->duck_anim = b ? 0x50 : 0x33; p->duck_t = anim_len(p, p->duck_anim, 0); p->duck = 3; if (!anim_owned) p->lanim = -1; }
             }
             break;
     case 3: if ((p->duck_t -= dt) <= 0) p->duck = 0; break;
     }
     if (p->duck && p->move_lock < dt) p->move_lock = dt;                     /* 0x44cce0(dt, 0): keeps a longer lock */
-    if (getenv("WOODY_DUCKLOG")) { static int prev = -1; if (p->duck != prev) printf("  DUCK %d -> %d (t %.2f, key %d, lock %.3f, ramp %d)\n", prev, p->duck, p->play_time, in->duck, p->move_lock, p->ramp_phase); prev = p->duck; }
+    if (wenv("WOODY_DUCKLOG")) { static int prev = -1; if (p->duck != prev) printf("  DUCK %d -> %d (t %.2f, key %d, lock %.3f, ramp %d)\n", prev, p->duck, p->play_time, in->duck, p->move_lock, p->ramp_phase); prev = p->duck; }
 }
 /* ---- look-around, Perso state 3 + camera mode 0x200 (docs/PERSO_LOOK.md) ----------------------------------------------
  * 0x44b980, every frame: action 7 RELEASED (0x467440(7)) toggles. In state 3 it goes back to the previous state (0x44c9f0,
@@ -1796,7 +1796,7 @@ static void look_update(Player *p, const PlayerInput *in)
     if (!rel && !forced) return;
     if (p->look) {                                                          /* 0x44b9f0 */
         p->look = 0; p->state6 = p->look_prev6; p->look_show = 1;
-        if (getenv("WOODY_LOOKLOG")) printf("  LOOK off (%s), back to state %d, facing %.0f\n", forced ? "camera left mode 0x200" : "key", p->state6 ? 6 : 0, p->yaw * 57.2958f);
+        if (wenv("WOODY_LOOKLOG")) printf("  LOOK off (%s), back to state %d, facing %.0f\n", forced ? "camera left mode 0x200" : "key", p->state6 ? 6 : 0, p->yaw * 57.2958f);
         return;
     }
     int ok = !p->race_char && !p->dead_kind && !p->climb_sub && !p->use_root && !p->script_act && !p->ride && !p->follow && (p->state6 ? p->bsub == 2 : !p->atk);
@@ -1805,10 +1805,10 @@ static void look_update(Player *p, const PlayerInput *in)
         p->look_prev6 = p->state6; bomb_drop(p);                            /* SetState(3): 0x44c9ad lets go of the bomb, +0x220 = 6 */
         p->atk = 0; p->use_atk_disp = 0; p->target = NULL; p->has_target = 0; p->throw_hold = 0;   /* SetState clears +0x5b4, +0x5cd, +0x5f0 */
         p->look = 1;
-        if (getenv("WOODY_LOOKLOG")) printf("  LOOK on (from state %d), facing %.0f\n", p->look_prev6 ? 6 : 0, p->yaw * 57.2958f);
+        if (wenv("WOODY_LOOKLOG")) printf("  LOOK on (from state %d), facing %.0f\n", p->look_prev6 ? 6 : 0, p->yaw * 57.2958f);
     } else {
         if (!p->app_menu) audio_fx(9, NULL, NULL);                          /* 0x44ba5f: "can't" (only while the App is in a game, App+0 != 0, 0x44ba52) */
-        if (getenv("WOODY_LOOKLOG")) printf("  LOOK refused (ground %d, camera mode %d)\n", p->on_ground, p->cam_mode);
+        if (wenv("WOODY_LOOKLOG")) printf("  LOOK refused (ground %d, camera mode %d)\n", p->on_ground, p->cam_mode);
     }
 }
 /* 0x459050 (camera controller, the frame the Perso enters state 3): 0x44c080(Perso, CamMgr+0x540, 1) = eye at the feet +
@@ -1829,7 +1829,7 @@ void player_look_camera(Player *p, FreeCamera *cam, float dt)
         if (l > 0) { d.x /= l; d.z /= l; }
         if (sqrtf(d.x * d.x + d.z * d.z) < 0.01f) d.x = 1.0f;                 /* 0x459495 (0x4a94f8) */
         float was = p->yaw; p->yaw = atan2f(d.x, d.z); p->move_dir = d;
-        if (getenv("WOODY_LOOKLOG") && fabsf(remainderf(p->yaw - was, 6.2831853f)) > 0.01f)
+        if (wenv("WOODY_LOOKLOG") && fabsf(remainderf(p->yaw - was, 6.2831853f)) > 0.01f)
             printf("  LOOK facing %.1f -> %.1f (the view of the last update; stale in the entry frame) pos %.1f %.1f %.1f\n", was * 57.2958f, p->yaw * 57.2958f, p->pos.x, p->pos.y, p->pos.z);
     }
     Vec3 eye = { p->pos.x, p->pos.y + player_body_height(p) * p->inst->scale.y * 0.9f, p->pos.z };   /* 0x44c0a4: 0x4624c0 * 0.9 */
@@ -1841,7 +1841,7 @@ void player_look_camera(Player *p, FreeCamera *cam, float dt)
     if (p->look_pitch < -1.2566371f) p->look_pitch = -1.2566371f;
     cam->pos = eye; cam->yaw = p->look_yaw0 + p->look_yaw; cam->pitch = p->look_pitch; cam->fov_deg = CAM_FOV_Y; cam->letterbox = 0;
     s_look_fwd = (Vec3){ sinf(cam->yaw) * cosf(cam->pitch), sinf(cam->pitch), cosf(cam->yaw) * cosf(cam->pitch) };   /* -R.row1: the view's forward */
-    if (getenv("WOODY_LOOKLOG") && (int)(p->play_time * 4) != (int)((p->play_time - dt) * 4)) printf("  LOOK view yaw %.1f pitch %.1f eye %.0f %.0f %.0f\n", cam->yaw * 57.2958f, cam->pitch * 57.2958f, eye.x, eye.y, eye.z);
+    if (wenv("WOODY_LOOKLOG") && (int)(p->play_time * 4) != (int)((p->play_time - dt) * 4)) printf("  LOOK view yaw %.1f pitch %.1f eye %.0f %.0f %.0f\n", cam->yaw * 57.2958f, cam->pitch * 57.2958f, eye.x, eye.y, eye.z);
 }
 /* 0x459c70, the Perso's half of the side view (runs while Perso+0x4ec, after 0x458bf0, before the Mover; 0x44b7be). Only while
  * +0x238 <= 0 (the move lock, 0x459c80): with no attack (+0x5b4), not climbing (+0x50c), not dead (state 2) and the camera in
@@ -1901,7 +1901,7 @@ static void race_check_crash(Player *p, Vec3 old_pos, Vec3 disp, float body_h)
     if (p->race_sub == 2) return;
     Vec3 mv = vsub(p->pos, old_pos); float moved = sqrtf(vdot(mv, mv)), want = sqrtf(vdot(disp, disp));
     if (want > 0 && moved / want < 0.7f) {                                 /* 0x4aa1d8; a frame without displacement is 0/0 in the original (counted as stuck), not here */
-        if (++p->race_stuck > 5 && !getenv("WOODY_GOD")) { game_hit_star((Vec3){ p->pos.x, p->pos.y + 150.0f, p->pos.z }); p->race_sub = 2; p->race_crash_t = 0; puts("  RACE crash (stuck)"); }   /* Effect_Star 0x4750e0(inst.pos + (0,150,0)); rumble left out */
+        if (++p->race_stuck > 5 && !wenv("WOODY_GOD")) { game_hit_star((Vec3){ p->pos.x, p->pos.y + 150.0f, p->pos.z }); p->race_sub = 2; p->race_crash_t = 0; puts("  RACE crash (stuck)"); }   /* Effect_Star 0x4750e0(inst.pos + (0,150,0)); rumble left out */
     } else p->race_stuck = 0;
     Vec3 U = p->ground_n, F = p->race_dir, fw = vcross(U, vcross(F, U));
     Vec3 end = { p->pos.x + fw.x * (P_RADIUS + 40.0f), p->pos.y + fw.y * (P_RADIUS + 40.0f), p->pos.z + fw.z * (P_RADIUS + 40.0f) };   /* 0x4ab294 */
@@ -1913,7 +1913,7 @@ static void race_check_crash(Player *p, Vec3 old_pos, Vec3 disp, float body_h)
         if (player_ray_instances(p, NULL, a, b, &fi, &ni, NULL)) { f = fi; n = ni; }   /* an instance hit replaces the world hit (0x432f87) */
         if (f > 1.0f) both = 0; else if (k == 1) n40 = n;
     }
-    if (both && p->race_sub != 2 && !getenv("WOODY_GOD")) {
+    if (both && p->race_sub != 2 && !wenv("WOODY_GOD")) {
         if (n40.x * n40.x + n40.z * n40.z > 1e-6f) p->yaw = atan2f(-n40.x, -n40.z);   /* Mover_SetFacing(-hitN) */
         p->race_sub = 2; p->race_crash_t = 0; game_hit_star((Vec3){ p->pos.x, p->pos.y + 150.0f, p->pos.z }); puts("  RACE crash (wall ahead)");
     }
@@ -1999,7 +1999,7 @@ static void crush_test(Player *p)
     if (k && t < 1.0f && p->on_ground && (k == 2 ? hi->a_speed != 0 : p->att_inst != NULL)) {
         float free = (b.y - a.y) * t; if (free < 2.0f) free = 2.0f;           /* 0x4a9870 */
         float s = free / (h - 2.0f); if (s > 1.0f) s = 1.0f;
-        if (getenv("WOODY_CRUSHLOG")) printf("  CRUSH kind %d inst %u free %.1f of %.1f -> scale %.3f", k, hi ? hi->index : 0u, free, h - 2.0f, s), puts("");
+        if (wenv("WOODY_CRUSHLOG")) printf("  CRUSH kind %d inst %u free %.1f of %.1f -> scale %.3f", k, hi ? hi->index : 0u, free, h - 2.0f, s), puts("");
         p->crush = s;
         if (s < 0.3f) { player_kill(p, 4); if (p->crush < 0.01f) p->crush = 0.01f; }
         return;
@@ -2037,7 +2037,7 @@ static void move_collide(Player *p, Vec3 *dispp, float dt, int racing, const Ins
             /* band [feet + margin, feet + H]: up = feet + H - centre, down = centre - (feet + margin) ([0x53a350], [0x53a54c]) */
             Vec3 push = body_push(p, cur, radius, feet + body_h - cur.y, cur.y - (feet + margin), &hit);
             if (hit) { wall = 1; cur.x += push.x * 0.9f; cur.z += push.z * 0.9f; }
-            if (hit && getenv("WOODY_PUSHLOG")) printf("sweep: contact at %.0f %.0f %.0f band %.0f..%.0f push %.1f %.1f", cur.x, feet, cur.z, margin, body_h, push.x, push.z), puts("");
+            if (hit && wenv("WOODY_PUSHLOG")) printf("sweep: contact at %.0f %.0f %.0f band %.0f..%.0f push %.1f %.1f", cur.x, feet, cur.z, margin, body_h, push.x, push.z), puts("");
             gy = world_ground(p, cur, &found, &hit_inst, &hit_node);
             if (!found) continue;
             if (mode == 2) { if (cur.y - half < gy) cur.y = gy + half; }
@@ -2053,7 +2053,7 @@ static void move_collide(Player *p, Vec3 *dispp, float dt, int racing, const Ins
                 if (k == 3) { from = (Vec3){ cur.x, gy + 0.1f, cur.z }; k = ray_4359b0(p, from, head, &t, &ri); }
                 if (k) {
                     float y = from.y + (head.y - from.y) * t - (body_h - half);
-                    if (getenv("WOODY_PUSHLOG")) printf("sweep: head ray kind %d inst %u t %.3f centre %.1f -> %.1f (floor %.1f)", k, ri ? ri->index : 0u, t, cur.y, y - half < gy ? gy + half : y, gy), puts("");
+                    if (wenv("WOODY_PUSHLOG")) printf("sweep: head ray kind %d inst %u t %.3f centre %.1f -> %.1f (floor %.1f)", k, ri ? ri->index : 0u, t, cur.y, y - half < gy ? gy + half : y, gy), puts("");
                     cur.y = y - half < gy ? gy + half : y;
                 }
             }
@@ -2103,7 +2103,7 @@ static void follow_update(Player *p)                                       /* 0x
     p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->sliding = 0; p->push_t = 0; p->push_speed = 0;   /* 0x467110 on RampB, RampC, RampA */
     p->vel = (Vec3){ 0, 0, 0 };                                            /* +0x204 stays 0: no displacement of his own */
     player_apply_transform(p);                                             /* Perso_Orient 0x44bd00 */
-    if (getenv("WOODY_FOLLOWLOG")) printf("  state 7: pos %.0f %.0f %.0f facing %.0f\n", p->pos.x, p->pos.y, p->pos.z, p->yaw * 57.2958f);
+    if (wenv("WOODY_FOLLOWLOG")) printf("  state 7: pos %.0f %.0f %.0f facing %.0f\n", p->pos.x, p->pos.y, p->pos.z, p->yaw * 57.2958f);
 }
 void player_follow(Player *p, const Instance *obj)                         /* 0x44e140 */
 {
@@ -2534,7 +2534,7 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
     else if (p->cam_state != 2 && cam_ray_blocked(p, P, T)) {           /* 0x4229b8: the target is hidden at the start of the frame */
         p->cam_state = 2; p->cam_n = 2; p->cam_seg = 0; p->cam_u = 0;
         p->cam_pad[0] = P; p->cam_pad[1] = p->cam_tprev; p->cam_pad[2] = T;
-        if (getenv("WOODY_CAMLOG")) {
+        if (wenv("WOODY_CAMLOG")) {
             float fi = 2.0f; Vec3 n; const Instance *hi = NULL; player_ray_instances(p, NULL, P, T, &fi, &n, &hi);
             printf("  CAM target hidden: breadcrumbs from %.0f %.0f %.0f (world %.2f, instance %d model %d type %d at %.2f)\n", P.x, P.y, P.z, gel_ray_frac(p->gel, P, T),
                    hi ? (int)hi->index : -1, hi ? (int)(hi->model - p->ins->models) : -1, hi ? hi->type : -1, fi);
@@ -2543,7 +2543,7 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
     if (p->cam_state == 2) {                                            /* no distance, height or collision step in this state */
         int n0 = p->cam_n;
         p->cam_pos = camera_breadcrumbs(p, T, dt); p->cam_tprev = T;
-        if (getenv("WOODY_CAMLOG") && (p->cam_n != n0 || p->cam_state != 2)) printf("  CAM crumbs %d seg %d u %.2f%s\n", p->cam_n, p->cam_seg, p->cam_u, p->cam_state != 2 ? " -> target in sight" : "");
+        if (wenv("WOODY_CAMLOG") && (p->cam_n != n0 || p->cam_state != 2)) printf("  CAM crumbs %d seg %d u %.2f%s\n", p->cam_n, p->cam_seg, p->cam_u, p->cam_state != 2 ? " -> target in sight" : "");
         goto drop;
     }
     if (behind) {
@@ -2572,7 +2572,7 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
         Vec3 out;
         if (camera_sweep(p, P, N, &out)) N = out;
         if (cam_ray_blocked(p, N, T)) {
-            if (getenv("WOODY_CAMLOG") && getenv("WOODY_CAMLOG")[0] == '2') printf("  CAM blind move refused at %.0f %.0f %.0f\n", N.x, N.y, N.z);
+            if (wenv("WOODY_CAMLOG") && wenv("WOODY_CAMLOG")[0] == '2') printf("  CAM blind move refused at %.0f %.0f %.0f\n", N.x, N.y, N.z);
             N = camera_sweep(p, P, P, &out) ? out : P;
         }
     }
