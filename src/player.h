@@ -115,6 +115,7 @@ typedef struct Player {
      * timer; carry_pressed = attack just pressed this frame (read by the sub-states), throw_hold = port: the throw animation
      * keeps playing after the release (the original does that with animation priorities) */
     struct Bomb *bomb; int carrying, bsub, carry_pressed; float bt, throw_hold;
+    float charge_rumble_t;          /* +0x600: the charge run's rumble clock, 0.2 s per pulse (0x457c43) */
     int state6;                     /* Perso state 6 itself (+0x21c == 6): on with the pick-up, off with SetState; normally bomb != NULL, but
                                      * the look-around bug (docs/PERSO_LOOK.md 5) gives it back without a bomb */
     /* look-around = Perso state 3 (0x44b980, docs/PERSO_LOOK.md): look_prev6 = the state it goes back to (+0x220, 6 or 0), look_key =

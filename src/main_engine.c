@@ -29,6 +29,7 @@
 #include "ambient.h"
 #include "blackbox.h"
 #include "datasetup.h"
+#include "pad.h"
 #ifdef WOODY_GUI
 #define WOODY_DEBUG_TITLE 0                     /* the release build keeps the plain window title */
 #define WOODY_DEBUG_KEYS (wenv("WOODY_DEBUGKEYS") != NULL)   /* and the developer keys only on request */
@@ -460,7 +461,7 @@ static void save_auto(void) { if (g_slot >= 0) { g_file.slot[g_slot] = g_save; f
  * written back at exit) and a copy per save slot. The port keeps them in its own woodyre.cfg, key=value lines, so
  * port-only settings (aspect ratio, resolution, issue #12) can be added later without a format bump. The master
  * volumes are linear amplitude v / 100: -2000 log10(100 / v) mB in 0x48bf50 is exactly that. */
-static struct { int sfx, music, vib; int have_sfx, have_music; } g_opt = { 100, 70, 0, 0, 0 };   /* port defaults (audio.c's 1.0 / 0.7); vibration: no joystick = 0% (0x4674b0), rumble is a no-op on PC;
+static struct { int sfx, music, vib; int have_sfx, have_music; } g_opt = { 100, 70, 100, 0, 0 };   /* port defaults (audio.c's 1.0 / 0.7); vibration: the original's 100% with a joystick (0x4674b0), where rumble is a no-op; the port rumbles the pads of src/pad.c (key rumble=, PORT EXTRA);
                                                                    * have_*: woodyre.cfg has the key (else setup_import may take Woody.cfg +0x80 / +0x84) */
 static void opt_apply(void) { audio_master(g_opt.sfx * 0.01f, g_opt.music * 0.01f); }   /* 0x469570 / 0x4695a0 */
 /* two switches of Detect.exe's Sound page that the game reads (docs/SETUP.md 3): "Invert Left/Right" = Woody.cfg +0x74 ->
@@ -470,6 +471,7 @@ static void opt_apply(void) { audio_master(g_opt.sfx * 0.01f, g_opt.music * 0.01
  * defaults (0x100032a0: invert 0, cinematic 1). -1 = not in woodyre.cfg. vsync: the same for the display page's key. */
 static struct { int rev, film, vsync; } g_setup = { -1, -1, -1 };
 static int g_logos = 1;                                 /* woodyre.cfg logos=0: never play the logo films (PORT EXTRA) */
+static int g_pad_dz = 30;                               /* woodyre.cfg pad_deadzone= (percent): the stick dead zone of the pads (PORT EXTRA), default the original's 30 % (0x467a80) */
 /* ---- display (docs/DISPLAY.md; everything here is a PORT EXTRA). The original runs exclusive fullscreen at the Woody.cfg mode
  * (Detect's list, default 640x480), always 4:3 in the layout, and paces itself only by Flip(DDFLIP_WAIT) = vsync (0x47ee90);
  * no frame cap, dt clamped to 0.1 s (0x40185b). The port: a window of any size or borderless fullscreen, 4:3 pillarboxed or a
@@ -486,21 +488,22 @@ static void opt_read(void)
 {
     FILE *f = fopen("woodyre.cfg", "r"); char line[128];
     if (f) { while (fgets(line, sizeof line, f)) { int v, v2; char s[16];
-        if (sscanf(line, "sfx=%d", &v) == 1) { g_opt.sfx = v; g_opt.have_sfx = 1; } else if (sscanf(line, "music=%d", &v) == 1) { g_opt.music = v; g_opt.have_music = 1; } else if (sscanf(line, "vibration=%d", &v) == 1) g_opt.vib = v;
+        if (sscanf(line, "sfx=%d", &v) == 1) { g_opt.sfx = v; g_opt.have_sfx = 1; } else if (sscanf(line, "music=%d", &v) == 1) { g_opt.music = v; g_opt.have_music = 1; } else if (sscanf(line, "rumble=%d", &v) == 1) g_opt.vib = v;   /* the old key vibration= is dropped: it never did anything */
         else if (sscanf(line, "aspect=%15s", s) == 1) g_disp.wide = strcmp(s, "4:3") != 0;
         else if (sscanf(line, "window=%dx%d", &v, &v2) == 2) { if (v >= 320 && v2 >= 240 && v <= 7680 && v2 <= 4320) { g_disp.w = v; g_disp.h = v2; } }
         else if (sscanf(line, "fullscreen=%d", &v) == 1) g_disp.full = v != 0; else if (sscanf(line, "vsync=%d", &v) == 1) g_disp.vsync = g_setup.vsync = v != 0;
         else if (sscanf(line, "reverse_stereo=%d", &v) == 1) g_setup.rev = v != 0; else if (sscanf(line, "film_sound=%d", &v) == 1) g_setup.film = v != 0;
         else if (sscanf(line, "logos=%d", &v) == 1) g_logos = v != 0;
+        else if (sscanf(line, "pad_deadzone=%d", &v) == 1) g_pad_dz = v < 0 ? 0 : v > 90 ? 90 : v;
         else if (sscanf(line, "fpscap=%d", &v) == 1) g_disp.cap = v < 0 ? 0 : v > 1000 ? 1000 : v; } fclose(f); }
     int *o[3] = { &g_opt.sfx, &g_opt.music, &g_opt.vib }; for (int i = 0; i < 3; i++) { if (*o[i] < 0) *o[i] = 0; if (*o[i] > 100) *o[i] = 100; }
 }
 static void opt_write(void)
 {
     FILE *f = fopen("woodyre.cfg", "w"); if (!f) return;
-    fprintf(f, "sfx=%d\nmusic=%d\nvibration=%d\n", g_opt.sfx, g_opt.music, g_opt.vib);
+    fprintf(f, "sfx=%d\nmusic=%d\nrumble=%d\n", g_opt.sfx, g_opt.music, g_opt.vib);
     fprintf(f, "aspect=%s\nwindow=%dx%d\nfullscreen=%d\nvsync=%d\nfpscap=%d\n", g_disp.wide ? "wide" : "4:3", g_disp.w, g_disp.h, g_disp.full, g_disp.vsync, g_disp.cap);
-    fprintf(f, "reverse_stereo=%d\nfilm_sound=%d\nlogos=%d\n", g_setup.rev > 0, g_setup.film != 0, g_logos);
+    fprintf(f, "reverse_stereo=%d\nfilm_sound=%d\nlogos=%d\npad_deadzone=%d\n", g_setup.rev > 0, g_setup.film != 0, g_logos, g_pad_dz);
     fclose(f);
 }
 /* the 3D view in the window (GL origin bottom left): narrower than 4:3 = letterboxed in both modes, wider = pillarboxed in 4:3 mode */
@@ -534,6 +537,8 @@ static struct {
     int joy; UINT jxmin, jxmax, jymin, jymax; double joy_scan;   /* the WinMM device (the original: the first attached DirectInput joystick, 0x4678d0) */
     float jx, jy; uint32_t jbtn; int jok;                        /* this frame: axes after the dead zone (-1..1), buttons */
     int down[14], prev[14]; float val[14];                       /* the controller: held this frame / last frame, value (0x467460) */
+    int pbind[12][4];                 /* PORT EXTRA: the pad buttons per action (PAD_* + 1 of pad.h, 0 ends the list); Woody.cfg does not know them */
+    PadState pad;                     /* this frame's pads (src/pad.c), all of them together */
 } g_in = { .joy = -1, .mode = 3 };
 static int in_dik_vk(int d)                                      /* DIK scan code (Woody.cfg) -> VK: the extended keys by table, the rest by the layout */
 {
@@ -555,6 +560,14 @@ static void in_defaults(void)
         {VK_SPACE, IN_JOY + 2}, {'X', IN_JOY + 0}, {VK_LCONTROL, VK_SHIFT, IN_JOY + 1}, {VK_RETURN, 'V', IN_JOY + 4},   /* DefaultControlSettings (Setup.dll 0x10002650, */
         {'X', IN_JOY + 3}, {VK_ESCAPE, IN_JOY + 5}, {'C', VK_NUMPAD0, IN_JOY + 6}, {VK_RCONTROL, 'E', IN_JOY + 7} };   /* table 0x1000c060: 0x200..0x207) */
     memcpy(g_in.bind, D, sizeof D); g_in.mode = 3; g_in.have_cfg = 0;
+    /* the pads (PORT EXTRA): D-pad = the directions, A / Cross jump (menu: confirm), B / Circle duck (menu: back, also duck
+     * while riding), X / Square and RT attack, RB look around, Start / Options pause, LB and R3 camera behind, Y / Triangle and
+     * LT special; the left stick moves (actions 0..3 with its deflection, as the joystick) */
+    #define P_(b) (PAD_##b + 1)
+    static const int PD[12][4] = { {P_(LEFT)}, {P_(RIGHT)}, {P_(UP)}, {P_(DOWN)}, {P_(A)}, {P_(B)}, {P_(X), P_(RT)}, {P_(RB)},
+        {P_(B)}, {P_(START)}, {P_(LB), P_(RS)}, {P_(Y), P_(LT)} };
+    #undef P_
+    memcpy(g_in.pbind, PD, sizeof PD);
 }
 /* the Woody.cfg file (magic + 0x11c bytes) into b[0x120]: 1 = read, 0 = none, -1 = obsolete; *used = the path */
 static int wcfg_read(const char *data_dir, unsigned char *b, const char **used)
@@ -614,14 +627,21 @@ static void in_read_cfg(const char *data_dir)
     printf("input: %s, mode %d (%s)\n", path, g_in.mode, g_in.mode ? "joystick" : "keyboard only");
 }
 #undef CFG32
+static float in_deadzone(float v, float dz)                       /* 0x467a80: dead zone dz (30 %, 0x4aab98) of the range 4096 (0x4b6f84), the rest scaled to 0..1 */
+{
+    int iv = (int)(v * 4096.0f), d = (int)(4096.0f * dz);
+    if (iv > 0) { iv -= d; if (iv < 0) iv = 0; } else { iv += d; if (iv > 0) iv = 0; }
+    return d < 4096 ? (float)iv / (4096.0f - d) : 0;
+}
 static void in_joy_poll(double now, double tl)                   /* 0x467a40 poll + 0x467a80 axes + 0x467af0 buttons; tl = the level clock */
 {
     g_in.jx = g_in.jy = 0; g_in.jbtn = 0; g_in.jok = 0;
     if (g_in.mode == 0) return;                                  /* keyboard only: the joystick object exists but 0x402d39 never polls it */
-    if (g_in.joy < 0 && now >= g_in.joy_scan) {                  /* no device yet: look again every 3 s (the original enumerates once, at boot) */
+    if (g_in.pad.kind != PADK_NONE) g_in.joy = -1;               /* a pad of src/pad.c is there: the WinMM device would be the same pad once more */
+    else if (g_in.joy < 0 && now >= g_in.joy_scan) {             /* no device yet: look again every 3 s (the original enumerates once, at boot) */
         g_in.joy_scan = now + 3.0;
         for (UINT id = 0; id < 16 && g_in.joy < 0; id++) { JOYINFOEX ji = { sizeof ji, JOY_RETURNALL }; JOYCAPSA jc;
-            if (joyGetPosEx(id, &ji) == JOYERR_NOERROR && joyGetDevCapsA(id, &jc, sizeof jc) == JOYERR_NOERROR) {
+            if (joyGetPosEx(id, &ji) == JOYERR_NOERROR && joyGetDevCapsA(id, &jc, sizeof jc) == JOYERR_NOERROR && jc.wMid != 0x054c /* Sony: src/pad.c reads those */) {
                 g_in.joy = (int)id; g_in.jxmin = jc.wXmin; g_in.jxmax = jc.wXmax; g_in.jymin = jc.wYmin; g_in.jymax = jc.wYmax; printf("input: joystick %u \"%s\"\n", id, jc.szPname); } }
     }
     const char *e = wenv("WOODY_JOY");                         /* testing: WOODY_JOY="T:X:Y:BUTTONS[:D] ...": stick at X,Y (-1..1, before the dead
@@ -639,11 +659,7 @@ static void in_joy_poll(double now, double tl)                   /* 0x467a40 pol
       g_in.jx = ((float)ji.dwXpos - g_in.jxmin) / rx * 2.0f - 1.0f; g_in.jy = ((float)ji.dwYpos - g_in.jymin) / ry * 2.0f - 1.0f;   /* DIPROP_RANGE -4096..4096 (0x4677db) */
       g_in.jbtn = (uint32_t)ji.dwButtons; g_in.jok = 1; }
 deadzone:
-    for (int a = 0; a < 2; a++) {                                /* 0x467a80: dead zone 30 % (0x4aab98) of the range 4096 (0x4b6f84), the rest scaled to 0..1 */
-        float *v = a ? &g_in.jy : &g_in.jx; int iv = (int)(*v * 4096.0f), dz = (int)(4096.0f * 0.3f);
-        if (iv > 0) { iv -= dz; if (iv < 0) iv = 0; } else { iv += dz; if (iv > 0) iv = 0; }
-        *v = (float)iv / (4096.0f - dz);
-    }
+    g_in.jx = in_deadzone(g_in.jx, 0.3f); g_in.jy = in_deadzone(g_in.jy, 0.3f);
 }
 static int in_key(const Window *w, int vk, int fly)              /* a VK held (keyboard vt[4] 0x4675f0) */
 {
@@ -653,10 +669,25 @@ static int in_key(const Window *w, int vk, int fly)              /* a VK held (k
     return vk > 0 && vk < 256 && w->keys[vk];
 }
 static void in_set(int a, float v) { g_in.down[a] = 1; g_in.val[a] = v; }   /* 0x4673b0 */
+static void in_pad_poll(const Window *w, double tl)              /* PORT EXTRA: the pads of src/pad.c */
+{
+    pad_set_strength(g_opt.vib * 0.01f);                         /* the Vibration option */
+    pad_poll(&g_in.pad, w->hwnd && GetForegroundWindow() == (HWND)w->hwnd, w->dev_changes);
+    /* testing: WOODY_PAD="T:LX:LY:BUTTONS[:D] ...": a pad with the left stick at LX,LY (-1..1, before the dead zone) and the
+     * buttons 1 << PAD_* (pad.h) for D s (default 0.08) from T s on the level clock, as WOODY_JOY */
+    for (const char *s = wenv("WOODY_PAD"); s && *s; ) {
+        double t, d = 0.08; float x, y; unsigned m; int used;
+        if (sscanf(s, " %lf:%f:%f:%i%n", &t, &x, &y, (int *)&m, &used) != 4) break;
+        s += used; if (*s == ':' && sscanf(s, ":%lf%n", &d, &used) == 1) s += used;
+        if (tl >= t && tl < t + d) { if (!g_in.pad.kind) g_in.pad.kind = PADK_DS5; g_in.pad.lx = x; g_in.pad.ly = y; g_in.pad.buttons = m; }
+    }
+}
 static void in_frame(const Window *w, int fly, double now, double tl)   /* 0x402940: joystick first, then the keyboard; the value is the last one set */
 {
     memcpy(g_in.prev, g_in.down, sizeof g_in.down); memset(g_in.down, 0, sizeof g_in.down); memset(g_in.val, 0, sizeof g_in.val);
+    in_pad_poll(w, tl);
     in_joy_poll(now, tl);
+    static const float dv[4] = { -1.0f, 1.0f, -1.0f, 1.0f };
     static const int btn_acts[8] = { 6, 11, 5, 4, 7, 10, 8, 9 }; /* 0x402df5..0x403002 */
     if (g_in.jok) {
         if (g_in.jx > 0) in_set(1, g_in.jx); else if (g_in.jx < 0) in_set(0, g_in.jx);   /* 0x402d58: joystick vt[3] X, vt[4] Y (down = +) */
@@ -664,8 +695,14 @@ static void in_frame(const Window *w, int fly, double now, double tl)   /* 0x402
         for (int i = 0; i < 8; i++) { int a = btn_acts[i];
             for (int s = 0; s < 4 && g_in.bind[a][s]; s++) { int c = g_in.bind[a][s]; if (c >= IN_JOY && (g_in.jbtn >> (c - IN_JOY) & 1)) { in_set(a, 1.0f); if (a == 4) in_set(12, 1.0f); break; } } }
     }
+    if (g_in.pad.kind != PADK_NONE) {                            /* PORT EXTRA: the pads after the joystick, before the keyboard */
+        float x = in_deadzone(g_in.pad.lx, g_pad_dz * 0.01f), y = in_deadzone(g_in.pad.ly, g_pad_dz * 0.01f);
+        if (x > 0) in_set(1, x); else if (x < 0) in_set(0, x);   /* the left stick as the joystick's X / Y */
+        if (y > 0) in_set(3, y); else if (y < 0) in_set(2, y);
+        for (int a = 0; a < 12; a++)
+            for (int s = 0; s < 4 && g_in.pbind[a][s]; s++) if (g_in.pad.buttons >> (g_in.pbind[a][s] - 1) & 1) { in_set(a, a < 4 ? dv[a] : 1.0f); if (a == 4) in_set(12, 1.0f); break; }
+    }
     int dirs = g_in.mode == 0 || g_in.mode == 3 || g_in.joy < 0; /* 0x40301e: directions from the keys only in mode 0 (port: also without a joystick) */
-    static const float dv[4] = { -1.0f, 1.0f, -1.0f, 1.0f };
     for (int a = 0; a < 12; a++) {
         if (a < 4 && !dirs) continue;
         for (int s = 0; s < 4 && g_in.bind[a][s]; s++) { int c = g_in.bind[a][s]; if (c < IN_JOY && in_key(w, c, fly)) { in_set(a, a < 4 ? dv[a] : 1.0f); if (a == 4) in_set(12, 1.0f); break; } }
@@ -1292,7 +1329,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
         int step = k->right ? 5 : k->left ? -5 : 0;
         if (step && M.sel >= 1 && M.sel <= 3) {
             MenuItem *e = &k_page1b[M.sel]; e->value += step; if (e->value > 100) e->value = 100; if (e->value < 0) e->value = 0; hud_menu_blink(0.25f);
-            if (M.sel == 1) g_opt.sfx = e->value; else if (M.sel == 2) g_opt.music = e->value; else g_opt.vib = e->value;
+            if (M.sel == 1) g_opt.sfx = e->value; else if (M.sel == 2) g_opt.music = e->value; else { g_opt.vib = e->value; pad_set_strength(g_opt.vib * 0.01f); pad_rumble(1.0f, 0.15f); }   /* port extra: a short rumble to feel the new strength */
             opt_apply();
         }
         if (k->ok && M.sel == 4) { opt_write(); menu_back_to_level_menu(); }                          /* Continue keeps the values */
@@ -1741,7 +1778,7 @@ static void bomb_explode(Bomb *b)
     if (pl && !pl->dead_kind && pl->inst && !wenv("WOODY_GOD")) {                /* Perso vtbl[40] 0x44d040 */
         Vec3 d = { pl->inst->position.x - c.x, pl->inst->position.y - c.y, pl->inst->position.z - c.z };
         if (d.x * d.x + d.y * d.y + d.z * d.z < 400.0f * 400.0f && pl->invuln_respawn <= 0) { float l = sqrtf(d.x * d.x + d.z * d.z);
-            player_hit(pl, 0, l > 1e-3f ? (Vec3){ d.x / l, 0, d.z / l } : (Vec3){ 0, 0, 1 }); player_kill(pl, 6);
+            player_hit(pl, 0, l > 1e-3f ? (Vec3){ d.x / l, 0, d.z / l } : (Vec3){ 0, 0, 1 }); pad_rumble(1.0f, 0.5f); player_kill(pl, 6);   /* rumble 0x44d1b0(+0x1d4, +0x1d0) = P+0xc4, P+0xc0 */
             printf("  BOMB %u blast kills the player", b->inst->index), puts(""); }
     }
     enemies_blast(&g_enemies, c, 400.0f);
@@ -2952,7 +2989,7 @@ static void rockets_update(float dt, Player *pl, int have_player)               
                                                                                    /* blast 600 on actor list 1 (0x453560, ROCKET.md 4.3): first the player (0x44d040) */
             if (have_player && !pl->dead_kind) { Vec3 d = { pl->inst->position.x - in->position.x, pl->inst->position.y - in->position.y, pl->inst->position.z - in->position.z };
                 if (d.x * d.x + d.y * d.y + d.z * d.z < 600.0f * 600.0f && !wenv("WOODY_GOD")) { float l = sqrtf(d.x * d.x + d.z * d.z); Vec3 away = l > 1e-3f ? (Vec3){ d.x / l, 0, d.z / l } : (Vec3){ 0, 0, 1 };
-                    player_hit(pl, 0, away); player_kill(pl, 6); printf("  ROCKET %u blast kills the player", in->index), puts(""); } }
+                    player_hit(pl, 0, away); pad_rumble(1.0f, 0.5f); player_kill(pl, 6);   /* rumble 0x44d1b0(+0x1d4, +0x1d0) = P+0xc4, P+0xc0 */ printf("  ROCKET %u blast kills the player", in->index), puts(""); } }
             enemies_actor_blast(&g_enemies, in->position, 600.0f);                 /* the rest of list 1: the thrower (0x4119b0) and Boss2 (0x40e800) */
             in->fade = in->fade_target = 1.0f; r->t = 0; r->state = 9; break;
         case 8: r->t += dt; if (r->t > 2.0f) r->t = 2.0f; in->quat = q_slerp(r->q0, r->q1, r->t / 2.0f);
@@ -3725,6 +3762,8 @@ int main(int argc, char **argv)
                  * 0.5) from T s on (testing, implies WOODY_LOOKMOUSE) */
                 static int lm = -1; if (lm < 0) lm = (wenv("WOODY_LOOKMOUSE") && atoi(wenv("WOODY_LOOKMOUSE"))) || wenv("WOODY_MOUSE");
                 if (lm) { pin.mouse_dx = win.raw_dx; pin.mouse_dy = win.raw_dy; }
+                if (g_in.pad.kind != PADK_NONE) {                    /* PORT EXTRA: the right stick of a pad aims the look-around, worth what the left stick is (ftol(value * 5)) */
+                    pin.mouse_dx += (int)(in_deadzone(g_in.pad.rx, g_pad_dz * 0.01f) * 5.0f); pin.mouse_dy += (int)(in_deadzone(g_in.pad.ry, g_pad_dz * 0.01f) * -5.0f); }
                 for (const char *e = wenv("WOODY_MOUSE"); e && *e; ) {
                     double t, d = 0.5; int dx, dy, n = 0;
                     if (sscanf(e, "%lf:%d:%d%n", &t, &dx, &dy, &n) < 3) break;

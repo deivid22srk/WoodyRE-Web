@@ -20,24 +20,27 @@ included in this repository or its releases.
 "Pica-Pau" CD, contain changed levels and are not supported. `WoodyRE.exe --verify` checks your copy (output in `woodyre.log`).
 
 ### Controls
-| Action | Keys |
-|---|---|
-| Walk | arrow keys or WASD (relative to the camera) |
-| Jump | Space |
-| Attack (peck, charge on release) | Left Ctrl or Shift |
-| Special attack | Right Ctrl or E |
-| Duck | X |
-| Look around | Enter or V |
-| Camera behind Woody | C or Numpad 0 |
-| Pause menu | Esc |
-| Fullscreen / window | F11 |
+| Action | Keys | PlayStation pad | Xbox naming |
+|---|---|---|---|
+| Walk | arrow keys or WASD (relative to the camera) | left stick or D-pad | left stick or D-pad |
+| Jump | Space | Cross | A |
+| Attack (peck, charge on release) | Left Ctrl or Shift | Square or R2 | X or RT |
+| Special attack | Right Ctrl or E | Triangle or L2 | Y or LT |
+| Duck | X | Circle | B |
+| Look around (aim with either stick) | Enter or V | R1 | RB |
+| Camera behind Woody | C or Numpad 0 | L1 or R3 | LB or RS |
+| Pause menu | Esc | Options | Start |
+| Fullscreen / window | F11 | | |
 
-Menus: Enter or Jump confirms, Esc goes back. A joystick works as in the original (WinMM).
+Menus: Enter or Jump confirms, Esc or Duck goes back.
+
+Controllers: a DualSense (PS5) or DualShock 4 (PS4) works over USB or Bluetooth without extra software, rumble included
+(Options, Vibration sets its strength). Any other joystick works as in the original (WinMM).
 
 ### Settings and files
 Everything the game writes stays next to `WoodyRE.exe` (or in `%LOCALAPPDATA%\WoodyRE` when that folder is read-only):
-- `woodyre.cfg`: the options (sound volumes and the Display page: resolution, window or fullscreen, 4:3 or wide, vsync,
-  frame cap, `logos=0` to skip the intro films).
+- `woodyre.cfg`: the options (sound volumes, rumble strength and the Display page: resolution, window or fullscreen, 4:3
+  or wide, vsync, frame cap, `logos=0` to skip the intro films, `pad_deadzone=30` for the stick dead zone in percent).
 - `woodyre.sav`: the four save slots, in the original `Woody.sav` layout. An original `Woody.sav` placed next to the exe
   is imported once.
 - `woodyre.log`: the engine log, useful in bug reports.

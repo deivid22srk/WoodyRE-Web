@@ -7,6 +7,12 @@
 #include "audio.h"
 #include "enemy.h"
 #include "instance.h"
+#include "pad.h"
+
+/* Rumble 0x44d1b0(a, b): [0x5e618c]->vt[2](a, b), skipped in Perso state 2 (dead). The original's joystick method is an empty
+ * `ret 8` (docs/MENU_OPTIONS.md 5.2); the port gives it to the pads of src/pad.c (PORT EXTRA): a = strength, b = seconds (the
+ * charge run pulses (0.5, 0.15) every 0.2 s, the lightning gives (0.5, 1.5) to its 1.7 s stun). The values are P+0x98..0xd4. */
+static void rumble(const Player *p, float strength, float seconds) { if (!p->dead_kind) pad_rumble(strength, seconds); }
 
 /* ---- decompiled Perso parameters (docs/PERSO_FRAME.md 2.3 / 2.6, table 0x4b5f14, Woody column) ---- */
 #define P_WALK_SPEED   600.0f     /* P+0x1c: RampA max speed, units/s */
@@ -943,6 +949,7 @@ static int attack_probe(Player *p, Vec3 v)                                      
     float gy = world_ground(p, (Vec3){ p->pos.x, p->pos.y + 1.0f, p->pos.z }, &found, &hi, &hn);
     int n = (found && p->pos.y - gy > 100.0f) ? 0xe : 0xd;
     p->atk = n == 0xe ? 7 : 6; p->atk_t = anim_len(p, n, 0); lock_move(p, p->atk_t);
+    rumble(p, 0.5f, 0.5f);                                                                         /* P+0x9c, P+0x98 */
     return 1;
 }
 /* target finder 0x4632e0 / 0x463420 (finder object Perso+0x604): the instances of this frame's list world+0x64 whose type
@@ -1024,7 +1031,7 @@ static void attack_hit_loop(Player *p)
             if (p->atk == 10) p->yaw = atan2f(dir.x, dir.z);                            /* 0x458b07: Mover_SetDir */
         }
         if (peck) p->atk = 3;                                                            /* 0x458b18 */
-        /* rumble 0x44d1b0 (0.5, 0.3) not ported; no SoundFx 6 here: that is the bomb explosion (0x44d730 is in Bomb_Explode 0x44d6e0) */
+        rumble(p, 0.5f, 0.3f);                                                           /* P+0xa4, P+0xa0; no SoundFx 6 here: that is the bomb explosion (0x44d730 is in Bomb_Explode 0x44d6e0) */
         int died = enemy_hit(e, 1.0f /* P+0x90 */, dir, pt, peck);         /* isPeck = 1 for the dash, 0 otherwise */
         printf("  ATTACK hit enemy %u (%s)%s at %.0f %.0f %.0f (feet %.0f %.0f %.0f)\n", e->inst->index, peck ? "peck" : "charge", died ? " - dead" : "", pt.x, pt.y, pt.z, p->pos.x, p->pos.y, p->pos.z);
     }
@@ -1099,7 +1106,9 @@ static void attack_update(Player *p, const PlayerInput *in, float dt)
         p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return;
     case 10:
         auto_aim(p); dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };
-        if (p->charge > 0 && !p->steep_edge && !in->jump) {               /* 0x457c09..0x457c3d: charge left, no ledge ahead, no jump */ p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return; }
+        if (p->charge > 0 && !p->steep_edge && !in->jump) {               /* 0x457c09..0x457c3d: charge left, no ledge ahead, no jump */
+            if ((p->charge_rumble_t -= dt) <= 0) { p->charge_rumble_t += 0.2f; rumble(p, 0.5f, 0.15f); }   /* 0x457c43: +0x600 (never reset), P+0xac, P+0xa8 */
+            p->use_atk_disp = 1; p->atk_disp = (Vec3){ dir.x * dt * 700.0f, 0, dir.z * dt * 700.0f }; attack_hit_loop(p); return; }
         if (in->jump) { lock_move(p, 0); p->atk = 0; return; }             /* jump cancels the run */
         player_brake_charge(p); return;                                    /* 0x457e16: the charge ran out or a ledge is ahead */
     case 11: if ((p->atk_t -= dt) <= 0) p->atk = 0; return;
@@ -1214,6 +1223,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
         printf("  PLAYER killed in the race (kind %d), lives %d\n", kind, p->lives);
         return;
     }
+    if (kind == 2 || kind == 9) rumble(p, 0.5f, 1.5f);                  /* 0x44c3ab: Perso +0x1e4, +0x1e0 = P+0xd4, P+0xd0, before the immunity tests */
     if (p->dead_kind) { if (!((kind == 7 && p->dead_kind != 7) || (kind == 1 && p->dead_kind != 1))) return; }
     if ((kind == 2 || kind == 9 || kind == 3 || kind == 8 || kind == 4 || kind == 5 || kind == 6) && p->invuln_respawn > 0) return;
     p->death_delay = 3.5f;                                              /* +0x288: time until the fade */
@@ -1232,6 +1242,7 @@ void player_kill(Player *p, int kind)                                   /* vt[38
 int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39] Hit 0x44ca00: returns 1 when health ran out */
 {
     if (p->dead_kind || p->invuln_respawn > 0 || p->invuln_hit > 0 || wenv("WOODY_GOD")) return 0;   /* WOODY_GOD: testing */
+    rumble(p, 0.5f, 0.5f);                                               /* P+0xbc, P+0xb8 */
     jumper_force_fall(&p->jumper, 0);
     /* knockback 0x45a140: RampC to 500 u/s (0.1 s up), held 0.2 s, 0.5 s out; the player turns to face the attacker */
     float l = sqrtf(dir.x * dir.x + dir.z * dir.z);
@@ -1670,6 +1681,7 @@ static Vec3 race_ride(Player *p, const PlayerInput *in, float dt)
         p->race_crash_t += dt;
         float L = anim_len(p, 0x70, 1) + anim_len(p, 0x70, 0);
         if (p->race_crash_t >= L) { jumper_update(&p->jumper, 0, 1, p->on_ground, p->pos.y - p->floor_y, dt); disp.y = p->jumper.dy; }   /* before L he hangs where he crashed */
+        if (p->race_crash_t >= L && p->on_ground) rumble(p, 0.5f, 0.5f);  /* P+0xdc, P+0xd8; not on the 2 s way out */
         if ((p->race_crash_t >= L && p->on_ground) || p->race_crash_t >= 2.0f) player_kill(p, 8);
         return disp; }
     case 1: disp = p->race_dir; break;                                     /* 0x456cf0: M+0x1c, the direction of the previous frame */
@@ -1729,7 +1741,7 @@ static void special_update(Player *p, const PlayerInput *in, float dt)
     if (p->special_st == 1) {
         p->special_t += dt;
         if (p->special_t >= 1.5f) {                                           /* [0x4aa184] */
-            game_cam_shake(2.0f); p->special_st = 2;                          /* rumble 0x44d1b0 not ported */
+            game_cam_shake(2.0f); rumble(p, 1.0f, 1.0f); p->special_st = 2;   /* P+0xb4, P+0xb0 */
             int n = 0;
             for (int i = 0; p->enemies && i < p->enemies->n && n < 32; i++) {   /* 0x4c5258[], max 32 */
                 Enemy *e = &p->enemies->e[i];
@@ -1910,7 +1922,7 @@ static void race_check_crash(Player *p, Vec3 old_pos, Vec3 disp, float body_h)
     if (p->race_sub == 2) return;
     Vec3 mv = vsub(p->pos, old_pos); float moved = sqrtf(vdot(mv, mv)), want = sqrtf(vdot(disp, disp));
     if (want > 0 && moved / want < 0.7f) {                                 /* 0x4aa1d8; a frame without displacement is 0/0 in the original (counted as stuck), not here */
-        if (++p->race_stuck > 5 && !wenv("WOODY_GOD")) { game_hit_star((Vec3){ p->pos.x, p->pos.y + 150.0f, p->pos.z }); p->race_sub = 2; p->race_crash_t = 0; puts("  RACE crash (stuck)"); }   /* Effect_Star 0x4750e0(inst.pos + (0,150,0)); rumble left out */
+        if (++p->race_stuck > 5 && !wenv("WOODY_GOD")) { game_hit_star((Vec3){ p->pos.x, p->pos.y + 150.0f, p->pos.z }); p->race_sub = 2; p->race_crash_t = 0; rumble(p, 0.5f, 0.5f); puts("  RACE crash (stuck)"); }   /* Effect_Star 0x4750e0(inst.pos + (0,150,0)); rumble left out */
     } else p->race_stuck = 0;
     Vec3 U = p->ground_n, F = p->race_dir, fw = vcross(U, vcross(F, U));
     Vec3 end = { p->pos.x + fw.x * (P_RADIUS + 40.0f), p->pos.y + fw.y * (P_RADIUS + 40.0f), p->pos.z + fw.z * (P_RADIUS + 40.0f) };   /* 0x4ab294 */
@@ -1924,7 +1936,7 @@ static void race_check_crash(Player *p, Vec3 old_pos, Vec3 disp, float body_h)
     }
     if (both && p->race_sub != 2 && !wenv("WOODY_GOD")) {
         if (n40.x * n40.x + n40.z * n40.z > 1e-6f) p->yaw = atan2f(-n40.x, -n40.z);   /* Mover_SetFacing(-hitN) */
-        p->race_sub = 2; p->race_crash_t = 0; game_hit_star((Vec3){ p->pos.x, p->pos.y + 150.0f, p->pos.z }); puts("  RACE crash (wall ahead)");
+        p->race_sub = 2; p->race_crash_t = 0; game_hit_star((Vec3){ p->pos.x, p->pos.y + 150.0f, p->pos.z }); rumble(p, 0.5f, 0.5f); puts("  RACE crash (wall ahead)");
     }
 }
 /* 0x464c20: lean left/right on the ground, the jump set of 0x4642f0 in the air; nothing during the start anim or a crash */
@@ -2149,6 +2161,7 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (!p->dead_kind && !p->race_char && (p->script_act || p->ride || p->climb_sub || p->follow)) duck_update(p, in, dt, 1, p->ride ? 1 : p->on_ground);   /* 0x465b10 also in the states 5 / 8 / 4, which return early below; before 0x44b980 as in 0x44b797 */
     /* fall damage 0x44b220: landing after more than 1500 fallen costs one heart */
     if (!p->dead_kind && p->jumper.state == 6 && p->atk == 0 && p->jumper.fallen >= J_HARD_FALL) {
+        rumble(p, 0.8f, 0.5f);                                           /* P+0xcc, P+0xc8 */
         p->health -= 1.0f; printf("  PLAYER fall damage, health %.0f\n", p->health);
         if (p->health <= 0) { p->health = 0; player_kill(p, 8); }
     }

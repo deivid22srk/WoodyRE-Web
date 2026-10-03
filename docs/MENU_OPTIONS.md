@@ -177,6 +177,8 @@ connected joystick via `EnumDevices(DIDEVTYPE_JOYSTICK, …, DIEDFL_ATTACHEDONLY
 `+4` = vibration strength, init **1.0** (`0x4674b0`). The only "rumble" call `0x44d1b0` (Perso, not when `perso+0x21c == 2`)
 goes to `vt[2]` = `0x467b20` = **`ret 8`**. No reader of `+4` other than the menu and the save (§6.2). Without a joystick,
 the item shows the static starting value **0%**, with a joystick **100%**.
+Port: the value (woodyre.cfg `rumble=`, default 100) scales the rumble of the pads of `src/pad.c` (PORT EXTRA, INPUT.md 6);
+moving the slider gives a short rumble at the new strength. The old key `vibration=` is no longer read.
 
 ## 6. Storage
 

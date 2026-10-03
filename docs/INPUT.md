@@ -277,6 +277,24 @@ the Mover).
 - **Joystick**: WinMM `joyGetPosEx` on the first device that answers (ids 0..15, looked for again every 3 s while none,
   so a pad can be plugged in later); X/Y are mapped to ±4096 and put through the dead zone of `0x467a80`; buttons = the
   low 32 bits of `dwButtons`. Mode 0 never polls it (as the original).
+- **Pads (PORT EXTRA, `src/pad.c`)**: the controllers of today, read as raw HID with `hid.dll` / `setupapi` (no driver, no
+  Steam): DualSense / DualSense Edge and DualShock 4 over USB and Bluetooth. Report layouts as in SDL's hidapi drivers: DualSense
+  input 0x01 (USB) / 0x31 (Bluetooth, CRC-32), which Bluetooth only sends after a feature report is read (0x09 serial, 0x20
+  firmware); DualShock 4 0x01 / 0x11..0x19 (feature 0x05). They are looked for at start and on every `WM_DEVICECHANGE`
+  (`Window.dev_changes`, 0.5 s and 2 s later), all of them act as one pad, and nothing is read while the window is not in
+  front. Mapping (`g_in.pbind`, separate from the Woody.cfg keys): left stick = the joystick axes through the dead zone of
+  `0x467a80` (`pad_deadzone=` in woodyre.cfg, default the original's 30 %), D-pad = directions, A/Cross 4 (and confirm),
+  B/Circle 5 and 8 (and back), X/Square and RT 6, RB 7, Start/Options 9, LB and R3 10, Y/Triangle and LT 11. The right stick
+  adds look-around counts (`ftol(value · 5)`, the same weight as the left stick, §6 mouse). While a pad is connected the
+  WinMM joystick is not used (it would be the same pad again; Sony devices, `wMid` 0x054c, are skipped anyway).
+- **Rumble (PORT EXTRA)**: the original's calls of `0x44d1b0(a, b)` (a = strength, b = seconds; the empty `0x467b20` never
+  used them) now reach the pads, scaled by the Vibration option (MENU_OPTIONS.md 5.2): hit (0.5, 0.5), lightning / laser
+  (0.5, 1.5), bomb or rocket blast (1.0, 0.5), fall damage (0.8, 0.5), attack hit (0.5, 0.3), wall / ground rebound
+  (0.5, 0.5), charge run every 0.2 s (0.5, 0.15, clock `+0x600`), special (1.0, 1.0), race crash (0.5, 0.5, at the crash and
+  on landing). Not while dead (`+0x21c == 2`). Overlapping calls: the strongest running one wins. The DualSense light turns
+  Woody red while the game runs (`WOODY_PADNOLIGHT=1` leaves it alone) and goes back to the system's at exit.
+  Testing: `WOODY_PAD="T:LX:LY:BUTTONS[:D] ..."` (as `WOODY_JOY`, buttons `1 << PAD_*` of `src/pad.h`), `WOODY_PADLOG=1`
+  logs every rumble call.
 - **Actions**: `in_frame` builds the 14 actions per frame in the order of `0x402940`; `PlayerInput` gets held states and
   the stick (`ax`, `az`), which scales speed and turn rate in `player_update` exactly like `0x45a4b0`. Menu keys use the
   actions (confirm = action 12 pressed or Enter released, back = action 5 pressed or Esc released, pause = action 9).

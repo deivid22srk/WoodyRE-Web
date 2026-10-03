@@ -11,8 +11,8 @@ cd /d "%~dp0"
 set "ZIG_VER=0.16.0"
 set "ZIG_SHA=68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e"
 set "ZIG_NAME=zig-x86_64-windows-%ZIG_VER%"
-set "SRC=src\level.c src\render_gl.c src\main_engine.c src\player.c src\instance.c src\enemy.c src\boss.c src\water.c src\storm.c src\ekovm.c src\audio.c src\hud.c src\hnm.c src\ambient.c src\blackbox.c src\datasetup.c"
-set "LIBS=-lopengl32 -lgdi32 -luser32 -lwinmm -lbcrypt -lshell32 -lole32"
+set "SRC=src\level.c src\render_gl.c src\main_engine.c src\player.c src\instance.c src\enemy.c src\boss.c src\water.c src\storm.c src\ekovm.c src\audio.c src\hud.c src\hnm.c src\ambient.c src\blackbox.c src\datasetup.c src\pad.c"
+set "LIBS=-lopengl32 -lgdi32 -luser32 -lwinmm -lbcrypt -lshell32 -lole32 -lhid -lsetupapi"
 
 call :find_zig || goto :fail
 

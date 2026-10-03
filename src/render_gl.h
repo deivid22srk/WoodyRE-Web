@@ -16,6 +16,7 @@ typedef struct {
     int raw_dx, raw_dy;                       /* relative mouse counts since the last win_poll (WM_INPUT, only while the window is in the
                                                * foreground), the port's stand-in for DirectInput's DIMOUSESTATE lX / lY (docs/INPUT.md 1.3) */
     int quit;
+    unsigned dev_changes;                     /* counts WM_DEVICECHANGE: a pad may have come or gone (src/pad.c looks again) */
     void *hwnd, *hdc, *hglrc;
     int vx, vy;                               /* port extra (docs/DISPLAY.md 3): rnd_frame draws into the box vx, vy, width, height of the real window */
 } Window;
