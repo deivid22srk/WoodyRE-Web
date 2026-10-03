@@ -358,7 +358,7 @@ static void cin_update(EkoVM *vm, float dt, float now)
             for (uint32_t i = 0; i < mo->nnodes && node < 0; i++) if (mo->nodes[i].type_code == 5 && mo->nodes[i].npoints >= 2) node = (int)i;
             if (node < 0) { printf("cinematic: no vector on instance %u\n", g_cin.vec->index); g_cin.remain = 0; break; }
             Vec3 P0 = ins_point_world(g_cin.vec, mo->nodes[node].point_base), P1 = ins_point_world(g_cin.vec, mo->nodes[node].point_base + 1);
-            plane_release(); if (g_player && g_player->inst == m) player_place(g_player, P0, atan2f(P1.x - P0.x, P1.z - P0.z));
+            plane_release(); if (g_player && g_player->inst == m) player_cin_place(g_player, P0, atan2f(P1.x - P0.x, P1.z - P0.z));
             m->scripted = 1; m->visible = 1; inst_play_once(m, g_cin.anim, 3.0f, now);
             for (int i = 0; i < g_cin.nactors; i++) { inst_play_once(g_cin.actor[i].inst, g_cin.actor[i].anim, 3.0f, now);
                 g_cin.actor[i].inst->visible = 1; }                          /* 0x44ed03: 0x4077f0 puts the actor back into its cell even when the script hid it (W1B: Buzz 398 and his saucer 399) */

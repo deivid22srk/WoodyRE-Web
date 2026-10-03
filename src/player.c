@@ -1501,14 +1501,14 @@ int player_collect(Player *p, int type, int arg)
     return 1;
 }
 
-static void player_apply_transform(Player *p)
+static void player_transform(Player *p, int tilt)
 {
     Instance *in = p->inst;
     /* q = yaw(y) * rotx(-90): (0.7071 c, -0.7071 s, -0.7071 s, -0.7071 c) with c=cos(yaw/2), s=sin(yaw/2) */
     float c = cosf(p->yaw * 0.5f), s = sinf(p->yaw * 0.5f);
     in->position = p->pos;
     in->quat.x = 0.70710678f * c; in->quat.y = -0.70710678f * s; in->quat.z = -0.70710678f * s; in->quat.w = -0.70710678f * c;
-    if (p->race_char && !p->dead_kind) {
+    if (tilt && p->race_char && !p->dead_kind) {
         /* Orient 0x44bd30 in state 1: up = the filtered floor normal +0x210 instead of (0,1,0); F = -facing, right = F x up,
          * fwd = up x right, rows +0x28/+0x34/+0x40 = right/fwd/up = the images of model x/y/z (so rider and board lean with
          * the slope). The port normalises the axes and turns them into the instance quaternion (Shepperd). */
@@ -1531,7 +1531,7 @@ static void player_apply_transform(Player *p)
     Vec3 sc = in->scale; if (p->crush > 0) sc.z *= p->crush;          /* 0x44bd00: inst z scale +0x54 = P+0x2e8 (crush test 0x462a40) */
     mat4_from_trs(&in->world, in->position, in->quat, sc);
 }
-
+static void player_apply_transform(Player *p) { player_transform(p, 1); }
 /* 0x44bf10: when Perso+0x4b4 (the race board, message 1120) is set, the board gets the Perso's position, centre, rotation
  * (the tilted one of the up filter) and cell every frame. Its animation is its own controller +0x498 (board_request), which
  * gets the rider's requests except for the kind-1 death (0x76) and the race restart (0) and has none at the level start. */
@@ -1548,6 +1548,15 @@ void player_place(Player *p, Vec3 pos, float yaw)
     bomb_drop(p); p->throw_hold = 0;
     p->pos = pos; p->yaw = yaw; p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->floor_y = pos.y; p->atk = 0; p->move_lock = 0; p->lanim = -1; p->step_u = -1.0f;
     jumper_reset(&p->jumper); p->on_ground = 1; p->cam_init = 0; player_apply_transform(p);
+}
+
+/* start of a real time cinematic (0x44eab0) on the Perso: instance position = P0 and the rows written straight from d,
+ * {d x (0,1,0), d, (0,1,0)}, so the main instance always stands upright. The race rider's tilt (the up filter +0x210
+ * of Orient 0x44bd30) is not used: Perso_Update, and with it Orient, is skipped while the cinematic runs (0x401cf9).
+ * S1R: kept tilted by the last slope, Splinter's anim-10 run to the door drifted off the floor into the air. */
+void player_cin_place(Player *p, Vec3 pos, float yaw)
+{
+    player_place(p, pos, yaw); player_transform(p, 0);
 }
 
 /* the camera as a volume actor (docs/EVENTS.md 2.1): 0x41f379..0x41f3cf at the end of Camera::Update, only once a script
