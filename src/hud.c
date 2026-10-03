@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <math.h>
 
 #ifndef GL_BGRA_EXT
@@ -208,21 +209,36 @@ static void font_draw(float x, float y, const uint16_t *s, uint32_t col)        
 }
 /* port-only text (docs/DISPLAY.md 4, port extra): ASCII turned into the font's codes (docs/HUD_TEXT.md 1.4; the glyph order is
  * the same in every bank of this English build), unknown characters become the space glyph 18. Ref = 0x7f000000 | slot. */
-static struct { char a[32]; uint16_t u[32]; } g_pstr[64]; static int g_npstr;
-uint32_t hud_port_str(const char *ascii)
+static struct { char a[32]; uint16_t u[32]; } g_pstr[96]; static int g_npstr;   /* 0..63 kept for good, 64..95 the rewritable ones of hud_port_str_tmp */
+static void port_codes(int i, const char *ascii)
 {
     static const char k_glyphs[] = "0123456789QuitAre yos?CnYN%=/:+LERD!SUTOKBHIGFagPkwmdlcvWpVXMf.h()\x01q'b,$zJx";   /* codes 1..75 (67 = the registered sign) */
+    snprintf(g_pstr[i].a, sizeof g_pstr[i].a, "%s", ascii);
+    int n = 0;
+    for (const char *c = g_pstr[i].a; *c && n < 31; c++) {
+        const char *f = *c ? strchr(k_glyphs, *c) : NULL;
+        if (!f && isalpha((unsigned char)*c)) { char o = isupper((unsigned char)*c) ? (char)tolower(*c) : (char)toupper(*c); f = strchr(k_glyphs, o); }   /* no "Z" or "j" in the font: the other case */
+        g_pstr[i].u[n++] = f ? (uint16_t)(f - k_glyphs + 1) : 18;
+    }
+    g_pstr[i].u[n] = 0;
+}
+uint32_t hud_port_str(const char *ascii)
+{
     int i; for (i = 0; i < g_npstr; i++) if (!strcmp(g_pstr[i].a, ascii)) return 0x7f000000u | (uint32_t)i;
     if (g_npstr == 64) return 0x7f000000u;
-    snprintf(g_pstr[i].a, sizeof g_pstr[i].a, "%s", ascii);
-    int n = 0; for (const char *c = g_pstr[i].a; *c && n < 31; c++) { const char *f = strchr(k_glyphs, *c); g_pstr[i].u[n++] = f ? (uint16_t)(f - k_glyphs + 1) : 18; }
-    g_pstr[i].u[n] = 0; g_npstr++;
+    port_codes(i, ascii); g_npstr++;
     return 0x7f000000u | (uint32_t)i;
+}
+uint32_t hud_port_str_tmp(int k, const char *ascii)  /* slot k (0..31), rewritten on every call: for texts that keep changing (the Controls page) */
+{
+    if (k < 0 || k >= 32) return 0x7f000000u;
+    port_codes(64 + k, ascii);
+    return 0x7f000000u | (uint32_t)(64 + k);
 }
 static const uint16_t *hud_string(uint32_t ref)
 {
     uint32_t i = ref & 0xffff;
-    if ((ref >> 24) == 0x7f) return (int)i < g_npstr ? g_pstr[i].u : NULL;
+    if ((ref >> 24) == 0x7f) return (int)i < g_npstr || (i >= 64 && i < 96) ? g_pstr[i].u : NULL;
     if ((ref >> 24) == 1) return (int)i < H.nlstr && H.lstr[i] ? H.lstr[i] : NULL;   /* level bank (the credits) */
     return (ref >> 24) == 0 && (int)i < H.nstr && H.str[i] ? H.str[i] : NULL;
 }
@@ -848,6 +864,9 @@ void hud_menu_items(const MenuItem *it, int n, float yfrac, int sel, int ready)
         const uint16_t *s = hud_string(it[i].id); if (!s) continue;
         while (S > 15.0f) { font_size(S); if (font_measure(s) < 640.0f) break; S -= 1.0f; }
     }
+    /* port extra: a page longer than the screen (the Controls page) shrinks until its last row fits; every page of the
+     * original already does */
+    while (S > 12.0f) { font_size(S); if (yfrac * 480.0f + (n - 1) * font_cell() + S <= 476.0f) break; S -= 1.0f; }
     float y = yfrac * 480.0f;
     for (int i = 0; i < n; i++) {
         if (!(it[i].flags & 2) && !ready) break;

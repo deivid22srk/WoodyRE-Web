@@ -471,6 +471,8 @@ static void opt_apply(void) { audio_master(g_opt.sfx * 0.01f, g_opt.music * 0.01
  * defaults (0x100032a0: invert 0, cinematic 1). -1 = not in woodyre.cfg. vsync: the same for the display page's key. */
 static struct { int rev, film, vsync; } g_setup = { -1, -1, -1 };
 static int g_logos = 1;                                 /* woodyre.cfg logos=0: never play the logo films (PORT EXTRA) */
+static char g_bind_cfg[32][100]; static int g_nbind_cfg;   /* woodyre.cfg key_* / pad_* lines (PORT EXTRA): applied by in_read_cfg after Woody.cfg */
+static void ctl_write(FILE *f);
 static int g_pad_dz = 30;                               /* woodyre.cfg pad_deadzone= (percent): the stick dead zone of the pads (PORT EXTRA), default the original's 30 % (0x467a80) */
 /* ---- display (docs/DISPLAY.md; everything here is a PORT EXTRA). The original runs exclusive fullscreen at the Woody.cfg mode
  * (Detect's list, default 640x480), always 4:3 in the layout, and paces itself only by Flip(DDFLIP_WAIT) = vsync (0x47ee90);
@@ -495,6 +497,8 @@ static void opt_read(void)
         else if (sscanf(line, "reverse_stereo=%d", &v) == 1) g_setup.rev = v != 0; else if (sscanf(line, "film_sound=%d", &v) == 1) g_setup.film = v != 0;
         else if (sscanf(line, "logos=%d", &v) == 1) g_logos = v != 0;
         else if (sscanf(line, "pad_deadzone=%d", &v) == 1) g_pad_dz = v < 0 ? 0 : v > 90 ? 90 : v;
+        else if ((!strncmp(line, "key_", 4) || !strncmp(line, "pad_", 4)) && strchr(line, '=') && g_nbind_cfg < 32) {
+            line[strcspn(line, "\r\n")] = 0; snprintf(g_bind_cfg[g_nbind_cfg++], sizeof g_bind_cfg[0], "%s", line); }
         else if (sscanf(line, "fpscap=%d", &v) == 1) g_disp.cap = v < 0 ? 0 : v > 1000 ? 1000 : v; } fclose(f); }
     int *o[3] = { &g_opt.sfx, &g_opt.music, &g_opt.vib }; for (int i = 0; i < 3; i++) { if (*o[i] < 0) *o[i] = 0; if (*o[i] > 100) *o[i] = 100; }
 }
@@ -504,6 +508,7 @@ static void opt_write(void)
     fprintf(f, "sfx=%d\nmusic=%d\nrumble=%d\n", g_opt.sfx, g_opt.music, g_opt.vib);
     fprintf(f, "aspect=%s\nwindow=%dx%d\nfullscreen=%d\nvsync=%d\nfpscap=%d\n", g_disp.wide ? "wide" : "4:3", g_disp.w, g_disp.h, g_disp.full, g_disp.vsync, g_disp.cap);
     fprintf(f, "reverse_stereo=%d\nfilm_sound=%d\nlogos=%d\npad_deadzone=%d\n", g_setup.rev > 0, g_setup.film != 0, g_logos, g_pad_dz);
+    ctl_write(f);
     fclose(f);
 }
 /* the 3D view in the window (GL origin bottom left): narrower than 4:3 = letterboxed in both modes, wider = pillarboxed in 4:3 mode */
@@ -610,7 +615,7 @@ static void setup_import(const char *data_dir)
     if (g_setup.rev < 0) g_setup.rev = 0;                                           /* Setup defaults 0x100032a0 */
     if (g_setup.film < 0) g_setup.film = 1;
 }
-static void in_read_cfg(const char *data_dir)
+static void in_read_wcfg(const char *data_dir)
 {
     in_defaults();
     unsigned char b[0x120]; const char *path = NULL; int r = wcfg_read(data_dir, b, &path);
@@ -709,6 +714,95 @@ static void in_frame(const Window *w, int fly, double now, double tl)   /* 0x402
     }
 }
 static int in_held(int a) { return g_in.down[a]; }                                /* 0x467400 */
+/* ---- the bindings as names, for woodyre.cfg and the Controls page (PORT EXTRA, docs/INPUT.md 6.2). The font has no "-",
+ * "[", "*" and friends, so those keys are spelled out. */
+static const struct { int vk; const char *n; } k_vk_names[] = {
+    {VK_SPACE,"Space"}, {VK_RETURN,"Enter"}, {VK_ESCAPE,"Esc"}, {VK_TAB,"Tab"}, {VK_BACK,"Backspace"}, {VK_LEFT,"Left arrow"},
+    {VK_RIGHT,"Right arrow"}, {VK_UP,"Up arrow"}, {VK_DOWN,"Down arrow"}, {VK_LCONTROL,"Left Ctrl"}, {VK_RCONTROL,"Right Ctrl"},
+    {VK_CONTROL,"Ctrl"}, {VK_LSHIFT,"Left Shift"}, {VK_RSHIFT,"Right Shift"}, {VK_SHIFT,"Shift"}, {VK_LMENU,"Left Alt"},
+    {VK_RMENU,"Right Alt"}, {VK_MENU,"Alt"}, {VK_INSERT,"Insert"}, {VK_DELETE,"Delete"}, {VK_HOME,"Home"}, {VK_END,"End"},
+    {VK_PRIOR,"Page Up"}, {VK_NEXT,"Page Down"}, {VK_MULTIPLY,"Num Times"}, {VK_ADD,"Num Plus"}, {VK_SUBTRACT,"Num Minus"},
+    {VK_DECIMAL,"Num Dot"}, {VK_DIVIDE,"Num Slash"}, {VK_CAPITAL,"Caps Lock"}, {VK_NUMLOCK,"Num Lock"}, {VK_SCROLL,"Scroll Lock"},
+    {VK_PAUSE,"Pause"}, {VK_APPS,"Menu key"}, {VK_OEM_1,"Semicolon"}, {VK_OEM_PLUS,"Equals"}, {VK_OEM_COMMA,"Comma"},
+    {VK_OEM_MINUS,"Minus"}, {VK_OEM_PERIOD,"Period"}, {VK_OEM_2,"Slash"}, {VK_OEM_3,"Backquote"}, {VK_OEM_4,"Left bracket"},
+    {VK_OEM_5,"Backslash"}, {VK_OEM_6,"Right bracket"}, {VK_OEM_7,"Quote"}, {VK_OEM_102,"Angle bracket"} };
+static void vk_name(int vk, char *b, size_t n)
+{
+    if (vk >= IN_JOY) { snprintf(b, n, "Joy%d", vk - IN_JOY + 1); return; }                       /* a WinMM joystick button */
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) { snprintf(b, n, "%c", vk); return; }
+    if (vk >= VK_F1 && vk <= VK_F24) { snprintf(b, n, "F%d", vk - VK_F1 + 1); return; }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) { snprintf(b, n, "Num %d", vk - VK_NUMPAD0); return; }
+    for (unsigned i = 0; i < sizeof k_vk_names / sizeof k_vk_names[0]; i++) if (k_vk_names[i].vk == vk) { snprintf(b, n, "%s", k_vk_names[i].n); return; }
+    snprintf(b, n, "Key %d", vk);
+}
+static int vk_parse(const char *s)                               /* a name of vk_name -> the code, 0 = unknown */
+{
+    char b[32];
+    for (int vk = 1; vk < 256; vk++) { vk_name(vk, b, sizeof b); if (!_stricmp(b, s)) return vk; }
+    if (!_strnicmp(s, "Joy", 3)) { int n = atoi(s + 3); if (n >= 1 && n <= 32) return IN_JOY + n - 1; }
+    return 0;
+}
+static const char *const k_pad_cfg[PAD_NBUTTONS] = { "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start", "LS", "RS", "Up", "Down", "Left", "Right", "Guide", "Touchpad" };
+static const char *pad_btn_name(int b, int kind)                 /* b = PAD_*; the names printed on that pad */
+{
+    static const char *const sony[PAD_NBUTTONS] = { "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "Create", "Options", "L3", "R3", "Up", "Down", "Left", "Right", "PS", "Touchpad" };
+    static const char *const dpad[4] = { "Dpad Up", "Dpad Down", "Dpad Left", "Dpad Right" };   /* no "-" in the font */
+    if (b >= PAD_UP && b <= PAD_RIGHT) return dpad[b - PAD_UP];
+    if (kind == PADK_DS4 && b == PAD_BACK) return "Share";
+    return kind == PADK_DS4 || kind == PADK_DS5 ? sony[b] : k_pad_cfg[b];
+}
+/* the rows of the Controls page; Duck also sets action 8 (duck while riding), which the original binds on its own */
+static const struct { const char *name, *cfg; int a, a2; } k_ctl_rows[11] = {
+    {"Walk forward:", "forward", 2, -1}, {"Walk back:", "back", 3, -1}, {"Walk left:", "left", 0, -1}, {"Walk right:", "right", 1, -1},
+    {"Jump:", "jump", 4, -1}, {"Attack:", "attack", 6, -1}, {"Special:", "special", 11, -1}, {"Duck:", "duck", 5, 8},
+    {"Look around:", "look", 7, -1}, {"Camera behind:", "camera", 10, -1}, {"Pause:", "pause", 9, -1} };
+static struct {
+    int custom;                                                  /* the bindings came from woodyre.cfg or the Controls page: write them back */
+    int dev;                                                     /* the page shows 0 the keyboard, 1 the pads */
+    int cap, phase; float cap_t; uint32_t pad_prev;              /* cap 1: waiting for the key / button of row M.sel - 2 (phase 0: until all are let go), 2: done, until all are let go */
+    int bak[12][4], pbak[12][4], bak_mode, bak_cfg;              /* the bindings when the page opened ("back" puts them back) */
+    int last_kind;                                               /* the pad kind seen last, for the button names */
+} g_ctl;
+static void ctl_apply_cfg(void)                                  /* woodyre.cfg key_<row>=Name,Name / pad_<row>=A,RT over Woody.cfg and the defaults */
+{
+    for (int i = 0; i < g_nbind_cfg; i++) {
+        char l[100]; snprintf(l, sizeof l, "%s", g_bind_cfg[i]);
+        int pad = l[0] == 'p'; char *eq = strchr(l, '='); *eq = 0; int row = -1;
+        for (int r = 0; r < 11; r++) if (!strcmp(l + 4, k_ctl_rows[r].cfg)) row = r;
+        if (row < 0) { printf("input: woodyre.cfg: unknown binding %s\n", l); continue; }
+        int codes[4] = { 0 }, n = 0;
+        for (char *t = strtok(eq + 1, ","); t && n < 4; t = strtok(NULL, ",")) {
+            while (*t == ' ') t++; char *e = t + strlen(t); while (e > t && e[-1] == ' ') *--e = 0;
+            int c = 0;
+            if (pad) { for (int b = 0; b < PAD_NBUTTONS; b++) if (!_stricmp(t, k_pad_cfg[b])) c = b + 1; }
+            else c = vk_parse(t);
+            if (c) codes[n++] = c; else if (*t) printf("input: woodyre.cfg: unknown %s \"%s\" in %s\n", pad ? "button" : "key", t, l);
+        }
+        int (*B)[4] = pad ? g_in.pbind : g_in.bind;
+        memcpy(B[k_ctl_rows[row].a], codes, sizeof codes);
+        if (k_ctl_rows[row].a2 >= 0) memcpy(B[k_ctl_rows[row].a2], codes, sizeof codes);
+    }
+    if (g_nbind_cfg) { g_ctl.custom = 1; printf("input: %d bindings from woodyre.cfg\n", g_nbind_cfg); }
+}
+static void in_read_cfg(const char *data_dir) { in_read_wcfg(data_dir); ctl_apply_cfg(); }
+static void ctl_list(int dev, int a, int names, char *b, size_t n)   /* the codes of action a as text; names: the pad's own names, keyboard view without WinMM buttons */
+{
+    b[0] = 0;
+    if (names && dev && a < 4) snprintf(b, n, "Left stick");    /* the stick always walks (as the original's joystick axes) */
+    for (int s = 0; s < 4; s++) {
+        int c = dev ? g_in.pbind[a][s] : g_in.bind[a][s]; if (!c) break;
+        if (names && !dev && c >= IN_JOY) continue;
+        char t[32]; if (dev) snprintf(t, sizeof t, "%s", names ? pad_btn_name(c - 1, g_ctl.last_kind) : k_pad_cfg[c - 1]); else vk_name(c, t, sizeof t);
+        size_t l = strlen(b); snprintf(b + l, n - l, "%s%s", l ? (names ? ", " : ",") : "", t);
+    }
+}
+static void ctl_write(FILE *f)
+{
+    if (!g_ctl.custom) return;
+    char b[100];
+    for (int r = 0; r < 11; r++) { ctl_list(0, k_ctl_rows[r].a, 0, b, sizeof b); fprintf(f, "key_%s=%s\n", k_ctl_rows[r].cfg, b); }
+    for (int r = 0; r < 11; r++) { ctl_list(1, k_ctl_rows[r].a, 0, b, sizeof b); fprintf(f, "pad_%s=%s\n", k_ctl_rows[r].cfg, b); }
+}
 static int in_pressed(int a) { return g_in.down[a] && !g_in.prev[a]; }            /* 0x467420 */
 static int in_released(int a) { return !g_in.down[a] && g_in.prev[a]; }           /* 0x467440 */
 /* LevelIsEnable 0x450470 (table 0x450694): the done flag of the predecessor. The original reads it in the block of the
@@ -899,7 +993,7 @@ static const MenuItem k_page17[] = { {61,2}, {5,1}, {6,1} };
 static const MenuItem k_page18[] = { {4,1}, {36,1}, {2,1} };
 static const MenuItem k_page19[] = { {4,1}, {19,1}, {36,1}, {2,1} };   /* 0x4b5d18: Continue (5), Start again (18), Options (6), Quit (7) */
 static const MenuItem k_page1c[] = { {3,2}, {5,1}, {6,1} };
-static MenuItem k_page1b[] = { {36,2}, {38,0x10}, {39,0x10}, {132,0x10}, {4,1}, {0,1} };   /* item 5 "Display" (y 424.5): port extra, id set on enter */
+static MenuItem k_page1b[] = { {36,2}, {38,0x10}, {39,0x10}, {132,0x10}, {4,1}, {0,1}, {0,1} };   /* items 5 "Display" and 6 "Controls": port extras, ids set on enter (the page starts at 0.33 instead of 0.4 to fit them) */
 /* port page 0x40 "Display" (docs/DISPLAY.md 4), the list class of 0x1b with choices (flag 0x100): ids and values are
  * port strings or Common 133 "On" / 134 "Off", filled in by disp_items */
 static MenuItem k_page40[7] = { {0,2}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100}, {4,1} };
@@ -927,14 +1021,81 @@ static void disp_step(int item, int dir)               /* left / right on a choi
     case 5: { int i = 0; while (i < NCAP && k_disp_cap[i] != d->cap) i++; i = i == NCAP ? 0 : (i + dir + NCAP) % NCAP; d->cap = k_disp_cap[i]; break; }
     }
 }
+/* port page 0x41 "Controls" (PORT EXTRA, docs/INPUT.md 6.2): a choice of device, a row per action with its keys or buttons,
+ * Defaults and Continue. Confirm on a row waits for a key (or button): one already in the row is taken out, any other is
+ * added (and taken out of the other rows); Esc or 6 s without one leaves the row as it was. Changes count at once,
+ * Continue saves them to woodyre.cfg, back puts the old ones back. */
+static MenuItem k_page41[15] = { {0,2}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100}, {0,0x100},
+    {0,0x100}, {0,0x100}, {0,0x100}, {0,1}, {4,1} };
+static void ctl_items(void)
+{
+    k_page41[0].id = hud_port_str("Controls");
+    k_page41[1].id = hud_port_str("Device:"); k_page41[1].value = (int)hud_port_str(g_ctl.dev ? "Controller" : "Keyboard");
+    for (int r = 0; r < 11; r++) {
+        char b[100]; ctl_list(g_ctl.dev, k_ctl_rows[r].a, 1, b, sizeof b);
+        if (g_ctl.cap == 1 && M.sel == 2 + r) snprintf(b, sizeof b, "%s", g_ctl.dev ? "Press a button" : "Press a key");
+        else if (!b[0]) snprintf(b, sizeof b, "(none)");
+        k_page41[2 + r].id = hud_port_str(k_ctl_rows[r].name); k_page41[2 + r].value = (int)hud_port_str_tmp(r, b);
+    }
+    k_page41[13].id = hud_port_str("Defaults");
+}
+static int key_side(int vk) { return vk == VK_LSHIFT || vk == VK_RSHIFT ? VK_SHIFT : vk == VK_LCONTROL || vk == VK_RCONTROL ? VK_CONTROL : vk == VK_LMENU || vk == VK_RMENU ? VK_MENU : vk; }
+static int ctl_same(int dev, int a, int b) { return a == b || (!dev && (key_side(a) == b || key_side(b) == a)); }   /* Shift also matches Left / Right Shift */
+static void ctl_remove(int *l, int dev, int code)
+{
+    int n = 0; for (int s = 0; s < 4; s++) if (l[s] && !ctl_same(dev, l[s], code)) l[n++] = l[s];
+    while (n < 4) l[n++] = 0;
+}
+static void ctl_assign(int row, int code)                        /* code: a VK (keyboard) or PAD_* + 1 */
+{
+    int dev = g_ctl.dev, (*B)[4] = dev ? g_in.pbind : g_in.bind, a = k_ctl_rows[row].a, had = 0;
+    for (int s = 0; s < 4; s++) if (B[a][s] && ctl_same(dev, B[a][s], code)) had = 1;
+    if (had) ctl_remove(B[a], dev, code);
+    else {
+        for (int r = 0; r < 11; r++) if (r != row) { ctl_remove(B[k_ctl_rows[r].a], dev, code); if (k_ctl_rows[r].a2 >= 0) ctl_remove(B[k_ctl_rows[r].a2], dev, code); }
+        int n = 0; while (n < 4 && B[a][n]) n++;
+        if (n == 4) { int k = 0; while (k < 3 && B[a][k] >= IN_JOY) k++; for (int s = k; s < 3; s++) B[a][s] = B[a][s + 1]; n = 3; }   /* full: the oldest key makes room (not a WinMM button) */
+        B[a][n] = code;
+    }
+    if (k_ctl_rows[row].a2 >= 0) memcpy(B[k_ctl_rows[row].a2], B[a], sizeof B[a]);
+    char t[32]; if (dev) snprintf(t, sizeof t, "%s", k_pad_cfg[code - 1]); else vk_name(code, t, sizeof t);
+    printf("input: %s %s %s\n", k_ctl_rows[row].name, had ? "without" : "with", t);
+}
+static void ctl_defaults(int dev)                                /* the port's defaults for one device (in_defaults sets both) */
+{
+    int keep[12][4], mode = g_in.mode, cfg = g_in.have_cfg;
+    memcpy(keep, dev ? g_in.bind : g_in.pbind, sizeof keep);
+    in_defaults();
+    if (dev) { memcpy(g_in.bind, keep, sizeof keep); g_in.mode = mode; g_in.have_cfg = cfg; } else memcpy(g_in.pbind, keep, sizeof keep);
+}
+/* the key / button capture, in the main loop before the menu: the menu gets no keys meanwhile */
+static void ctl_capture(const Window *w, const int *key_prev, MenuKeys *mk, float dt)
+{
+    if (g_in.pad.kind != PADK_NONE) g_ctl.last_kind = g_in.pad.kind;
+    if (!g_ctl.cap) return;
+    memset(mk, 0, sizeof *mk);
+    int held = 0, vk = 0;
+    for (int k = 8; k < 256; k++) {
+        if (k == VK_SHIFT || k == VK_CONTROL || k == VK_MENU || k == VK_F11 || k == VK_LWIN || k == VK_RWIN) continue;   /* the sided ones are set too; F11 is fullscreen */
+        if (w->keys[k]) { held = 1; if (!key_prev[k] && !vk) vk = k; }
+    }
+    uint32_t pb = g_in.pad.buttons, pnew = pb & ~g_ctl.pad_prev; g_ctl.pad_prev = pb;
+    if (g_ctl.cap == 2 || g_ctl.phase == 0) { if (!held && !pb) { if (g_ctl.cap == 2) g_ctl.cap = 0; else g_ctl.phase = 1; } return; }
+    g_ctl.cap_t += dt;
+    int done = 0;
+    if (vk == VK_ESCAPE || g_ctl.cap_t > 6.0f) done = 1;
+    else if (!g_ctl.dev && vk) { ctl_assign(M.sel - 2, vk); done = 1; }
+    else if (g_ctl.dev && pnew) { int b = 0; while (!(pnew >> b & 1)) b++; ctl_assign(M.sel - 2, b + 1); done = 1; }
+    if (done) { g_ctl.cap = 2; ctl_items(); hud_menu_blink(0.25f); }
+}
 static const MenuItem *menu_items(int page, int *n, float *yfrac)
 {
     #define PG(t, y) { *n = (int)(sizeof t / sizeof t[0]); *yfrac = y; return t; }
     switch (page) {
     case 0: PG(k_page0, 0.7f)  case 1: PG(k_page1, 0.55f)  case 6: PG(k_page6, 0.4f)  case 7: PG(k_page7, 0.4f)
     case 8: PG(k_page8, 0.4f)  case 9: PG(k_page9, 0.4f)   case 0xa: PG(k_pagea, 0.4f) case 0x17: PG(k_page17, 0.4f)
-    case 0x18: PG(k_page18, 0.05f) case 0x19: PG(k_page19, 0.05f) case 0x1b: PG(k_page1b, 0.4f) case 0x1c: PG(k_page1c, 0.55f)
-    case 0x40: PG(k_page40, 0.25f)
+    case 0x18: PG(k_page18, 0.05f) case 0x19: PG(k_page19, 0.05f) case 0x1b: PG(k_page1b, 0.33f) case 0x1c: PG(k_page1c, 0.55f)
+    case 0x40: PG(k_page40, 0.25f) case 0x41: PG(k_page41, 0.03f)
     }
     #undef PG
     *n = 0; *yfrac = 0; return NULL;
@@ -1183,8 +1344,11 @@ static void menu_enter(int page)
     case 0x1b:                                                         /* 0x460240: the cursor on "Sound FX volume", the values backed up */
         M.opt_bak[0] = g_opt.sfx; M.opt_bak[1] = g_opt.music; M.opt_bak[2] = g_opt.vib;
         k_page1b[1].value = g_opt.sfx; k_page1b[2].value = g_opt.music; k_page1b[3].value = g_opt.vib; M.sel = 1;
-        k_page1b[5].id = hud_port_str("Display"); break;                  /* port extra */
+        k_page1b[5].id = hud_port_str("Display"); k_page1b[6].id = hud_port_str("Controls"); break;   /* port extras */
     case 0x40: M.disp = g_dnow; disp_items(); M.sel = 1; break;        /* port page: the cursor on the first choice */
+    case 0x41: g_ctl.dev = g_in.pad.kind != PADK_NONE; g_ctl.cap = 0;  /* port page: the pads when one is there */
+        memcpy(g_ctl.bak, g_in.bind, sizeof g_ctl.bak); memcpy(g_ctl.pbak, g_in.pbind, sizeof g_ctl.pbak); g_ctl.bak_mode = g_in.mode; g_ctl.bak_cfg = g_in.have_cfg;
+        ctl_items(); M.sel = 1; break;
     case 0x1c: M.sel = 2; break;                                       /* 0x45bd40: on "No" */
     case 0x18: case 0x19: case 0x1f: M.sel = 0; hud_logo_off(); break; /* 0x45b390 */
     case 0x1d: M.go_t = 5.0f; break;                                   /* 0x45bbb0: base enter, +0x14 = 5.0 */
@@ -1334,12 +1498,24 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
         }
         if (k->ok && M.sel == 4) { opt_write(); menu_back_to_level_menu(); }                          /* Continue keeps the values */
         else if (k->ok && M.sel == 5) menu_enter(0x40);                                                /* port extra: the Display page */
+        else if (k->ok && M.sel == 6) menu_enter(0x41);                                                /* port extra: the Controls page */
         else if (k->back) { g_opt.sfx = M.opt_bak[0]; g_opt.music = M.opt_bak[1]; g_opt.vib = M.opt_bak[2]; opt_apply(); menu_back_to_level_menu(); }   /* 0x4602a0 */
         break; }
     case 0x40:                                                         /* port page (docs/DISPLAY.md 4): left/right change a choice, Continue applies + saves, back drops the edit */
         if ((k->right || k->left) && M.sel >= 1 && M.sel <= 5) { disp_step(M.sel, k->right ? 1 : -1); disp_items(); hud_menu_blink(0.25f); }
         if (k->ok && M.sel == 6) { g_disp = g_dnow = M.disp; g_disp_dirty = 1; opt_write(); }
         if ((k->ok && M.sel == 6) || k->back) { M.page = 0x1b; M.sel = 5; M.delay = 0; hud_menu_blink(0); }   /* back to Options on "Display", its backups kept */
+        break;
+    case 0x41:                                                         /* port page "Controls": the capture itself runs in ctl_capture */
+        if ((k->right || k->left) && M.sel == 1) { g_ctl.dev ^= 1; ctl_items(); hud_menu_blink(0.25f); }
+        if (k->ok && M.sel >= 2 && M.sel <= 12) { g_ctl.cap = 1; g_ctl.phase = 0; g_ctl.cap_t = 0; g_ctl.pad_prev = g_in.pad.buttons; ctl_items(); }
+        if (k->ok && M.sel == 13) { ctl_defaults(g_ctl.dev); ctl_items(); hud_menu_blink(0.25f); puts("input: defaults"); }
+        if (k->ok && M.sel == 14) {
+            if (memcmp(g_ctl.bak, g_in.bind, sizeof g_ctl.bak) || memcmp(g_ctl.pbak, g_in.pbind, sizeof g_ctl.pbak)) g_ctl.custom = 1;
+            opt_write();
+        }
+        if (k->back) { memcpy(g_in.bind, g_ctl.bak, sizeof g_ctl.bak); memcpy(g_in.pbind, g_ctl.pbak, sizeof g_ctl.pbak); g_in.mode = g_ctl.bak_mode; g_in.have_cfg = g_ctl.bak_cfg; }
+        if ((k->ok && M.sel == 14) || k->back) { M.page = 0x1b; M.sel = 6; M.delay = 0; hud_menu_blink(0); }
         break;
     case 3: if (!M.p.lock) carousel_update(k, dt); break;
     case 4: if (!M.p.lock && k->back) { panel_close(0, 24); panel_iris(0, 0); } break;   /* 0x45bb30 -> 0x45bb40: iris +0x30 = 0 -> 0; confirm is vt[19] = ret */
@@ -1381,7 +1557,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
 }
 
 /* table 0x405af8: the half-black backdrop and whether the world stands still */
-static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 0xb || page == 0xc || page == 0xe || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && ((page >= 0x18 && page <= 0x1c) || page == 0x40)); }   /* 0x40: port page, as 0x1b */
+static int menu_overlay(int page) { return page == 7 || page == 0xa || page == 0xb || page == 0xc || page == 0xe || page == 6 || page == 8 || page == 9 || page == 0x17 || (g_level != 0 && ((page >= 0x18 && page <= 0x1c) || page == 0x40 || page == 0x41)); }   /* 0x40 / 0x41: port pages, as 0x1b */
 static int menu_pauses_world(void) { return g_level != 0 && ((M.page >= 0x18 && M.page <= 0x1c) || M.page == 0x40 || M.page == 0x20 || M.page == 0x1d); }   /* 0x20: the credits level stands still; 0x1d GAME OVER (table 0x405af8 = 0) */
 
 /* the page layer of a frame: items, then the iris, then the logo (docs/TITLE.md 5.4) */
@@ -3703,8 +3879,9 @@ int main(int argc, char **argv)
             int synth = enter_at >= 0 && ((now - t0 >= enter_at && now - t0 < enter_at + 0.1) || (wenv("WOODY_ENTER2") && now - t0 >= enter_at + 2 && now - t0 < enter_at + 2.1));
             mk.syn = synth && !l_prev; l_prev = synth;                              /* --enter T: New game at once (testing) */
             mk.ok = REL(VK_RETURN) || in_pressed(12); mk.back = REL(VK_ESCAPE) || in_pressed(5) || PRS(VK_BACK);   /* 0x4033fb / 0x4464f0: Enter and Esc are fixed (DIK codes) */
-            mk.up = in_pressed(2); mk.dn = in_pressed(3); mk.left = in_pressed(0); mk.right = in_pressed(1);
+            mk.up = in_pressed(2) || PRS(VK_UP); mk.dn = in_pressed(3) || PRS(VK_DOWN); mk.left = in_pressed(0) || PRS(VK_LEFT); mk.right = in_pressed(1) || PRS(VK_RIGHT);   /* port: the arrows always work in menus, whatever the bindings */
             mk.esc_rel = in_released(9); mk.esc_prs = in_pressed(9); mk.atk_rel = in_released(6);
+            ctl_capture(&win, key_prev, &mk, dt);                                   /* the Controls page waiting for a key or button */
             #undef PRS
             #undef REL
             for (int k = 0; k < 256; k++) key_prev[k] = win.keys[k];

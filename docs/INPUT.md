@@ -297,6 +297,17 @@ the Mover).
   Woody red while the game runs (`WOODY_PADNOLIGHT=1` leaves it alone) and goes back to the system's at exit.
   Testing: `WOODY_PAD="T:LX:LY:BUTTONS[:D] ..."` (as `WOODY_JOY`, buttons `1 << PAD_*` of `src/pad.h`), `WOODY_PADLOG=1`
   logs every rumble call.
+- **Controls page and woodyre.cfg bindings (PORT EXTRA)**: Options → Controls (menu page 0x41, the list class of the Display
+  page 0x40) shows a device choice (Keyboard / Controller) and a row per action: walk forward / back / left / right, jump,
+  attack, special, duck (actions 5 and 8 together), look around, camera behind, pause. Confirm on a row waits for a key or
+  button (first until everything is let go): one already in the row is taken out, any other is added and taken out of the
+  other rows (Shift also matches Left / Right Shift); Esc or 6 s without input leaves the row. Defaults puts back the port's
+  keys or buttons of that device, Continue saves, back undoes the visit. The edits are written to woodyre.cfg as
+  `key_<row>=Up arrow,W` and `pad_<row>=X,RT` (rows `forward back left right jump attack special duck look camera pause`,
+  key names as on the page, WinMM buttons `Joy1..Joy32`, pad buttons by their Xbox names `A B X Y LB RB LT RT Back Start LS
+  RS Up Down Left Right Guide Touchpad`); they win over Woody.cfg (`ctl_apply_cfg` after `in_read_wcfg`), which is only read
+  while woodyre.cfg has none. The menus always take the arrow keys too, whatever the bindings. The page has 15 rows: the
+  menu renderer shrinks a page's font until its last row fits (no page of the original needs that).
 - **Actions**: `in_frame` builds the 14 actions per frame in the order of `0x402940`; `PlayerInput` gets held states and
   the stick (`ax`, `az`), which scales speed and turn rate in `player_update` exactly like `0x45a4b0`. Menu keys use the
   actions (confirm = action 12 pressed or Enter released, back = action 5 pressed or Esc released, pause = action 9).

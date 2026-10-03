@@ -20,6 +20,7 @@ void hud_begin(int win_w, int win_h);                           /* 640x480 virtu
 void hud_begin_view(int vx, int vy, int vw, int vh);
 void hud_bars(int win_w, int win_h, int vx, int vy, int vw, int vh);
 uint32_t hud_port_str(const char *ascii);
+uint32_t hud_port_str_tmp(int k, const char *ascii);
 void hud_end(void);
 void hud_draw(const HudState *s, float dt);
 /* 0x448450: hud+0 = 0 game, 1 the pause pages 0x18 / 0x19 (the extended HUD: $ and charge counters slide in),

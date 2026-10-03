@@ -32,7 +32,7 @@ included in this repository or its releases.
 | Pause menu | Esc | Options | Start |
 | Fullscreen / window | F11 | | |
 
-Menus: Enter or Jump confirms, Esc or Duck goes back.
+Menus: Enter or Jump confirms, Esc or Duck goes back. Options → Controls changes the keys and pad buttons.
 
 Controllers: a DualSense (PS5) or DualShock 4 (PS4) works over USB or Bluetooth without extra software, and so do Xbox
 controllers and other XInput pads; all with rumble (Options, Vibration sets its strength). Any other joystick works as in
