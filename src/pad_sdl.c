@@ -1,9 +1,11 @@
 /* pad_sdl.c - pad.h on SDL2's game controller API, for the builds outside Windows (the Windows build has src/pad.c with its
  * own Sony HID and XInput code). SDL knows the DualSense / DualShock 4 (rumble and light bar over USB and Bluetooth), Xbox
  * pads and the Steam Deck's controls (through Steam Input), all with the same button names as pad.h. Every pad acts as one,
- * input and rumble pause while the window is not in front, as in pad.c. */
+ * input and rumble pause while the window is not in front, as in pad.c. The on-screen pad of a touch screen (touch.c) is
+ * merged in last, and a real pad in use hides it. */
 #ifndef _WIN32
 #include "pad.h"
+#include "touch.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -128,7 +130,7 @@ void pad_poll(PadState *st, int focused, unsigned devchanges)
         P.vpad = -1; if (penv("WOODY_VPAD")) vpad_attach();
         atexit(pad_close); open_new(); P.seen = devchanges;
     }
-    if (P.inited == 2) return;
+    if (P.inited == 2) { touch_pad(st, 0); return; }
     if (devchanges != P.seen) { P.seen = devchanges; close_gone(); open_new(); }
     double now = pad_clock();
     if (P.vpad >= 0) vpad_drive(now);
@@ -150,5 +152,6 @@ void pad_poll(PadState *st, int focused, unsigned devchanges)
     }
     if (!(kinds >> P.kind_last & 1)) P.kind_last = any;      /* the pad used last went away */
     st->kind = P.kind_last;
+    touch_pad(st, st->buttons || st->lx * st->lx + st->ly * st->ly > 0.25f);
 }
 #endif

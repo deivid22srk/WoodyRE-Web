@@ -1,6 +1,7 @@
-# Builds WoodyRE.exe with build.bat (Windows) and woodyre with build.sh (Linux, SDL2) on every push and pull request (no game
-# data involved: the programs hold only the port's own code). A pushed tag v* also publishes a GitHub release with
-# WoodyRE-<tag>.zip (WoodyRE.exe, README.md, LICENSE) and WoodyRE-<tag>-linux-x86_64.tar.gz (woodyre, README.md, LICENSE).
+# Builds WoodyRE.exe with build.bat (Windows), woodyre with build.sh (Linux, SDL2) and the Android APK (android/, Gradle) on
+# every push and pull request (no game data involved: the programs hold only the port's own code). A pushed tag v* also
+# publishes a GitHub release with WoodyRE-<tag>.zip (WoodyRE.exe, README.md, LICENSE), WoodyRE-<tag>-linux-x86_64.tar.gz
+# (woodyre, README.md, LICENSE) and WoodyRE-<tag>.apk.
 name: build
 
 on:
@@ -66,10 +67,32 @@ jobs:
           name: WoodyRE-linux
           path: ${{ env.TGZ }}
 
+  # Android: arm64 phones and tablets, x86_64 for the emulator and Chromebooks. CMake fetches SDL 2.32.10; the runner's SDK
+  # installs NDK 27.2 when it lacks it. Signed with the debug key (no secrets here): fine for installing it yourself.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        working-directory: android
+        run: JAVA_HOME="$JAVA_HOME_17_X64" ./gradlew assembleRelease --console=plain
+
+      - name: Package
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name="WoodyRE-$GITHUB_REF_NAME"; else name="WoodyRE-${GITHUB_SHA:0:7}"; fi
+          cp android/app/build/outputs/apk/release/app-release.apk "$name.apk" && ls -l "$name.apk"
+          echo "APK=$name.apk" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: WoodyRE-android
+          path: ${{ env.APK }}
+
   # The release notes: the annotated tag's message (what is new; its first line is the title of the tag), then how to start.
   release:
     if: github.ref_type == 'tag'
-    needs: [windows, linux]
+    needs: [windows, linux, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -87,6 +110,6 @@ jobs:
         run: |
           git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           new=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | sed -e 's/[[:space:]]*$//')
-          start="Windows: unzip, start WoodyRE.exe and point it to your Woody Woodpecker CD (or a mounted ISO image of it). Linux / Steam Deck: unpack the .tar.gz and start woodyre (needs SDL2). The game files are not included - see README.md."
+          start="Windows: unzip, start WoodyRE.exe and point it to your Woody Woodpecker CD (or a mounted ISO image of it). Linux / Steam Deck: unpack the .tar.gz and start woodyre (needs SDL2). Android: install the .apk and choose your ISO image or a copy of the CD at the first start. The game files are not included - see README.md."
           if [ -n "$new" ]; then printf '%s\n\n%s\n' "$new" "$start" > notes.md; else printf '%s\n' "$start" > notes.md; fi
           gh release create "$GITHUB_REF_NAME" dist/* --title "WoodyRE $GITHUB_REF_NAME" --notes-file notes.md

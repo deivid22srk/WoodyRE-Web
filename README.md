@@ -23,6 +23,14 @@ when the copy is done); or copy `Data`, `Common`, `Logo`, `Game` and `Music.bf` 
 and `mods/` then live in `~/.local/share/WoodyRE`. On the Steam Deck add `woodyre` to Steam as a non-Steam game; the
 Windows `WoodyRE.exe` under Proton should work as well.
 
+**Android** (7.0 or later, 64-bit phones and tablets, OpenGL ES 2.0): install `WoodyRE-<version>.apk` from the Releases
+page (allow installing from your browser or file manager when Android asks), or build it (below). At the first start
+choose an ISO image of the CD, or a folder with a copy of its files, in Android's file picker; the game files are copied
+into the app's own folder `Android/data/io.github.jjmhalew.woodyre/files/data` and checked as on Windows. You can also
+copy `Data`, `Common`, `Logo`, `Game` and `Music.bf` there with a USB cable. `woodyre.cfg`, `woodyre.sav`, `woodyre.log`
+and `mods/` live in `Android/data/io.github.jjmhalew.woodyre/files`. A Bluetooth or USB pad works like on Linux and hides
+the touch controls; touching the screen brings them back.
+
 **Supported version:** the English PC CD-ROM, version 1.00 (October 2001). Other releases, such as the later Brazilian
 "Pica-Pau" CD, contain changed levels and are not supported. `WoodyRE.exe --verify` checks your copy (output in `woodyre.log`).
 
@@ -40,6 +48,11 @@ Windows `WoodyRE.exe` under Proton should work as well.
 | Fullscreen / window | F11 | | |
 
 Menus: Enter or Jump confirms, Esc or Duck goes back. Options → Controls changes the keys and pad buttons.
+
+Touch screens (Android): the left half of the screen is a stick wherever you put your thumb down (it walks, and moves
+through the menus). On the right are the four pad buttons: A (green, jump / confirm), B (red, duck / back), X (blue,
+attack) and Y (yellow, special), above them camera behind (LB) and look around (RB), and pause at the top right. The
+back button or gesture works as Esc.
 
 Controllers: a DualSense (PS5) or DualShock 4 (PS4) works over USB or Bluetooth without extra software, and so do Xbox
 controllers and other XInput pads; all with rumble (Options, Vibration sets its strength). Any other joystick works as in
@@ -74,6 +87,12 @@ or `pip install ziglang` is used when present, otherwise `build.bat` downloads t
 - Linux: `./build.sh` builds `woodyre` with the system's C compiler and SDL2 (Debian / Ubuntu:
   `sudo apt install build-essential libsdl2-dev`). The engine is the same; only the window, input, sound, pads
   (`src/plat_sdl.c`, `src/pad_sdl.c`) and the first-start copy (`src/datasetup_posix.c`) are SDL / POSIX code.
+- Android: `cd android` then `gradlew assembleRelease` (or `assembleDebug`) builds the APK in
+  `android/app/build/outputs/apk/`. It needs the Android SDK with NDK 27.2 and CMake 3.22 (Android Studio's SDK Manager
+  installs both; Android Studio can also open the `android` folder directly). The build downloads SDL 2.32.10 and checks
+  its SHA-256. The engine is the same as on Linux; OpenGL ES stands in for desktop OpenGL through `src/gles/`, the touch
+  controls are `src/touch.c`. Without your own signing key (`-PwoodyKeystore=... -PwoodyKeyAlias=... -PwoodyKeyPassword=...`)
+  the release APK is signed with the debug key, which is fine for installing it yourself.
 - `build.bat dev`: the developer build `out\woody.exe`, which logs to the console and keeps the developer keys
   (F1-F5, Tab, `[ ]`, P, PgUp/PgDn, End; in `WoodyRE.exe` they need `WOODY_DEBUGKEYS=1`).
 - `make_standalone.bat`: packs `WoodyRE.exe` and **your** game files from `data\` into a single
@@ -83,7 +102,8 @@ or `pip install ziglang` is used when present, otherwise `build.bat` downloads t
 ## License
 The code in this repository is licensed under the [GNU General Public License v3.0](LICENSE) or later. This does not
 cover the original game, its data or its trademarks, which belong to their owners and are not part of this project.
-`src/stb/` holds Sean Barrett's stb_image and stb_image_write (public domain or MIT, see the end of each file).
+`src/stb/` holds Sean Barrett's stb_image and stb_image_write (public domain or MIT, see the end of each file). `android/app/src/main/java/org/libsdl/` is SDL's Android code (SDL 2.32.10, zlib license); the
+Android build downloads SDL itself.
 
 # Development and reverse engineering
 Developers keep the CD's contents in `extract/` and the installed original (exe, DLLs) in `game/`; both are ignored by

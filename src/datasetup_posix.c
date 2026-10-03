@@ -3,7 +3,8 @@
  * the current directory (a development checkout), $XDG_DATA_HOME/WoodyRE/data (~/.local/share/WoodyRE/data). Nothing there:
  * looks for the CD (or a mounted ISO image) under /media, /run/media and /mnt, asks, and copies the 232 files of the
  * manifest (src/datafiles.h) into ~/.local/share/WoodyRE/data with their SHA-1 checked. The folder that holds data/ becomes
- * the current directory, so woodyre.cfg, woodyre.sav and mods/ live beside it. Names on the disc are matched ignoring case. */
+ * the current directory, so woodyre.cfg, woodyre.sav and mods/ live beside it. Names on the disc are matched ignoring case.
+ * Android has its own data_find and folder (below): the app's folder, filled from an ISO image or a folder the user picks. */
 #ifndef _WIN32
 #include "datasetup.h"
 #include "datafiles.h"
@@ -62,6 +63,7 @@ static int cd_layout(const char *root)
     for (int i = 0; i < 3; i++) { snprintf(p, sizeof p, "%s/%s", root, probe[i]); if (!readable(p)) return 0; }
     return 1;
 }
+#ifndef __ANDROID__
 static void exe_dir(char *d)
 {
     ssize_t n = readlink("/proc/self/exe", d, PMAX - 1);
@@ -75,6 +77,7 @@ static int home_dir(char *d)                                /* $XDG_DATA_HOME/Wo
     if (h && *h) { snprintf(d, PMAX, "%s/.local/share/WoodyRE", h); return 1; }
     return 0;
 }
+#endif
 static void make_dirs(char *path)                           /* every parent directory of path */
 {
     for (char *p = path + 1; *p; p++) if (*p == '/') { *p = 0; mkdir(path, 0755); *p = '/'; }
@@ -112,6 +115,7 @@ static int file_pass(const char *src_root, const char *dst_root, int i, unsigned
     if (d) { if (fclose(d) || ok < 0 || rename(tp, dp)) { remove(tp); return -1; } }
     return ok;
 }
+#ifndef __ANDROID__
 static int copy_cd(const char *src, const char *home)       /* the number of files that differ from the 1.00 CD, -1 = failed */
 {
     char dst[PMAX], m[PMAX + 400]; snprintf(dst, sizeof dst, "%s/data", home); mkdir(dst, 0755);
@@ -187,6 +191,190 @@ const char *data_find(void)
         if (ask(m, "Search", NULL) != 1) return NULL;
     }
 }
+#else
+/* ---- Android: the app's own folder on the shared storage (Android/data/<package>/files: a USB cable reaches it, no
+ * permission needed), filled once from an ISO image of the CD or a folder with a copy of it that the user picks in the
+ * system's file picker (WoodyActivity.java); an ISO is read here, through the file descriptor the picker hands out. */
+#include <fcntl.h>
+#include <jni.h>
+
+static int home_dir(char *d)
+{
+    const char *p = SDL_AndroidGetExternalStoragePath(); if (!p) p = SDL_AndroidGetInternalStoragePath();
+    if (!p) return 0;
+    snprintf(d, PMAX, "%s", p); return 1;
+}
+/* WoodyActivity.pickGameData(kind, dest): kind 1 = an ISO image, returns its file descriptor; kind 2 = a folder, copied
+ * into dest by the Java side, returns 0. -1 = cancelled, -2 = failed (the Java side said why). */
+static int java_pick(int kind, const char *dest)
+{
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv(); jobject act = (jobject)SDL_AndroidGetActivity(); int r = -2;
+    if (!env || !act) return -2;
+    jclass c = (*env)->GetObjectClass(env, act);
+    jmethodID m = (*env)->GetStaticMethodID(env, c, "pickGameData", "(ILjava/lang/String;)I");
+    if (m) { jstring s = (*env)->NewStringUTF(env, dest ? dest : ""); r = (*env)->CallStaticIntMethod(env, c, m, kind, s); (*env)->DeleteLocalRef(env, s); }
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); r = -2; }
+    (*env)->DeleteLocalRef(env, c); (*env)->DeleteLocalRef(env, act);
+    return r;
+}
+static void java_progress(const char *text)                 /* WoodyActivity.progress: a dialog with this text, NULL closes it */
+{
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv(); jobject act = (jobject)SDL_AndroidGetActivity();
+    if (!env || !act) return;
+    jclass c = (*env)->GetObjectClass(env, act);
+    jmethodID m = (*env)->GetStaticMethodID(env, c, "progress", "(Ljava/lang/String;)V");
+    if (m) { jstring s = text ? (*env)->NewStringUTF(env, text) : NULL; (*env)->CallStaticVoidMethod(env, c, m, s); if (s) (*env)->DeleteLocalRef(env, s); }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env, c); (*env)->DeleteLocalRef(env, act);
+}
+static void progress_pct(const char *what, unsigned long long done, int *last)
+{
+    int pct = (int)(done * 100 / DATAFILES_BYTES); char m[128];
+    if (pct == *last) return;
+    *last = pct; snprintf(m, sizeof m, "%s %d %%", what, pct); java_progress(m);
+}
+
+/* ---- ISO 9660 (ECMA-119) with the Joliet names when there are some: just enough to find the manifest's files ---- */
+typedef struct { int fd; uint32_t root_lba, root_len; int joliet; } Iso;
+static uint32_t le32(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+static int iso_pread(int fd, void *b, size_t n, unsigned long long off)
+{
+    for (size_t got = 0; got < n; ) { ssize_t k = pread(fd, (char *)b + got, n - got, (off_t)(off + got)); if (k <= 0) return -1; got += (size_t)k; }
+    return 0;
+}
+static int iso_open(Iso *is, int fd)
+{
+    unsigned char b[2048]; int have = 0; memset(is, 0, sizeof *is); is->fd = fd;
+    for (uint32_t s = 16; s < 64; s++) {
+        if (iso_pread(fd, b, sizeof b, (unsigned long long)s * 2048) || memcmp(b + 1, "CD001", 5)) break;
+        if (b[0] == 255) break;
+        int jol = b[0] == 2 && b[88] == '%' && b[89] == '/' && (b[90] == '@' || b[90] == 'C' || b[90] == 'E');
+        if ((b[0] == 1 && !have) || jol) { is->root_lba = le32(b + 156 + 2); is->root_len = le32(b + 156 + 10); is->joliet = jol; have = 1; }
+        if (jol) break;
+    }
+    return have ? 0 : -1;
+}
+static int iso_name_is(const unsigned char *n, int len, int joliet, const char *want, size_t wl)
+{
+    char a[256]; size_t o = 0;
+    if (joliet) { for (int i = 0; i + 1 < len && o < sizeof a - 1; i += 2) a[o++] = n[i] ? '?' : (char)n[i + 1]; }
+    else for (int i = 0; i < len && o < sizeof a - 1; i++) a[o++] = (char)n[i];
+    a[o] = 0;
+    char *semi = strchr(a, ';'); if (semi) *semi = 0;             /* the version ";1" */
+    o = strlen(a); if (o && a[o - 1] == '.') a[--o] = 0;          /* "MUSIC." of a name without an extension */
+    return o == wl && !strncasecmp(a, want, wl);
+}
+static int iso_find(const Iso *is, const char *path, uint32_t *lba, uint32_t *len)   /* 0 = found (a file) */
+{
+    uint32_t cl = is->root_lba, cn = is->root_len; const char *p = path;
+    while (*p) {
+        const char *e = strchr(p, '/'); size_t wl = e ? (size_t)(e - p) : strlen(p); int found = 0;
+        unsigned char *d = malloc(cn ? cn : 1); if (!d || iso_pread(is->fd, d, cn, (unsigned long long)cl * 2048)) { free(d); return -1; }
+        for (uint32_t o = 0; o < cn; ) {
+            unsigned rl = d[o];
+            if (!rl) { o = (o / 2048 + 1) * 2048; continue; }        /* records do not cross sectors */
+            if (o + 33 > cn || o + rl > cn) break;
+            int nl = d[o + 32];
+            if (!(nl == 1 && d[o + 33] <= 1) && iso_name_is(d + o + 33, nl, is->joliet, p, wl)) { cl = le32(d + o + 2); cn = le32(d + o + 10); found = 1; if (!e && (d[o + 25] & 2)) found = 0; break; }
+            o += rl;
+        }
+        free(d);
+        if (!found) return -1;
+        p = e ? e + 1 : p + wl;
+    }
+    *lba = cl; *len = cn; return 0;
+}
+static int iso_copy(int fd, const char *home)               /* the number of files that differ from the 1.00 CD, -1 = failed */
+{
+    Iso is; char m[PMAX + 400], dst[PMAX];
+    if (iso_open(&is, fd)) { plat_message("That file is not an ISO image of a CD.", 1); return -1; }
+    uint32_t l0, n0;
+    if (iso_find(&is, "Data/W1A/W1A.gel", &l0, &n0) || iso_find(&is, "Music.bf", &l0, &n0)) { plat_message("That ISO image does not hold the Woody Woodpecker game files (Data, Common, Music.bf).", 1); return -1; }
+    snprintf(dst, sizeof dst, "%s/data", home); mkdir(dst, 0755);
+    struct statvfs vf;
+    if (!statvfs(home, &vf) && (unsigned long long)vf.f_bavail * vf.f_frsize < (unsigned long long)DATAFILES_BYTES + (16u << 20)) {
+        snprintf(m, sizeof m, "Not enough free space for the game files (%u MB) in\n%s", DATAFILES_BYTES >> 20, dst); plat_message(m, 1); return -1;
+    }
+    size_t bufsz = 4u << 20; unsigned char *buf = malloc(bufsz); if (!buf) return -1;
+    unsigned long long done = 0; int bad = 0, first_bad = -1, last = -1;
+    printf("data: copying the game files from the ISO image to %s\n", dst);
+    for (int i = 0; i < DATAFILES_COUNT; i++) {
+        char dp[PMAX], tp[PMAX + 8]; uint32_t lba, len; int ok = 1;
+        if (iso_find(&is, k_datafiles[i].path, &lba, &len)) { snprintf(m, sizeof m, "The ISO image has no %s.", k_datafiles[i].path); java_progress(NULL); plat_message(m, 1); free(buf); return -1; }
+        snprintf(dp, sizeof dp, "%s/%s", dst, k_datafiles[i].path); make_dirs(dp); snprintf(tp, sizeof tp, "%s.part", dp);
+        FILE *d = fopen(tp, "wb"); if (!d) ok = -1;
+        Sha1 h; sha1_init(&h);
+        for (uint32_t o = 0; ok > 0 && o < len; ) {
+            size_t n = len - o < bufsz ? len - o : bufsz;
+            if (iso_pread(fd, buf, n, (unsigned long long)lba * 2048 + o) || fwrite(buf, 1, n, d) != n) { ok = -1; break; }
+            sha1_add(&h, buf, n); o += (uint32_t)n; done += n; progress_pct("Copying the game files...", done, &last);
+        }
+        if (d && fclose(d)) ok = -1;
+        if (ok < 0 || rename(tp, dp)) {
+            remove(tp); java_progress(NULL);
+            snprintf(m, sizeof m, "Could not copy %s from the ISO image to\n%s/\n\nIs there room on the device?", k_datafiles[i].path, dst);
+            plat_message(m, 1); free(buf); return -1;
+        }
+        char hex[41]; sha1_hex(&h, hex);
+        if (len != k_datafiles[i].size || strcmp(hex, k_datafiles[i].sha1)) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s differs from the English 1.00 CD\n", k_datafiles[i].path); }
+    }
+    free(buf); java_progress(NULL);
+    if (bad) {
+        snprintf(m, sizeof m, "%d of the copied files differ from the English 1.00 CD (the first: %s).\n\n"
+                              "WoodyRE is made for that version; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+        plat_message(m, 1);
+    }
+    return bad;
+}
+static void check_copy(const char *home)                     /* after the Java side copied a folder: compare it with the manifest */
+{
+    char root[PMAX], m[PMAX + 300]; snprintf(root, sizeof root, "%s/data", home);
+    size_t bufsz = 4u << 20; unsigned char *buf = malloc(bufsz); if (!buf) return;
+    unsigned long long done = 0; int bad = 0, first_bad = -1, last = -1;
+    for (int i = 0; i < DATAFILES_COUNT; i++) {
+        if (file_pass(root, NULL, i, buf, bufsz, &done) <= 0) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s missing or differs\n", k_datafiles[i].path); }
+        progress_pct("Checking the game files...", done, &last);
+    }
+    free(buf); java_progress(NULL);
+    if (bad) {
+        snprintf(m, sizeof m, "%d game files are missing or differ from the English 1.00 CD (the first: %s).\n\n"
+                              "WoodyRE is made for that version; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+        plat_message(m, 1);
+    }
+}
+
+const char *data_find(void)
+{
+    const char *env = getenv("WOODY_DATA"); if (env && *env) return env;
+    char home[PMAX], p[PMAX + 16], m[3 * PMAX];
+    if (!home_dir(home)) { plat_message("No storage for the game files.", 1); return NULL; }
+    snprintf(p, sizeof p, "%s/data", home); if (cd_layout(p)) return enter(home, "data/Data");
+    for (;;) {
+        snprintf(m, sizeof m, "WoodyRE needs the files of the original game CD-ROM:\n"
+                              "Woody Woodpecker: Escape from Buzz Buzzard Park (PC, English version).\n\n"
+                              "Choose an ISO image of the CD, or a folder with a copy of it (Data, Common, Logo, Game and Music.bf). "
+                              "The game files (%u MB) are copied once.\n\n"
+                              "Or copy those files with a USB cable into\n%s/data\nand start WoodyRE again.", DATAFILES_BYTES >> 20, home);
+        int r = ask(m, "ISO image", "Folder");
+        if (r < 0) return NULL;
+        mkdir(p, 0755);
+        if (r == 1) {
+            int fd = java_pick(1, NULL);
+            if (fd == -2) plat_message("Could not open that file.", 1);
+            if (fd < 0) continue;
+            int bad = iso_copy(fd, home); close(fd);
+            if (bad >= 0 && cd_layout(p)) return enter(home, "data/Data");
+        } else {
+            int k = java_pick(2, p);
+            if (k == -2) plat_message("Could not copy that folder. Is there room on the device?", 1);
+            if (k < 0) continue;
+            if (!cd_layout(p)) { plat_message("That folder does not hold the game files: it needs Data, Common, Logo, Game and Music.bf of the CD.", 1); continue; }
+            check_copy(home);
+            return enter(home, "data/Data");
+        }
+    }
+}
+#endif
 
 int data_verify(const char *data_dir)
 {

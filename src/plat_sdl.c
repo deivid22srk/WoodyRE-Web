@@ -1,11 +1,13 @@
 /* plat_sdl.c - the window, keyboard, mouse and OS bits of render_gl.h / plat.h on SDL2, for the builds outside Windows
- * (Linux, Steam Deck; build.sh). The Windows build keeps its own Win32 + WGL window in render_gl.c. Keys arrive as SDL
+ * (Linux, Steam Deck: build.sh; Android: android/, on OpenGL ES 2.0 / 3.0 through src/gles). The Windows build keeps its own
+ * Win32 + WGL window in render_gl.c. Keys arrive as SDL
  * scancodes and are stored as the Windows virtual-key codes the rest of the engine uses: letters by the layout (as VK
  * letters are on Windows), everything else by position; Ctrl / Shift / Alt set both their side and the plain code. */
 #ifndef _WIN32
 #include "plat.h"
 #undef fopen
 #include "render_gl.h"
+#include "touch.h"
 #include <SDL.h>
 #include <GL/gl.h>
 #include <dirent.h>
@@ -60,11 +62,43 @@ int plat_vsc_to_vk(int sc)            /* MapVirtualKey(sc, MAPVK_VSC_TO_VK) of a
         VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD0, VK_DECIMAL, 0, 0, VK_OEM_102, VK_F11, VK_F12 };
     return sc > 0 && sc < 0x59 ? T[sc] : 0;
 }
+#ifdef __ANDROID__
+void (*plat_gl_proc(const char *name))(void) { return gles_proc(name); }   /* eglGetProcAddress may hand out stubs for any name */
+#else
 void (*plat_gl_proc(const char *name))(void) { return (void (*)(void))SDL_GL_GetProcAddress(name); }
+#endif
 void plat_message(const char *text, int warn)
 {
     if (SDL_ShowSimpleMessageBox(warn ? SDL_MESSAGEBOX_WARNING : SDL_MESSAGEBOX_INFORMATION, "WoodyRE", text, NULL)) fprintf(stderr, "%s\n", text);
 }
+
+#ifdef __ANDROID__
+/* stdout (woodyre.log, WOODY_GUI) also to logcat: adb logcat -s WoodyRE */
+#include <android/log.h>
+#include <pthread.h>
+static int g_logfd = -1, g_logpipe[2];
+static void *log_pump(void *arg)
+{
+    (void)arg; char b[1024]; size_t n = 0; ssize_t k;
+    while ((k = read(g_logpipe[0], b + n, sizeof b - 1 - n)) > 0) {
+        if (g_logfd >= 0) (void)!write(g_logfd, b + n, (size_t)k);
+        n += (size_t)k; b[n] = 0;
+        char *s = b, *e;
+        while ((e = strchr(s, '\n'))) { *e = 0; __android_log_write(ANDROID_LOG_INFO, "WoodyRE", s); s = e + 1; }
+        n = strlen(s); memmove(b, s, n + 1);
+        if (n == sizeof b - 1) { __android_log_write(ANDROID_LOG_INFO, "WoodyRE", b); n = 0; }
+    }
+    return NULL;
+}
+static void log_tee(void)
+{
+    pthread_t t; fflush(stdout);
+    if (pipe(g_logpipe)) return;
+    g_logfd = dup(fileno(stdout)); dup2(g_logpipe[1], fileno(stdout));
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    if (pthread_create(&t, NULL, log_pump, NULL) == 0) pthread_detach(t);
+}
+#endif
 
 /* ---- window ---------------------------------------------------------------------------------------------------------- */
 static int vk_of(const SDL_Keysym *k)
@@ -98,6 +132,7 @@ static int vk_of(const SDL_Keysym *k)
     case SDL_SCANCODE_KP_PLUS: return VK_ADD;        case SDL_SCANCODE_KP_0: return VK_NUMPAD0;
     case SDL_SCANCODE_KP_PERIOD: return VK_DECIMAL;  case SDL_SCANCODE_NONUSBACKSLASH: return VK_OEM_102;
     case SDL_SCANCODE_APPLICATION: return VK_APPS;
+    case SDL_SCANCODE_AC_BACK: return VK_ESCAPE;     /* Android's back button / gesture: the pause menu and back */
     case SDL_SCANCODE_LCTRL: return VK_LCONTROL;     case SDL_SCANCODE_RCTRL: return VK_RCONTROL;
     case SDL_SCANCODE_LSHIFT: return VK_LSHIFT;      case SDL_SCANCODE_RSHIFT: return VK_RSHIFT;
     case SDL_SCANCODE_LALT: return VK_LMENU;         case SDL_SCANCODE_RALT: return VK_RMENU;
@@ -110,12 +145,26 @@ static void drawable(Window *w) { int dw, dh; SDL_GL_GetDrawableSize((SDL_Window
 int win_open(Window *w, const char *title, int width, int height)
 {
     memset(w, 0, sizeof *w);
+    Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+#ifdef __ANDROID__
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight"); SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");                     /* the fingers are the on-screen pad (touch.c), not a mouse */
+    SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
+    flags |= SDL_WINDOW_FULLSCREEN;
+    log_tee();
+#endif
     if (SDL_InitSubSystem(SDL_INIT_VIDEO)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return -1; }
+#ifdef __ANDROID__
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES); SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3); SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1); SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24); SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8); SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8); SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
-    SDL_Window *sw = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    SDL_Window *sw = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, flags);
     if (!sw) { fprintf(stderr, "SDL window: %s\n", SDL_GetError()); return -1; }
     SDL_GLContext gc = SDL_GL_CreateContext(sw);
+#ifdef __ANDROID__
+    if (!gc) { SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2); gc = SDL_GL_CreateContext(sw); }   /* no ES 3.0: 2.0 does too */
+#endif
     if (!gc) { fprintf(stderr, "SDL OpenGL: %s\n", SDL_GetError()); SDL_DestroyWindow(sw); return -1; }
     w->hwnd = sw; w->hglrc = gc; w->width = width; w->height = height; w->focused = 1; drawable(w);
     printf("OpenGL: %s / %s (SDL %d.%d.%d, %s)\n", (const char *)glGetString(GL_RENDERER), (const char *)glGetString(GL_VERSION), SDL_MAJOR_VERSION, SDL_MINOR_VERSION, SDL_PATCHLEVEL, SDL_GetCurrentVideoDriver());
@@ -128,7 +177,7 @@ void win_poll(Window *w)
     for (int k = 0; k < 256; k++) { if (g_up_late[k]) { w->keys[k] = 0; g_up_late[k] = 0; } g_down_now[k] = 0; }
     w->keys[VK_CONTROL] = w->keys[VK_LCONTROL] || w->keys[VK_RCONTROL]; w->keys[VK_SHIFT] = w->keys[VK_LSHIFT] || w->keys[VK_RSHIFT]; w->keys[VK_MENU] = w->keys[VK_LMENU] || w->keys[VK_RMENU];
     SDL_Event e;
-    while (SDL_PollEvent(&e)) switch (e.type) {
+    while (SDL_PollEvent(&e)) switch (touch_event(&e, w->width, w->height), e.type) {
     case SDL_QUIT: w->quit = 1; break;
     case SDL_WINDOWEVENT:
         if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED || e.window.event == SDL_WINDOWEVENT_RESIZED) drawable(w);
@@ -156,10 +205,19 @@ void win_poll(Window *w)
     case SDL_CONTROLLERDEVICEADDED: case SDL_CONTROLLERDEVICEREMOVED: case SDL_JOYDEVICEADDED: case SDL_JOYDEVICEREMOVED: w->dev_changes++; break;
     }
 }
-void win_swap(Window *w) { SDL_GL_SwapWindow((SDL_Window *)w->hwnd); }
+void win_swap(Window *w)
+{
+    touch_draw(w->width, w->height); SDL_GL_SwapWindow((SDL_Window *)w->hwnd);
+#ifdef __ANDROID__
+    fflush(stdout);                                                    /* Android's stdio holds even a line-buffered stdout back */
+#endif
+}
 void win_mode(Window *w, int width, int height, int full)
 {
     SDL_Window *sw = (SDL_Window *)w->hwnd;
+#ifdef __ANDROID__
+    (void)width; (void)height; (void)full; (void)sw; drawable(w); return;   /* always the whole screen */
+#endif
     if (full) { SDL_SetWindowFullscreen(sw, SDL_WINDOW_FULLSCREEN_DESKTOP); drawable(w); return; }
     SDL_SetWindowFullscreen(sw, 0);
     SDL_Rect r; int d = SDL_GetWindowDisplayIndex(sw);

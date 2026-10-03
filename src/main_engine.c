@@ -4287,8 +4287,9 @@ int main(int argc, char **argv)
     return 0;
 }
 
-#ifdef WOODY_GUI
-/* the windowed release build (build.bat): no console; stdout goes to woodyre.log (main), a failed start says so */
+#if defined WOODY_GUI && defined _WIN32
+/* the windowed release build (build.bat): no console; stdout goes to woodyre.log (main), a failed start says so. The
+ * Android build is a WOODY_GUI build too, entered through SDL's SDL_main (android/app/CMakeLists.txt) */
 int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
 {
     (void)hi; (void)hp; (void)cmd; (void)show;

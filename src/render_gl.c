@@ -218,7 +218,7 @@ static void batch_reserve(struct WorldBatch *b, uint32_t extra_tris, uint32_t *c
 {
     if (b->ntris + extra_tris <= *cap) return;
     *cap = (b->ntris + extra_tris) * 2 + 64;
-    b->pos = (float *)realloc(b->pos, (size_t)*cap * 9 * sizeof(float)); b->uv = (float *)realloc(b->uv, (size_t)*cap * 6 * sizeof(float)); b->col = (uint8_t *)realloc(b->col, (size_t)*cap * 9);
+    b->pos = (float *)realloc(b->pos, (size_t)*cap * 9 * sizeof(float)); b->uv = (float *)realloc(b->uv, (size_t)*cap * 6 * sizeof(float)); b->col = (uint8_t *)realloc(b->col, (size_t)*cap * 12);   /* RGBA: OpenGL ES takes no 3-byte colours */
     if (b->face) b->face = (uint32_t *)realloc(b->face, (size_t)*cap * 4);
 }
 /* one light polygon (flush 0x4293f0 / 0x42c320): constant colour C*k, radial texture 15 - round(k*15.49) */
@@ -271,7 +271,7 @@ static void light_poly(Renderer *r, const LitLight *L, const float *plane, const
             size_t o = (size_t)b->ntris * 3 + c; float d[3] = { pv[c][0] - F[0], pv[c][1] - F[1], pv[c][2] - F[2] };
             b->pos[o * 3] = pv[c][0]; b->pos[o * 3 + 1] = pv[c][1]; b->pos[o * 3 + 2] = pv[c][2];
             b->uv[o * 2] = 0.5f + s * (d[0] * W[0] + d[1] * W[1] + d[2] * W[2]); b->uv[o * 2 + 1] = 0.5f + s * (d[0] * U[0] + d[1] * U[1] + d[2] * U[2]);
-            b->col[o * 3] = col[0]; b->col[o * 3 + 1] = col[1]; b->col[o * 3 + 2] = col[2];
+            b->col[o * 4] = col[0]; b->col[o * 4 + 1] = col[1]; b->col[o * 4 + 2] = col[2]; b->col[o * 4 + 3] = 255;
         }
         b->face[b->ntris] = face;
         b->ntris++;
@@ -376,7 +376,8 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
                         if (l + 1 == r->lit->nlights) for (int q = 0; q < 3; q++) scale[q] = (scale[q] > 1 ? 1 : scale[q]) * 2;
                     }
                 }
-                for (int q = 0; q < 3; q++) { float cv = ((v->colour >> (8 * q)) & 0xff) * scale[q]; b->col[o * 3 + q] = (uint8_t)(cv > 255 ? 255 : cv); }
+                for (int q = 0; q < 3; q++) { float cv = ((v->colour >> (8 * q)) & 0xff) * scale[q]; b->col[o * 4 + q] = (uint8_t)(cv > 255 ? 255 : cv); }
+                b->col[o * 4 + 3] = 255;
             }
             b->ntris++;
         }
@@ -384,7 +385,7 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
     free(cap); free(lit_face);
     for (uint32_t g = 0; g < tex->ngroups; g++) if (tex->groups[g].flags & 2) {          /* additive groups: intensity = flags byte 2 */
         uint32_t a = (tex->groups[g].flags >> 16) & 0xff; struct WorldBatch *b = &r->batches[g];
-        for (size_t i = 0; i < (size_t)b->ntris * 9; i++) b->col[i] = (uint8_t)(b->col[i] * a / 255);
+        for (size_t i = 0; i < (size_t)b->ntris * 12; i++) if (i % 4 != 3) b->col[i] = (uint8_t)(b->col[i] * a / 255);
     }
     if (r->lit) {
         r->face_bound = (float *)calloc(gel->npolys + 1, 4 * sizeof(float));
@@ -2109,7 +2110,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
         for (uint32_t i = 0; i < r->nbatches; i++) {
             struct WorldBatch *b = &r->batches[i]; if (batch_empty(r, b) || group_blended(r, b->group) != pass) continue;
             glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->tex->groups[b->group].gl_tex);
-            glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(3, GL_UNSIGNED_BYTE, 0, b->col);
+            glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(4, GL_UNSIGNED_BYTE, 0, b->col);
             batch_draw(r, b);
         }
         if (pass == 0 && r->lit) {
@@ -2125,7 +2126,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
                 for (int t = 0; t < 16; t++) {
                     struct WorldBatch *b = &r->lightb[t]; if (batch_empty(r, b)) continue;
                     glBindTexture(GL_TEXTURE_2D, r->light_tex[t]);
-                    glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(3, GL_UNSIGNED_BYTE, 0, b->col);
+                    glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(4, GL_UNSIGNED_BYTE, 0, b->col);
                     batch_draw(r, b);
                 }
                 glDisable(GL_POLYGON_OFFSET_FILL);
@@ -2136,7 +2137,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
             for (uint32_t i = 0; i < r->nbatches; i++) {
                 struct WorldBatch *b = &r->litb[i]; if (batch_empty(r, b)) continue;
                 glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, r->tex->groups[b->group].gl_tex);
-                glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(3, GL_UNSIGNED_BYTE, 0, b->col);
+                glVertexPointer(3, GL_FLOAT, 0, b->pos); glTexCoordPointer(2, GL_FLOAT, 0, b->uv); glColorPointer(4, GL_UNSIGNED_BYTE, 0, b->col);
                 batch_draw(r, b);
             }
             glDisable(GL_BLEND); glDepthMask(GL_TRUE); glDepthFunc(GL_LESS); glEnable(GL_ALPHA_TEST);
