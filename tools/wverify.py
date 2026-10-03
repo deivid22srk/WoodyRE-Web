@@ -24,7 +24,8 @@ Probes (--probe, several allowed, comma separated):
   fpu       the x87 control word at the camera sweep's inline fistp 0x439cb3 (docs/CAMERA.md 3.6) and the step count
             [0x5ac8ac] it produces, plus the control word at the frame's VM tick
   carousel  world-select carousel class 110 (docs/MENU_LOAD.md 4.4): args of 0x489780, the local basis inst+0x14c it builds,
-            the camera matrix [0x5e86ac]+0x154 and the instance rows 0x489210 writes, for slots 105..114
+            the camera matrix [0x5e86ac]+0x154 and the instance rows 0x489210 writes, for slots 105..114, plus each
+            figure's animation state (speed +0xa0, clock +0xa8, position +0xac, slots +0xb0) and drawn root node
   rocket    rideable rocket (docs/ROCKET.md): per frame state/t/rot rows/quaternions of the class-20 instance --inst
   cam       per frame Perso pos/state + camera mode index/position (CamMgr+0x138/+0x1d0) and the rail point (+0x3e8)
   blackbox  the BlackBox mini game (docs/BLACKBOX.md): with --level BlackBox, patches 0x4042c9 so the load creates the object
@@ -214,6 +215,9 @@ def main():
         cp = fv(dbg.u32(dbg.u32(0x509adc) + 8) + 0x90, 3)
         dbg.log('    0x489210 slot %s: M(+0x154) rows %s ; campos %.2f %.2f %.2f' % (slot(e), ' | '.join('%.5f %.5f %.5f %.5f' % M[i:i + 4] for i in (0, 4, 8, 12)), *cp))
         dbg.log('      inst pos %.2f %.2f %.2f rows %s scale %.3f %.3f %.3f' % (*P, ' | '.join('%.5f %.5f %.5f' % R[i:i + 3] for i in (0, 3, 6)), *S))
+        pal = dbg.u32(dbg.u32(0x509adc) + 0xa0) + 0x30 * dbg.u32(e + 0x5c); N = fv(pal, 12)   # the drawn root node matrix (palette +0xa0)
+        dbg.log('      anim speed %.3f clock %.3f apos %.3f slots %d %d %d %d | node1 T %.1f %.1f %.1f' % (f32(e + 0xa0), f32(e + 0xa8), f32(e + 0xac),
+                *struct.unpack('<4i', dbg.read(e + 0xb0, 16)), *N[9:12]))
 
     # --- rocket
     def rocket_line():

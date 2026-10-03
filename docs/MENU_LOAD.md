@@ -250,9 +250,12 @@ axis so the front of the ring dips (the same tilt as the offsets `26.047·cos θ
 check - through the same scale (y · 0.75, z / 1.2) and normalised per axis like `0x489210`, so the rows are no longer
 exactly orthogonal. Against the traced instance rows the port's axes now agree to 2·10⁻⁴; the earlier pure rotation was
 1.1-1.7° off. Result: characters upright, each looking outward from the ring's center, the front one
-straight into the lens, the pedestals as ellipses seen from above; Woody stands with his feet on his pedestal. The "?" figure and the
-BlackBox crate float noticeably above their pedestal in frame 0 of their anim 0 (that's how the data has it; not
-comparable without footage of the original). The placement runs every frame after the title-camera path and before rendering.
+straight into the lens, the pedestals as ellipses seen from above; Woody stands with his feet on his pedestal. The "?" figure
+floats noticeably above its pedestal in frame 0 of its anim 0, and so does the BlackBox cabinet in the last frame of its anim 1
+(root key (0, 0, 101), the box is 68 high): that is how the data has it, and the original shows the same (checked live
+2026-10-03, `--shot`). The cabinet holds anim 1 from the start because its registration (message 58, n = 3) plays it once
+(4.1); its anim 0 is the House fly-in, which starts 640 units off the pedestal. The placement runs every frame after the
+title-camera path and before rendering.
 
 **The camera goes nowhere.** Page 3 never calls `SetMode`; the title camera (mode 0x80, circle around the
 treehouse, TITLE §2) just keeps turning, the carousel hangs fixed in front of the lens and the scenery turns behind it. The

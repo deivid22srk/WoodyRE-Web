@@ -54,7 +54,7 @@ thus comes back through a script variable (watchers get woken).
 | 55 | inst, a, b | 34 | check rocket/cannon parameters class 20/21 (ROCKET.md §2.1) |
 | 56 | inst, v | 606 | check base: float +0x6c = v·0.01; in `0x44e8f0` (most classes) first `0x44e91b` |
 | 57 | inst, v | 643 | check fade speed `+0x100 = v·0.01` per s (`0x44e907`, the derived-class fader `0x44e8f0`; INSTANCE.md §10); ported |
-| 58 | inst, n | 10 | check class 110 (House world-select carousel, slots 105..114): registration `0x451960` → `0x45e6f0` as figure/pedestal n (MENU_LOAD.md §4); the port takes the fixed slots instead (no-op) |
+| 58 | inst, n | 10 | check class 110 (House world-select carousel, slots 105..114): registration `0x451960` → `0x45e6f0` as figure/pedestal n (MENU_LOAD.md §4); the port takes the fixed slots instead, and only does what the registration does to n = 3: the BlackBox figure plays anim 1 once (`0x436ca0(1.0, {1,−1,−1,−1})`) |
 | 63 | inst, v | 2 | check class 17 (the machine coupled to a boss, `0x40c5e0`): `+0x114 = v`, then Reset `vtbl[17]` `0x40c460`; `+0x114 == 0` would give a one-time smoke emitter over its typecode-9 markers, but the ctor already sets 1 (`0x40c3f8`) and W2D 746 / W3D 776 send `[., 1]`: no-op |
 | 59..62 | inst, … | few | class 14 (boss Buzz, `0x410070`): **59** `[boss, inst]` links **one** instance (`+0x234`, flag 0x20, own AnimCtrl), **60** `[boss, var]` = mailbox variable (BOSS14.md §7); class 15 (`0x40e781`): 8 instances at +0x1c8..+0x1e4, flag 0x40; 63 in class 17 |
 | 500..580 | cam, … | many | check camera modes and transitions (CAMERA.md §4, CAMERA_SCRIPT.md); ported |
