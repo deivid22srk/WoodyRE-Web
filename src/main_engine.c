@@ -30,6 +30,7 @@
 #include "blackbox.h"
 #include "datasetup.h"
 #include "pad.h"
+#include "texpack.h"
 #ifdef WOODY_GUI
 #define WOODY_DEBUG_TITLE 0                     /* the release build keeps the plain window title */
 #define WOODY_DEBUG_KEYS (wenv("WOODY_DEBUGKEYS") != NULL)   /* and the developer keys only on request */
@@ -3611,6 +3612,7 @@ static int level_load(Level *L, const char *dir, const char *lvl)
     g_now = 0; g_clock = 0;                            /* the init scripts start animations / launchers against the new level's clock, not the previous level's */
     if (char_of_level(g_level) >= 0) g_char = char_of_level(g_level);
     snprintf(path, sizeof path, "%s/%s/%s.tex", dir, lvl, lvl); if (tex_load(&L->tex, path)) return -1;
+    tp_scope(lvl);                                     /* --dumptex writes this level's textures to mods\dump\<lvl> (texpack.c) */
     snprintf(path, sizeof path, "%s/%s/%s.gel", dir, lvl, lvl); if (gel_load(&L->gel, path)) { tex_free(&L->tex); return -1; }
     snprintf(path, sizeof path, "%s/%s/%s.ins", dir, lvl, lvl); if (ins_load(&g_ins, path)) { gel_free(&L->gel); tex_free(&L->tex); return -1; }
     snprintf(path, sizeof path, "%s/%s/code", dir, lvl);
@@ -3762,6 +3764,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--fullscreen")) full_arg = 1;
         else if (!strcmp(argv[i], "--aspect") && i + 1 < argc) { wide_arg = strcmp(argv[i + 1], "4:3") != 0; i += 1; }
         else if (!strcmp(argv[i], "--verify")) verify = 1;
+        else if (!strcmp(argv[i], "--dumptex")) tp_set_dump(1);                       /* port extra: every texture to mods\dump\<level>\ (docs/TEXTURES.md) */
     }
     if (verify) {
         int bad = data_verify(dir);

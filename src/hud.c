@@ -1,6 +1,7 @@
 /* hud.c - 2D layer: font (rck type 3), strings (type 2), HUD sprites (bank 0 images 61..64), text box 1080.
  * Everything in 640x480 virtual coordinates, origin top left. Colours are 0xAARRGGBB with RGB 0x80 = 1.0 (docs/HUD_TEXT.md 5.2). */
 #include "hud.h"
+#include "texpack.h"
 #include <windows.h>
 #include <GL/gl.h>
 #include <stdio.h>
@@ -68,6 +69,9 @@ static GLuint upload(const uint8_t *rgba, int w, int h)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    uint64_t hash = tp_hash('I', rgba, (uint32_t)(w * h * 4), w, h);    /* port extra: a texture pack's PNG (texpack.c); w, h stay the original's for the layout */
+    if (tp_replace(hash, TP_ASIS)) return t;
+    tp_dump(hash, rgba, w, h);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     return t;
 }
@@ -134,7 +138,9 @@ static void level_item(int type, int index, const uint8_t *d, uint32_t size)
 int hud_load(const char *common_rck, const char *level_rck)
 {
     hud_free();
-    if (rck_walk(common_rck, 6, common_item)) return -1;
+    char scope[64]; snprintf(scope, sizeof scope, "%s", tp_scope_get()); tp_scope("Common");   /* texture dumps of bank 0 go to mods\dump\Common */
+    int bad = rck_walk(common_rck, 6, common_item); tp_scope(scope);
+    if (bad) return -1;
     if (rck_walk(level_rck, 8 | 4 | 2, level_item) || !H.nglyphs) return -1;   /* images, strings, font */
     H.ok = 1; H.k = 17.0f / (H.H - H.B);
     return 0;

@@ -9,6 +9,7 @@
 #include "blackbox.h"
 #include "hud.h"
 #include "audio.h"
+#include "texpack.h"
 #include <windows.h>
 #include <GL/gl.h>
 #include <stdio.h>
@@ -102,7 +103,9 @@ static GLuint upload(const uint8_t *d, int w, int h, int bpp)   /* 0x480780: BGR
     glGenTextures(1, &t); glBindTexture(GL_TEXTURE_2D, t);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);   /* GL_CLAMP_TO_EDGE: GL_CLAMP would mix the black border into the tile seams */
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1); glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    uint64_t hash = tp_hash('I', px, (uint32_t)(w * h * 4), w, h);     /* port extra: a texture pack's PNG (texpack.c) */
+    if (!tp_replace(hash, TP_ASIS)) { tp_dump(hash, px, w, h); glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px); }
     free(px); return t;
 }
 /* RectVirtual 0x480a10 with the colour 0xfe808080 (0x488140) and flag 8 (alpha blend): destination x, y, w, h (w < 0 = mirrored),

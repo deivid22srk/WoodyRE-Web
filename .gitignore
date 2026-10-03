@@ -15,6 +15,7 @@ woodyre.sav
 woodyre.log
 Woody.cfg
 Woody.sav
+mods/
 # developer scratch: dev builds, traces, screenshots, exports (may hold renders of game art)
 out/
 docs/disasm_*.txt

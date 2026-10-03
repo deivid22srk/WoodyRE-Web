@@ -10,6 +10,7 @@
 #include <math.h>
 #include "render_gl.h"
 #include "player.h"                                   /* volume_contains (0x4300c0) */
+#include "texpack.h"
 
 static Window *g_win;
 
@@ -166,9 +167,15 @@ static GLuint upload_texture(const TexGroup *g, int frame)
 {
     GLuint id; glGenTextures(1, &id); glBindTexture(GL_TEXTURE_2D, id);
     int w = (int)g->width, h = (int)g->height, ck = g->flags & 1; uint32_t n = g->width * g->height;
+    uint64_t hash = tp_hash('T', g->frames[frame], n * 2, w, h);
+    if (tp_replace(hash, ck ? TP_KEY : TP_OPAQUE)) {                         /* port extra: a texture pack's PNG (texpack.c) */
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        return id;
+    }
     uint16_t *s = (uint16_t *)malloc((size_t)n * 2 + 2), *half = (uint16_t *)malloc((size_t)n * 2 + 2); uint8_t *rgba = (uint8_t *)malloc((size_t)n * 4 + 4);
     for (uint32_t i = 0; i < n; i++) s[i] = tex16_texel(g->frames[frame][i], ck);
     tex16_widen(s, rgba, n, ck);
+    tp_dump(hash, rgba, w, h);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     int level = 0;
     while (w > 1 || h > 1) {                  /* the original stops after 3 levels (GL_TEXTURE_MAX_LEVEL below); the rest only makes the chain complete for GL 1.1 */

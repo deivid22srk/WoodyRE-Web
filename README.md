@@ -46,7 +46,14 @@ Everything the game writes stays next to `WoodyRE.exe` (or in `%LOCALAPPDATA%\Wo
   is imported once.
 - `woodyre.log`: the engine log, useful in bug reports.
 
-Command line: `WoodyRE.exe [--windowed | --fullscreen] [--res WxH] [--aspect 4:3|wide] [--nologo] [--verify]`.
+Command line: `WoodyRE.exe [--windowed | --fullscreen] [--res WxH] [--aspect 4:3|wide] [--nologo] [--verify] [--dumptex]`.
+
+### Texture packs
+Any texture can be replaced by a PNG of any size, for example an HD version. Put the PNGs in `mods\textures\` next to
+`woodyre.cfg` (subfolders are fine). To make one, start the game with `--dumptex` and play: every texture it shows is
+written to `mods\dump\<level>\` as `<w>x<h>_<hash>.png`. Edit or upscale a file, keep its `_<hash>.png` ending (the part
+before it may be anything) and put it in `mods\textures\`. Keep the aspect ratio; transparency works through the PNG's
+alpha. Details in [docs/TEXTURES.md](docs/TEXTURES.md).
 
 ## Building from source
 Windows 10 or 11; nothing needs to be installed first.
@@ -66,6 +73,7 @@ or `pip install ziglang` is used when present, otherwise `build.bat` downloads t
 ## License
 The code in this repository is licensed under the [GNU General Public License v3.0](LICENSE) or later. This does not
 cover the original game, its data or its trademarks, which belong to their owners and are not part of this project.
+`src/stb/` holds Sean Barrett's stb_image and stb_image_write (public domain or MIT, see the end of each file).
 
 # Development and reverse engineering
 Developers keep the CD's contents in `extract/` and the installed original (exe, DLLs) in `game/`; both are ignored by
