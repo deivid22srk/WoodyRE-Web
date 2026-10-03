@@ -138,6 +138,7 @@ typedef struct Instance {
     /* runtime */
     int visible; int anim; float anim_time; float anim_speed; int type;   /* type from SetTypeInstance */
     int snd_anim; float snd_tf;                 /* sound events: animation and frame time at the previous tick */
+    unsigned snd_frame;                         /* frame of that tick (+0xc4): events only fire when it was the previous frame */
     Mat4 world;                                 /* instance placement */
     /* base class state driven by the script (instance.c, docs/INSTANCE.md) */
     int scripted;                               /* 0 = animation owned by other code (the player) */

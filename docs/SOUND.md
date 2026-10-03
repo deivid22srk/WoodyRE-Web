@@ -251,9 +251,15 @@ config 1..8 (`0x4693b0`). Setters for the options menu: `vt[0x54/0x5c/0x64]` of 
 
 ## 3. Animation events type 4 = sound (`.ins`)
 
-`0x42f5e0` (instance animation tick, only if the instance was drawn this frame: `inst+0xc4 == frame−1`) →
+`0x42f5e0` (tail of the instance's vtbl[3] update, e.g. `0x44e8df`, which only runs for the instances of the frame's list
+world+0x64; it always stores `+0xc4/+0xc8/+0xcc` = frame / animation / time but only collects events when `inst+0xc4 == frame−1`,
+so an instance that comes back into the list starts without a backlog) →
 `0x43a880(model, animPrev, animNow, tPrev, tNow, buf, wrap)` → `0x43a8f0` collects the events of the **root node** with
 `tPrev ≤ t < tNow` (on wrap: `[tPrev, end)` + `[0, tNow)`) → `0x4695f0(inst, buf, n)`.
+
+The port once scanned every visible instance of the level: in W3B 17 far-away instances of one model (ref 0x4b) and the
+script's ambient loops then filled its 96-voice pool and Woody's own plays (jump, peck, duck, splash, death) were dropped at random.
+`anim_sounds` now has the list gate above, and the pool is the original's 512 logical voices (§2.1).
 
 Order matters: the clock `0x43eee0` steps a logical-animation chain to its next part itself (slot step `0x43f0c9`) BEFORE this
 scan, so when a chain part ends the scan sees `animPrev != animNow` (a new animation, events from 0) and never a wrap of the

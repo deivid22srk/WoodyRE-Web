@@ -3048,17 +3048,24 @@ static void snd_msg(const EkoMsg *m, Instance *in)
 }
 
 /* animation events of type 4 on the root node = sounds (0x42f5e0 -> 0x43a8f0 -> 0x4695f0, docs/SOUND.md 3):
- * {4, t, ref, probLo, probHi, vol, pitch%, dmin cm, 0}; one random draw per call picks among the variants; the Perso plays 2D */
+ * {4, t, ref, probLo, probHi, vol, pitch%, dmin cm, 0}; one random draw per call picks among the variants; the Perso plays 2D.
+ * 0x42f5e0 is the tail of an instance's vtbl[3] update, which only runs for the instances of this frame's list world+0x64;
+ * it always stores frame / animation / time (+0xc4/+0xc8/+0xcc) but only collects events when +0xc4 was the previous frame,
+ * so an instance that comes back into the list starts from where it is, without a backlog. Scanning every instance of the
+ * level instead started a stream of far-away one-shots (W3B: 17 owners of ref 0x4b ~100 m off) that filled the voice pool. */
+static unsigned g_snd_frame = 1;
 static void anim_sounds(Instance *ii)
 {
     const Model *mo = ii->model;
     if (!ii->visible || !mo->nnodes || ii->anim < 0 || (uint32_t)ii->anim >= mo->nanims) return;
+    if (!(g_player && g_player->inst == ii) && !game_enemy_thinks(ii)) return;         /* not in the list: no update, no scan (the Perso's update always runs) */
+    int fire = ii->snd_frame == g_snd_frame - 1; ii->snd_frame = g_snd_frame;
     const InsNode *n = &mo->nodes[0]; if (!n->event_refs || !n->pool || !n->event_refs[ii->anim].cnt) { ii->snd_anim = ii->anim; return; }
     const InsAnim *a = &mo->anims[ii->anim]; float dur = a->duration_s > 0 ? a->duration_s : 1.0f;
     float ph = fmodf(ii->anim_time / dur, 1.0f); if (ph < 0) ph += 1.0f; float tf = ph * (float)a->nframes;
     float t0 = ii->snd_anim == ii->anim ? ii->snd_tf : 0.0f;                         /* 0x43a8b4: a new animation plays its events of [0, tNow) (Woody's results arrival, anim 74, speaks at t = 0) */
     ii->snd_anim = ii->anim; ii->snd_tf = tf;
-    if (tf == t0) return;
+    if (!fire || tf == t0) return;
     float r = -1;
     const uint32_t *e = (const uint32_t *)(n->pool + ((size_t)n->a + n->b + n->event_refs[ii->anim].off) * 4);
     for (uint32_t i = 0; i < n->event_refs[ii->anim].cnt; i++) {
@@ -3795,6 +3802,7 @@ int main(int argc, char **argv)
                 }
                 anim_sounds(ii);
             }
+            g_snd_frame++;
         }
         if (!paused) ambient_update(dt);                                          /* class 90 thinks (ambient.c): new butterflies / motes / rain drops */
         if (!paused) water_update(dt, g_player);

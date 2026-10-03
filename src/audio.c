@@ -10,7 +10,9 @@
 #define MIX_RATE   44100
 #define BLOCK      1024                     /* frames per waveOut buffer (23 ms) */
 #define NBLOCKS    4
-#define NVOICES    96                       /* the original: 512 logical, 24 physical; out-of-range voices cost nothing here */
+#define NVOICES    512                      /* the original's logical pool (mgr+0x908, 512 entries); 24 physical. Out-of-range and
+                                             * unprocessed voices keep their entry (loops forever), so 96 ran full in W3B and new
+                                             * plays - Woody's grunts, splashes - were dropped */
 #define STR_FRAMES 8192
 #define BLOCK_DT   ((float)BLOCK / MIX_RATE)
 
