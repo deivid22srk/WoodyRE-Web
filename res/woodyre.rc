@@ -1,0 +1,28 @@
+// Resources of WoodyRE.exe and the standalone launcher: the port's own icon (tools/mkicon.py) and version info.
+#include <winver.h>
+
+1 ICON "woodyre.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     0,9,0,0
+PRODUCTVERSION  0,9,0,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "WoodyRE contributors"
+            VALUE "FileDescription",  "WoodyRE - engine reimplementation for the original game data"
+            VALUE "FileVersion",      "0.9.0"
+            VALUE "LegalCopyright",   "GPL-3.0-or-later. Needs the original game files; not affiliated with the rights holders."
+            VALUE "ProductName",      "WoodyRE"
+            VALUE "ProductVersion",   "0.9.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

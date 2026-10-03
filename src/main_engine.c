@@ -28,6 +28,15 @@
 #include "hnm.h"
 #include "ambient.h"
 #include "blackbox.h"
+#include "datasetup.h"
+#ifdef WOODY_GUI
+#define WOODY_DEBUG_TITLE 0                     /* the release build keeps the plain window title */
+#define WOODY_DEBUG_KEYS (wenv("WOODY_DEBUGKEYS") != NULL)   /* and the developer keys only on request */
+#else
+#define WOODY_DEBUG_TITLE 1                     /* level, fps, VM clock and player state in the title */
+#define WOODY_DEBUG_KEYS 1                      /* F1-F5, Tab, [ ], P, PgUp / PgDn (level skip), End (finish the level) */
+#endif
+#define DBGKEY(k) (WOODY_DEBUG_KEYS && win.keys[k])
 
 static InsFile g_ins;
 static int g_log_msgs = 1;
@@ -3486,7 +3495,16 @@ static void *read_all(const char *path, size_t *sz) { FILE *f = fopen(path, "rb"
 int main(int argc, char **argv)
 {
     if (wenv("WOODY_UNBUF")) setvbuf(stdout, NULL, _IONBF, 0);                  /* debugging a crash: every line reaches the log */
-    const char *dir = argc > 1 ? argv[1] : "extract/Data", *lvl = argc > 2 && argv[2][0] != '-' ? argv[2] : "House";   /* no level: boot to the title (House, level 0) */
+    /* [data dir] [level] [options]: the data dir is a path (it has a / \ or :, or exists); without one data_find() looks for the
+     * game files and asks for the CD at the first start (datasetup.h). No level: boot to the title (House, level 0) */
+    int ai = 1; const char *dir = NULL, *lvl = "House";
+    if (argc > ai && argv[ai][0] != '-' && (strpbrk(argv[ai], "/\\:") || GetFileAttributesA(argv[ai]) != INVALID_FILE_ATTRIBUTES)) dir = argv[ai++];
+    if (argc > ai && argv[ai][0] != '-') lvl = argv[ai++];
+    if (!dir && !(dir = data_find())) return 1;
+#ifdef WOODY_GUI
+    if (!wenv("WOODY_CONSOLE")) freopen("woodyre.log", "w", stdout);              /* the windowed release build: the log beside woodyre.cfg */
+#endif
+    int verify = 0;                                                               /* --verify: check the data against the English 1.00 CD and quit */
     const char *shot_path = NULL; double shot_after = 0;                          /* --shot file.ppm seconds: screenshot then quit */
     int have_cam = 0; float cam_args[5] = {0, 0, 0, 0, 0};                          /* --cam x y z yaw pitch (degrees) */
     double jump_at = -1; float max_y = -1e30f, start_y = 0;                       /* --jump T: hold jump from T s for 1 s (testing), reports the apex */
@@ -3500,7 +3518,7 @@ int main(int argc, char **argv)
     int new_game = 0, logo = -1; const char *next_name = NULL; double next_at = 0;   /* --nologo / --logo: the logo films off / on even for a scripted run */                              /* --next LVL T: change to level LVL after T s (testing) */
     double walk_for = 0, walk_at = wenv("WOODY_WALKAT") ? atof(wenv("WOODY_WALKAT")) : 0; int fly = 0;                                             /* --walk T: hold forward for T s (testing); --fly: start in free camera */
     int res_w = 0, res_h = 0, full_arg = -1, wide_arg = -1;                          /* --res WxH, --windowed / --fullscreen, --aspect 4:3|wide (port extras) */
-    for (int i = (argc > 2 && argv[2][0] != '-') ? 3 : 2; i < argc; i++) {
+    for (int i = ai; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 2 < argc) { shot_path = argv[i + 1]; shot_after = atof(argv[i + 2]); i += 2; }
         else if (!strcmp(argv[i], "--cam") && i + 5 < argc) { for (int k = 0; k < 5; k++) cam_args[k] = (float)atof(argv[i + 1 + k]); have_cam = 1; i += 5; fly = 1; }
         else if (!strcmp(argv[i], "--walk") && i + 1 < argc) { walk_for = atof(argv[i + 1]); i += 1; }
@@ -3530,6 +3548,16 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--windowed")) full_arg = 0;
         else if (!strcmp(argv[i], "--fullscreen")) full_arg = 1;
         else if (!strcmp(argv[i], "--aspect") && i + 1 < argc) { wide_arg = strcmp(argv[i + 1], "4:3") != 0; i += 1; }
+        else if (!strcmp(argv[i], "--verify")) verify = 1;
+    }
+    if (verify) {
+        int bad = data_verify(dir);
+#ifdef WOODY_GUI
+        char m[200] = "All game files equal the English 1.00 CD.";
+        if (bad) snprintf(m, sizeof m, "%d game files are missing or differ from the English 1.00 CD (the list is in woodyre.log).", bad);
+        MessageBoxA(NULL, m, "WoodyRE", bad ? MB_ICONWARNING : MB_ICONINFORMATION); return 0;
+#endif
+        return bad != 0;
     }
     SetProcessDPIAware();                                                              /* port extra: real pixels on a scaled desktop, so 4K is 4K */
     opt_read();                                                                        /* woodyre.cfg: the volumes (applied at sound start) and the display */
@@ -3605,7 +3633,7 @@ int main(int argc, char **argv)
         g_clock += dt; g_now = (float)g_clock;         /* 0x401880: everything (Perso timers, animations, the script VM) runs on this one clock, so a hitch cannot make script delays
                                                         * run ahead of the action timers - a door would then teleport while action 17 is still running and 0x44a650 refuses the move */
         if (fixdt > 0) now = t0 + g_clock;             /* ... and the test hooks timed from the level start (--shot, WOODY_SHOTSEQ, WOODY_KEYS) follow the same clock */
-        if (win.keys[VK_F5] && !f5_prev && L.have_player) { fly ^= 1; if (!fly) L.player.cam_init = 0; }
+        if (DBGKEY(VK_F5) && !f5_prev && L.have_player) { fly ^= 1; if (!fly) L.player.cam_init = 0; }
         f5_prev = win.keys[VK_F5];
         /* camera */
         float speed = (win.keys[VK_SHIFT] ? 3000.0f : 600.0f) * dt;
@@ -3619,14 +3647,14 @@ int main(int argc, char **argv)
         if (fly) { cam.yaw -= win.mouse_dx * 0.004f; cam.pitch -= win.mouse_dy * 0.004f; }
         if (cam.pitch > 1.5f) cam.pitch = 1.5f; if (cam.pitch < -1.5f) cam.pitch = -1.5f;
         /* toggles */
-        for (int k = 0; k < 3; k++) { int down = win.keys[VK_F1 + k]; if (down && !f_prev[k]) { if (k == 0) L.rnd.show_world ^= 1; else if (k == 1) L.rnd.show_instances ^= 1; else L.rnd.wireframe ^= 1; } f_prev[k] = down; }
+        for (int k = 0; k < 3; k++) { int down = DBGKEY(VK_F1 + k); if (down && !f_prev[k]) { if (k == 0) L.rnd.show_world ^= 1; else if (k == 1) L.rnd.show_instances ^= 1; else L.rnd.wireframe ^= 1; } f_prev[k] = down; }
         {   /* F4 steps the visibility back: frustum + .vis -> frustum only -> the whole level every frame */
             static const char *cn[3] = { "off (whole level)", "frustum only", "frustum + .vis" };
-            int down = win.keys[VK_F4], top = L.gel.nsectors ? (L.rnd.vis ? 2 : 1) : 0;
+            int down = DBGKEY(VK_F4), top = L.gel.nsectors ? (L.rnd.vis ? 2 : 1) : 0;
             if (down && !f_prev[3]) { L.rnd.cull = L.rnd.cull ? L.rnd.cull - 1 : top; L.rnd.sec_dirty = 1; printf("culling: %s\n", cn[L.rnd.cull]); }
             f_prev[3] = down;
         }
-        if (win.keys['P'] && !p_prev) dbg_paused ^= 1; p_prev = win.keys['P'];
+        if (DBGKEY('P') && !p_prev) dbg_paused ^= 1; p_prev = win.keys['P'];
         paused = dbg_paused || menu_pauses_world() || bb_active();                    /* the pause menu and its pages stop the world (table 0x405af8); App state 3 (BlackBox) runs 0x401ab0 with app+0xf4 |= 8, the world paused (0x40166e) */
         in_frame(&win, fly, now, now - t0);                                          /* the 14 actions of this frame (0x402940, docs/INPUT.md) */
         /* menu keys (docs/MENU_NEWGAME.md 1.3): confirm = Enter RELEASED or the jump key (action 4 + 0xc) pressed; back = Esc released
@@ -3644,7 +3672,7 @@ int main(int argc, char **argv)
             #undef REL
             for (int k = 0; k < 256; k++) key_prev[k] = win.keys[k];
         }
-        if (win.keys[VK_TAB] && !tab_prev && sel) {                                   /* next instance with animations */
+        if (DBGKEY(VK_TAB) && !tab_prev && sel) {                                   /* next instance with animations */
             Instance *nxt = NULL; int found = 0;
             for (uint32_t mi = 0; mi < g_ins.nmodels && !nxt; mi++) for (uint32_t k = 0; k < g_ins.models[mi].ninstances; k++) {
                 Instance *c = &g_ins.models[mi].instances[k];
@@ -3655,7 +3683,7 @@ int main(int argc, char **argv)
             printf("selected instance %u (model with %u nodes, %u anims, type %d)\n", sel->index, sel->model->nnodes, sel->model->nanims, sel->type);
         }
         tab_prev = win.keys[VK_TAB];
-        int br[2] = { win.keys[VK_OEM_4], win.keys[VK_OEM_6] };
+        int br[2] = { DBGKEY(VK_OEM_4), DBGKEY(VK_OEM_6) };
         if (sel && sel->model->nanims) {
             if (br[0] && !br_prev[0]) { sel->anim = (sel->anim + (int)sel->model->nanims - 1) % (int)sel->model->nanims; sel->anim_time = 0; printf("anim %d (%u frames, %.2f s)\n", sel->anim, sel->model->anims[sel->anim].nframes, sel->model->anims[sel->anim].duration_s); }
             if (br[1] && !br_prev[1]) { sel->anim = (sel->anim + 1) % (int)sel->model->nanims; sel->anim_time = 0; printf("anim %d (%u frames, %.2f s)\n", sel->anim, sel->model->anims[sel->anim].nframes, sel->model->anims[sel->anim].duration_s); }
@@ -3935,7 +3963,7 @@ int main(int argc, char **argv)
             hud_end(); g_hud_ext = 0;
         }
         /* level change: PgUp / PgDn cycle through the levels (debug); a request fades out, swaps the level, fades in */
-        for (int k = 0; k < 2; k++) { int down = win.keys[k ? VK_NEXT : VK_PRIOR]; if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
+        for (int k = 0; k < 2; k++) { int down = DBGKEY(k ? VK_NEXT : VK_PRIOR); if (down && !pg_prev[k]) { int cur = g_level >= 0 && g_level < 27 ? g_level : 0; request_level((cur + (k ? 1 : 26)) % 27, 0.5f); } pg_prev[k] = down; }
         { static int side_done; if (wenv("WOODY_SIDE") && now - t0 >= 1.0 && !side_done && L.have_player) { side_done = 1; Instance *si = slot_instance(0x1000000 | (uint32_t)strtol(wenv("WOODY_SIDE"), NULL, 0)); if (si) cam_side_start(si, 2); } }   /* testing: force the side view on a marker instance */
         {   /* WOODY_SIDECHECK="slot:v slot:v ..." (testing, the 1088 pairs of the level script): for five points along the marker A-B, is the
              * line from the side camera (A..B + 340 up, 1000 to the side, the sign of 0x424bf0) to the body (+100) blocked by the world - and
@@ -3988,7 +4016,7 @@ int main(int argc, char **argv)
             /* WOODY_BOMBAT="T x y z": a bomb of the pool dropped there (template 0, 8 s fuse, no floor snap) T s into the level, once */
             static int bat_done; if (wenv("WOODY_BOMBAT") && !bat_done && sscanf(wenv("WOODY_BOMBAT"), "%f %f %f %f", &T, &x, &y, &z) == 4 && now - t0 >= T) {
                 BombT bt = BOMB_T0; bt.life = 8.0f; bt.speed = 0; bat_done = 1; bomb_start(&bt, (Vec3){ x, y, z }, (Vec3){ 0, -1, 0 }, 0, -1, 0); } }
-        if ((next_name && now - t0 >= next_at && !strcmp(next_name, "END")) || (win.keys[VK_END] && !end_prev)) {   /* End key / --next END T: finish the level as its exit door does (message 1083) */
+        if ((next_name && now - t0 >= next_at && !strcmp(next_name, "END")) || (DBGKEY(VK_END) && !end_prev)) {   /* End key / --next END T: finish the level as its exit door does (message 1083) */
             EkoMsg em; memset(&em, 0, sizeof em); em.id = 1083; on_msg(&L.vm, &em, NULL); if (next_name && !strcmp(next_name, "END")) next_name = NULL;
         }
         end_prev = win.keys[VK_END];
@@ -4020,8 +4048,19 @@ int main(int argc, char **argv)
             lvl = L.name; continue;
         }
         if (now - fps_t > 2.0 && wenv("WOODY_FPSLOG")) printf("fps %.1f\n", frames / (now - fps_t));   /* testing: the frame cap / vsync */
-        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE%s - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", g_level == 0 ? " - TITLE: Enter = new game, L = continue" : "", lvl, frames / (now - fps_t), L.vm.time, L.vm.frame, L.vm.stat_msgs_total, fly ? "fly" : "play", L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.on_ground ? "ground" : "air", L.player.events_sent, L.player.health, L.player.lives, L.player.bonus_got, L.player.bonus_total); SetWindowTextA((HWND)win.hwnd, title); if (L.have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.vel.x, L.player.vel.y, L.player.vel.z, L.player.on_ground ? (L.player.floor_is_hull ? "hull" : "ground") : "air", L.player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
+        if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE%s - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", g_level == 0 ? " - TITLE: Enter = new game, L = continue" : "", lvl, frames / (now - fps_t), L.vm.time, L.vm.frame, L.vm.stat_msgs_total, fly ? "fly" : "play", L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.on_ground ? "ground" : "air", L.player.events_sent, L.player.health, L.player.lives, L.player.bonus_got, L.player.bonus_total); if (WOODY_DEBUG_TITLE) SetWindowTextA((HWND)win.hwnd, title); if (L.have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.vel.x, L.player.vel.y, L.player.vel.z, L.player.on_ground ? (L.player.floor_is_hull ? "hull" : "ground") : "air", L.player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
     }
     opt_write(); level_free(&L); audio_shutdown(); win_close(&win);   /* 0x401130: the cfg is written back at exit */
     return 0;
 }
+
+#ifdef WOODY_GUI
+/* the windowed release build (build.bat): no console; stdout goes to woodyre.log (main), a failed start says so */
+int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
+{
+    (void)hi; (void)hp; (void)cmd; (void)show;
+    int r = main(__argc, __argv);
+    if (r) { fflush(stdout); MessageBoxA(NULL, "WoodyRE could not start the game. Details are in woodyre.log.", "WoodyRE", MB_ICONERROR); }
+    return r;
+}
+#endif

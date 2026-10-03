@@ -1,0 +1,49 @@
+# Builds WoodyRE.exe with build.bat on every push and pull request (no game data involved: the exe holds only the port's own
+# code). A pushed tag v* also publishes a GitHub release with WoodyRE-<tag>.zip (WoodyRE.exe, README.md, LICENSE).
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Check the exe
+        shell: pwsh
+        run: |
+          $v = (Get-Item WoodyRE.exe).VersionInfo
+          "WoodyRE.exe: $((Get-Item WoodyRE.exe).Length) bytes, $($v.ProductName) $($v.FileVersion)"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = if ($env:GITHUB_REF_TYPE -eq 'tag') { "WoodyRE-$env:GITHUB_REF_NAME" } else { "WoodyRE-$($env:GITHUB_SHA.Substring(0, 7))" }
+          New-Item -ItemType Directory -Force "pkg/$name" | Out-Null
+          Copy-Item WoodyRE.exe, README.md, LICENSE "pkg/$name/"
+          Compress-Archive -Path "pkg/$name" -DestinationPath "$name.zip"
+          "ZIP=$name.zip" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WoodyRE
+          path: ${{ env.ZIP }}
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:GITHUB_REF_NAME" "$env:ZIP" --title "WoodyRE $env:GITHUB_REF_NAME" --notes "Unzip, start WoodyRE.exe and point it to your Woody Woodpecker CD (or a mounted ISO image of it). The game files are not included - see README.md."

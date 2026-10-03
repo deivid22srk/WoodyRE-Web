@@ -18,7 +18,7 @@
 | Ext | Content | Status |
 |---|---|---|
 | code | "EKO CODE" bytecode, 32-bit words, end marker 0xFADEFADE, header with object count (e.g. 507 for W1A) and segment boundaries | structure partly known, opcodes still to be RE'd |
-| .gel | Geometry: header {faces, indices(=3*faces), 3, n}; per face 36 B: plane(nx,ny,nz,d) + 3 indices + 2 dwords; then group table; then vertex count + vertices {x,y,z float, RGB color} | decoded, render made (W1A_topdown.png) |
+| .gel | Geometry: header {faces, indices(=3*faces), 3, n}; per face 36 B: plane(nx,ny,nz,d) + 3 indices + 2 dwords; then group table; then vertex count + vertices {x,y,z float, RGB color} | decoded, render made |
 | .tex | count; per texture header (w,h,flags,6 dwords; 36–40 B) + w*h*2 bytes RGB565 (no mipmaps) | decoded (minor header variants open) |
 | .lit | Lights: position (3 floats), color RGB, range | almost trivial |
 | .col | Collision: per-face material/flags (u16 pairs) | simple |

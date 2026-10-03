@@ -1,10 +1,72 @@
 # WoodyRE
 
-Reverse engineering of *Woody Woodpecker: Escape from Buzz Buzzard Park* (PC, Eko Software / Cryo, 2001),
-with the goal of a reimplementation of the engine that loads the original data (`Data\`, `Common\`, `Music.bf`).
+A reimplementation of the engine of *Woody Woodpecker: Escape from Buzz Buzzard Park* (PC, Eko Software / Cryo, 2001),
+rebuilt by reverse engineering the original. It runs the original game data from **your own CD**: no game files are
+included in this repository or its releases.
 
-There are no game files in this repo. Put the contents of the ISO in `extract/` and the installed
-exe/DLLs in `game/` (both are in `.gitignore`).
+> Unofficial fan project for preservation. Not affiliated with or endorsed by Eko Software, Cryo Interactive, Microïds,
+> Universal Studios or Walter Lantz Productions. Woody Woodpecker and related names are trademarks of their owners.
+> You need your own copy of the original game to play.
+
+## Playing
+1. Get `WoodyRE.exe`: download it from the [Releases](../../releases) page, or build it yourself (below).
+2. Put it in a folder of its own and start it.
+3. At the first start it looks for the game CD in every drive (a mounted ISO image works too), asks once, copies the game
+   files (about 640 MB) into `data\` next to the exe and checks each one against the English 1.00 CD. After that the CD
+   is no longer needed. No CD drive? Choose a folder with a copy of the CD's files instead, or copy `Data`, `Common`,
+   `Logo`, `Game` and `Music.bf` from the CD into `data\` yourself.
+
+**Supported version:** the English PC CD-ROM, version 1.00 (October 2001). Other releases, such as the later Brazilian
+"Pica-Pau" CD, contain changed levels and are not supported. `WoodyRE.exe --verify` checks your copy (output in `woodyre.log`).
+
+### Controls
+| Action | Keys |
+|---|---|
+| Walk | arrow keys or WASD (relative to the camera) |
+| Jump | Space |
+| Attack (peck, charge on release) | Left Ctrl or Shift |
+| Special attack | Right Ctrl or E |
+| Duck | X |
+| Look around | Enter or V |
+| Camera behind Woody | C or Numpad 0 |
+| Pause menu | Esc |
+| Fullscreen / window | F11 |
+
+Menus: Enter or Jump confirms, Esc goes back. A joystick works as in the original (WinMM).
+
+### Settings and files
+Everything the game writes stays next to `WoodyRE.exe` (or in `%LOCALAPPDATA%\WoodyRE` when that folder is read-only):
+- `woodyre.cfg`: the options (sound volumes and the Display page: resolution, window or fullscreen, 4:3 or wide, vsync,
+  frame cap, `logos=0` to skip the intro films).
+- `woodyre.sav`: the four save slots, in the original `Woody.sav` layout. An original `Woody.sav` placed next to the exe
+  is imported once.
+- `woodyre.log`: the engine log, useful in bug reports.
+
+Command line: `WoodyRE.exe [--windowed | --fullscreen] [--res WxH] [--aspect 4:3|wide] [--nologo] [--verify]`.
+
+## Building from source
+Windows 10 or 11; nothing needs to be installed first.
+```bat
+build.bat
+```
+This builds `WoodyRE.exe` in the repository folder. The C compiler is [Zig](https://ziglang.org): an existing `zig`
+or `pip install ziglang` is used when present, otherwise `build.bat` downloads the official Zig 0.16.0 for Windows
+(about 95 MB) into `tools\zig` once and checks its SHA-256.
+
+- `build.bat dev`: the developer build `out\woody.exe`, which logs to the console and keeps the developer keys
+  (F1-F5, Tab, `[ ]`, P, PgUp/PgDn, End; in `WoodyRE.exe` they need `WOODY_DEBUGKEYS=1`).
+- `make_standalone.bat`: packs `WoodyRE.exe` and **your** game files from `data\` into a single
+  `WoodyRE-standalone.exe` that unpacks itself to `%LOCALAPPDATA%\WoodyRE`. It contains the game's data, so it is
+  for your own use only: never share or upload it.
+
+## License
+The code in this repository is licensed under the [GNU General Public License v3.0](LICENSE) or later. This does not
+cover the original game, its data or its trademarks, which belong to their owners and are not part of this project.
+
+# Development and reverse engineering
+Developers keep the CD's contents in `extract/` and the installed original (exe, DLLs) in `game/`; both are ignored by
+git, as are `data/` and the scratch folder `out/`. The original's internals are documented in [docs/](docs) (open work:
+[docs/TODO.md](docs/TODO.md)).
 
 ## Status
 - **Script VM ("EKO CODE") fully dissected**: file format, 63 opcodes, tick/scheduler, message routing → [docs/VM.md](docs/VM.md)
@@ -26,7 +88,7 @@ python tools/ekodisasm.py extract/Data out/ekoasm   # disassemble all levels
 python tools/ekovm.py extract/Data                  # message statistics for all levels
 ```
 
-## Native engine (prototype)
+## Native engine
 Coordinate system: the level data is **right-handed** with y up (3ds Max export; instances carry a
 rotation of -90° about x). Looking along +z, +x is therefore to the left. Vertex colors are R,G,B bytes with 128 = neutral (×2).
 `src/level.c` (C loaders for .gel/.tex/.ins + pose evaluation like `0x43a3a0`), `src/render_gl.c` (Win32 + OpenGL 1.1),
@@ -36,9 +98,9 @@ texture groups with flag bit 1 are blended additively.
 The **results screen** after a level also runs: Woody floats in through the hub door (scripted action 0x4a
 with root motion and its own camera track), the panel with the scores comes up, he cheers and then comes the question
 "Do you want to save?" (docs/GAMEFLOW.md §5.1-5.2).
-`src/player.c` is a PROVISIONAL player controller (not yet the decompiled Perso class): camera-relative walking, gravity,
-floor/wall collision against the `.gel` polygons and against the hull nodes of instances, follow camera, and trigger volumes (convex volume nodes)
-that send `eko_vol_perso_enter/in/leave` to the script VM; `--walk T` runs T seconds forward for tests. W1A now matches a screenshot of the original (mirroring, colors, orientation of the floating saucers, glow effects).
+`src/player.c` is the player (Perso) controller ported from the original: movement, jumps, attacks, collision against the
+`.gel` polygons and the press nodes of instances, the follow camera, and trigger volumes that send `eko_vol_perso_enter/in/leave`
+to the script VM (docs/PERSO_*.md, docs/CAMERA.md); `--walk T` runs T seconds forward for tests.
 
 **Visibility (`0x42a980`/`0x42ac10`, issue #9).** The kd-tree and the sectors of `.gel` (sections 5-7) and the `.vis` are now
 loaded and used, as the original does. Per frame: the sector the camera is in → the `.vis` list of that sector →
@@ -50,7 +112,7 @@ times, once per enemy added. `src/geltest.c` checks those queries on synthetic d
 `F4` disables the culling step by step if something disappears that should be there, `WOODY_PROF=1` shows per frame how many triangles
 and sectors remain, and `WOODY_NOKD=1` makes the queries walk the whole level again.
 ```bash
-python -m ziglang cc -std=c99 -O2 -o out/woody.exe src/level.c src/render_gl.c src/main_engine.c src/player.c src/instance.c src/enemy.c src/boss.c src/water.c src/storm.c src/ekovm.c src/audio.c src/hud.c src/hnm.c src/ambient.c src/blackbox.c -lopengl32 -lgdi32 -luser32 -lwinmm
+build.bat dev                                    # out/woody.exe (the source list is in build.bat); the first argument is a data dir when it is a path
 ./out/woody.exe extract/Data                     # without a level: the three logo films (each press of Esc / Enter / Space skips one; --nologo, or logos=0 in woodyre.cfg, plays none), then the title screen (House, level 0); Enter starts, then the hub
 ./out/woody.exe extract/Data W1A                 # arrow keys/WASD walk (relative to camera), space jumps, Enter (or V) looks around (release toggles; arrows turn the view; the mouse only with WOODY_LOOKMOUSE=1, the original never polls it; docs/PERSO_LOOK.md), F5 free camera (then WASD + right mouse button), [ ] animation, Tab instance, F1-F4 toggles (F4 = culling)
 ./out/woody.exe extract/Data W1A --shot out/s.ppm 3   # screenshot after 3 s and stop
