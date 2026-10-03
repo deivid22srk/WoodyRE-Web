@@ -129,7 +129,13 @@ to its maximum `1 − a`; multiplied by the vertex colour `C·k` (`k ≈ 1 − a
 
 ### 1.5 `0x42b6c0` – base face, and the buckets in `0x4293f0`
 
-`0x42b6c0` looks at the flag (`0x42ba31..0x42ba3f`):
+`0x42b6c0` first drops the face when `material & 0x8000` (`0x42b6e2`) or when the camera is not in front of its plane:
+`n·eye + D <= 0` (`0x42b6eb..0x42b716`, eye = `[renderer+8]+0x90`, `[0x4a9004]` = 0.0) - a per-face **back-face test of the
+world against the camera**, covering both the base pass and the lit multipass below. The port does it in `add_face`
+(render_gl.c); before that it drew the back of every wall, which the door camera tracks expose (WWS jackpot door 310,
+W1B boss door 414: the action-17 eye sits outside the room).
+
+Then it looks at the flag (`0x42ba31..0x42ba3f`):
 
 - flag ≠ 2 (`0x42bef9`): one polygon, vertex colour × `renderer+0x1ac` (0.6; `0x42bfb5`…),
   own texture, bucket **10** (`0x42c2ec`).

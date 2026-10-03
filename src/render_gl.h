@@ -61,6 +61,7 @@ typedef struct {
     /* race levels (Perso subtype 4/5, 0x401c36): the region list renderer+0xc0 of SetRaceInfo 0x455dc0; with race[0] != -1
      * 0x42a980 draws only the zone (.gel group) of the floor under the camera and the list entry after it (docs/RACE.md 2.1) */
     int32_t race[6]; int race_vis; int32_t race_zone[2], race_prev[2]; const void *race_entry; int race_sky, sky_on;
+    Vec3 face_eye; int face_eye_ok;                    /* camera of the last index-list build: 0x42b6c0 culls every world face the camera is not in front of */
     /* drawn after the models and before the fade list: texture list 8 of the flush 0x4293f0 (docs/LIGHTING.md 1.5),
      * where the water surfaces of class 60 go (water.c) */
     void (*post_models)(const TexFile *tex, Vec3 eye);

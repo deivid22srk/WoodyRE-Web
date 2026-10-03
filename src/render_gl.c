@@ -450,6 +450,9 @@ static void idx_reserve(struct WorldBatch *b, uint32_t extra)
 static void add_face(Renderer *r, uint32_t f)
 {
     if (f >= r->gel->npolys || r->face_stamp[f] == r->stamp_gen) return;
+    const float *pl = r->gel->polys[f].plane; Vec3 e = r->face_eye;
+    if (pl[0] * e.x + pl[1] * e.y + pl[2] * e.z + pl[3] <= 0.0f) return;   /* 0x42b6eb..0x42b716: n.eye + D <= 0 ([0x4a9004] = 0) -> not drawn. Without it a
+                                                                         * camera behind a wall (the door tracks put it outside the WWS jackpot room) saw its back */
     const struct FaceBatch *fb = &r->face_batch[f];
     if (r->race_vis && (int32_t)fb->zone != r->race_zone[0] && (int32_t)fb->zone != r->race_zone[1]) return;   /* 0x42ac32: only the polygons of a marked group carry the frame stamp */
     r->face_stamp[f] = r->stamp_gen;
@@ -504,8 +507,10 @@ static void world_visibility(Renderer *r, const FreeCamera *cam, const float pl[
     else memset(r->sec_vis, 1, ns);                                            /* no sector, or an empty list: show everything */
     r->nsec_vis = 0;
     for (uint32_t i = 0; i < ns; i++) if (r->sec_vis[i]) { if (aabb_in_frustum(pl, g->sectors[i].bbox)) r->nsec_vis++; else r->sec_vis[i] = 0; }
-    /* the index lists only have to be rebuilt when the set of sectors changed */
-    if (!r->sec_dirty && !memcmp(r->sec_vis, r->sec_prev, ns) && r->race_zone[0] == r->race_prev[0] && r->race_zone[1] == r->race_prev[1]) return;
+    /* the index lists only have to be rebuilt when the set of sectors or the camera changed (the back-face test of add_face) */
+    int moved = !r->face_eye_ok || r->face_eye.x != cam->pos.x || r->face_eye.y != cam->pos.y || r->face_eye.z != cam->pos.z;
+    if (!r->sec_dirty && !moved && !memcmp(r->sec_vis, r->sec_prev, ns) && r->race_zone[0] == r->race_prev[0] && r->race_zone[1] == r->race_prev[1]) return;
+    r->face_eye = cam->pos; r->face_eye_ok = 1;
     memcpy(r->sec_prev, r->sec_vis, ns); r->sec_dirty = 0; r->race_prev[0] = r->race_zone[0]; r->race_prev[1] = r->race_zone[1];
     for (uint32_t i = 0; i < r->nbatches; i++) { r->batches[i].nidx = 0; r->litb[i].nidx = 0; }
     if (++r->stamp_gen == 0) { memset(r->face_stamp, 0, (size_t)g->npolys * 4); r->stamp_gen = 1; }
