@@ -41,9 +41,16 @@ jobs:
           name: WoodyRE
           path: ${{ env.ZIP }}
 
+      # The release notes: the annotated tag's message (what is new; its first line is the title of the tag), then how to start.
       - name: Release
         if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$env:GITHUB_REF_NAME" "$env:ZIP" --title "WoodyRE $env:GITHUB_REF_NAME" --notes "Unzip, start WoodyRE.exe and point it to your Woody Woodpecker CD (or a mounted ISO image of it). The game files are not included - see README.md."
+        run: |
+          git fetch --force origin "refs/tags/${env:GITHUB_REF_NAME}:refs/tags/${env:GITHUB_REF_NAME}"
+          $new = (git tag -l --format='%(contents)' "$env:GITHUB_REF_NAME" | Out-String).Trim()
+          $start = "Unzip, start WoodyRE.exe and point it to your Woody Woodpecker CD (or a mounted ISO image of it). The game files are not included - see README.md."
+          $notes = if ($new) { "$new`n`n$start" } else { $start }
+          Set-Content -Encoding utf8 notes.md $notes
+          gh release create "$env:GITHUB_REF_NAME" "$env:ZIP" --title "WoodyRE $env:GITHUB_REF_NAME" --notes-file notes.md
