@@ -15,7 +15,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build
         shell: cmd
@@ -36,7 +36,7 @@ jobs:
           Compress-Archive -Path "pkg/$name" -DestinationPath "$name.zip"
           "ZIP=$name.zip" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: WoodyRE
           path: ${{ env.ZIP }}
