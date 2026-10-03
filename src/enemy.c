@@ -57,7 +57,8 @@ static void wander_init(Enemy *e);
 static void wander_restart(Enemy *e, int a);
 float enemy_height(const Enemy *e) { return e->P.height; }
 
-void enemies_add(EnemySet *s, Instance *inst, int type)
+static void ground_snap(Enemy *e, struct Player *pl);
+void enemies_add(EnemySet *s, Instance *inst, int type, struct Player *pl)
 {
     if (s->n >= MAX_ENEMIES) return;
     for (int i = 0; i < s->n; i++) if (s->e[i].inst == inst) return;
@@ -79,6 +80,10 @@ void enemies_add(EnemySet *s, Instance *inst, int type)
     if (type == 14) boss_init(e);
     if (type == 15) boss15_init(e);
     if (type == 16) boss16_init(e);
+    /* the class factory 0x403502 runs PostLoad (vtbl[1]) and then Reset (vtbl[17], 0x403e74) right here, so the ground snap 0x41a1a0
+     * happens during the script init, not at the first Think: an enemy that never thinks before a cinematic shows it (K3A 485/486,
+     * placed 213 above the floor and seen in the door-306 cinematic, where Think 0x41a320 returns early) stands on the floor */
+    if (pl && type < 13) { ground_snap(e, pl); enemy_place(e); }
 }
 
 static int bomber_peck(Enemy *e);

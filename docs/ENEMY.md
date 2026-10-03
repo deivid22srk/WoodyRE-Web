@@ -546,8 +546,10 @@ use: MESSAGES.md row 11.
 angle snapped to the start angle `+0x1c`), fall reset, hp = `P+0x34`, `+0x14c/+0x154/+0x158/+0x15c` = 0, flag 8 cleared, both probes reset, **ground snap
 `0x41a1a0` for subtypes < 9** (feet onto the ground under pos + h/2; outside the world ⇒ the log "An ennemy (Id=%x) is outside of the world"), probe test,
 flags `&= ~0x10 | 4`, msgmask 0x10 cleared, `+0x84 = −1`, type word `|= 0x400` (attackable). Then the class part (types 4/5/6 `0x418c20` ⇒ 8, 7/8/9
-`0x416ed0` ⇒ 3, ghost `0x4139b0` ⇒ 5, all with a restarted Wander; the thrower `0x411020` ⇒ 0). The port also does the ground snap at level start
-(the factory Reset), which lets the first wander step of an enemy placed a few units above the floor pass the ±10 test.
+`0x416ed0` ⇒ 3, ghost `0x4139b0` ⇒ 5, all with a restarted Wander; the thrower `0x411020` ⇒ 0). The class factory `0x403502` calls PostLoad (`vtbl[1]`) and then
+Reset (`vtbl[17]`, `0x403e74`) on SetTypeInstance, so this snap runs during the script init, before any Think; the port does it in
+`enemies_add` (types 4..12). That lets the first wander step of an enemy placed a few units above the floor pass the ±10 test, and an
+enemy that has never thought stands on the floor when a cinematic shows it (K3A/S3A type-9 pair 485/486 resp. 451/452, placed 214 too high).
 
 There are **no acknowledge variables** in this handler; the SetVar pairs `+0x230/+0x294/+0x24c` from EVENTS §4.2 belong to the
 boss classes (`0x40c730`, `0x40d850`, `0x40eb50`, own handlers `0x40d530`, `0x40e7e3`, `0x410052`, which then

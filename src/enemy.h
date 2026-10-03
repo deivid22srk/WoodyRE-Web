@@ -81,7 +81,7 @@ typedef struct Enemy {
     Vec3 start; float start_ang;                 /* +0x128 start position and H start angle (Reset, message 11/4) */
     float p154, p48, p50;                        /* message 11/18 (+0x154, x 0.01), 32 / 34 (P+0x48 / +0x50): stored, no reader in the classes 4..9 / 12 / 13 */
     int flag20;                                  /* +0x174 flag 0x20 (message 11/30): no reader */
-    int need_snap;                               /* Reset's ground snap 0x41a1a0 still to do (needs the level geometry, so on the next update) */
+    int need_snap;                               /* Reset's ground snap 0x41a1a0 still to do (done in enemies_add for 4..12, else on the next update) */
     uint32_t path_to; int path_dir;              /* patrol along the instance TRAJ */
     EnemySensor sens;                            /* +0x124 */
     uint32_t col_cur;                            /* +0x198 = probe +0x178 +0x20: the world_collision it presses, 0xffffffff none (ctor 0x436cf0) */
@@ -96,7 +96,7 @@ typedef struct EnemySet { Enemy e[MAX_ENEMIES]; int n;
                                                   * (0x419391, 0x4179f2, 0x41171f, 0x414396, 0x415f55, 0x412c81); both zeroed per level by 0x40bf30 (from the load, 0x40439e) */
 } EnemySet;
 
-void enemies_add(EnemySet *s, Instance *inst, int type);                      /* on SetTypeInstance 4..9, 12..16 */
+void enemies_add(EnemySet *s, Instance *inst, int type, struct Player *pl);  /* on SetTypeInstance 4..9, 12..16 (pl: the level geometry for the Reset ground snap) */
 void enemies_update(EnemySet *s, struct Player *pl, Vec3 cam_pos, float dt);
 void enemies_anim_settle(EnemySet *s, const Instance *inst);                  /* right after inst's clock: step a wander chain whose part just ended */
 /* vtbl[39] 0x419480: returns 1 when the enemy died. dir = (0,0,0) for a peck (no knockback). */
