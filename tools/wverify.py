@@ -30,6 +30,12 @@ Probes (--probe, several allowed, comma separated):
   blackbox  the BlackBox mini game (docs/BLACKBOX.md): with --level BlackBox, patches 0x4042c9 so the load creates the object
             and sets App state 3 at --at; logs the round / Woody / Buzz / pool per 0x4846d0 call; --bbpos teleports Woody
   crush     the crush test 0x462a40: every squash < 1 (0x462bd4) and every Kill(4) call (0x462bed)
+  bomb      per VM tick every bomb of the pool 0x5e4880 in use (+0x131): state +0x108, held +0x132, pos +0xc and its projectile
+            +0x124 (age P+0xd4, velocity P+0xc8, target P+0x80, owner P+0xa0, grounded P+0xec), plus the Perso pos/state/sub-state
+
+  --setvar "T var val ..."  SetVar 0x443ca0(var, val) T s after INIT (as tools/wsetvar.py, one per VM tick)
+  --tp "T x y z yaw ..."    teleport the Perso T s after INIT and turn him to yaw (Mover_SetDir); x = "bomb" puts him
+                            y units off the first bomb in use, in +x, and z is ignored
   python tools/wverify.py game --level W1A --probe list,fpu --from 15 --frames 12 --seconds 110 --out out/trace/v_list.txt
 """
 import argparse, ctypes, math, os, struct, sys, time
@@ -53,7 +59,11 @@ def main():
     ap.add_argument('--shot', default='', help='"T file.png [T file.png ...]": the finished frame (back buffer at Present 0x47ee90) T s after INIT')
     ap.add_argument('--face', type=float, help='with --pos: turn the Perso to this yaw (degrees, 0 = +z, 90 = +x) through the Mover 0x459ff0')
     ap.add_argument('--windowed', action='store_true', help='patch 0x4027b8 so the renderer takes its (never shipped) windowed path: no exclusive mode')
+    ap.add_argument('--setvar', default='', help='"T var val ...": SetVar 0x443ca0 T s after INIT')
+    ap.add_argument('--tp', default='', help='"T x y z yaw ...": teleport + face T s after INIT (x = bomb: y units off the first bomb in use)')
     a = ap.parse_args()
+    tok = a.setvar.split(); setvars = [(float(tok[i]), int(tok[i + 1]), int(tok[i + 2])) for i in range(0, len(tok) - 2, 3)]
+    tok = a.tp.split(); tps = [(float(tok[i]), tok[i + 1], float(tok[i + 2]), float(tok[i + 3]), float(tok[i + 4])) for i in range(0, len(tok) - 4, 5)]
     probes = set(a.probe.split(','))
     out = sys.stdout if a.out == '-' else open(a.out, 'w', encoding='utf-8', buffering=1)
     exe = os.path.join(a.gamedir, 'Woody.exe')
@@ -101,6 +111,24 @@ def main():
         dbg.log('%s SEND %u [%s]' % (T(), mid, args))
     def on_tick(ctx):
         st['vmtime'] = dbg.u32(0x5d0514)
+        if setvars and st['init'] is not None and since() >= setvars[0][0]:
+            _, var, val = setvars.pop(0); esp = ctx.Esp - 16
+            dbg.write(esp, struct.pack('<4I', 0x41a4bd, var & 0xffffffff, val & 0xffffffff, 0x442240))   # gadget add esp, 8; ret -> the tick
+            ctx.Esp = esp; ctx.Eip = 0x443ca0
+            dbg.log('%s # SetVar(%d, %d) injected' % (T(), var, val))
+            return 'skip'
+        if tps and st['init'] is not None and since() >= tps[0][0]:
+            _, x, y, z, yaw = tps.pop(0); p = dbg.u32(0x53a34c)
+            if p:
+                if x == 'bomb':
+                    bs = [b for b in (dbg.u32(0x5e4880 + 4 * i) for i in range(dbg.u32(0x5e487c))) if b and dbg.read(b + 0x131, 1)[0]]
+                    if not bs: dbg.log('%s # tp: no bomb in use' % T()); return
+                    q = fv(bs[0] + 0xc, 3); tgt = (q[0] + y, q[1] + 30.0, q[2])
+                else: tgt = (float(x), y, z)
+                v = struct.pack('<3f', *tgt); dbg.write(p + 0x1f4, v); dbg.write(p + 0x28c, v)
+                dbg.log('%s # Perso teleported to %.1f %.1f %.1f, yaw %.0f' % (T(), *tgt, yaw))
+                return face_call(ctx, p, yaw)
+        if 'bomb' in probes and st['init'] is not None and a.frm <= since() <= a.until: bomb_lines()
         if (a.pos or a.onto) and st['init'] is not None and not st['moved'] and since() >= a.at:
             p = dbg.u32(0x53a34c)
             if p:
@@ -114,7 +142,7 @@ def main():
                 v = struct.pack('<3f', *tgt); dbg.write(p + 0x1f4, v); dbg.write(p + 0x28c, v); st['moved'] = done
                 dbg.log('%s # Perso %08x teleported to %.1f %.1f %.1f' % (T(), p, *tgt))
                 if a.face is not None and done and not st.get('faced'):
-                    st['faced'] = True; return face_call(ctx, p)
+                    st['faced'] = True; return face_call(ctx, p, a.face)
         if 'fpu' in probes and st['fpu'] < 3:
             cw = fpu_cw(ctx); dbg.log('%s FPU control word at the VM tick 0x442240: 0x%04x' % (T(), cw)); st['fpu'] += 1
         if st['init'] is not None and a.frm <= since() <= a.until and since() >= st.get('next', 0):
@@ -200,6 +228,18 @@ def main():
         pal = dbg.u32(dbg.u32(0x509adc) + 0xa0) + 0x30 * dbg.u32(e + 0x5c); N = fv(pal, 12)   # the drawn node matrices (palette +0xa0)
         line += ' | node1 %s T %.1f %.1f %.1f' % (' | '.join('%.4f %.4f %.4f' % N[i:i + 3] for i in (0, 3, 6)), *N[9:12])
         if line != st['last']: dbg.log('%s %s' % (T(), line)); st['last'] = line
+
+    # --- bombs (docs/BOMB.md, BOMB_CARRY.md)
+    def bomb_lines():
+        p = dbg.u32(0x53a34c); pl = ''
+        if p: pl = 'perso %.1f %.1f %.1f state %d sub %d' % (*fv(p + 0x1f4, 3), dbg.u32(p + 0x21c), dbg.u32(p + 0x58c))
+        for i in range(min(dbg.u32(0x5e487c), 16)):
+            b = dbg.u32(0x5e4880 + 4 * i)
+            if not b or not dbg.read(b + 0x131, 1)[0]: continue
+            pr = dbg.u32(b + 0x124); line = 'BOMB %s state %d held %d pos %.1f %.1f %.1f' % (slot(b), dbg.u32(b + 0x108), dbg.read(b + 0x132, 1)[0], *fv(b + 0xc, 3))
+            if pr: line += ' | proj age %.3f vel %.1f %.1f %.1f target %s owner %s grounded %d' % (f32(pr + 0xd4), *fv(pr + 0xc8, 3),
+                    slot(dbg.u32(pr + 0x80)) if dbg.u32(pr + 0x80) else '-', slot(dbg.u32(pr + 0xa0)) if dbg.u32(pr + 0xa0) else '-', dbg.read(pr + 0xec, 1)[0])
+            dbg.log('%s %s | %s' % (T(), line, pl))
 
     # --- camera
     def cam_line():
@@ -293,10 +333,10 @@ def main():
         return 'skip'
     # --face: Mover_SetDir 0x459ff0 (thiscall, ecx = Perso+0x388, arg = &dir, ret 4) called from the VM tick entry with the
     # return address on an int3 page, then the registers are put back and the tick runs as usual
-    def face_call(ctx, p):
+    def face_call(ctx, p, face):
         if 'fpage' not in st:
             st['fpage'] = remote_alloc(4096, 0x40); dbg.write(st['fpage'], b'\xcc' * 4096); dbg.add_bp(st['fpage'], on_face_ret)
-        yaw = math.radians(a.face)
+        yaw = math.radians(face)
         dbg.write(st['fpage'] + 0x100, struct.pack('<3f', math.sin(yaw), 0.0, math.cos(yaw)))
         st['fregs'] = {r: getattr(ctx, r) for r in REGS}; st['fregs']['Eip'] = 0x442240
         esp = ctx.Esp - 8

@@ -1701,7 +1701,10 @@ void game_bomb_launch(struct Bomb *b, Vec3 dir, float speed)
 {
     if (!b || !b->p_active) return;
     b->held = 0; b->p = b->inst->position; b->vel = (Vec3){ dir.x * speed, dir.y * speed, dir.z * speed }; b->press = b->grounded = 0;
-    b->target = b->owner_e ? b->owner_e->inst : b->launcher; b->owner_e = NULL; b->owner_pl = 1; b->age = 0; b->dir0 = dir;   /* 0x463894: T.target = the old owner, T.owner = the Perso */
+    b->target = b->owner_e ? b->owner_e->inst : b->launcher; b->owner_e = NULL; b->owner_pl = 1; b->dir0 = dir;   /* 0x463894: T.target = the old owner, T.owner = the Perso */
+    /* the age P+0xd4 runs on: Reinit 0x4492d0 copies T, pos, dir, speed and clears +0xe8/+0xec/+0x100 only, so a bomb that was
+     * in flight and then carried (pick-up 1.2 s + release 0.47 s) is past the 2 s of steering (T+0x48) when thrown and does
+     * not turn back to its launcher / thrower */
 }
 /* Fire 0x411e80 of the bomb thrower (type 12, docs/ENEMY2.md 4.3): template 0 with his speed and fuse, owner = him, no target */
 int game_enemy_bomb(Enemy *e, Vec3 pos, Vec3 dir, float speed, float fuse)
@@ -1780,12 +1783,13 @@ static float vdot3(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static void bombs_fly(float dt, const GelFile *gel)
 {
     for (int i = 0; i < g_nbombs; i++) {
-        Bomb *b = &g_bombs[i]; if (!b->in_use || !b->p_active || b->held || dt <= 0) continue;
+        Bomb *b = &g_bombs[i]; if (!b->in_use || !b->p_active || dt <= 0) continue;
+        b->age += dt;                                                              /* 0x4493e0: P+0xd4 runs from Init 0x449130 on, also while Woody holds it */
+        if (b->held) continue;                                                     /* 0x449440 */
         float damp;
         if (!b->grounded) { b->vel.y -= dt * b->T.gravity * 200.0f; if (b->vel.y < -800.0f) b->vel.y = -800.0f; damp = b->T.damp_a; }
         else { b->vel.y = 0; damp = b->T.damp_g; }
         float k = powf(damp, dt * 60.0f); b->vel.x *= k; b->vel.y *= k; b->vel.z *= k;
-        b->age += dt;
         if (b->target && b->age < 2.0f) {                                          /* 0x4494df, template 0: xz steer 0.025 per 1/60 s for 2 s at target + 125, limits 0.7 */
             Vec3 old = b->vel, tg = { b->target->position.x, b->target->position.y + 125.0f, b->target->position.z };
             float s = sqrtf(vdot3(b->vel, b->vel)), dx = tg.x - b->p.x, dz = tg.z - b->p.z, dl = sqrtf(dx * dx + dz * dz);

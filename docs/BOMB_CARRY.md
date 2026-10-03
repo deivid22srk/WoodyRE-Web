@@ -20,7 +20,8 @@ bomb cannon), ENEMY2.md §4 (bomb thrower type 12, throwing back), BOSS14.md §9
 * **Throwing**: attack *just pressed* in sub-state 2 and not crouching. On the ground: anim 0x43 (0.933 s, movement blocked), the bomb releases
   **0.467 s** after the start; in the air: anim 0x44 (0.6 s), releases after **0.3 s**. Throw = the bomb's running projectile restarted with
   direction `normalize(look.x, 1, look.z)` (45° upward) and speed **1000**, gravity from template 0 (3000 u/s²), owner = Woody,
-  target = the previous owner (a bomb thrown back by the bomb thrower thus seeks its thrower). Flight distance on flat ground ≈ 340.
+  target = the previous owner (the launcher / the bomb thrower). The projectile's age `P+0xd4` is NOT reset by the throw, so the 2 s of
+  steering towards that target are over by then: the bomb flies straight along Woody's facing (live-verified, §1.3). Flight distance on flat ground ≈ 340.
 * **Dropping without throwing** (`0x463c90`, speed 0, straight down): on any state switch away from 6 while holding the bomb (death, look-around,
   climbing wall, script), on Reset, and during a **long fall** (anim .ins 66).
 * **Fuse in his hands**: the fuse just keeps running (`bomb+0x114 += dt`, `0x44d886`); if it explodes, the explosion (radius 400) hits Woody
@@ -141,9 +142,15 @@ Everything not overridden comes from the bomb's running block. For a 1090 bomb t
 **gravity 15 → 3000 u/s²**, damping 0.95 on the ground / 0.99 in the air per 1/60 s, unlimited bouncing, `hits_all = 0` = only hits
 category 2 with subtype 8 or 12, no visual) with a lifetime = the fuse (doesn't run down while there's a carried instance, PROJECTILES §2.2).
 Since the owner is now the Perso, the hit test `0x44a0a0` skips Woody; if the bomb hits an enemy of subtype 8 (type 12, the bomb thrower)
-or 12 (type 15), it explodes immediately (PROJECTILES §2.5, ENEMY2.md §4.3). With `T.target` = the thrower, a thrown-back bomb steers for
-2 s in xz towards its thrower (template 0: steering factor 0.025, `T+0x48` = 2 s, no vertical steering) — **uncertain** how noticeable that
-is in practice.
+or 12 (type 15), it explodes immediately (PROJECTILES §2.5, ENEMY2.md §4.3). `T.target` = the old owner (the launcher, `L+0x160 = L`
+`0x452352`, or the bomb thrower), but the xz steering only runs while the projectile's age `P+0xd4 < T+0x48` (2 s, `0x44950d`), and that
+age is set to 0 only by Init `0x449130` (`0x449148`, the only writer besides the per-frame `+= dt` at `0x4493e6`). It runs on while the bomb is
+held (the add comes before the "held" return `0x449440`), and Reinit `0x4492d0` (the throw) copies T, pos, dir, speed and clears
+`+0xe8/+0xec/+0x100` only. A caught bomb is ≥ 1.67 s old at the release point (pick-up 1.2 s + 0.467 s), so at most a few frames of
+steering are left; in practice the throw flies straight. **Live** (W2D Boss2, `tools/wverify.py --probe bomb`, 2026-10-03): launcher 760's
+bomb picked up at age 0.57, released at age 2.94 with target 760 / owner 3 (the Perso), velocity (0.0, 479, −667) right after the release,
+x stays −3867.7 (no steering), straight 340 along −z into Boss2, explodes at (−3868, 2248, 9689). The port before the fix reset the age on the
+throw and turned the bomb back towards the launcher within ≈ 200 units.
 
 Flight path (own simulation with the constants above, 60 Hz, flat ground, without bouncing; uncertain ±10%): starts ≈ 89 high, peak ≈ 170,
 lands after ≈ 0.57 s at ≈ **340** units; after that it bounces/rolls further (BOMB.md). For the air throw (starting ≈ 170 above the feet) ≈ 390.
@@ -610,8 +617,8 @@ void chest_reset(Chest *k) { Instance *in = k->inst; in->anim = 0; in->anim_time
 
 1. The dispenser's marker ejection point (8217, 236, −17281) is computed in rest pose with the port convention, not measured in the original.
 2. The flight distance (≈ 340) is an own simulation; bouncing/rolling afterward (BOMB.md) not included.
-3. Whether the steering of a thrown-back bomb towards its thrower (`T.target = old owner`) is noticeable; the xz clamp `T+0x50` compares against a
-   non-normalized speed (PROJECTILES §2.2).
+3. ~~Whether the steering of a thrown-back bomb towards its thrower is noticeable~~: it is not; the age runs on (§1.3), live-verified. Still
+   unread: the xz clamp `T+0x50` compares against a non-normalized speed (PROJECTILES §2.2).
 4. Exactly how the animation controller (priorities) decides the throw animation keeps playing after `SetState(0)`: not read (`0x436b70`); the port
    holds it with `throw_hold`.
 5. `vtbl[23]` of the bomb (`0x44d990`: 1 if held, else 8) — meaning unknown.
