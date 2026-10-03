@@ -10,6 +10,9 @@
  *   switches to them).
  * - Rumble / light: DualSense output 0x02 (USB, 48 B) or 0x31 (Bluetooth, 78 B: 0x00, tag 0x10, the 47-byte effects block,
  *   CRC-32 with header 0xa2); DualShock 4 output 0x05 (USB, 32 B) or 0x11 (Bluetooth, 78 B with CRC).
+ * Xbox pads and everything that speaks XInput (most other pads, Steam Input, DS4Windows): xinput1_4.dll (or 1_3 / 9_1_0),
+ * loaded at run time, the four slots; ordinal 100 (XInputGetStateEx) also gives the Guide button. An empty slot is slow to
+ * ask, so those are only tried every 2 s and when Windows reports a device change.
  * The game's own rumble calls (Perso 0x44d1b0, strength and duration) arrive through pad_rumble. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -232,10 +235,71 @@ static int sony_write(Sony *d, int v, int light)
     return -1;
 }
 
+/* ---- XInput -------------------------------------------------------------------------------------------------------- */
+typedef struct { WORD buttons; BYTE lt, rt; SHORT lx, ly, rx, ry; } XGamepad;       /* XINPUT_GAMEPAD */
+typedef struct { DWORD packet; XGamepad pad; } XState;                              /* XINPUT_STATE */
+typedef struct { WORD left, right; } XVibration;                                    /* XINPUT_VIBRATION: low / high frequency motor */
+typedef DWORD (WINAPI *XGetState)(DWORD, XState *);
+typedef DWORD (WINAPI *XSetState)(DWORD, XVibration *);
+static struct {
+    int tried; XGetState get; XSetState set;
+    int on[4]; double next_try[4]; int sent[4]; PadState st[4];
+} g_xi;
+static void xi_load(void)
+{
+    g_xi.tried = 1;
+    static const char *dll[3] = { "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll" };
+    for (int i = 0; i < 3 && !g_xi.get; i++) {
+        HMODULE m = LoadLibraryA(dll[i]); if (!m) continue;
+        g_xi.get = (XGetState)(void (*)(void))GetProcAddress(m, (LPCSTR)100);   /* XInputGetStateEx: with the Guide button (not in 9_1_0) */
+        if (!g_xi.get) g_xi.get = (XGetState)(void (*)(void))GetProcAddress(m, "XInputGetState");
+        g_xi.set = (XSetState)(void (*)(void))GetProcAddress(m, "XInputSetState");
+        if (!g_xi.get || !g_xi.set) { g_xi.get = NULL; g_xi.set = NULL; FreeLibrary(m); }
+    }
+}
+static float xaxis(SHORT v) { return v < 0 ? v / 32768.0f : v / 32767.0f; }
+static void xi_poll(int slot, double now, int force)   /* force: look at an empty slot now */
+{
+    if (!g_xi.on[slot] && !force && now < g_xi.next_try[slot]) return;
+    XState x; memset(&x, 0, sizeof x);
+    if (g_xi.get((DWORD)slot, &x) != ERROR_SUCCESS) {
+        if (g_xi.on[slot]) printf("pad: Xbox controller %d disconnected\n", slot + 1);
+        g_xi.on[slot] = 0; g_xi.next_try[slot] = now + 2.0; memset(&g_xi.st[slot], 0, sizeof g_xi.st[slot]); return;
+    }
+    if (!g_xi.on[slot]) { g_xi.on[slot] = 1; g_xi.sent[slot] = -1; printf("pad: Xbox controller %d connected (XInput)\n", slot + 1); }
+    static const struct { WORD bit; int b; } map[15] = { {0x0001,PAD_UP}, {0x0002,PAD_DOWN}, {0x0004,PAD_LEFT}, {0x0008,PAD_RIGHT}, {0x0010,PAD_START},
+        {0x0020,PAD_BACK}, {0x0040,PAD_LS}, {0x0080,PAD_RS}, {0x0100,PAD_LB}, {0x0200,PAD_RB}, {0x0400,PAD_GUIDE},
+        {0x1000,PAD_A}, {0x2000,PAD_B}, {0x4000,PAD_X}, {0x8000,PAD_Y} };
+    PadState *st = &g_xi.st[slot]; uint32_t m = 0;
+    for (int i = 0; i < 15; i++) if (x.pad.buttons & map[i].bit) m |= 1u << map[i].b;
+    st->lt = x.pad.lt / 255.0f; st->rt = x.pad.rt / 255.0f;
+    if (st->lt >= 0.25f) m |= 1u << PAD_LT;
+    if (st->rt >= 0.25f) m |= 1u << PAD_RT;
+    st->lx = xaxis(x.pad.lx); st->ly = -xaxis(x.pad.ly); st->rx = xaxis(x.pad.rx); st->ry = -xaxis(x.pad.ry);   /* XInput: y up = + */
+    st->kind = PADK_XBOX;
+    if (m != st->buttons) { st->buttons = m; g_kind = PADK_XBOX; }
+}
+static void xi_rumble(int slot, int v)
+{
+    if (!g_xi.on[slot] || v == g_xi.sent[slot]) return;
+    XVibration vib = { (WORD)(v * 257), (WORD)(v * 257) };
+    if (g_xi.set((DWORD)slot, &vib) == ERROR_SUCCESS) g_xi.sent[slot] = v;
+}
+
 /* ---- all pads ------------------------------------------------------------------------------------------------------- */
 static unsigned g_dev_seen; static double g_scan_at[2] = { 0, -1 }; static int g_inited;
+static void merge(PadState *st, const PadState *p, float *best_l, float *best_r)   /* one more pad into st: buttons together, the stick pushed furthest */
+{
+    st->buttons |= p->buttons;
+    float ml = p->lx * p->lx + p->ly * p->ly, mr = p->rx * p->rx + p->ry * p->ry;
+    if (ml > *best_l) { *best_l = ml; st->lx = p->lx; st->ly = p->ly; }
+    if (mr > *best_r) { *best_r = mr; st->rx = p->rx; st->ry = p->ry; }
+    if (p->lt > st->lt) st->lt = p->lt;
+    if (p->rt > st->rt) st->rt = p->rt;
+}
 void pad_close(void)
 {
+    for (int i = 0; i < 4; i++) if (g_xi.set && g_xi.on[i] && g_xi.sent[i] > 0) { XVibration z = { 0, 0 }; g_xi.set((DWORD)i, &z); g_xi.sent[i] = 0; }
     for (int i = 0; i < 4; i++) {
         Sony *d = &g_sony[i]; if (!d->h) continue;
         if (d->full && (d->sent > 0 || d->led)) {
@@ -251,26 +315,31 @@ void pad_poll(PadState *st, int focused, unsigned devchanges)
     double now = pad_clock();
     if (!g_inited) { g_inited = 1; g_dev_seen = devchanges; atexit(pad_close); }
     if (devchanges != g_dev_seen) { g_dev_seen = devchanges; g_scan_at[0] = now + 0.5; g_scan_at[1] = now + 2.0; }   /* the device may need a moment: look twice */
-    for (int k = 0; k < 2; k++) if (g_scan_at[k] >= 0 && now >= g_scan_at[k]) { g_scan_at[k] = -1; sony_scan(); }
+    int scan = 0;
+    for (int k = 0; k < 2; k++) if (g_scan_at[k] >= 0 && now >= g_scan_at[k]) { g_scan_at[k] = -1; sony_scan(); scan = 1; }
     memset(st, 0, sizeof *st);
     int lvl = (int)(rum_level(now) * 255.0f + 0.5f); if (!focused) lvl = 0;
-    float best_l = 0, best_r = 0; int any = 0;     /* any = the kind of the first pad */
+    float best_l = 0, best_r = 0; int any = 0, kinds = 0;   /* any = the kind of the first pad, kinds = 1 << kind of every pad there */
     for (int i = 0; i < 4; i++) {
         Sony *d = &g_sony[i]; sony_pump(d); if (!d->h) continue;
         if (!any) any = d->kind;
-        st->buttons |= d->st.buttons;
-        float ml = d->st.lx * d->st.lx + d->st.ly * d->st.ly, mr = d->st.rx * d->st.rx + d->st.ry * d->st.ry;
-        if (ml > best_l) { best_l = ml; st->lx = d->st.lx; st->ly = d->st.ly; }
-        if (mr > best_r) { best_r = mr; st->rx = d->st.rx; st->ry = d->st.ry; }
-        if (d->st.lt > st->lt) st->lt = d->st.lt;
-        if (d->st.rt > st->rt) st->rt = d->st.rt;
+        kinds |= 1 << d->kind;
+        merge(st, &d->st, &best_l, &best_r);
         if (!d->full) continue;
         /* the light: right away over USB; over Bluetooth only once the pad's own connect animation is over (SDL waits
          * for its sensor clock to pass 10200000), or the pad overrides it */
         int light = d->kind == PADK_DS5 && !d->led && (!d->bt || d->stamp >= 10200000u) && !penv("WOODY_PADNOLIGHT") ? 1 : 0;
         if (lvl != d->sent || light) { if (sony_write(d, lvl, light) > 0) { d->sent = lvl; if (light) d->led = 1; } }
     }
-    st->kind = any ? (g_kind ? g_kind : any) : PADK_NONE;
-    if (!any) g_kind = 0;
+    if (!g_xi.tried) xi_load();
+    for (int i = 0; g_xi.get && i < 4; i++) {
+        xi_poll(i, now, scan); if (!g_xi.on[i]) continue;
+        if (!any) any = PADK_XBOX;
+        kinds |= 1 << PADK_XBOX;
+        merge(st, &g_xi.st[i], &best_l, &best_r);
+        xi_rumble(i, lvl);
+    }
+    if (!(kinds >> g_kind & 1)) g_kind = any;      /* the pad used last went away */
+    st->kind = g_kind;
     if (!focused) { PadState z = { st->kind }; *st = z; }
 }

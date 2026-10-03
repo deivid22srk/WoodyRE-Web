@@ -278,11 +278,13 @@ the Mover).
   so a pad can be plugged in later); X/Y are mapped to ±4096 and put through the dead zone of `0x467a80`; buttons = the
   low 32 bits of `dwButtons`. Mode 0 never polls it (as the original).
 - **Pads (PORT EXTRA, `src/pad.c`)**: the controllers of today, read as raw HID with `hid.dll` / `setupapi` (no driver, no
-  Steam): DualSense / DualSense Edge and DualShock 4 over USB and Bluetooth. Report layouts as in SDL's hidapi drivers: DualSense
+  Steam): DualSense / DualSense Edge and DualShock 4 over USB and Bluetooth; and XInput (`xinput1_4.dll`, else 1_3 / 9_1_0,
+  loaded at run time; ordinal 100 = XInputGetStateEx for the Guide button) for Xbox pads and everything that emulates one,
+  empty slots asked every 2 s and on a device change because that call is slow. Report layouts as in SDL's hidapi drivers: DualSense
   input 0x01 (USB) / 0x31 (Bluetooth, CRC-32), which Bluetooth only sends after a feature report is read (0x09 serial, 0x20
   firmware); DualShock 4 0x01 / 0x11..0x19 (feature 0x05). They are looked for at start and on every `WM_DEVICECHANGE`
   (`Window.dev_changes`, 0.5 s and 2 s later), all of them act as one pad, and nothing is read while the window is not in
-  front. Mapping (`g_in.pbind`, separate from the Woody.cfg keys): left stick = the joystick axes through the dead zone of
+  front. Rumble on XInput: both motors get the same value (`XInputSetState`). Mapping (`g_in.pbind`, separate from the Woody.cfg keys): left stick = the joystick axes through the dead zone of
   `0x467a80` (`pad_deadzone=` in woodyre.cfg, default the original's 30 %), D-pad = directions, A/Cross 4 (and confirm),
   B/Circle 5 and 8 (and back), X/Square and RT 6, RB 7, Start/Options 9, LB and R3 10, Y/Triangle and LT 11. The right stick
   adds look-around counts (`ftol(value · 5)`, the same weight as the left stick, §6 mouse). While a pad is connected the

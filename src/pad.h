@@ -1,6 +1,7 @@
 /* pad.h - the game controllers of today (PORT EXTRA, docs/INPUT.md 6.1). The original reads one DirectInput joystick
  * (X, Y and 32 buttons, no rumble: 0x467b20 is `ret 8`); the port adds pads with a known button layout: Sony DualShock 4
- * and DualSense over USB and Bluetooth (raw HID). All pads together act as one; main_engine.c maps them to the actions. */
+ * and DualSense over USB and Bluetooth (raw HID), and Xbox pads / anything else that speaks XInput. All pads together act
+ * as one; main_engine.c maps them to the actions. */
 #ifndef WOODY_PAD_H
 #define WOODY_PAD_H
 #include <stdint.h>

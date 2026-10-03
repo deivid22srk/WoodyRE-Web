@@ -34,8 +34,9 @@ included in this repository or its releases.
 
 Menus: Enter or Jump confirms, Esc or Duck goes back.
 
-Controllers: a DualSense (PS5) or DualShock 4 (PS4) works over USB or Bluetooth without extra software, rumble included
-(Options, Vibration sets its strength). Any other joystick works as in the original (WinMM).
+Controllers: a DualSense (PS5) or DualShock 4 (PS4) works over USB or Bluetooth without extra software, and so do Xbox
+controllers and other XInput pads; all with rumble (Options, Vibration sets its strength). Any other joystick works as in
+the original (WinMM).
 
 ### Settings and files
 Everything the game writes stays next to `WoodyRE.exe` (or in `%LOCALAPPDATA%\WoodyRE` when that folder is read-only):
