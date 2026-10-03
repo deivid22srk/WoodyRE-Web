@@ -44,6 +44,7 @@ def main():
                 state = dbg.u32(p + 0x21c); slot0 = dbg.u32(p + 0xb0); cam = dbg.u32(0x4c737c)
                 cmode = dbg.u32(cam + 0x138) if cam else -1
                 line = 'pos %.0f %.0f %.0f inst %.0f %.0f %.0f state %d anim %d cam %d onground %d' % (pos + ipos + (state, slot0, cmode, dbg.read(p + 0x22c, 1)[0]))
+                root = struct.unpack('<3f', dbg.read(p + 0x60, 12)); line += ' root %.0f %.0f %.0f clk %.3f spd %.2f' % (root + (f32(p + 0xac), f32(p + 0xa0)))
                 if line != st['last']: dbg.log('%s %s' % (T(), line)); st['last'] = line
     def on_init(ctx):
         st['init'] = time.perf_counter(); dbg.log('INIT')

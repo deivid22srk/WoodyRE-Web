@@ -410,6 +410,25 @@ int rnd_init(Renderer *r, TexFile *tex, GelFile *gel, InsFile *ins, const LitFil
     return 0;
 }
 
+/* The letterbox image strip inside the view box (x, y from its bottom left). The original only ever renders 640x480, and its
+ * letterbox (0x41f8d0 / 0x41f910: sy = 0.5625, sx = 1.0) is a 640x360 = 16:9 picture with hfov 100.4 / vfov 68.0 - 1 centred
+ * (y 60..420, cinematics), 2 shifted up (y 30..390, mode 4). In a wider box (the Hor+ window mode) widening that strip would
+ * show more than the original's frame: Woody, whose cinematic animations run him out of the shot and then hold the last
+ * key (W2D anim 73: the root stops at frame 2100 of 3500), stayed visible standing still at the side. So the strip keeps
+ * 16:9 on every window: as wide as the box, pillarboxed when the box is wider than 16:9; the bar split stays 1:1 / 1:3. */
+static void lb_strip(const Window *w, int lb, int *x, int *y, int *vw, int *vh)
+{
+    int W = w->width, H = w->height, sw = W, sh = W * 9 / 16;
+    if (sh > H) { sh = H; sw = H * 16 / 9; }
+    *x = (W - sw) / 2; *y = lb == 1 ? (H - sh) / 2 : (H - sh) * 3 / 4; *vw = sw; *vh = sh;
+}
+static float view_aspect(const Window *w, const FreeCamera *cam)
+{
+    if (!w->height) return 1.333f;
+    if (!cam->letterbox) return (float)w->width / (float)w->height;
+    int x, y, vw, vh; lb_strip(w, cam->letterbox, &x, &y, &vw, &vh); return vh ? (float)vw / (float)vh : 16.0f / 9.0f;
+}
+
 /* ---- visibility (0x42a980 / 0x42ac10) ---------------------------------------------------------
  * The original never hands the whole level to the device. It looks up the sector the camera stands in, takes the
  * list of sectors the .vis says are reachable from there, and stamps the faces of those - each face once, however
@@ -1058,8 +1077,8 @@ void rnd_instance_list(Renderer *r, const Window *w, const FreeCamera *cam, cons
         }
     }
     /* the side planes of 0x437b00, from the same camera the renderer uses */
-    float aspect = w->height ? (float)w->width / (float)w->height : 1.333f; if (cam->letterbox) aspect /= 0.75f;
-    float tv = tanf(cam->fov_deg * 3.14159265f / 360.0f), th = tv * aspect;
+    float aspect = view_aspect(w, cam);
+    float tv =tanf(cam->fov_deg * 3.14159265f / 360.0f), th = tv * aspect;
     Vec3 fw = cam_forward(cam), rt = cam_right(cam), up = { rt.y * fw.z - rt.z * fw.y, rt.z * fw.x - rt.x * fw.z, rt.x * fw.y - rt.y * fw.x };
     uint32_t n_sec = 0, n_grp = 0, n_link = 0, n_frus = 0, n_far = 0, n_act = 0, n_nofloor = 0, n_vis = 0, n_seen = 0;
     for (uint32_t mi = 0; mi < ins->nmodels; mi++) for (uint32_t k = 0; k < ins->models[mi].ninstances; k++) {
@@ -1849,13 +1868,13 @@ int rnd_project(const Window *w, const FreeCamera *cam, Vec3 p, float *sx, float
     Vec3 d = { p.x - cam->pos.x, p.y - cam->pos.y, p.z - cam->pos.z };
     float ex = d.x * rt.x + d.y * rt.y + d.z * rt.z, ey = d.x * up.x + d.y * up.y + d.z * up.z, ez = d.x * fw.x + d.y * fw.y + d.z * fw.z;
     if (ez <= 0.001f || !w->width || !w->height) return 0;
-    float aspect = (float)w->width / (float)w->height;
-    int vpy = 0, vph = w->height;
-    if (cam->letterbox) { vpy = (int)(w->height * (cam->letterbox == 1 ? 0.125f : 0.1875f)); vph = (int)(w->height * 0.75f); aspect /= 0.75f; }
+    float aspect = view_aspect(w, cam);
+    int vpx = 0, vpy = 0, vpw = w->width, vph = w->height;
+    if (cam->letterbox) lb_strip(w, cam->letterbox, &vpx, &vpy, &vpw, &vph);
     float f = 1.0f / tanf(cam->fov_deg * 3.14159265f / 360.0f);
     float ndx = f / aspect * ex / ez, ndy = f * ey / ez;
     if (ndx < -1 || ndx > 1 || ndy < -1 || ndy > 1) return 0;           /* the four side planes; there is no near/far test */
-    *sx = (ndx * 0.5f + 0.5f) * 640.0f;
+    *sx = (vpx + (ndx * 0.5f + 0.5f) * vpw) * 640.0f / w->width;
     *sy = (w->height - (vpy + (ndy * 0.5f + 0.5f) * vph)) * 480.0f / w->height;
     return 1;
 }
@@ -1946,8 +1965,7 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     glDepthMask(GL_TRUE); glDisable(GL_BLEND); glClearColor(0, 0, 0, 1); glClearStencil(0);   /* 0x47ee70 (0x40174e, every frame): Clear(TARGET | ZBUFFER, colour 0 = black, z 1.0) */ glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     double q0 = win_time(); g_srt.on = 0; g_srt.fn = g_srt.an = 0;
     /* camera basis and frustum first: what is visible decides what still has to be lit and drawn */
-    float aspect = w->height ? (float)w->width / (float)w->height : 1.333f, zn = 5.0f, zf = 200000.0f;
-    if (cam->letterbox) aspect /= 0.75f;                     /* the image strip is 3/4 as tall, see the viewport below */
+    float aspect = view_aspect(w, cam), zn = 5.0f, zf = 200000.0f;   /* letterbox: the 16:9 image strip, see the viewport below */
     float f = 1.0f / tanf(cam->fov_deg * 3.14159265f / 360.0f);
     Vec3 fw = cam_forward(cam), rt = cam_right(cam);
     Vec3 up = { rt.y * fw.z - rt.z * fw.y, rt.z * fw.x - rt.x * fw.z, rt.x * fw.y - rt.y * fw.x };   /* right x forward */
@@ -1979,7 +1997,8 @@ void rnd_frame(Renderer *r, const Window *w, const FreeCamera *cam, float time_s
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
     if (cam->letterbox) {                     /* image strip y = 30..390 of 480: black above (30) and below (90), docs/CAMERA_SCRIPT.md 2.4 */
         glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
-        glViewport(w->vx, w->vy + (int)(w->height * (cam->letterbox == 1 ? 0.125f : 0.1875f)), w->width, (int)(w->height * 0.75f));   /* 1 = centred (cinematics, 0x41f8d0), 2 = shifted up (mode 4) */
+        int x, y, vw, vh; lb_strip(w, cam->letterbox, &x, &y, &vw, &vh);
+        glViewport(w->vx + x, w->vy + y, vw, vh);   /* 1 = centred (cinematics, 0x41f8d0), 2 = shifted up (mode 4) */
     }
     float proj[16] = { f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (zf + zn) / (zn - zf), -1, 0, 0, 2 * zf * zn / (zn - zf), 0 };
     glMultMatrixf(proj);

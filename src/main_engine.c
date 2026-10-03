@@ -347,6 +347,8 @@ static void fade_start(float t, int out) { g_sfade.total = g_sfade.rest = t; g_s
 static void cin_update(EkoVM *vm, float dt, float now)
 {
     Instance *m = g_cin.main_inst;
+    if (wenv("WOODY_CINLOG") && g_cin.state && m) printf("CIN t=%.3f st=%d rem=%.3f anim=%d slot0=%d pos=%.3f spd=%.2f ended=%d at=%.3f P=(%.0f %.0f %.0f)\n", now, g_cin.state, g_cin.remain, g_cin.anim, m->slot[0], m->a_pos, m->a_speed, m->a_ended, m->anim_time, m->position.x, m->position.y, m->position.z);
+    if (wenv("WOODY_CINLOG") && g_cin.state && m) { Vec3 c = ins_anim_centre(m); printf("CINROOT %.0f %.0f %.0f\n", c.x, c.y, c.z); }
     switch (g_cin.state) {
     case 1:
         if ((g_cin.timer -= dt) > 0) break;
