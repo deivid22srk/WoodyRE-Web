@@ -31,6 +31,8 @@ Probes (--probe, several allowed, comma separated):
   blackbox  the BlackBox mini game (docs/BLACKBOX.md): with --level BlackBox, patches 0x4042c9 so the load creates the object
             and sets App state 3 at --at; logs the round / Woody / Buzz / pool per 0x4846d0 call; --bbpos teleports Woody
   crush     the crush test 0x462a40: every squash < 1 (0x462bd4) and every Kill(4) call (0x462bed)
+  shadow    the cast shadow of instance --inst (docs/LIGHTING.md 3/4): per draw 0x42e2b0 the arg, the sector +0x1c, the
+            animated root +0x60 and the light the sector list gives (0x42e573), at most one line per --every s
   bomb      per VM tick every bomb of the pool 0x5e4880 in use (+0x131): state +0x108, held +0x132, pos +0xc and its projectile
             +0x124 (age P+0xd4, velocity P+0xc8, target P+0x80, owner P+0xa0, grounded P+0xec), plus the Perso pos/state/sub-state
 
@@ -219,6 +221,24 @@ def main():
         dbg.log('      anim speed %.3f clock %.3f apos %.3f slots %d %d %d %d | node1 T %.1f %.1f %.1f' % (f32(e + 0xa0), f32(e + 0xa8), f32(e + 0xac),
                 *struct.unpack('<4i', dbg.read(e + 0xb0, 16)), *N[9:12]))
 
+    # --- cast shadow of one instance
+    def on_sh_draw(ctx):                       # 0x42e2b0 entry: ecx = instance, [esp+4] = arg bits (2 = cast shadow, 4 = model)
+        if ctx.Ecx != inst_ptr(a.inst): return
+        st['sh_arg'] = dbg.u32(ctx.Esp + 4)
+    def on_sh_light(ctx):                      # 0x42e573: the light choice is done; ebp = instance
+        e = ctx.Ebp
+        if e != inst_ptr(a.inst): return
+        t = since()
+        if a.every and t - st.get('sh_t', -1e9) < a.every: return
+        st['sh_t'] = t
+        have = dbg.u32(ctx.Esp + 0x1b7ac); li = dbg.u32(ctx.Esp + 0x1b7b0); argnow = dbg.u32(ctx.Esp + 0x1b7bc)
+        sec = struct.unpack('<i', dbg.read(e + 0x1c, 4))[0]
+        lit = dbg.u32(0x4c4cac); lst = dbg.u32(dbg.u32(lit + 0x10) + 4 * sec) if sec >= 0 else 0
+        n = dbg.u32(lst) if lst else 0; ids = struct.unpack('<%dI' % min(n, 16), dbg.read(lst + 4, 4 * min(n, 16))) if n else ()
+        lp = fv(dbg.u32(lit + 4) + 64 * li + 0xc, 3) if have else (0, 0, 0)
+        dbg.log('%s SHADOW inst %d arg %x -> %x sector %d lights %s root %.0f %.0f %.0f pos %.0f %.0f %.0f | light %s at %.0f %.0f %.0f' % (T(), a.inst,
+                st.get('sh_arg', -1), argnow, sec, list(ids), *fv(e + 0x60, 3), *fv(e + 0xc, 3), li if have else 'none', *lp))
+
     # --- rocket
     def rocket_line():
         e = inst_ptr(a.inst)
@@ -398,6 +418,7 @@ def main():
     if 'fpu' in probes: bps[0x439cb3] = on_sweep_fistp; bps[0x439cb9] = on_sweep_after
     if 'carousel' in probes: bps.update({0x451890: on_car_place, 0x489780: on_car_rot, 0x451935: on_car_ret, 0x48964c: on_car_world})
     if 'crush' in probes: bps.update({0x462bd4: on_crush_scale, 0x462bed: on_crush_kill})
+    if 'shadow' in probes: bps.update({0x42e2b0: on_sh_draw, 0x42e573: on_sh_light})
     if a.level:
         import pefile
         pe = pefile.PE(exe); img = pe.get_memory_mapped_image()

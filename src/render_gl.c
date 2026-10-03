@@ -1493,10 +1493,40 @@ static void sh_cache_build(const Renderer *r, Instance *inst, ShCache *cc)
     }
 }
 static int g_shlog;                                                         /* WOODY_SHLOG=1: one line per second per instance that reaches the caster test */
+/* 0x42e798: before anything is projected, the original takes the outline of the caster's bounding-box node (model S+0x24) as
+ * seen from the light, 0x43aaa0: a polygon is "front" when the light, in the node's own space (0x440fc0), lies on its outer
+ * side (plane . L + d > 0), and the outline is every edge of a front polygon whose neighbour is not front. Two edges or fewer
+ * and the whole shadow is skipped (0x42e7a0 -> 0x42ecdd). With the light inside the box no polygon is front, so a caster
+ * whose light is inside its own box casts nothing: W2B's boss lift (model 54, a box 400 wide and 2800 high with the chain)
+ * comes down around its lamp, light 8, and the port threw its shadow from inside over the walls and the ceiling. */
+static const float *poly_plane(Model *m, const InsNode *n, InsPoly *p);
+static int sh_outline(const Instance *inst, const LitLight *L)
+{
+    Model *m = inst->model; uint32_t bn = m->bbox_node; Vec3 q;
+    if (!bn || bn > m->nnodes || !inst->node_world) return 1;
+    const InsNode *n = &m->nodes[bn - 1]; if (!n->npolys || n->npolys > 64 || !affine_inv_apply(&inst->node_world[bn - 1], L->pos, &q)) return 1;
+    q.x -= n->pivot.x; q.y -= n->pivot.y; q.z -= n->pivot.z;
+    uint8_t front[64]; int edges = 0;
+    for (uint32_t k = 0; k < n->npolys; k++) { const float *pl = poly_plane(m, n, &n->polys[k]); front[k] = pl[0] * q.x + pl[1] * q.y + pl[2] * q.z + pl[3] > 0; }
+    for (uint32_t k = 0; k < n->npolys; k++) {
+        const InsPoly *p = &n->polys[k]; if (!front[k]) continue;
+        for (uint32_t e = 0; e < p->nverts; e++) {                            /* the neighbour across edge a-b: the other polygon with both points */
+            uint32_t a = p->indices[e], b = p->indices[(e + 1) % p->nverts]; int nb_front = 0;
+            for (uint32_t j = 0; j < n->npolys && !nb_front; j++) {
+                const InsPoly *o = &n->polys[j]; int ha = 0, hb = 0; if (j == k) continue;
+                for (uint32_t v = 0; v < o->nverts; v++) { ha |= o->indices[v] == a; hb |= o->indices[v] == b; }
+                if (ha && hb) nb_front = front[j];
+            }
+            if (!nb_front) edges++;
+        }
+    }
+    return edges > 2;
+}
 static void cast_shadow(const Renderer *r, Instance *inst)
 {
     int fading = inst->fade > 0.01f;                                        /* 0x42e69a/0x42eb7a: [0x4a94f8] = 0.01 -> 0x4388e0, else 0x4385f0 */
     Model *m = inst->model; const LitLight *L = &r->lit->lights[inst->light];
+    if (!sh_outline(inst, L)) { if (g_shlog) printf("    light %d at %.0f %.0f %.0f inside the bounding box: no outline, no shadow (0x42e7a0)\n", inst->light, L->pos.x, L->pos.y, L->pos.z); return; }
     int st[3] = { 0, 0, 0 }, n_drawn = 0; uint32_t n_tris = 0;
     static ShQ q[SH_BATCH]; uint32_t nq = 0;
     if (!fading) {                                                          /* opaque: the per-pose cache */
