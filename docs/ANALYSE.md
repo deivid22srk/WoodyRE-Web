@@ -39,7 +39,7 @@
 `tools/coverage.py` now also treats switch tables as part of their function: a case label reached only through a
 `jmp [reg*4 + T]` table, and the table itself when the disassembler took it for code (e.g. `0x41304c`, `0x4162f4` in the
 type 11 / type 10 enemy code), are merged into the function with the `jmp`, like any other jump target. That alone took
-106 + 300 such "functions" off the list (92.5 % → 95.0 %). Every function still unnamed after that was classified
+383 such "functions" off the list (92.5 % → 95.0 %). The listing also hid every function that an earlier line named as a caller or callee (`doc()` indexed the defaultdict and so marked it named; the totals were right, the list was not), e.g. `0x460a30` and `0x47e7b0`; fixed. Every function still unnamed after that was classified
 (A = dead in the shipped game, B = dev/debug only, C = trivial or infrastructure the port replaces, D = reachable behaviour
 the port may lack). The D items and the larger A/B items are written up in their own docs:
 
