@@ -424,16 +424,12 @@ static void slot_reset(SaveSlot *s)                              /* 0x44ffa0 */
 }
 static void save_reset(void) { slot_reset(&g_save); }
 static void file_reset(void) { memset(&g_file, 0, sizeof g_file); g_file.ver = SAVE_VER; for (int s = 0; s < 4; s++) { slot_reset(&g_file.slot[s]); g_file.music[s] = 70; g_file.sfx[s] = 100; } }   /* 0x456e20 */
-static int  file_write(void)                                    /* 0x450b30; the port writes a temporary file and renames it over woodyre.sav, so a */
-{                                                               /* crash or power cut while writing cannot leave a truncated save (read as -1, then reset) */
-    g_file.ver = SAVE_VER; FILE *f = fopen("woodyre.sav.tmp", "wb"); if (!f) return 0;
+static int  file_write(void)                                     /* 0x450b30; the port writes a new file and then swaps it in, so a full disk */
+{                                                                /* or a crash halfway cannot take the four slots with it */
+    g_file.ver = SAVE_VER; FILE *f = fopen("woodyre.sav.new", "wb"); if (!f) return 0;
     int ok = fwrite(&g_file, sizeof g_file, 1, f) == 1; if (fflush(f)) ok = 0; if (fclose(f)) ok = 0;
-#ifdef _WIN32
-    if (ok) ok = MoveFileExA("woodyre.sav.tmp", "woodyre.sav", MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-    if (ok) ok = rename("woodyre.sav.tmp", "woodyre.sav") == 0;
-#endif
-    if (!ok) remove("woodyre.sav.tmp");
+    if (ok) ok = plat_replace("woodyre.sav.new", "woodyre.sav");
+    if (!ok) remove("woodyre.sav.new");
     return ok;
 }
 /* 0x450be0: 1 = read, 0 = no file (page 7), -1 = unreadable / wrong version (page 0xa). Without a woodyre.sav an
@@ -3732,8 +3728,35 @@ static void logos_play(Window *w, const char *dir)
 
 static void *read_all(const char *path, size_t *sz) { FILE *f = fopen(path, "rb"); if (!f) return NULL; fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); void *b = malloc((size_t)n); if (fread(b, 1, (size_t)n, f) != (size_t)n) { fclose(f); free(b); return NULL; } fclose(f); *sz = (size_t)n; return b; }
 
+/* a crash (PORT EXTRA): the log is buffered, so without this its last lines - the ones a bug report needs - never reach
+ * woodyre.log. Writes where it happened, flushes, says so in the windowed build and lets the system end the process. */
+#ifdef _WIN32
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *e)
+{
+    void *a = e->ExceptionRecord->ExceptionAddress; HMODULE m = NULL; char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)a, &m) && m) {
+        GetModuleFileNameA(m, name, sizeof name); const char *s = strrchr(name, '\\'); if (s) memmove(name, s + 1, strlen(s));
+    }
+    printf("crash: exception 0x%08lx at %p (%s+0x%llx)\n", (unsigned long)e->ExceptionRecord->ExceptionCode, a, name,
+           m ? (unsigned long long)((char *)a - (char *)m) : 0ull);
+    fflush(stdout);
+#ifdef WOODY_GUI
+    MessageBoxA(NULL, "WoodyRE has crashed. woodyre.log (next to woodyre.cfg) says where; please attach it to a bug report.", "WoodyRE", MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
+#endif
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#elif !defined __ANDROID__                                        /* Android keeps its own handlers (the tombstone in logcat) */
+#include <signal.h>
+static void crash_signal(int sig) { printf("crash: signal %d\n", sig); fflush(stdout); signal(sig, SIG_DFL); raise(sig); }
+#endif
+
 int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(crash_filter);
+#elif !defined __ANDROID__
+    signal(SIGSEGV, crash_signal); signal(SIGBUS, crash_signal); signal(SIGFPE, crash_signal); signal(SIGILL, crash_signal); signal(SIGABRT, crash_signal);
+#endif
     if (wenv("WOODY_UNBUF")) setvbuf(stdout, NULL, _IONBF, 0);                  /* debugging a crash: every line reaches the log */
     /* [data dir] [level] [options]: the data dir is a path (it has a / \ or :, or exists); without one data_find() looks for the
      * game files and asks for the CD at the first start (datasetup.h). No level: boot to the title (House, level 0) */

@@ -163,13 +163,23 @@ static int find_cd(char *root)                              /* a mounted CD or I
     return 0;
 }
 
+/* the game files in dir/rel next to the executable: dir becomes the current directory (woodyre.cfg, .sav, .log, mods/ beside
+ * them) unless it cannot be written (/opt, /usr, a read-only mount): then home does, and the files are read by their full path */
+static const char *enter_exe(const char *dir, const char *rel, const char *home)
+{
+    static char out[PMAX + 16]; char h[PMAX + 2];
+    if (!home || access(dir, W_OK) == 0) return enter(dir, rel);
+    snprintf(out, sizeof out, "%s/%s", dir, rel); snprintf(h, sizeof h, "%s/", home); make_dirs(h);
+    return chdir(home) ? enter(dir, rel) : out;
+}
+
 const char *data_find(void)
 {
     const char *env = getenv("WOODY_DATA"); if (env && *env) return env;
     char exe[PMAX], home[PMAX], p[PMAX + 16];
     exe_dir(exe); int have_home = home_dir(home);
-    snprintf(p, sizeof p, "%s/data", exe); if (cd_layout(p)) return enter(exe, "data/Data");
-    if (cd_layout(exe)) return enter(exe, "Data");
+    snprintf(p, sizeof p, "%s/data", exe); if (cd_layout(p)) return enter_exe(exe, "data/Data", have_home ? home : NULL);
+    if (cd_layout(exe)) return enter_exe(exe, "Data", have_home ? home : NULL);
     if (cd_layout("extract")) return "extract/Data";
     if (have_home) { snprintf(p, sizeof p, "%s/data", home); if (cd_layout(p)) return enter(home, "data/Data"); }
     if (!have_home) { plat_message("No folder for the game files ($HOME is not set).", 1); return NULL; }

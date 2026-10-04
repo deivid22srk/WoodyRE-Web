@@ -10,7 +10,8 @@ included in this repository or its releases.
 
 ## Playing
 1. Get `WoodyRE.exe`: download it from the [Releases](../../releases) page, or build it yourself (below).
-2. Put it in a folder of its own and start it.
+2. Put it in a folder of its own and start it. (The exe is not signed, so Windows SmartScreen may say "Windows protected
+   your PC" at the first start: *More info*, then *Run anyway*.)
 3. At the first start it looks for the game CD in every drive (a mounted ISO image works too), asks once, copies the game
    files (about 640 MB) into `data\` next to the exe and checks each one against the English 1.00 CD. After that the CD
    is no longer needed. No CD drive? Choose a folder with a copy of the CD's files instead, or copy `Data`, `Common`,
@@ -19,8 +20,9 @@ included in this repository or its releases.
 **Linux and Steam Deck:** download the `linux-x86_64.tar.gz` from the Releases page (or run `./build.sh`), unpack it and
 start `woodyre`. It needs SDL2 (`libsdl2-2.0-0`; SteamOS and most desktops have it). At the first start it looks for the
 CD under `/media`, `/run/media` and `/mnt` and copies the game files into `~/.local/share/WoodyRE/data` (the window opens
-when the copy is done); or copy `Data`, `Common`, `Logo`, `Game` and `Music.bf` there yourself. `woodyre.cfg`, `woodyre.sav`
-and `mods/` then live in `~/.local/share/WoodyRE`. On the Steam Deck add `woodyre` to Steam as a non-Steam game; the
+when the copy is done); or copy `Data`, `Common`, `Logo`, `Game` and `Music.bf` there yourself. `woodyre.cfg`, `woodyre.sav`,
+`woodyre.log` and `mods/` then live in `~/.local/share/WoodyRE` (with the game files in a `data/` folder next to `woodyre`
+instead, they live next to `woodyre`, or in `~/.local/share/WoodyRE` when that folder is read-only). On the Steam Deck add `woodyre` to Steam as a non-Steam game; the
 Windows `WoodyRE.exe` under Proton should work as well.
 
 **Android** (7.0 or later, 64-bit phones and tablets, OpenGL ES 2.0): install `WoodyRE-<version>.apk` from the Releases
@@ -59,7 +61,8 @@ controllers and other XInput pads; all with rumble (Options, Vibration sets its 
 the original (WinMM). On Linux every pad SDL2 knows works, the Steam Deck's own controls included.
 
 ### Settings and files
-Everything the game writes stays next to `WoodyRE.exe` (or in `%LOCALAPPDATA%\WoodyRE` when that folder is read-only):
+Everything the game writes stays next to `WoodyRE.exe` (or in `%LOCALAPPDATA%\WoodyRE` when that folder is read-only, such
+as `Program Files`, or a temporary one, such as when the exe is started from inside the zip):
 - `woodyre.cfg`: the options (sound volumes, rumble strength and the Display page: resolution, window or fullscreen, 4:3
   or wide, vsync, frame cap, `logos=0` to skip the intro films, `pad_deadzone=30` for the stick dead zone in percent).
 - `woodyre.sav`: the four save slots, in the original `Woody.sav` layout. An original `Woody.sav` placed next to the exe

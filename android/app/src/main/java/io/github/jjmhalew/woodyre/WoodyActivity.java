@@ -146,6 +146,7 @@ public class WoodyActivity extends SDLActivity {
     private static void copyDir(ContentResolver cr, Uri tree, String docId, File dest, boolean top, long[] done) throws IOException {
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId);
         String[] cols = { Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME, Document.COLUMN_MIME_TYPE };
+        String lastId = null, lastName = null;
         try (Cursor q = cr.query(children, cols, null, null, null)) {
             if (q == null) throw new IOException("cannot list " + docId);
             while (q.moveToNext()) {
@@ -157,19 +158,27 @@ public class WoodyActivity extends SDLActivity {
                     copyDir(cr, tree, id, f, false, done);
                     continue;
                 }
-                File part = new File(dest, name + ".part");
-                try (InputStream in = cr.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, id));
-                     OutputStream out = new FileOutputStream(part)) {
-                    if (in == null) throw new IOException("cannot open " + name);
-                    byte[] buf = new byte[1 << 20];
-                    for (int n; (n = in.read(buf)) > 0; ) {
-                        out.write(buf, 0, n);
-                        done[0] += n;
-                        if (done[0] - done[1] >= 8 << 20) { done[1] = done[0]; progress("Copying the game files... " + (done[0] >> 20) + " MB"); }
-                    }
-                }
-                if (!part.renameTo(f)) throw new IOException("cannot write " + f);
+                // Music.bf last: the game takes the folder as complete once it is there (cd_layout in src/datasetup_posix.c),
+                // so a copy that Android cut short (the app sent away, the phone off) is asked for again, not started half
+                if (top && name.equalsIgnoreCase("music.bf")) { lastId = id; lastName = name; continue; }
+                copyFile(cr, tree, id, dest, name, done);
             }
         }
+        if (lastId != null) copyFile(cr, tree, lastId, dest, lastName, done);
+    }
+
+    private static void copyFile(ContentResolver cr, Uri tree, String id, File dest, String name, long[] done) throws IOException {
+        File f = new File(dest, name), part = new File(dest, name + ".part");
+        try (InputStream in = cr.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, id));
+             OutputStream out = new FileOutputStream(part)) {
+            if (in == null) throw new IOException("cannot open " + name);
+            byte[] buf = new byte[1 << 20];
+            for (int n; (n = in.read(buf)) > 0; ) {
+                out.write(buf, 0, n);
+                done[0] += n;
+                if (done[0] - done[1] >= 8 << 20) { done[1] = done[0]; progress("Copying the game files... " + (done[0] >> 20) + " MB"); }
+            }
+        }
+        if (!part.renameTo(f)) throw new IOException("cannot write " + f);
     }
 }

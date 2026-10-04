@@ -11,7 +11,9 @@
 #define plat_exists(path) (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES)
 #define plat_vsc_to_vk(sc) ((int)MapVirtualKeyA((UINT)(sc), 1 /* MAPVK_VSC_TO_VK */))
 static inline void plat_message(const char *text, int warn) { MessageBoxA(NULL, text, "WoodyRE", warn ? MB_ICONWARNING : MB_ICONINFORMATION); }
+#define plat_replace(from, to) (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0)   /* 1 = file from now is file to */
 #else
+#define plat_replace(from, to) (rename(from, to) == 0)
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>

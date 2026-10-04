@@ -24,6 +24,9 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CLOSE: case WM_DESTROY: if (w) w->quit = 1; return 0;
     case WM_SIZE: if (w) { w->width = LOWORD(lp); w->height = HIWORD(lp); } return 0;
     case WM_DEVICECHANGE: if (w && wp == 0x0007 /* DBT_DEVNODES_CHANGED, sent to every top-level window */) w->dev_changes++; break;
+    case WM_KILLFOCUS:                                            /* Alt+Tab, a click elsewhere: the key-up of a held key goes to the other window, */
+        if (w) { memset(w->keys, 0, sizeof w->keys); if (w->mouse_right) { w->mouse_right = 0; ReleaseCapture(); } }   /* so let go of all of them (plat_sdl.c does the same) */
+        break;
     case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP: {   /* Esc is a menu key now (docs/MENU_NEWGAME.md 1.3), not quit */
         int down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN, sc = (int)(lp >> 16) & 0xff, ext = (int)(lp >> 24) & 1;
         if (w && wp < 256) w->keys[wp] = down;
