@@ -580,6 +580,10 @@ static void attach_store(Player *p, const Instance *inst, const InsNode *node, V
     if (!mat4_inv_apply(&inst->node_world[ni], contact, &p->att_local)) return;
     p->att_inst = inst; p->att_node = ni; p->att_world = contact;
 }
+static void slide_reset(Player *p)                                       /* Mover_SetDir 0x459ff0: 0x467110 on RampB, M+0xd0 = up (0x45a110), M+0xdc = 0 */
+{
+    p->ground_n = (Vec3){ 0, 1, 0 }; p->slide_dir = (Vec3){ 0, 0, 0 }; p->slide_speed = p->slide_target = p->slide_t1 = p->slide_t2 = 0; p->slide_phase = 0; p->sliding = 0;
+}
 
 /* ---- Jumper (0x462d70 update, 0x462fd0 tick) ------------------------------------ */
 /* P+0x64 / +0x68 / +0x6c for the parameter column of the player (0x4b5f14): the race columns 3/4 jump 400 high with
@@ -718,7 +722,7 @@ int player_init(Player *p, InsFile *ins, const GelFile *gel, const TexFile *tex)
 {
     memset(p, 0, sizeof *p);
     if (!ins->nmodels || !ins->models[0].ninstances) return -1;
-    p->gel = gel; p->ins = ins; p->tex = tex; p->cur_col = 0xffffffffu; p->step_u = -1.0f; p->crush = 1.0f;
+    p->gel = gel; p->ins = ins; p->tex = tex; p->cur_col = 0xffffffffu; p->step_u = -1.0f; p->crush = 1.0f; p->ground_n = (Vec3){ 0, 1, 0 };
     player_bind(p, &ins->models[0].instances[0]);
     p->jumper.state = 2; p->jumper.armed = 1;                      /* 0x462c90 reset */
     p->health = 3.0f; p->lives = 3; p->lanim = -1; p->board_lanim = -1;
@@ -1296,7 +1300,7 @@ static void perso_reset(Player *p)                                      /* vt[17
     jumper_reset(&p->jumper); p->on_ground = 1; p->invuln_respawn = 1.0f; p->invuln_hit = 0; p->move_lock = 0;
     if (p->health <= 0) p->health = 3.0f;
     bomb_drop(p); p->throw_hold = 0;                                     /* 0x44acb4 */
-    p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->push_t = 0; p->push_speed = 0;
+    p->ride = NULL; p->dead_kind = 0; p->dead_T = 0; p->nograv_t = 0; p->hit_anim_t = 0; p->script_act = 0; p->atk = 0; p->charge = 0; p->speed = 0; p->ramp_phase = 0; slide_reset(p); p->push_t = 0; p->push_speed = 0;
     p->att_inst = NULL; p->lanim = -1; p->board_lanim = -1; p->step_u = -1.0f; p->cam_init = 0; idle_reset(p);   /* 0x44abab A/B->Reset(), 0x44abcf */
     p->bonus_inv = p->bonus_inv_acc = 0; p->bonus_inv_cnt = 0; p->inst->tint_mode = 0;   /* 0x44ad46..0x44ad58: +0x704 +0x700 +0x708 +0x70c = 0, no more white blinking */
     p->duck = 0; p->duck_t = 0;                                          /* 0x44ad28 */
@@ -2085,7 +2089,7 @@ static void crush_test(Player *p)
 static void move_collide(Player *p, Vec3 *dispp, float dt, int racing, const Instance **hit_inst_out, const InsNode **hit_node_out)
 {
     const Instance *hit_inst = NULL; const InsNode *hit_node = NULL; int found;
-    Vec3 np, disp;
+    Vec3 np, disp, mc_carry = { 0, 0, 0 }, mc_pos = p->pos, mc_local = p->att_local, mc_world = p->att_world; const Instance *mc_att = p->att_inst;
     /* P+0x08 = 160 standing / 81 crouched for the race columns (0x462490), wall radius halved while crouched in state 1 (0x462517) */
     const float body_h = player_body_height(p), radius = racing && p->race_crouch ? P_RADIUS * 0.5f : P_RADIUS;
     actor_push(p, radius, body_h, dt, dispp); disp = *dispp;
@@ -2093,6 +2097,7 @@ static void move_collide(Player *p, Vec3 *dispp, float dt, int racing, const Ins
         const float half = body_h * 0.5f;
         Vec3 cur = { p->pos.x, p->pos.y + half, p->pos.z };
         Vec3 carry = attach_delta(p);                                 /* 0x436d20: the platform moved under the player */
+        mc_carry = carry;
         Vec3 d = { disp.x + carry.x, disp.y + carry.y, disp.z + carry.z };
         int mode = d.y > 0.1f ? 3 : (d.y < -0.1f ? 2 : 0), wall = 0;
         int n = (int)(floorf(sqrtf(vdot(d, d)) / P_SUBSTEP) + 1.5f);
@@ -2143,11 +2148,19 @@ static void move_collide(Player *p, Vec3 *dispp, float dt, int racing, const Ins
         p->ground_n = p->on_ground ? g_ground_n : (Vec3){ 0, 1, 0 };            /* 0x45a110 -> Mover+0xd0 */
         p->race_floor_n = found && g_ground_n.y >= 0 ? g_ground_n : (Vec3){ 0, 1, 0 };   /* 0x4628e0: the floor query's normal, (0,1,0) if it points down */
         p->ground_kind = found ? ground_type(p, g_ground_mat) : 0;              /* 0x4628e0 -> Perso+0x308 */
-        attach_store(p, p->on_ground ? hit_inst : NULL, hit_node, np);  /* 0x436d80 / 0x436d10 */
+        /* 0x436d80 / 0x436d10: the point remembered on the platform is the probe point itself (swept feet + 43, before the
+         * snap to the floor; 0x436f54 passes the probe pointer), not the feet: on a tilting platform (W3C model 10) a point
+         * 43 above the deck moves 43·ω further sideways than the deck, and that is what 0x436d20 carries him by */
+        attach_store(p, p->on_ground ? hit_inst : NULL, hit_node, probe);
     }
     if (np.y < p->gel->bbox[2] - 2000.0f) { np = p->pos; player_kill(p, 7); }     /* below the world: "disappear" death (the original leaves this to script volumes) */
     p->pos = np;
     *hit_inst_out = hit_inst; *hit_node_out = hit_node;
+    if (wenv("WOODY_MCLOG"))                                           /* testing: one line per MoveCollide, as tools/wverify.py --probe move */
+        printf("MC local %.2f %.2f %.2f world %.2f %.2f %.2f | ", mc_local.x, mc_local.y, mc_local.z, mc_world.x, mc_world.y, mc_world.z),
+        printf("MC pos %.2f %.2f %.2f disp %.2f %.2f %.2f att %d carry %.2f %.2f %.2f -> %.2f %.2f %.2f g %d inst %d n %.3f %.3f %.3f slide %d B %.1f\n",
+               mc_pos.x, mc_pos.y, mc_pos.z, disp.x, disp.y, disp.z, mc_att ? (int)mc_att->index : -1, mc_carry.x, mc_carry.y, mc_carry.z,
+               np.x, np.y, np.z, p->on_ground, hit_inst ? (int)hit_inst->index : -1, g_ground_n.x, g_ground_n.y, g_ground_n.z, p->sliding, p->slide_speed);
 }
 
 /* ---- Perso state 7: carried by an object's vector marker (docs/PERSO_STATE7.md) -------------------------------------
@@ -2170,7 +2183,7 @@ static void follow_update(Player *p)                                       /* 0x
         p->follow_nomark = 1; printf("  state 7: instance %u has no vector marker (typecode 0), position kept\n", p->follow->index);
     }
     p->move_dir = (Vec3){ sinf(p->yaw), 0, cosf(p->yaw) };                 /* RampA.dir = M+0x1c = M+0x10 */
-    p->speed = 0; p->ramp_phase = 0; p->slide_speed = 0; p->sliding = 0; p->push_t = 0; p->push_speed = 0;   /* 0x467110 on RampB, RampC, RampA */
+    p->speed = 0; p->ramp_phase = 0; slide_reset(p); p->push_t = 0; p->push_speed = 0;   /* 0x467110 on RampB, RampC, RampA */
     p->vel = (Vec3){ 0, 0, 0 };                                            /* +0x204 stays 0: no displacement of his own */
     player_apply_transform(p);                                             /* Perso_Orient 0x44bd00 */
     if (wenv("WOODY_FOLLOWLOG")) printf("  state 7: pos %.0f %.0f %.0f facing %.0f\n", p->pos.x, p->pos.y, p->pos.z, p->yaw * 57.2958f);
@@ -2361,18 +2374,46 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     else if (p->ramp_phase == 2) p->speed = p->ramp_target;
     else if (p->ramp_phase == 3) { p->ramp_t += dt; float k = p->ramp_t / dec_T; if (k >= 1.0f) { k = 1.0f; p->ramp_phase = 0; } p->speed = p->ramp_v0 * (1.0f - k * k); }
     else p->speed = 0;
-    /* sliding, Mover RampB 0x45aa60: on ground steeper than n.y < 0.71 the player accelerates downhill to 600 u/s;
-     * on flatter ground the slide decelerates. (The original keeps separate ramp phases; this is one linear ramp.) */
+    /* sliding, 0x45aa60 (docs/PERSO_FRAME.md 2.3, PERSO_MOVE.md 6.6): n = normalize(M+0xd0); on the ground with n.y < 0.71 and not
+     * sliding yet (M+0xdc == 0): RampB target = max (600), start accelerating (0x467130), M+0xdc = 1 and RampB.dir = the xz part of
+     * n x (n x up) = n.y (n.x, n.z), downhill - set once, it does not follow the slope while he slides. Sliding and n.y >= 0.71 or
+     * in the air: on the ground target 0, start decelerating (0x467180), M+0xdc = 0, RampA reset to the facing (0x467110);
+     * in the air the slide stays on and Mover flag 4 is set (0x45ac18), which the total 0x45ae80 reads below. RampB is ticked
+     * every frame (0x4671d0(dt, 1)) and its direction normalised. */
+    int slide_air = 0;                                                     /* Mover+0x108 flag 4 */
     {
-        Vec3 n = p->ground_n; int steep = p->on_ground && n.y < P_SLIDE_NY;
-        if (steep) {
-            Vec3 up = { 0, 1, 0 }, dh = vcross(vcross(n, up), n); float l = sqrtf(vdot(dh, dh));
-            if (l > 1e-5f) { if (dh.y > 0) l = -l; p->slide_dir = (Vec3){ dh.x / l, dh.y / l, dh.z / l }; }
-            p->sliding = 1; p->slide_speed += P_SLIDE_SPEED / P_SLIDE_TIME * dt; if (p->slide_speed > P_SLIDE_SPEED) p->slide_speed = P_SLIDE_SPEED;
-        } else if (p->slide_speed > 0) {
-            if (p->on_ground) p->sliding = 0;
-            p->slide_speed -= P_SLIDE_SPEED / P_SLIDE_TIME * dt; if (p->slide_speed < 0) p->slide_speed = 0;
+        Vec3 n = p->ground_n; float l = sqrtf(vdot(n, n));
+        if (l > 0) n = (Vec3){ n.x / l, n.y / l, n.z / l };
+        if (n.y < P_SLIDE_NY && p->on_ground) {
+            if (!p->sliding) {
+                float v = p->slide_speed < 0 ? 0 : p->slide_speed;         /* 0x467130: the timer resumes at the current speed */
+                v /= P_SLIDE_SPEED; if (v < 0) v = 0;
+                p->slide_target = P_SLIDE_SPEED; p->slide_t1 = sqrtf(v) * P_SLIDE_TIME; p->slide_phase = 1;
+                p->sliding = 1; p->slide_dir = (Vec3){ n.y * n.x, 0, n.y * n.z };
+            }
+        } else if (p->sliding) {
+            if (p->on_ground) {
+                float v = p->slide_speed < 0 ? 0 : p->slide_speed;         /* 0x467180 */
+                v = (P_SLIDE_SPEED - v) / P_SLIDE_SPEED; if (v < 0) v = 0;
+                p->slide_target = 0; p->slide_t2 = sqrtf(v) * P_SLIDE_TIME; p->slide_phase = 3; p->sliding = 0;
+                /* RampA 0x467110 + dir = M+0x10: its phase 0 gives v = target at the next tick, the Mover phase (M+0xc) is kept,
+                 * so a walk in progress goes on at its target speed and a braking one stops (the port has one phase for both) */
+                if (p->ramp_phase == 1) p->ramp_phase = 2;
+                else if (p->ramp_phase == 3) { p->ramp_phase = 0; p->speed = 0; }
+            } else slide_air = 1;
         }
+        if (p->slide_target < 0) p->slide_speed = p->slide_target;          /* 0x4671d0(dt, useMax = 1) */
+        else if (p->slide_phase == 1) {
+            p->slide_t1 += dt;
+            if (p->slide_t1 >= P_SLIDE_TIME) { p->slide_phase = 2; p->slide_speed = p->slide_target; }
+            else { float k = p->slide_t1 / P_SLIDE_TIME; p->slide_speed = k * k * p->slide_target; }
+        } else if (p->slide_phase == 3) {
+            p->slide_t2 += dt; float k = 1.0f;
+            if (p->slide_t2 >= P_SLIDE_TIME) p->slide_phase = 0; else k = p->slide_t2 / P_SLIDE_TIME;
+            p->slide_speed = P_SLIDE_SPEED - k * k * P_SLIDE_SPEED;
+        } else p->slide_speed = p->slide_target;
+        l = sqrtf(vdot(p->slide_dir, p->slide_dir));
+        if (l > 0) p->slide_dir = (Vec3){ p->slide_dir.x / l, p->slide_dir.y / l, p->slide_dir.z / l };
     }
     /* vertical motion comes from the Jumper; air control is the unchanged Mover (docs/PERSO_JUMP.md 1.4) */
     if (p->dead_kind == 7) jumper_reset(&p->jumper);                       /* 0x4649bf: the water death never falls further */
@@ -2388,9 +2429,20 @@ void player_update(Player *p, const PlayerInput *in, float dt, EkoVM *vm, float 
     if (p->push_t > 0 || p->push_speed > 0) {                              /* RampC 0x45acb0: 500 u/s, 0.1 s up, 0.5 s out */
         if (p->push_t > 0) { p->push_t -= dt; p->push_speed += 500.0f / 0.1f * dt; if (p->push_speed > 500.0f) p->push_speed = 500.0f; }
         else { p->push_speed -= 500.0f / 0.5f * dt; if (p->push_speed < 0) p->push_speed = 0; }
-        if (!p->use_atk_disp && !hlock) { disp.x += p->push_dir.x * p->push_speed * dt; disp.z += p->push_dir.z * p->push_speed * dt; }
+        if (!p->use_atk_disp && !hlock && !slide_air) { disp.x += p->push_dir.x * p->push_speed * dt; disp.z += p->push_dir.z * p->push_speed * dt; }
     }
-    if (!p->use_atk_disp && !hlock && p->slide_speed > 0) { disp.x += p->slide_dir.x * p->slide_speed * dt; disp.z += p->slide_dir.z * p->slide_speed * dt; }
+    /* the total 0x45ae80: walk + slide + knockback; with flag 4 (sliding, in the air) only the walk vector a, times the cosine
+     * between it and the slide vector b clamped to >= 0 (0x440070 = a.b / |a||b|; 0/0 = NaN fails the test and gives 0), so a
+     * slide that carries him off an edge stops dead in the air and goes on (decelerating) when he lands */
+    if (!p->use_atk_disp && !hlock) {
+        if (slide_air) {
+            float bx = p->slide_dir.x * p->slide_speed, bz = p->slide_dir.z * p->slide_speed;
+            float la = sqrtf(disp.x * disp.x + disp.z * disp.z), lb = sqrtf(bx * bx + bz * bz);
+            float c = la > 0 && lb > 0 ? (disp.x * bx + disp.z * bz) / (la * lb) : 0;
+            if (c < 0) c = 0;
+            disp.x *= c; disp.z *= c;
+        } else if (p->slide_speed != 0) { disp.x += p->slide_dir.x * p->slide_speed * dt; disp.z += p->slide_dir.z * p->slide_speed * dt; }
+    }
     disp.y += dt * p->vy_corr;
     if (p->side_on) {                                                      /* 0x44bcd8 -> 0x459eb0, the last step of Perso_Move (so not in the states 1/4/5/7/8) */
         float m = sqrtf(disp.x * disp.x + disp.y * disp.y + disp.z * disp.z);   /* |disp|, 3D (the jumper's dy counts) */
@@ -2708,7 +2760,7 @@ void player_script_action(Player *p, int act, int have, Vec3 p0, Vec3 dir)
     bomb_drop(p); p->throw_hold = 0; p->look = 0;                   /* SetState(5); out of state 3 without +0x268 (docs/PERSO_LOOK.md 4) */
     int lg = log_from_raw(act);                                     /* the action number is the raw .ins animation (docs/CINEMATIC.md 6) */
     if (lg < 0) { printf("  scripted action %d: no logical record, standing still", act), puts(""); player_script_hold(p, 2.0f); return; }
-    p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
+    p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; slide_reset(p);
     if (have) { p->pos = p0; if (dir.x * dir.x + dir.z * dir.z > 1e-6f) p->yaw = atan2f(dir.x, dir.z); }   /* on P0 of the door vector (typecode 5), facing P1; no ground snap */
     jumper_reset(&p->jumper); p->on_ground = 1; p->floor_y = p->pos.y;
     if (have) p->ground_22c = 1;                                    /* 0x44dede: onGround = 1 only with a vector (msgmask 0x200) */
@@ -2731,7 +2783,7 @@ void player_face_action(Player *p, int act, Vec3 at)
     float dx = at.x - p->pos.x, dz = at.z - p->pos.z;
     if (dx * dx + dz * dz > 0) p->yaw = atan2f(dx, dz);
     bomb_drop(p); p->throw_hold = 0; p->look = 0;                       /* SetState(5) */
-    p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; p->slide_speed = 0;
+    p->atk = 0; p->charge = 0; p->use_atk_disp = 0; p->climb_sub = 0; p->use_root = 0; p->speed = 0; p->ramp_phase = 0; p->push_t = 0; p->push_speed = 0; slide_reset(p);
     player_ground_snap(p);
     p->script_act = act; p->script_log = lg; p->lanim = -1; anim_request(p, lg, 1.0f); p->script_total = p->script_t = 0; p->script_faded = 0; p->script_carry = NULL;
     player_apply_transform(p);

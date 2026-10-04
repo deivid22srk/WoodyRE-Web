@@ -8,6 +8,8 @@ Common options (every probe):
                        and the window needs no focus); KEY is held from T s after INIT for D s (default 0.1).
                        KEY = RET ESC UP DOWN LEFT RIGHT JUMP (LCtrl) ATTACK (LShift) DUCK (Space) or a hex internal code.
   --seconds N          wall-clock limit (the boot to INIT takes ~70 s)
+  --fixfps N           from INIT every frame advances exactly 1/N s (debug switch [0x5d7b89] / [0x4b3a8c] of 0x401810), as the
+                       port's WOODY_FIXDT=N; --at / --from / --until stay wall-clock seconds
   --sav FILE           CreateFileA of "Woody.sav" is redirected to FILE (game/ has no save; a copy of the port's woodyre.sav,
                        which has the original layout, lets the Load game chain reach the carousel without touching game/)
   --face YAW           with --pos: turn the Perso to YAW degrees (0 = +z, 90 = +x) through Mover_SetDir 0x459ff0 (the follow
@@ -31,6 +33,8 @@ Probes (--probe, several allowed, comma separated):
   blackbox  the BlackBox mini game (docs/BLACKBOX.md): with --level BlackBox, patches 0x4042c9 so the load creates the object
             and sets App state 3 at --at; logs the round / Woody / Buzz / pool per 0x4846d0 call; --bbpos teleports Woody
   crush     the crush test 0x462a40: every squash < 1 (0x462bd4) and every Kill(4) call (0x462bed)
+  move      per Perso_MoveCollide 0x4624f0 (--from..--until): pos/disp at the entry, platform carry 0x436d20, swept pos,
+            floor attach 0x436f00 (ground y, kind, instance, plane), attach record +0x298, Mover normal/slide/RampB
   shadow    the cast shadow of instance --inst (docs/LIGHTING.md 3/4): per draw 0x42e2b0 the arg, the sector +0x1c, the
             animated root +0x60 and the light the sector list gives (0x42e573), at most one line per --every s
   bomb      per VM tick every bomb of the pool 0x5e4880 in use (+0x131): state +0x108, held +0x132, pos +0xc and its projectile
@@ -63,6 +67,7 @@ def main():
     ap.add_argument('--face', type=float, help='with --pos: turn the Perso to this yaw (degrees, 0 = +z, 90 = +x) through the Mover 0x459ff0')
     ap.add_argument('--windowed', action='store_true', help='patch 0x4027b8 so the renderer takes its (never shipped) windowed path: no exclusive mode')
     ap.add_argument('--setvar', default='', help='"T var val ...": SetVar 0x443ca0 T s after INIT')
+    ap.add_argument('--fixfps', type=int, help='from INIT every frame advances exactly 1/N s (the debug switch [0x5d7b89] / [0x4b3a8c] of 0x401810), like the port\'s WOODY_FIXDT')
     ap.add_argument('--tp', default='', help='"T x y z yaw ...": teleport + face T s after INIT (x = bomb: y units off the first bomb in use)')
     a = ap.parse_args()
     tok = a.setvar.split(); setvars = [(float(tok[i]), int(tok[i + 1]), int(tok[i + 2])) for i in range(0, len(tok) - 2, 3)]
@@ -154,6 +159,8 @@ def main():
             if 'rocket' in probes: rocket_line()
     def on_init(ctx):
         st['init'] = time.perf_counter(); st['objs'] = None; dbg.log('INIT')
+        if a.fixfps:                           # the debug fixed step of the frame 0x40181e: dt = 1/[0x4b3a8c] while [0x5d7b89] != 0
+            dbg.write(0x4b3a8c, struct.pack('<i', a.fixfps)); dbg.write(0x5d7b89, b'\x01'); dbg.log('# fixed dt 1/%d (0x5d7b89 = 1)' % a.fixfps)
 
     # --- FPU
     def fpu_ctx(ctx_unused):
@@ -283,6 +290,30 @@ def main():
         if v < 1.0: dbg.log('%s CRUSH squash %.3f perso %08x pos %.1f %.1f %.1f' % (T(), v, ctx.Esi, *fv(ctx.Esi + 0x1f4, 3)))
     def on_crush_kill(ctx):
         dbg.log('%s CRUSH Kill(4) 0x462bed' % T())
+
+    # --- Perso_MoveCollide 0x4624f0 (docs/PERSO_MOVE.md 6.1), one line per call from --from to --until: the position and
+    # displacement +0x204 at the entry, the platform carry 0x436d20 returns, the swept position, the floor attach 0x436f00
+    # (hit, ground y, kind [0x53a554], instance, plane [0x4b3108]) and the attach record +0x298 it leaves, plus the Mover's
+    # ground normal M+0xd0, sliding M+0xdc and RampB (slide) speed / direction (M = P+0x388, RampB = M+0x68)
+    def on_mc_entry(ctx):
+        if st['init'] is None or not (a.frm <= since() <= a.until): st['mc'] = None; return
+        p = ctx.Ecx; att = dbg.u32(p + 0x298)
+        st['mc'] = '%s MC pos %.2f %.2f %.2f disp %.2f %.2f %.2f st %d g %d att %s/%d' % (T(), *fv(p + 0x1f4, 3), *fv(p + 0x204, 3),
+                   dbg.u32(p + 0x21c), dbg.read(p + 0x22c, 1)[0], slot(att) if att else '-', dbg.u32(p + 0x29c) if att else -1)
+        if att: st['mc'] += ' local %.2f %.2f %.2f world %.2f %.2f %.2f' % (*fv(p + 0x2a0, 3), *fv(p + 0x2ac, 3))
+        st['mc'] += ' dt %.4f' % f32(p + 0x2f8)
+    def on_mc_carry(ctx):
+        if st.get('mc'): st['mc'] += ' | carry %.2f %.2f %.2f' % fv(ctx.Esp + 0x24, 3)
+    def on_mc_swept(ctx):
+        if st.get('mc'): st['mc'] += ' | swept %.2f %.2f %.2f' % fv(ctx.Esi + 0x1f4, 3)
+    def on_mc_floor(ctx):
+        if not st.get('mc'): return
+        p = ctx.Esi; k = dbg.u32(0x53a554); gi = dbg.u32(0x53a560) if k == 2 else 0
+        n = fv(0x4b3108, 4); M = p + 0x388
+        st['mc'] += ' | floor hit %d gy %.2f kind %d inst %s n %.3f %.3f %.3f | M n %.3f %.3f %.3f slide %d B v %.1f dir %.3f %.3f %.3f ph %d | A v %.1f' % (
+            ctx.Eax, f32(0x53a568), k, slot(gi) if gi else '-', n[0], n[1], n[2], *fv(M + 0xd0, 3), dbg.read(M + 0xdc, 1)[0],
+            f32(M + 0x68 + 0xc), *fv(M + 0x68, 3), dbg.u32(M + 0x68 + 0x2c), f32(M + 0x34 + 0xc))
+        dbg.log(st['mc']); st['mc'] = None
 
     def on_createfile(ctx):
         name = dbg.cstr(dbg.u32(ctx.Esp + 4))
@@ -418,6 +449,7 @@ def main():
     if 'fpu' in probes: bps[0x439cb3] = on_sweep_fistp; bps[0x439cb9] = on_sweep_after
     if 'carousel' in probes: bps.update({0x451890: on_car_place, 0x489780: on_car_rot, 0x451935: on_car_ret, 0x48964c: on_car_world})
     if 'crush' in probes: bps.update({0x462bd4: on_crush_scale, 0x462bed: on_crush_kill})
+    if 'move' in probes: bps.update({0x4624f0: on_mc_entry, 0x4625f4: on_mc_carry, 0x46268d: on_mc_swept, 0x4626f9: on_mc_floor})
     if 'shadow' in probes: bps.update({0x42e2b0: on_sh_draw, 0x42e573: on_sh_light})
     if a.level:
         import pefile

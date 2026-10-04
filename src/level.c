@@ -980,8 +980,16 @@ static int track_rot(const InsNode *n, int anim, float t, Quat *out)
     if (t <= f[0] || cnt == 1) { a = b = f; u = 0; }
     else if (t >= f[5 * (cnt - 1)]) { a = b = f + 5 * (cnt - 1); u = 0; }
     else { uint32_t i = 1; while (i < cnt && f[5 * i] < t) i++; a = f + 5 * (i - 1); b = f + 5 * i; u = (b[0] > a[0]) ? (t - a[0]) / (b[0] - a[0]) : 0; }
-    float dot = a[1] * b[1] + a[2] * b[2] + a[3] * b[3] + a[4] * b[4]; float sgn = dot < 0 ? -1.0f : 1.0f;
-    out->x = a[1] + (sgn * b[1] - a[1]) * u; out->y = a[2] + (sgn * b[2] - a[2]) * u; out->z = a[3] + (sgn * b[3] - a[3]) * u; out->w = a[4] + (sgn * b[4] - a[4]) * u;
+    /* 0x440a80: a true slerp, k0 = sin((1 - u)O) / sin O, k1 = sin(uO) / sin O with O = acos(a.b) (0x49a7e0), plain lerp when
+     * a.b >= 0.9999 (0x4aa41c); no shortest-path sign flip, so a pair with a.b < 0 turns the long way round. (The port used a
+     * shortest-path nlerp before: on the W3C drop-away platforms, model 10 anim 4, one key pair turns 179 degrees, and the nlerp
+     * turned it up to 8 degrees late, a third slower at the start, so Woody was carried off it too slowly; docs/PERSO_MOVE.md 6.6) */
+    float c = a[1] * b[1] + a[2] * b[2] + a[3] * b[3] + a[4] * b[4], k0 = 1.0f - u, k1 = u;
+    if (c < 0.9999f) {
+        float O = acosf(c < -1.0f ? -1.0f : c), s = sinf(O);
+        if (s != 0) { k0 = sinf((1.0f - u) * O) / s; k1 = sinf(u * O) / s; }   /* port guard: an exact sin O = 0 would divide by zero */
+    }
+    out->x = k0 * a[1] + k1 * b[1]; out->y = k0 * a[2] + k1 * b[2]; out->z = k0 * a[3] + k1 * b[3]; out->w = k0 * a[4] + k1 * b[4];
     return 1;
 }
 
