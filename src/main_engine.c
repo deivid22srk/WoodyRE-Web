@@ -257,8 +257,9 @@ static void sv_ahead(Vec3 *ahead, int flip, float rate, float dt)
     if (g_cam.sv_blend != 1.0f) {                                                 /* 0x42518d */
         /* T = 0 happens when the flip byte stays up for a second frame (0x459c70 skipped under a move lock): start = -(-1) = 1, and
          * the original divides 0 / 0 at 0x4251a1 - a NaN that then sticks in the blend until the next SetMode(5) (derived). The
-         * port takes t / T = 1 there: blend 1, s unchanged */
-        float f = g_cam.sv_bT != 0 ? g_cam.sv_bt / g_cam.sv_bT : 1.0f;
+         * port takes t / T = 1 there: blend 1, s unchanged. The same for a NaN or negative T: 1110 [6, 0] (rate 0, the scripts send
+         * it from a variable) gives T = x / 0 = inf, then inf * (1 - 1) = NaN on the next flip, a NaN camera until SetMode(5) */
+        float f = g_cam.sv_bT > 0 ? g_cam.sv_bt / g_cam.sv_bT : 1.0f;
         float v = f * (1.0f - g_cam.sv_bstart) + g_cam.sv_bstart;
         g_cam.sv_blend = v > 1.0f ? 1.0f : v;
         g_cam.sv_bt += dt;
