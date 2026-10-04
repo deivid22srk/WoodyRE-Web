@@ -317,6 +317,7 @@ static void send_msg(EkoVM *vm, int n)                              /* 0x443220 
     int32_t *a = &vm->stack[vm->sp - n];
     m->id = (uint32_t)a[0]; m->nargs = (uint32_t)(n - 1);
     int copy = n - 1; if (copy > EKO_MAX_MSG_ARGS) copy = EKO_MAX_MSG_ARGS;
+    m->nargs = (uint32_t)copy;                                       /* the handlers loop to nargs over args[EKO_MAX_MSG_ARGS] */
     for (int i = 0; i < copy; i++) m->args[i] = (uint32_t)a[1 + i];
     vm->sp -= n;
     if (vm->on_msg && !vm->discard_msgs && !vm->defer_msgs) vm->on_msg(vm, m, vm->user);
@@ -325,7 +326,7 @@ static void send_msg(EkoVM *vm, int n)                              /* 0x443220 
 /* ------------------------------------------------------------------ interpreter (0x4429f0) */
 #define PUSH(v)  do { if (vm->sp >= EKO_STACK) { vm->error = 1; vm->stop = 1; break; } vm->stack[vm->sp++] = (int32_t)(v); } while (0)
 #define POP()    (vm->sp > 0 ? vm->stack[--vm->sp] : (vm->error = 1, vm->stop = 1, 0))
-#define TOP()    (vm->stack[vm->sp - 1])
+#define TOP()    (*(vm->sp > 0 ? &vm->stack[vm->sp - 1] : (vm->error = 1, vm->stop = 1, &junk)))
 #define BPUSH(b) do { if (vm->bsp >= EKO_STACK) { vm->error = 1; vm->stop = 1; break; } vm->bstack[vm->bsp++] = (b) ? 1 : 0; } while (0)
 #define BPOP()   (vm->bsp > 0 ? vm->bstack[--vm->bsp] : (vm->error = 1, vm->stop = 1, 0))
 
@@ -349,15 +350,18 @@ static int col_actor_flag(EkoVM *vm, uint32_t c, uint32_t actor, uint32_t fl)
 void eko_run(EkoVM *vm, uint32_t pc)
 {
     uint32_t *w = vm->w; const uint32_t b = vm->base; const size_t n = vm->nwords;
+    int32_t junk = 0;                                                   /* TOP() of an empty stack: a fault, not a write below the stack */
+    int had = vm->error; vm->error = 0;                                 /* error: the fault of THIS run ends it (and stays set for ekorun's report), it
+                                                                         * does not end every later run of the level after one first fault */
     vm->stop = 0;
     while (!vm->stop) {
-        if ((size_t)(b + pc) >= n) { vm->error = 1; return; }
+        if ((size_t)(b + pc) >= n) { vm->error = 1; break; }
         uint32_t op = w[b + pc];
         if (op >= 0x3f) { vm->stop = 1; break; }              /* 0x442a1b */
         uint32_t a1 = (size_t)(b + pc + 1) < n ? w[b + pc + 1] : 0;
         uint32_t a2 = (size_t)(b + pc + 2) < n ? w[b + pc + 2] : 0;
         uint32_t a3 = (size_t)(b + pc + 3) < n ? w[b + pc + 3] : 0;
-        int32_t x, y;
+        int32_t x, y, *t;
         switch (op) {
         case 0:  pc += 1; break;                                        /* 0x443210 */
         case 1:  vm->error = 1; vm->stop = 1; break;                    /* 0x443200 would spin forever */
@@ -366,11 +370,11 @@ void eko_run(EkoVM *vm, uint32_t pc)
         case 4:  PUSH((int32_t)(a1 < vm->nstr ? (intptr_t)a1 : 0)); pc += 2; break; /* 0x442cd0: pushes char*; we push the index */
         case 5:  PUSH(a1 < vm->nvars ? vm->varval[a1] : 0); pc += 2; break;         /* 0x442d00 */
         case 6:  x = POP(); eko_set_var(vm, a1, x); pc += 2; break;    /* 0x442d30 */
-        case 7:  x = POP(); TOP() = TOP() + x; pc += 1; break;          /* 0x442d60 */
-        case 8:  x = POP(); TOP() = TOP() - x; pc += 1; break;          /* 0x442d90 */
-        case 9:  x = POP(); TOP() = TOP() * x; pc += 1; break;          /* 0x442dc0 */
-        case 10: x = POP(); TOP() = x ? TOP() / x : 0; pc += 1; break;  /* 0x442df0 (idiv; exe traps on 0) */
-        case 11: TOP() = -TOP(); pc += 1; break;                        /* 0x442e20 */
+        case 7:  x = POP(); t = &TOP(); *t = *t + x; pc += 1; break;    /* 0x442d60 */
+        case 8:  x = POP(); t = &TOP(); *t = *t - x; pc += 1; break;    /* 0x442d90 */
+        case 9:  x = POP(); t = &TOP(); *t = *t * x; pc += 1; break;    /* 0x442dc0 */
+        case 10: x = POP(); t = &TOP(); *t = x ? *t / x : 0; pc += 1; break;   /* 0x442df0 (idiv; exe traps on 0) */
+        case 11: t = &TOP(); *t = -*t; pc += 1; break;                  /* 0x442e20 */
         case 12: x = POP(); BPUSH(x != 0); pc += 1; break;              /* 0x442e40 */
         case 13: y = POP(); x = POP(); BPUSH(x == y); pc += 1; break;
         case 14: y = POP(); x = POP(); BPUSH(x != y); pc += 1; break;
@@ -461,8 +465,10 @@ void eko_run(EkoVM *vm, uint32_t pc)
         }
         default: vm->error = 1; vm->stop = 1; break;
         }
-        if (vm->error) return;
+        if (vm->error) break;
     }
+    if (vm->error) vm->sp = vm->bsp = 0;                                /* a faulted run leaves no half-built operands for the next one */
+    vm->error |= had;
 }
 
 /* ------------------------------------------------------------------ init & tick */
