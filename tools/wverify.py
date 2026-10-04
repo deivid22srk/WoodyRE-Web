@@ -38,7 +38,7 @@ Probes (--probe, several allowed, comma separated):
   shadow    the cast shadow of instance --inst (docs/LIGHTING.md 3/4): per draw 0x42e2b0 the arg, the sector +0x1c, the
             animated root +0x60 and the light the sector list gives (0x42e573), at most one line per --every s
   bomb      per VM tick every bomb of the pool 0x5e4880 in use (+0x131): state +0x108, held +0x132, pos +0xc and its projectile
-            +0x124 (age P+0xd4, velocity P+0xc8, target P+0x80, owner P+0xa0, grounded P+0xec), plus the Perso pos/state/sub-state
+            +0x124 (age P+0xd4, position P+0xb0, velocity P+0xc8, target P+0x80, owner P+0xa0, grounded P+0xec), plus the Perso pos/state/sub-state; every Launch 0x44d4d0 prints the template it starts from (BOMBLAUNCH: T.pos, dir0, gravity, speed, life, ground flag)
 
   --setvar "T var val ..."  SetVar 0x443ca0(var, val) T s after INIT (as tools/wsetvar.py, one per VM tick)
   --tp "T x y z yaw ..."    teleport the Perso T s after INIT and turn him to yaw (Mover_SetDir); x = "bomb" puts him
@@ -268,9 +268,13 @@ def main():
             b = dbg.u32(0x5e4880 + 4 * i)
             if not b or not dbg.read(b + 0x131, 1)[0]: continue
             pr = dbg.u32(b + 0x124); line = 'BOMB %s state %d held %d pos %.1f %.1f %.1f' % (slot(b), dbg.u32(b + 0x108), dbg.read(b + 0x132, 1)[0], *fv(b + 0xc, 3))
-            if pr: line += ' | proj age %.3f vel %.1f %.1f %.1f target %s owner %s grounded %d' % (f32(pr + 0xd4), *fv(pr + 0xc8, 3),
+            if pr: line += ' | proj age %.3f pos %.1f %.1f %.1f vel %.1f %.1f %.1f target %s owner %s grounded %d' % (f32(pr + 0xd4), *fv(pr + 0xb0, 3), *fv(pr + 0xc8, 3),
                     slot(dbg.u32(pr + 0x80)) if dbg.u32(pr + 0x80) else '-', slot(dbg.u32(pr + 0xa0)) if dbg.u32(pr + 0xa0) else '-', dbg.read(pr + 0xec, 1)[0])
             dbg.log('%s %s | %s' % (T(), line, pl))
+
+    def on_bomb_launch(ctx):                 # 0x44d4d0 Launch(T*, ground, var, kind), thiscall: the template the projectile starts from
+        t = dbg.u32(ctx.Esp + 4); g = dbg.read(ctx.Esp + 8, 1)[0]
+        dbg.log('%s BOMBLAUNCH %s T.pos %.2f %.2f %.2f dir0 %.4f %.4f %.4f grav %.2f speed %.1f life %.2f ground %d var %d kind %d' % (T(), slot(ctx.Ecx), *fv(t, 6), f32(t + 0x1c), f32(t + 0x20), f32(t + 0x2c), g, struct.unpack('<i', dbg.read(ctx.Esp + 12, 4))[0], dbg.u32(ctx.Esp + 16)))
 
     # --- camera
     def cam_line():
@@ -450,6 +454,7 @@ def main():
     if 'carousel' in probes: bps.update({0x451890: on_car_place, 0x489780: on_car_rot, 0x451935: on_car_ret, 0x48964c: on_car_world})
     if 'crush' in probes: bps.update({0x462bd4: on_crush_scale, 0x462bed: on_crush_kill})
     if 'move' in probes: bps.update({0x4624f0: on_mc_entry, 0x4625f4: on_mc_carry, 0x46268d: on_mc_swept, 0x4626f9: on_mc_floor})
+    if 'bomb' in probes: bps[0x44d4d0] = on_bomb_launch
     if 'shadow' in probes: bps.update({0x42e2b0: on_sh_draw, 0x42e573: on_sh_light})
     if a.level:
         import pefile

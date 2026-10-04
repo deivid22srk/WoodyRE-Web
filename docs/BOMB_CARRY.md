@@ -295,7 +295,7 @@ case 1090: {
 |---|---|---|
 | `+0x10c` fuse | `T.life` = `t · 0.01` s (W2A: **20 s**) | `0x44d4dd` |
 | `+0x110` warning duration | `min([0x5e48c4] = 2.0, fuse)` | `0x44d4e3..0x44d508`, ctor `0x44d28b` |
-| position | `T.pos`; with `snap`: `GetHeight(pos)` (`0x435650`) ⇒ `y = ground + 1.0` | `0x44d52c..0x44d545` |
+| position | `T.pos`; with `snap`: `GetHeight(pos)` (`0x435650`) ⇒ `y = ground + 1.0` — **the bomb instance only**: the projectile gets the caller's `T` with `T.pos` untouched (next row), so it starts at the marker in the air, and its first step (`0x449b52`) puts the bomb back on the projectile point + (0, 1, 0). The snap is visible for at most the launch frame | `0x44d52c..0x44d545` |
 | `+0x60` | = position, re-cell (`0x4077f0`) ⇒ **visible** | `0x44d548..0x44d55c` |
 | `+0x12c` script var | `var` (−1 = none) | `0x44d569` |
 | `+0x128` explosion kind | `kind` = 0 for 1090, 1 for the cannon | `0x44d5a4` |
@@ -303,8 +303,13 @@ case 1090: {
 | `+0x108` state | 1; `+0x114 = +0x118 = +0x11c = +0x120 = 0` | `0x44d56f..0x44d59e` |
 | projectile | `T.carried = bomb`; `+0x124 = 0x4490a0(&T)`; pool full ⇒ `vtbl[17]` Reset (bomb gone again) | `0x44d5ab..0x44d5c4` |
 
-There is **no sound or effect** in 1090 itself; the script plays the dispenser's sound and animation (§5). The bomb rolls/bounces out of the
-dispenser at 100 u/s (template-0 physics, BOMB.md). The script hears about the end via the variable: `0x44d6e0` sets `var := 1` on the
+There is **no sound or effect** in 1090 itself; the script plays the dispenser's sound and animation (§5). The bomb falls out of the
+dispenser's muzzle at 100 u/s along the marker and bounces on the dispenser's own press node before it drops to the floor (template-0
+physics, BOMB.md). **Verified live** (2026-10-04, `tools/wverify.py --probe bomb --fixfps 60`, S2A `--setvar "8 14 1"`): the original
+launches S2A's bomb from T.pos (10497.52, −1118.66, −23353.32), dir0 (0, 0, −1), speed 100, ground 1; first step (0, −49.5, −99.0), first
+bounce at y −1132.1 (the cannon) after 6 frames, floor (−1207) at 0.62 s, z −23426.5 after 1.0 s. It comes to rest at z −23507.2 after ~6 s. With both fixes of that day (projectile from T.pos, bounce
+mirrored in the hit plane, PROJECTILES §2.3) the port follows it within 0.3 units for 420 frames (7 s) and rests at −23507.3. Until then the port also moved the PROJECTILE onto the floor, so the bomb appeared under the muzzle
+and rolled ~37 units straight out, resting ~117 units short, (user report: "the original drops it more sideways"). The script hears about the end via the variable: `0x44d6e0` sets `var := 1` on the
 **explosion** (`0x44d707`), not on pickup or throwing.
 
 The level's 16 type-40 instances are just the **pool**: 1200 `[inst, 40]` → Init `0x44d2e0` + Reset `0x44d320` (out of the world,
@@ -425,8 +430,9 @@ objects 187..194, 318..325: SEND 1200 [x, 40]                      ; the bomb po
   a cube of 400, x 8025..8425, y 274..674, z −17522..−17122. There is no facing-direction test (no 1042): pressing and releasing the attack
   key inside the volume is enough. Pressing starts an ordinary peck in state 0 (and picks up a bomb if one is already within 269).
 * **Ejection**: type-code-0 marker of model 43 (node 16, parent = node 1 ≈ identity): in rest pose ≈ **(8217, 236, −17281)** with direction
-  ≈ (−0.38, 0, 0.92) (rest pose, computed with the port convention `mat4_from_trs`, not measured in the original: uncertain). The bomb is
-  placed on the ground and rolls that way at 100 u/s.
+  ≈ (−0.38, 0, 0.92) (the port's posed marker at the moment of 1090 gives (8217.3, 236.0, −17281.8), dir (−0.3827, 0, 0.9239); the same
+  marker read of S2A's dispenser 384 was confirmed live, see §2). The bomb leaves the muzzle that way at 100 u/s, ~84 above the floor, and
+  drops off the dispenser.
 * **Target**: crate 537, model 48 with its origin at (13400, 256, −16847). **Correction (seen in the port):** it is indeed a treasure chest,
   next to the palm tree on the sand island; the 2200 bbox is that of mesh node 1 over the whole open animation (planks flying around). Collision:
   press node 8 and hull node 9, ≈ 300 x 200 x 300 around the origin (the earlier "hull node 10 / press node 9" belongs to instance 127,
