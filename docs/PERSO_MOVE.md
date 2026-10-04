@@ -775,6 +775,13 @@ sector chains: they use the static `.col` lists of the leaf cells (§6.7). The p
   phases against the world floor under / ceiling over them) lists the other candidates: in W1A only 53/54 (model 12, raised once
   in a scripted cutscene) besides the stampers; many more in K2A, K3A, S1A, S3A, W2A, W2B, W3A-W3D (mostly lifts and doors
   whose lower face meets the floor they rest on - whether Woody can stand under them was not checked one by one).
+  2026-10-04 scan of the ten levels: 313 lines; "A press" are almost all pillars/platforms whose bottom starts below the floor
+  they rise out of (K2A model 33/48, K3A model 10, S1A model 34, S3A model 8), "B lift" mostly W3C model 10 (the platforms that
+  drop away 0.5 s after Woody presses them, script `COL_FLAG5` → `3 [inst, 4, 1, 200]`) and W3D model 8. One checked live:
+  W3C 116 (`WOODY_POSAT="1 5362 800 -1601"` / `wverify --level W3C --probe cam,crush --pos 5362 800 -1601 --at 1`): no crush in
+  either; the platform drops at 1.75 s and he falls off it onto y −401 in both. Small difference: the original pushes him +44 in x
+  while it drops and slides him another +87 right after the landing (final x 5505), the port +23 and no slide (x 5385); same at
+  140 fps, so not frame rate. Not investigated further.
 * **Ledge edge** (`0x44b2e0`) and **fall damage** (`0x44b220`): see PERSO_FRAME §2.2.
 * **"Fell out of the world"**: does not exist as a separate test. If GetHeight finds no floor (`g_raw == 1`), then `ground height = probe point.y`
   (= feet+43): `0x436f00` then reports `onGround` and sets `pos.y += 43` (!), and in the sweep it counts as "on the ground". In practice, levels

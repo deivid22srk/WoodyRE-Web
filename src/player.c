@@ -1290,9 +1290,9 @@ int player_hit(Player *p, float damage, Vec3 dir)                       /* vt[39
     if (p->health <= 0) { p->health = 0; return 1; }
     return 0;
 }
-static void player_reset(Player *p)                                     /* vt[17] Reset 0x44ab20 + respawn in 0x4459c0 */
+static void perso_reset(Player *p)                                      /* vt[17] Reset 0x44ab20 (no position: 0x44a810 / the cinematic end set it) */
 {
-    p->pos = p->spawn_pos; p->yaw = p->spawn_yaw; p->floor_y = p->pos.y;
+    p->yaw = p->spawn_yaw; p->floor_y = p->pos.y;                        /* 0x44ab90: 0x459ff0(M, +0x324) = the checkpoint facing */
     jumper_reset(&p->jumper); p->on_ground = 1; p->invuln_respawn = 1.0f; p->invuln_hit = 0; p->move_lock = 0;
     if (p->health <= 0) p->health = 3.0f;
     bomb_drop(p); p->throw_hold = 0;                                     /* 0x44acb4 */
@@ -1306,10 +1306,26 @@ static void player_reset(Player *p)                                     /* vt[17
     p->am_win = 0; p->am_used = 0; p->am_on = 0;                         /* 0x44ad34 / 0x44ad3a / 0x44ad40 */
     p->follow = NULL;                                                    /* 0x44ac84: +0x55c = 0; Reset's SetState(0) (0x44ac3f) ends state 7 */
     if (p->race_char) race_enter(p, 1);                                /* 0x44ac33: SurfEnter + state 1 */
+}
+static void player_reset(Player *p)                                     /* respawn 0x44a810(0) in 0x445930: +0x318, Reset, ground snap */
+{
+    p->pos = p->spawn_pos; perso_reset(p);
     player_ground_snap(p);                                              /* 0x44a810 -> 0x462990 */
     /* 0x445930 -> 0x44a810 -> Reset 0x44ab20 clears Perso+0x4ec (0x44ad22): the side view's plane lock ends with the death,
      * and 0x445930 then calls 0x458f90 (hard cut back to the follow camera). Both live in the app (g_cam). */
     p->respawn_req = 1;
+}
+/* end of a real time cinematic, Game update 0x445af9..0x445b66 (docs/CINEMATIC.md 5): Perso vtbl[0x44] = Reset 0x44ab20
+ * (0x445b23: state 0, or SurfEnter + state 1 for the race riders with the up filter back to (0,1,0); anim controllers reset,
+ * 1 s invulnerability, carried bomb dropped, ...), then the facing 0x459ff0 and 0x44a650 = position + ground snap. The app
+ * does the rest of Reset (plane lock off, every bomb in flight discarded 0x44db10) and the hard cut to the follow camera.
+ * have = 0: the port could not evaluate the root end, he stays where he is (the original always has Game+0x198). */
+void player_cin_end(Player *p, int have, Vec3 pos, float yaw)
+{
+    perso_reset(p);
+    if (have) { p->yaw = yaw; p->pos = pos; }
+    p->vel = (Vec3){ 0, 0, 0 }; p->speed = 0; p->ramp_phase = 0; p->lanim = -1; p->step_u = -1.0f; p->board_lanim = -1;   /* 0x44a650: A->Reset, B->Reset (as player_teleport) */
+    player_ground_snap(p);                                              /* 0x44a678 */
 }
 /* The iris Game+4: 0x4776b0(from, to, dur) sets it, 0x477920(dt) advances it, draws it (0x4776d0, hud_iris: a black ring
  * around the screen centre with the inner radius iris * 0.99 * 480) and says whether it has arrived. */

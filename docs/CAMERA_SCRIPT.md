@@ -498,6 +498,19 @@ right only turns him, the jump carries him along −x; z stays −7527 throughou
 WOODY_KEYS="4.5:RIGHT:3 7.5:LEFT:1.5 9.2:RIGHT:1.5" --pos -8500 400 -16806 --yaw -90 --peck 1.5 0.1`): 600 u/s along +z,
 the turn at 7.5 s reverses him at once (150 units per 0.25 s either side of it), x stays −11231.
 
+**Does 1088 land during state 5?** (live, 2026-10-04, `tools/wverify.py --level W1B --windowed --probe cam --pos -8500 400 -16806
+--face -90 --at 0.5 --setvar "1.0 42 1" --keys "1.5:ATTACK:0.1"`). The door sequence `26 [8, 409, 1]; 1040 [409, 18]; DELAY 150`
+and object 408's `1088 [0x19b, 2]` one tick later: action 18 and the DELAY both last 1.5 s and start in the same tick, so it is a
+tie decided by the frame times. In the original (~110 fps) the Perso update (frame step 12) ended state 5 in the frame whose VM tick
+(step 31) sent 1088: the next frame shows state 0 and the feet ON the marker point A (−11231.0, 187.3, −14608.4), i.e. moved 63
+units. The port with `WOODY_FIXDT=60` lands one frame early ("state 5: not moved", feet stay at x −11168): 90 × float(1/60)
+leaves +7.6e-7 of the 1.5 s timer, so state 5 lasts one frame longer. Same frame order as the original (player update before the
+VM tick, VM clock one frame behind); with real (jittering) frame times either outcome happens in both, so this is left as is.
+The only visible effect is the 63-unit offset from the plane at the fade-in, which the plane lock bends away on the first steps.
+1040 itself: every VALID action (10..0x13, 0x48..0x4e, `0x44de42`) clears `+0x4ec`, and the shipped scripts only send 17/18,
+so the port's `plane_release()` on every 1040 matches (it also runs when Kill state 2 refuses the action, which the original
+does not; no shipped script sends 1040 to a dead Woody).
+
 ### 4.3 Mode 0x80 = camera from an instance's animation (doors and cinematics)
 
 `CamMgr_Update` `0x41f1ee`: `inst = CamMgr+0x5d4`; if `0x42feb0(inst, inst->anim (+0xb0))` (the model has a node of

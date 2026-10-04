@@ -252,6 +252,12 @@ d = xzNormalize(seg.p1 - seg.p0);                            /* only if length >
 p->boostTarget(+0x4cc) = seg.p0 + (d.x, 0, d.z) * (speed * dur * 1.1f);   /* 0x4aa168 = 1.1 */
 Sound2D(59);                                                 /* 0x468a00(sfx, 0x3b, 0) */
 ```
+Senders: 11 boost pads (`COL_B3_BIT0`/`COL_B2_BIT0` = the rider pressing the pad instance): K1R 236/331, K2R 412, K3R
+249/250/251, S1R 125 (the last one, it also starts the end cinematic through var 13), S2R 378/322, S3R 79/80.
+Port test (2026-10-04): `extract/Data K3R` + `WOODY_GOD=1 WOODY_POSLOG=1 WOODY_MSGAT="2.5 1121 249 3000 100"`: the forced boost
+rides 3000 u/s straight at the target (≈750 units per 0.25 s, no steering), and on its way the rider presses pad 249 itself,
+so the script's own `1121 [249, 3000, 100]` follows at 3.5 s; the spray is drawn in mode 3. Without input the rider never reaches
+a pad (he rides straight into the first wall), so a boost is only seen with steering or this hook.
 
 ## 4. State 1 per frame
 
