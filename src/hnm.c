@@ -428,12 +428,14 @@ int hnm_next(HnmFile *h)
     int got = 0;
     for (uint32_t p = 0; p + 8 <= size; ) {
         uint32_t csz = rd32(h->chunk + p); const uint8_t *c = h->chunk + p + 8; int pad = h->chunk[p + 7];   /* flags +6: high byte = padding bytes at the end */
-        if (csz < 8 || p + csz > size) return -1;
+        if (csz < 8 || csz > size - p) return -1;          /* not p + csz > size: a size near 4G wrapped past it (endless loop / reads far outside) */
         uint32_t n = csz - 8 > (uint32_t)pad ? csz - 8 - (uint32_t)pad : 0;
         if ((c[-4] == 'A' && c[-3] == 'A') || (c[-4] == 'B' && c[-3] == 'B')) {          /* sound */
             if (n >= 32 && !memcmp(c, "CRYO_APC", 8)) {                                    /* the first block: header, 32 frames of pre-buffer (0x4941f0 / 0x4a55a0) */
                 h->sound_total = rd32(c + 12); h->rate = (int)rd32(c + 16);
-                h->pred[0] = (int32_t)rd32(c + 20); h->pred[1] = (int32_t)rd32(c + 24); h->channels = (rd32(c + 28) & 1) ? 2 : 1;
+                h->pred[0] = (int32_t)rd32(c + 20); h->pred[1] = (int32_t)rd32(c + 24);
+                int ch = (rd32(c + 28) & 1) ? 2 : 1; if (ch != h->channels) h->pcm_cap = 0;   /* pcm_cap counts frames of the old channel count */
+                h->channels = ch;
                 h->index[0] = h->index[1] = 0; h->has_sound = h->rate > 0; h->sound_done = 0;
                 c += 32; n -= 32;
                 if (h->has_sound) h->frame_time = (double)(h->channels == 2 ? n : n * 2) / 32 / h->rate;
