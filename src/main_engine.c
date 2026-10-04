@@ -48,6 +48,7 @@ static Player *g_player;
 static const Renderer *g_rnd; static const GelFile *g_gel;              /* the current level's renderer and world, for game_enemy_thinks() */
 static EnemySet g_enemies;
 static float g_now; static double g_clock;           /* game time in seconds (VM time base): World+0x20 / +0x30 (0x401880), the sum of the CLAMPED frame times */
+static float g_dt;                                     /* this frame's dt, World+0x38; 0 while a level loads (its init messages) */
 /* messages 12/13 wait for the running animation to end: offered again every frame (max 32 in the original, 0x4012f0 clears) */
 static EkoMsg g_retry[32]; static int g_nretry;
 static float inst_yaw(const Instance *in) { Vec3 f = mat4_apply(&in->world, (Vec3){ 0, -1, 0 }); return atan2f(f.x - in->position.x, f.z - in->position.z); }   /* as player_bind */
@@ -2206,6 +2207,9 @@ static void launcher_fire(Launcher *l)                                          
     Vec3 p0, d; if (!inst_vector(l->inst, 0, &p0, &d)) return;                      /* marker 0 in the current pose, before the anim restarts */
     if (l->aim && l->target) { Vec3 tp = shot_target_pos(l->target); d.x = tp.x - p0.x; d.y = tp.y + l->t.aim_h - p0.y; d.z = tp.z - p0.z; }
     float len = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); if (len < 1e-4f) return;
+    if (wenv("WOODY_LAUNCHLOG")) printf("%.3f FIRE launcher %u vis %d listed %d at %.0f %.0f %.0f dir %.3f %.3f %.3f visual %d aim_h %.0f aim %d life %.2f t_xz %.2f target %u | player %.0f %.0f %.0f",
+                                        g_now, l->inst->index, l->inst->visible, l->inst->listed, p0.x, p0.y, p0.z, d.x / len, d.y / len, d.z / len, l->t.visual, l->t.aim_h, l->aim, l->t.life, l->t.t_xz,
+                                        l->target ? l->target->index : 0u, g_player ? g_player->pos.x : 0, g_player ? g_player->pos.y : 0, g_player ? g_player->pos.z : 0), puts("");
     if (l->anim >= 0 && (uint32_t)l->anim < l->inst->model->nanims && l->anim_dur > 0) {   /* 0x4526fb: the shooting anim lasts exactly param 8 * 0.01 s, also without a bomb */
         float L = l->inst->model->anims[l->anim].duration_s > 0 ? l->inst->model->anims[l->anim].duration_s : 1.0f; inst_play_once(l->inst, l->anim, L / l->anim_dur, g_now); }
     if (l->kind == 0) {                                                            /* the bomb thrower: 0x44d5d0(&L->T, 0, -1, 0), SoundFx 14 on the launcher */
@@ -2257,8 +2261,9 @@ static void shot_steer(Shot *s, float dt)
 }
 static void launchers_update(float now, float dt, Player *pl, const GelFile *gel, int player_ok)
 {
-    for (int i = 0; i < g_nlaunchers; i++) {                                       /* think step 0x452780 */
-        Launcher *l = &g_launchers[i]; if (!l->active) continue;
+    for (int i = 0; i < g_nlaunchers; i++) {                                       /* think step 0x452780 = vtbl[3] of 0x4ab148, run only by 0x42b400 for the
+                                                                                    * instances of this frame's list world+0x64: a hidden or unlisted launcher never fires */
+        Launcher *l = &g_launchers[i]; if (!l->active || !l->inst->visible || !game_enemy_thinks(l->inst)) continue;
         if (floorf((now - l->t0) / l->T) > floorf((now - dt - l->t0) / l->T) && now - l->last >= l->T - 0.2f) {
             l->last = now; launcher_fire(l); if (l->count > 0 && --l->count == 0) l->active = 0;
         }
@@ -2356,7 +2361,7 @@ float game_time(void) { return g_now; }
 void game_launcher_start(Instance *in)                                         /* 0x4522b0(1, 1.0, 0) = message 1000 [inst, -1]: one shot on the next think step */
 {
     Launcher *l = in ? launcher_of(in) : NULL; if (!l) return;
-    l->target = NULL; l->count = 1; l->T = 1.0f; l->t0 = (float)g_now + 1e-3f; l->last = (float)g_now - 1.0f; l->active = 1;
+    l->target = NULL; l->count = 1; l->T = 1.0f; l->t0 = g_now + g_dt; l->last = g_now - 1.0f; l->active = 1;
 }
 void game_bombs_crush(Vec3 c, float r)                                         /* Boss2 0x40e9fd: the bombs in state 2 near a crusher go off */
 {
@@ -3576,7 +3581,9 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         else if (m->id == 1004) l->active = 0;
         else {
             int tgt = m->id == 1000 ? a1 : a1, cnt = m->id == 1000 ? 1 : a2; float T = m->id == 1000 ? 1.0f : a3 * 0.01f; if (T < 0.2f) T = 0.2f;
-            l->target = tgt == -1 ? NULL : slot_instance((uint32_t)tgt); l->count = cnt; l->T = T; l->t0 = (float)g_now + 1e-3f; l->last = (float)g_now - T; l->active = 1;
+            l->target = tgt == -1 ? NULL : slot_instance((uint32_t)tgt); l->count = cnt; l->T = T; l->t0 = g_now + g_dt; l->last = g_now - T; l->active = 1;   /* 0x4522e9: t0 = now + dt (World+0x30 / +0x38): started in a frame, the
+                                                                                    * first shot comes on the next think step; started by an init script (dt 0, verified live: W1A launcher 26
+                                                                                    * first fires at 3 s, not at 0) only one interval later */
         }
     } break;
     case 11: if (in && m->nargs > 1) enemies_msg11(&g_enemies, in, (int)m->args[1], m->nargs > 2 ? (int)m->args[2] : 0); break;   /* Enemy::HandleMsg 0x41a740 */
@@ -3629,7 +3636,7 @@ static void level_free(Level *L)
 static int level_load(Level *L, const char *dir, const char *lvl)
 {
     char path[512]; memset(L, 0, sizeof *L); snprintf(L->name, sizeof L->name, "%s", lvl);
-    g_now = 0; g_clock = 0;                            /* the init scripts start animations / launchers against the new level's clock, not the previous level's */
+    g_now = 0; g_clock = 0; g_dt = 0;                  /* the init scripts start animations / launchers against the new level's clock, not the previous level's */
     if (char_of_level(g_level) >= 0) g_char = char_of_level(g_level);
     snprintf(path, sizeof path, "%s/%s/%s.tex", dir, lvl, lvl); if (tex_load(&L->tex, path)) return -1;
     tp_scope(lvl);                                     /* --dumptex writes this level's textures to mods\dump\<lvl> (texpack.c) */
@@ -3896,7 +3903,7 @@ int main(int argc, char **argv)
         static double fixdt = -1; if (fixdt < 0) fixdt = wenv("WOODY_FIXDT") ? atof(wenv("WOODY_FIXDT")) : 0;   /* WOODY_FIXDT=N: testing, every frame advances 1/N s whatever */
         if (fixdt > 0) dt = (float)(1.0 / fixdt);                                       /* the wall clock says, so --shot frames repeat exactly (before/after diffs) */
         audio_offline_advance(dt);                     /* no-op unless WOODY_AUDIODUMP + WOODY_FIXDT (video capture) */
-        g_clock += dt; g_now = (float)g_clock;         /* 0x401880: everything (Perso timers, animations, the script VM) runs on this one clock, so a hitch cannot make script delays
+        g_clock += dt; g_now = (float)g_clock; g_dt = dt;   /* 0x401880: everything (Perso timers, animations, the script VM) runs on this one clock, so a hitch cannot make script delays
                                                         * run ahead of the action timers - a door would then teleport while action 17 is still running and 0x44a650 refuses the move */
         if (fixdt > 0) now = t0 + g_clock;             /* ... and the test hooks timed from the level start (--shot, WOODY_SHOTSEQ, WOODY_KEYS) follow the same clock */
         if (DBGKEY(VK_F5) && !f5_prev && L.have_player) { fly ^= 1; if (!fly) L.player.cam_init = 0; }

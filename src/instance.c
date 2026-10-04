@@ -72,7 +72,9 @@ int inst_msg(Instance *I, uint32_t id, const uint32_t *arg, uint32_t nargs, floa
         if (I->traj.npoints < 2 || a2 <= 0) return 0;
         I->traj_flags = T_ACTIVE | (a1 != 1 ? T_REVERSE : 0) | (id == 43 ? T_LOOP | (a3 == 1 ? T_PINGPONG : 0) : (I->traj_flags & T_PINGPONG)) | (I->traj_flags & (T_ORIENT | T_ORIENT_REV));   /* 0x437d10 / 0x437d50 keep bits 21-22 */
         I->traj_dur = a2 * 0.01f; I->traj_start = now;
-        I->position = I->traj.points[a1 == 1 ? 0 : I->traj.npoints - 1]; return 0;
+        I->position = I->traj.points[a1 == 1 ? 0 : I->traj.npoints - 1];
+        I->cell_ok = 0; return 0;                                 /* 0x42dd5d / 0x42dd8b: 0x4077f0(0) re-cells it at that point (renderer chains_sync); otherwise
+                                                                   * it kept its old cell, e.g. the far path end of the S1R launchers' 42 [0, 1], and was never listed */
     case 44: I->traj_flags &= ~T_ACTIVE; return 0;
     case 46: if (I->traj.npoints) I->traj_flags = (I->traj_flags & ~(T_ORIENT | T_ORIENT_REV)) | (a1 == 1 ? T_ORIENT : 0) | (a2 == 1 ? T_ORIENT_REV : 0); return 0;   /* 0x42dc7d -> 0x4381e0 (S1R / S3R launchers) */
     case 16: case 18:                                             /* texture frame override B (docs/INSTANCE.md 2): 16 = one shot, 18 = loop; a2 = 1 forward, 0 backward,

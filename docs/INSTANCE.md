@@ -224,7 +224,7 @@ path length (`0x437ca0`, sum of the npoints−1 segments; that function also cle
 
 | id | args | address | behavior |
 |---|---|---|---|
-| 42 | a, f | `0x42dcb2` → `0x437d10(a≠1, f·0.01)` | one-shot pass over the path in f/100 s; start = now; afterward `inst.pos` = the first point (a == 1) or last point (a ≠ 1) and `0x4077f0(0)` (re-determine cell) |
+| 42 | a, f | `0x42dcb2` → `0x437d10(a≠1, f·0.01)` | one-shot pass over the path in f/100 s; start = now; afterward `inst.pos` = the first point (a == 1) or last point (a ≠ 1) and `0x4077f0(0)` (re-determine cell, `0x42dd5d` / `0x42dd8b`; the port re-cells too since the S1R launcher fix, PROJECTILES.md §6.1) |
 | 43 | a, f, c | `0x42dcdd` → `0x437d50(a≠1, f·0.01, c==1)` | like 42 but in a loop (loop time f/100 s), c == 1 = back-and-forth |
 | 44 | – | `0x42dd9a` → `0x437d90` | stop (clears bit 17); position stays put |
 | 46 | a, b | `0x42dc7d` → `0x4381e0` | orientation flags: bit 21 = (a == 1), bit 22 = (b == 1); 42 (`0x437d10`, clears bits 18-19) and 43 (`0x437d50`, clears 18 and 20) keep them. Sent only to the flying launchers (type 42) of S1R (172, 175, 178, 179, 181) and S3R (152, 156), always `[., 1, 1]`, followed by 42 `[., 0, 1]` (to the path end at once) and 42 `[., 1, T]` (fly the path). Ported (instance.c) |
