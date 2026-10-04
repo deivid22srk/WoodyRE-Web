@@ -172,13 +172,13 @@ void storm_update(float dt, Player *pl, int frozen)
                 if (!z) {
                     top = v3(pos.x, pos.y + 180.0f, pos.z);
                     player_kill(pl, 9);                             /* vt[38](9): the lightning death */
-                    audio_fx(7, pl->inst, &pl->inst->position.x);   /* the voice keeps reading its position: instance memory, not this stack frame */
+                    audio_fx(7, pl->inst, &pl->inst->position.x);   /* 0x451e53: the Perso's own position; the voice keeps the pointer (not the local copy) */
                 }
                 Vec3 sky = v3(pos.x, pos.y + 2000.0f, pos.z);
                 bolt_spawn(sky, top); bolt_spawn(sky, top);
                 if (z) {
                     Vec3 c = z->inst->position; float span = z->h - 80.0f;
-                    audio_fx(7, z->inst, &z->inst->position.x);
+                    audio_fx(7, z->inst, &z->inst->position.x);     /* 0x451ebb: the rod's position, live like every 3D voice's */
                     for (int i = 0; i < 3; i++) {                   /* three arcs between random points of the rod, 0.2..1.2 s later */
                         Vec3 A = v3(c.x, rnd01() * span + c.y + 80.0f, c.z), B = v3(c.x, rnd01() * span + c.y + 80.0f, c.z), C = v3(c.x, rnd01() * span + c.y + 80.0f, c.z);
                         arc_spawn(B, C, A, rnd01() + 0.2f);
