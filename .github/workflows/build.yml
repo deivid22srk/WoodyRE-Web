@@ -28,6 +28,9 @@ jobs:
         run: |
           $v = (Get-Item WoodyRE.exe).VersionInfo
           "WoodyRE.exe: $((Get-Item WoodyRE.exe).Length) bytes, $($v.ProductName) $($v.FileVersion)"
+          # a release tag must match res/woodyre.rc (the exe's and the APK's version): v1.2.3 = "1.2.3"
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$($v.ProductVersion)") {
+            "::error::tag $env:GITHUB_REF_NAME does not match the version in res/woodyre.rc ($($v.ProductVersion))"; exit 1 }
 
       - name: Package
         shell: pwsh
@@ -68,7 +71,10 @@ jobs:
           path: ${{ env.TGZ }}
 
   # Android: arm64 phones and tablets, x86_64 for the emulator and Chromebooks. CMake fetches SDL 2.32.10; the runner's SDK
-  # installs NDK 27.2 when it lacks it. Signed with the debug key (no secrets here): fine for installing it yourself.
+  # installs NDK 27.2 when it lacks it. Signed with the release key of the repository secrets ANDROID_KEYSTORE_B64 (the
+  # keystore, base64), ANDROID_KEY_ALIAS and ANDROID_KEY_PASSWORD (store and key) when they are set. Without them the APK
+  # carries the runner's debug key, which nobody keeps and which can differ from run to run: such an APK may not update the
+  # one before it (Android wants the same key), and uninstalling first also deletes the copied game files and the saves.
   android:
     runs-on: ubuntu-latest
     steps:
@@ -76,7 +82,18 @@ jobs:
 
       - name: Build
         working-directory: android
-        run: JAVA_HOME="$JAVA_HOME_17_X64" ./gradlew assembleRelease --console=plain
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/woody.jks"
+            export ORG_GRADLE_PROJECT_woodyKeystore="$RUNNER_TEMP/woody.jks" ORG_GRADLE_PROJECT_woodyKeyAlias="$KEY_ALIAS" ORG_GRADLE_PROJECT_woodyKeyPassword="$KEY_PASSWORD"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "::warning::no ANDROID_KEYSTORE_B64 secret: this release APK is signed with the runner's debug key and may not install over an earlier one"
+          fi
+          JAVA_HOME="$JAVA_HOME_17_X64" ./gradlew assembleRelease --console=plain
 
       - name: Package
         run: |
