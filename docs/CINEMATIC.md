@@ -217,6 +217,15 @@ The letterbox goes off in `CamMgr_Update` as soon as the previous mode was 0x80 
 `0x41f34f`). **Nothing is sent to or written back to the script at the end**; the script knows the length itself
 (fixed `DELAY`s relative to the start, §7). The actors stay on their last frame until the script hides them.
 
+`vtbl[0x44]` is Reset `0x44ab20` (confirmed at `0x445b23`: `call [eax+0x44]` on `[Game+0]` = the Perso), the same Reset as the
+respawn but without `0x44a810`'s `pos = +0x318`: state 0 (race riders: SurfEnter `0x456150` + state 1, up filter `+0x210` =
+(0,1,0), race bonuses back to the checkpoint count), anim controllers reset, `+0x270 = 1.0` (1 s invulnerable), health 3 if it
+was 0, carried bomb dropped, `+0x4ec = 0`, every bomb in flight discarded (`0x44db10`, `0x44ad79`), fade target 0 at 100/s.
+The facing (`0x459ff0`) and `0x44a650` (position + ground snap) then override the checkpoint facing Reset set.
+Port (2026-10-04): `player_cin_end` (`src/player.c`) = `perso_reset` (the Reset half of `player_reset`) + facing + position +
+ground snap; `cin_update` adds `plane_release` and `game_bombs_discard`. The six race end cinematics run until the script's
+EndLevel (S1R: 1083 at 9.5 s after the start, the cinematic is longer), so the race branch of Reset is never seen there.
+
 ## 6. Perso: scripted actions `0x44dda0(Perso, action, vec6*, targetInst)`
 
 **The action number IS the raw .ins animation number** of the player model: `0x463e30(action)` looks up the first record
