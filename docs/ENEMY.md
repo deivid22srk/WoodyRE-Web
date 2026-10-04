@@ -174,6 +174,12 @@ void Enemy_Think(Enemy *e) {
 }
 ```
 So enemies further than **3000** from the camera stand still (unless they're already dead: the death animation still plays out).
+Only Update runs the AnimCtrl, so an enemy that never got an Update shows what Reset (`0x41a010` → `0x42e250`) left: **frame 0 of
+anim 0 with the clock stopped**. S1A sends its type 4 and type 7 `11 [inst, 37, 10]` (activation distance 10, jump table `0x41ac40`
+entry 37 = `0x41a79e`), so they stand frozen in that pose until the room's volumes wake them: objects 370..372 send
+`11 [373..376, 37, 2000]` on volumes 123..125. Live (`tools/wverify.py game --level S1A --probe enemy --inst 373 --pos 1000 1000 2450
+--face 0 --at 5 --every 1`): before the wake +0xac stays 0.000 with 0 Updates; after it, ~220 Updates/s and the chick walks. The port
+used to loop anim 0 (the `.ins` default of every instance) on the dormant chicks, whose later frames lie them flat on the floor.
 And the Think itself is only called by `0x42b400` for the instances of the frame's list `world+0x64` (INSTANCE.md §4.1): an
 enemy whose sector is not in the camera's `.vis` entry, or whose floor group (`+0x18`, taken at its collision centre
 `pos + (0, h/2, 0)` by every re-cell) is not marked, does nothing at all this frame - no Npc_Tick, no RegisterActor2, no

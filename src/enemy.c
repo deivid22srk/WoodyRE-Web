@@ -70,6 +70,9 @@ void enemies_add(EnemySet *s, Instance *inst, int type, struct Player *pl)
     e->cool = -1; e->attackable = 1; e->speed = e->want_speed = e->P.walk; e->path_dir = 1; e->path_to = 1;
     { Vec3 f = mat4_apply(&inst->world, (Vec3){ 0, -1, 0 }); e->ang = e->want_ang = e->start_ang = atan2f(f.z - inst->position.z, f.x - inst->position.x); }   /* PostLoad 0x419ec1: angle0 = pos -> pos - row(+0x34) */
     e->start = inst->position; e->lanim = -1; wander_init(e);
+    inst->anim = 0; inst->anim_time = 0; inst->anim_speed = 0;                  /* Reset 0x41a010 -> 0x42e250: frame 0 of anim 0, clock stopped. Only Update (vtbl[52])
+                                                                                 * runs the AnimCtrl, so an enemy that never thinks keeps this pose: S1A's type 4 (message
+                                                                                 * 11 [37, 10] = activation distance 10) stand frozen; the .ins default looped anim 0 */
     if (type >= 7 && type <= 9) sac_init(e);
     e->st = inst->traj.npoints > 1 ? 0 : (type >= 7 && type <= 9 ? 3 : 8); e->hand = rand() & 1;
     e->behav = 2;                                                                /* Stand: the thrower (PostLoad 0x410f80 makes only that one), bosses 15 / 16 */
@@ -1071,7 +1074,7 @@ static void enemy_reset(Enemy *e)
     Instance *in = e->inst;
     e->pos = e->home = e->start; e->ang = e->want_ang = e->start_ang;
     e->hp = e->P.hp; e->hit_t = e->dead_t = e->knock_t = e->vfall = 0; e->removed = 0; e->attackable = 1;
-    in->visible = 1; in->fade = 0; in->anim = 0; in->anim_time = 0; e->lanim = -1;
+    in->visible = 1; in->fade = 0; in->anim = 0; in->anim_time = 0; in->anim_speed = 0; e->lanim = -1;   /* 0x42e250 */
     e->plat_inst = NULL;                                          /* both probes reset (0x436d10) */
     e->need_snap = e->type < 13; if (g_epl) ground_snap(e, g_epl); enemy_reset_probe(e);   /* 0x41a0f8..0x41a148: ground snap 0x41a1a0, then the probe (Press/In/UnPress) */
     game_msgmask(in, 0x10, 0);

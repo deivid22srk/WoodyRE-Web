@@ -288,6 +288,15 @@ def main():
     def on_crush_scale(ctx):                   # 0x462bd4: the squash +0x2e8 after the clamp to 1 (only reached on a ray hit)
         v = f32(ctx.Esi + 0x2e8)
         if v < 1.0: dbg.log('%s CRUSH squash %.3f perso %08x pos %.1f %.1f %.1f' % (T(), v, ctx.Esi, *fv(ctx.Esi + 0x1f4, 3)))
+    # --- enemy (docs/ENEMY.md 3.1): Think 0x41a320 of instance --inst (position +0xc, activation distance P+0xc0, P = +0x118,
+    # instance clock +0xac) at most once per --every, and every Update vtbl[52] of types 4..6 (0x418cf0) / 7..9 (0x416fb0) it gets
+    def on_en_think(ctx):
+        if st['init'] is None or not (a.frm <= since() <= a.until) or ctx.Ecx != inst_ptr(a.inst): return
+        if since() - st.get('en_t', -9) < a.every: return
+        st['en_t'] = since(); p = dbg.u32(ctx.Ecx + 0x118)
+        dbg.log('%s ENEMY %d think pos %.1f %.1f %.1f active_d %.0f clock +0xac %.3f updates %d' % (T(), a.inst, *fv(ctx.Ecx + 0xc, 3), f32(p + 0xc0), f32(ctx.Ecx + 0xac), st.get('en_up', 0)))
+    def on_en_update(ctx):
+        if st['init'] is not None and ctx.Ecx == inst_ptr(a.inst): st['en_up'] = st.get('en_up', 0) + 1
     def on_crush_kill(ctx):
         dbg.log('%s CRUSH Kill(4) 0x462bed' % T())
 
@@ -449,6 +458,7 @@ def main():
     if 'fpu' in probes: bps[0x439cb3] = on_sweep_fistp; bps[0x439cb9] = on_sweep_after
     if 'carousel' in probes: bps.update({0x451890: on_car_place, 0x489780: on_car_rot, 0x451935: on_car_ret, 0x48964c: on_car_world})
     if 'crush' in probes: bps.update({0x462bd4: on_crush_scale, 0x462bed: on_crush_kill})
+    if 'enemy' in probes: bps.update({0x41a320: on_en_think, 0x418cf0: on_en_update, 0x416fb0: on_en_update})
     if 'move' in probes: bps.update({0x4624f0: on_mc_entry, 0x4625f4: on_mc_carry, 0x46268d: on_mc_swept, 0x4626f9: on_mc_floor})
     if 'shadow' in probes: bps.update({0x42e2b0: on_sh_draw, 0x42e573: on_sh_light})
     if a.level:
