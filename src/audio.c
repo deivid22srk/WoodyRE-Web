@@ -71,7 +71,7 @@ static struct {
     int last2d, log; unsigned seq;          /* last2d: index+1 of the newest 2D voice (mgr+0x30, tail of the 2D queue); log: WOODY_SNDLOG */
     int reverse;                            /* reverse stereo [0x5e81c0] = Woody.cfg +0x74, Detect's "Invert Left/Right" (0x46b7e0) */
     float lpos[3], lright[3], m_sfx, m_mus, next_fade;
-    FILE *dump;
+    FILE *dump; int offline; double owed; long long ndumped;   /* offline: WOODY_AUDIODUMP + WOODY_FIXDT, the game loop mixes (audio_offline_advance), the device stays silent */
     char bf_path[260]; BfFile *bf; int nbf; uint32_t bf_data;
     Stream s[2];                            /* 0 = music, 1 = rtc */
     struct { int16_t *buf; int cap, head, count, rate, channels, on; double pos; } pcm;   /* film sound: ring of stereo frames */
@@ -232,7 +232,7 @@ static void mix_block(int16_t *out) {
     }
     UNLOCK();
     for (int i = 0; i < BLOCK * 2; i++) { float x = acc[i]; out[i] = (int16_t)(x > 32767.0f ? 32767 : x < -32768.0f ? -32768 : (int)x); }
-    if (A.dump) fwrite(out, 2, BLOCK * 2, A.dump);                                  /* WOODY_AUDIODUMP=file: raw s16 stereo 44.1 kHz */
+    if (A.dump) { fwrite(out, 2, BLOCK * 2, A.dump); A.ndumped += BLOCK; }          /* WOODY_AUDIODUMP=file: raw s16 stereo 44.1 kHz */
 }
 
 #ifdef _WIN32
@@ -263,6 +263,8 @@ int audio_init(void) {
     }
     if (getenv("WOODY_AUDIODUMP")) A.dump = fopen(getenv("WOODY_AUDIODUMP"), "wb");
     A.ok = 1;
+    A.offline = A.dump && getenv("WOODY_FIXDT");
+    if (A.offline) return 0;
     A.th = CreateThread(NULL, 0, audio_thread, NULL, 0, NULL);
     SetThreadPriority(A.th, THREAD_PRIORITY_TIME_CRITICAL);
     SetEvent(A.ev);
@@ -271,7 +273,7 @@ int audio_init(void) {
 
 void audio_shutdown(void) {
     if (!A.ok) return;
-    A.quit = 1; SetEvent(A.ev); WaitForSingleObject(A.th, 1000);
+    A.quit = 1; SetEvent(A.ev); if (A.th) WaitForSingleObject(A.th, 1000);
     waveOutReset(A.wo);
     for (int i = 0; i < NBLOCKS; i++) waveOutUnprepareHeader(A.wo, &A.hdr[i], sizeof(WAVEHDR));
     waveOutClose(A.wo);
@@ -302,7 +304,8 @@ int audio_init(void) {
     if (!A.dev) { fprintf(stderr, "audio: %s\n", SDL_GetError()); SDL_DestroyMutex(A.mx); A.mx = NULL; return -1; }
     if (getenv("WOODY_AUDIODUMP")) A.dump = fopen(getenv("WOODY_AUDIODUMP"), "wb");
     A.ok = 1; A.nrest = 0;
-    SDL_PauseAudioDevice(A.dev, 0);
+    A.offline = A.dump && getenv("WOODY_FIXDT");
+    if (!A.offline) SDL_PauseAudioDevice(A.dev, 0);
     return 0;
 }
 void audio_shutdown(void) {
@@ -418,6 +421,13 @@ int audio_play(uint32_t ref, const void *owner, int loop, float vol, float f, co
 }
 
 void audio_next_fade_in(float t) { A.next_fade = t; }
+
+void audio_offline_advance(double dt) {   /* testing (video capture): mix dt seconds of game time into the dump, in step with the frames */
+    if (!A.ok || !A.offline) return;
+    int16_t out[BLOCK * 2];
+    for (A.owed += dt * MIX_RATE; A.owed >= BLOCK; A.owed -= BLOCK) mix_block(out);
+}
+long long audio_dump_pos(void) { return A.ndumped + (long long)A.owed; }
 
 static void voice_fade_out(Voice *v, float fade) {
     if (fade < 0.01f) { voice_free(v); return; }                                    /* t < 0.01: kill flag voice+5, gone next frame */

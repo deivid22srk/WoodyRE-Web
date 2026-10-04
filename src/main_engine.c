@@ -3895,6 +3895,7 @@ int main(int argc, char **argv)
         if (dt > 0.1f) dt = 0.1f;
         static double fixdt = -1; if (fixdt < 0) fixdt = wenv("WOODY_FIXDT") ? atof(wenv("WOODY_FIXDT")) : 0;   /* WOODY_FIXDT=N: testing, every frame advances 1/N s whatever */
         if (fixdt > 0) dt = (float)(1.0 / fixdt);                                       /* the wall clock says, so --shot frames repeat exactly (before/after diffs) */
+        audio_offline_advance(dt);                     /* no-op unless WOODY_AUDIODUMP + WOODY_FIXDT (video capture) */
         g_clock += dt; g_now = (float)g_clock;         /* 0x401880: everything (Perso timers, animations, the script VM) runs on this one clock, so a hitch cannot make script delays
                                                         * run ahead of the action timers - a door would then teleport while action 17 is still running and 0x44a650 refuses the move */
         if (fixdt > 0) now = t0 + g_clock;             /* ... and the test hooks timed from the level start (--shot, WOODY_SHOTSEQ, WOODY_KEYS) follow the same clock */
@@ -4298,7 +4299,7 @@ int main(int argc, char **argv)
         hud_bars(win.width, win.height, vx, vy, vw, vh);                              /* port extra: the pillar- / letterbox bars black */
         {   /* WOODY_SHOTSEQ="prefix start step count": a burst of screenshots prefix_NNN.ppm (testing: popping, flicker) */
             static char pre[200]; static double st, sp; static int cnt = -1, k; if (cnt < 0) { cnt = 0; if (wenv("WOODY_SHOTSEQ")) sscanf(wenv("WOODY_SHOTSEQ"), "%199s %lf %lf %d", pre, &st, &sp, &cnt); }
-            if (k < cnt && now - t0 >= st + k * sp) { char fn[256]; snprintf(fn, sizeof fn, "%s_%03d.ppm", pre, k); rnd_screenshot(&win, fn); k++; }
+            if (k < cnt && now - t0 >= st + k * sp) { char fn[256]; snprintf(fn, sizeof fn, "%s_%03d.ppm", pre, k); rnd_screenshot(&win, fn); if (!k && wenv("WOODY_AUDIODUMP")) printf("shotseq: frame 0 at audio frame %lld\n", audio_dump_pos()); k++; }
         }
         if (shot_path && now - t0 >= shot_after) { rnd_screenshot(&win, shot_path); printf("screenshot -> %s\n", shot_path); win.quit = 1; }
         double pt3 = win_time();

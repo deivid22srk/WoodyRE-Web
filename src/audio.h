@@ -21,6 +21,8 @@ int  audio_play(uint32_t ref, const void *owner, int loop, float vol, float f, c
  * 2D voice (mgr+0x30) resp. behind the owner's newest 3D voice and its queued successors, and starts when that one ends or stops */
 int  audio_play_q(uint32_t ref, const void *owner, int queue, int loop, float vol, float f, const float *pos, float dmin, float maxdur);
 void audio_next_fade_in(float t);                                   /* message 1657 */
+void audio_offline_advance(double dt);                              /* testing: WOODY_AUDIODUMP + WOODY_FIXDT mix per game frame, not in real time */
+long long audio_dump_pos(void);                                     /* frames written to WOODY_AUDIODUMP so far */
 void audio_stop3d(uint32_t ref, const void *owner, float fade);     /* key (owner, ref): message 1628 */
 void audio_stop2d(uint32_t ref, float fade, int mask);              /* key ref; mask 1 = loops, 2 = one-shots: message 1652 */
 void audio_stop_all(void);                                          /* every voice, not the streams */
