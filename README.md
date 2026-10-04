@@ -4,6 +4,18 @@ A reimplementation of the engine of *Woody Woodpecker: Escape from Buzz Buzzard 
 rebuilt by reverse engineering the original. It runs the original game data from **your own CD**: no game files are
 included in this repository or its releases.
 
+<p align="center">
+  <img width="100%" alt="Woody's special attack flattens three pirate chickens (W2A)" src="https://github.com/user-attachments/assets/caf51280-5d79-4810-a16f-c9ee0cfb5059" />
+</p>
+<p align="center">
+  <img width="49%" alt="Woody rides a rocket (W1A)" src="https://github.com/user-attachments/assets/7e15997d-394b-4527-b234-ff6f9551859f" />
+  <img width="49%" alt="The new-game intro: Buzz and his sidekick climb in through the window" src="https://github.com/user-attachments/assets/6f72f708-64b2-42aa-92bf-c0c5511599aa" />
+</p>
+
+The new-game intro with sound:
+
+https://github.com/user-attachments/assets/a6b3fd6f-4642-4c40-9a26-c97c50b65f9a
+
 > Unofficial fan project for preservation. Not affiliated with or endorsed by Eko Software, Cryo Interactive, Microïds,
 > Universal Studios or Walter Lantz Productions. Woody Woodpecker and related names are trademarks of their owners.
 > You need your own copy of the original game to play.
