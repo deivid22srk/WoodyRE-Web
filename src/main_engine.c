@@ -385,12 +385,14 @@ static void cin_update(EkoVM *vm, float dt, float now)
     case 3:
         if ((g_cin.timer -= dt) > 0) break;
         fade_start(0.5f, 0); g_cin.timer = 0.5f; g_cin.state = 4; audio_rtc(-1); audio_music_pause(0, 0.45f);
-        {   /* 0x44edb0 + 0x445af9: the player continues where the animation left the root, follow camera behind him */
+        {   /* 0x44edb0 + 0x445af9: Perso Reset 0x44ab20 (0x445b23), the player continues where the animation left the root,
+             * follow camera behind him (hard cut 0x41f9f0(2), +0x368 = 0, SetMode(0, 0)) */
             Vec3 pos, fwd;
             if (g_player && g_player->inst == m) {
                 m->scripted = 0;
-                if (ins_root_end(m, g_cin.anim, &pos, &fwd)) player_place(g_player, pos, atan2f(fwd.x, fwd.z));
-                player_ground_snap(g_player);                                   /* 0x445b41 -> 0x44a650 */
+                int have = ins_root_end(m, g_cin.anim, &pos, &fwd);
+                player_cin_end(g_player, have, pos, have ? atan2f(fwd.x, fwd.z) : g_player->yaw);
+                plane_release(); game_bombs_discard();                          /* Reset: +0x4ec = 0 (0x44ad22), 0x44db10 (0x44ad79) */
             }
             g_cam.cut = 1; cam_set_mode(1);
         }

@@ -175,6 +175,7 @@ int  player_collect(Player *p, int type, int arg);      /* bonus classes 30, 34.
 void player_script_hold(Player *p, float t);       /* message 1040: scripted action, control taken away for t s */
 void player_place(Player *p, Vec3 pos, float yaw);     /* Perso reset + SetPos + SetFacing (end of a cinematic, hub door) */
 void player_cin_place(Player *p, Vec3 pos, float yaw); /* cinematic start 0x44eab0: player_place, instance upright (no race tilt) */
+void player_cin_end(Player *p, int have, Vec3 pos, float yaw);   /* cinematic end 0x445af9: Perso Reset 0x44ab20, facing, 0x44a650 */
 void player_volumes_actor(Player *p, EkoVM *vm, Vec3 pt, uint32_t actor);   /* a non-Perso volume actor at pt (the camera of message 800): plain enter/in/leave */
 void player_ground_snap(Player *p);                    /* 0x462990: onto the floor under feet + 43, on the ground, Jumper reset */
 void player_kill(Player *p, int kind);
