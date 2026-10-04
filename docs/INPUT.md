@@ -167,7 +167,7 @@ The only readers of `app+0x104` are `0x402d44` and `0x403018`, so modes 1 and 2 
 ```c
 kbd->vt3();                                               /* edges */
 if (app+0x384 & 8) DebugKeys();                          /* dev mode: internal codes 0x41, 0x2b, 0x2c, 0x30, 0x12, … (camera, VM, cheats; 0x0f/0x10/0x11 = SavePos.bin, PERSO_DEATH.md §3.4); flag 8 is never set by the shipped exe */
-if (state == 5 /*waiting*/) { ...; return; }             /* 0x402c8d */
+if (rec->mode /*app+0x40 +4*/ == 1) { Replay(); return; } /* 0x402c8d: dev input replay instead of the devices (§4.2) */
 Pad_Begin(dt);                                            /* 0x467340 */
 if (state == 1 && !(app+0xf4 & 8) && perso && perso+0x5fc) Pad_Set(6, 1.0);   /* perso+0x5fc: an attack queued elsewhere (uncertain), cleared */
 if (joy && (mode == 1 || mode == 2)) {                   /* 0x402d39 */
@@ -185,6 +185,7 @@ if (Pad_Pressed(9) && (state == 1 ? Game_CanPause() /*0x445980*/ : state == 3)) 
 /* 0x403360: the console "controller removed" check, dead on PC (§1.2) */
 if (kbd && kbd->vt5(0x1b /*DIK_RETURN*/)) Pad_Set(0xc, 1.0);   /* 0x4033fb: Enter RELEASED = confirm */
 Pad_End();                                                /* 0x467370 */
+if (rec->mode == 2) Record(world->dt);                    /* 0x403424: dev input recording (§4.2) */
 ```
 `Pad_Set(i, v)` = `0x4673b0`: held, value = v (the last call of a frame wins; in the original the stick and the direction keys
 never both run, in the port's mode 3 a held key overrides the stick this way). `Game_CanPause` `0x445980`: Game state (`Game+0x14`) not 0/1/3/4, i.e. 2
@@ -196,6 +197,25 @@ camera direction turned by `π − atan2(x, y)`, the target speed `(dot(new, old
 turns by `slerp(old, new, |(x,y)| · 0.25)`. The keyboard always gives |x|, |y| = 1, so a key walks at full speed; the stick walks
 slower with a small deflection. Race steering (`0x456210`), the side view (`0x45a7b0`) and the climbing state only look at
 Held(0..3).
+
+### 4.2 Input recording and replay (dev only): `0x406aa0`, object `app+0x40`
+Round 34 (coverage triage). `app+0x40` is a 12-byte recorder `{u32 *frames, int mode, int index}`; the level load
+`0x404234` picks the mode from the config word `cfg+0x378` (`[0x5e5814]`, set to **0** by the config ctor `0x44fb6c`, no
+Woody.cfg field and no menu writes it, so the shipped game never records or replays):
+
+| `cfg+0x378` | load | mode | what |
+|---|---|---|---|
+| 1 | `0x406930`: `frames = new(0xc8000)` | 2 = record | every frame after `Pad_End` `0x403434` → `Record(dt)` |
+| 2 or 3 | `0x4069c0`: reads 5 + 4 + n·16 bytes from the file named at `cfg+0x278` (`0x43fd00`/`0x43fdb0`) | 1 = replay | `0x402c8d`: `Replay(0)` replaces all device input, `world->dt` = the recorded dt (`0x406a90`), the rest of the input step is skipped |
+
+`Record` (mode 2, at most 0xc800 = 51200 frames): record `{u32 held, float dt, float y, float x}` with bit k = action k held
+(`0x467400`), the analog values of actions 0/1 (x) and 2/3 (y) from `0x467460`. `Replay` (mode 1, no bound check):
+`Pad_Begin(rec.dt)` `0x467340`, then `Pad_Set(k, value or 1.0)` `0x4673b0` for every set bit, `index++`. The level unload
+`0x4049a0` writes the file in record mode (`0x406960`, `fopen(cfg+0x278, "wb")`: frame count, then the frames) or frees the buffer
+in replay mode (`0x406a70`). Further hooks of the same dev feature: `0x401838` (dt = 1/`cfg+0x37c`, default 25, while
+`cfg+0x378 == 2`), key code 0x3b in App::Frame `0x40167b` toggles `cfg+0x378` between 2 and 3, and with 3 during a replay
+`0x4016c4` prints "Save bitmap %05d" (frame grabbing for videos). **Not needed by the port** (no player can reach it); the port's
+own test input is `WOODY_KEYS` / `WOODY_PECKS` etc.
 
 ## 5. Menus and the pause menu
 

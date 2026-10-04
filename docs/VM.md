@@ -113,6 +113,8 @@ Handler signature: `uint32* handler(uint32* pc)` returns the next pc. Opcode ≥
 | 61 | DELAYPOP | t | schedule run(t) at now+pop |
 | 62 | RANDOM | | push rand() % pop |
 
+Handler addresses (op `0xaddr`, read from the init `0x442a30`; round 34): 0 `0x443210` · 1 `0x443200` · 3 `0x442cb0` · 4 `0x442cd0` · 5 `0x442d00` · 6 `0x442d30` · 7 `0x442d60` · 8 `0x442d90` · 9 `0x442dc0` · 10 `0x442df0` · 11 `0x442e20` · 12 `0x442e40` · 13 `0x442e80` · 14 `0x442ec0` · 15 `0x442f00` · 16 `0x442f40` · 17 `0x442f80` · 18 `0x442fc0` · 19 `0x443000` · 20 `0x443050` · 21 `0x4430a0` · 22 `0x4430f0` · 23 `0x4430c0` · 24 `0x443110` · 25 `0x4431d0` · 26 `0x443180` · 27 `0x4431b0` · 28 `0x443220` · 29 `0x4432a0` · 30 `0x443360` · 31 `0x443510` · 32 `0x443550` · 33 `0x443590` · 34 `0x443630` · 35 `0x4435d0` · 36 `0x443600` · 37 `0x4432e0` · 38 `0x4433c0` · 39 `0x443690` · 40 `0x443710` · 41 `0x4436d0` · 42 `0x4438a0` · 43 `0x4438e0` · 44 `0x443900` · 45 `0x443430` · 46 `0x4434a0` · 48 `0x443a00` · 49 `0x443a40` · 50 `0x443a80` · 51 `0x443ad0` · 52 `0x443b10` · 53 `0x443b40` · 54 `0x443750` · 55 `0x4437c0` · 56 `0x443830` · 57 `0x443b90` · 58 `0x443bd0` · 59 `0x443c20` · 60 `0x443960` · 61 `0x443140` · 62 `0x443c50`. Op 2 gets a register value (`0x442b1e`, the end-of-run marker) and op 47 has no entry (both stop the run). The condition opcodes push onto the byte stack `0x5ce44c` (top `[0x5d0520]`), the int stack is `0x5ce2b0` (top `[0x5d051c]`). The VM's node free list is `0x5d6378` (init `0x444780`, alloc `0x4447b0`). Port: `src/ekovm.c`, message stream checked identical against the original (TRACING.md).
+
 ## 4. Message routing (engine side, `0x4019c0` → `0x401370`)
 
 | id range | handler | meaning |

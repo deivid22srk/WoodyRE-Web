@@ -30,11 +30,28 @@ callers = collections.defaultdict(set)
 for a, f in F.items():
     for c in f['calls']: callers[c].add(a)
 
-pe = pefile.PE(args[1]); raw = pe.get_memory_mapped_image()
+pe = pefile.PE(args[1]); raw = pe.get_memory_mapped_image(); base = pe.OPTIONAL_HEADER.ImageBase
+def dw(i): return raw[i] | raw[i + 1] << 8 | raw[i + 2] << 16 | raw[i + 3] << 24
+# switch jump tables (jmp dword ptr [reg*4 + T]): their slots point at case labels of the function that owns the jmp,
+# so a case label referenced only from such a table is a jump target like any other, not a function of its own
+jt_slots = set(); jt_data = set()   # jt_data: table addresses (a table the disassembler took for code is data, not a function)
+for l in L:
+    m = re.match(r'[0-9a-f]{8}  mov\s+\w+, byte ptr \[\w+ \+ 0x([0-9a-f]+)\]', l)
+    if m: jt_data.add(int(m.group(1), 16))
+    m = re.match(r'([0-9a-f]{8})  jmp     dword ptr \[\w+\*4 \+ 0x([0-9a-f]+)\]', l)
+    if not m: continue
+    at, t = int(m.group(1), 16), int(m.group(2), 16)
+    jt_data.add(t); i = t - base
+    while 0 <= i < len(raw) - 3:
+        v = dw(i)
+        if not at - 0x4000 < v < at + 0x4000: break   # case labels are code next to the jmp
+        jt_slots.add(i); i += 4
 ptrs = set()
 for i in range(len(raw) - 3):
-    v = raw[i] | raw[i + 1] << 8 | raw[i + 2] << 16 | raw[i + 3] << 24
+    if i in jt_slots: continue
+    v = dw(i)
     if v in F: ptrs.add(v)
+ptrs -= jt_data
 real = sorted(a for a in A if a in callers or a in ptrs or a == A[0])
 def owner(x): return real[bisect.bisect_right(real, x) - 1]
 
@@ -55,7 +72,7 @@ print('game code (< 0x480000): %d instr, named %d (%.1f%%), %d functions not nam
 lib = [o for o in real if o >= 0x480000]
 print('library code (>= 0x480000): %d instr, named %d' % (sum(size[o] for o in lib), sum(size[o] for o in lib if o in named)))
 
-def doc(a): return ','.join(sorted(named[a])[:3])
+def doc(a): return ','.join(sorted(named.get(a, ()))[:3])   # .get: indexing the defaultdict would mark a as named and hide it from the list
 for o in (real if show_all else game):
     if o in named or size[o] < min_n: continue
     k = A.index(o); body = [o]
