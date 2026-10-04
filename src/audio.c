@@ -326,15 +326,17 @@ int audio_bank_load(int bank, const char *path) {
     uint8_t h[0x38];
     if (fread(h, 1, sizeof h, f) != sizeof h || memcmp(h, "RKET", 4)) { fclose(f); return -1; }
     int count = (int)rd32(h + 8 + 0x18);                                            /* type 0 items come first (docs/RCK.md) */
-    Sound *snd = calloc(count ? count : 1, sizeof *snd);
+    Sound *snd = count >= 0 && count <= 65536 ? calloc(count ? count : 1, sizeof *snd) : NULL;   /* a damaged header: no bank rather than a NULL write */
+    if (!snd) { fclose(f); return -1; }
     for (int i = 0; i < count; i++) {
         uint8_t ih[8], sh[16];
         if (fread(ih, 1, 8, f) != 8) { count = i; break; }
         uint32_t size = rd32(ih);
         if (size < 16 || fread(sh, 1, 16, f) != 16) { fseek(f, size, SEEK_CUR); continue; }
         uint32_t nbytes = rd32(sh), rate = rd32(sh + 4), bits = rd32(sh + 8), ch = rd32(sh + 12);
-        if (bits != 16 || ch < 1 || ch > 2 || nbytes > size - 16) { fseek(f, size - 16, SEEK_CUR); continue; }
+        if (bits != 16 || ch < 1 || ch > 2 || nbytes > size - 16 || rate == 0 || rate > 192000) { fseek(f, size - 16, SEEK_CUR); continue; }   /* rate 0: a voice that never ends (step 0) */
         snd[i].pcm = malloc(nbytes ? nbytes : 2);
+        if (!snd[i].pcm) { fseek(f, size - 16, SEEK_CUR); continue; }
         if (fread(snd[i].pcm, 1, nbytes, f) != nbytes) { free(snd[i].pcm); snd[i].pcm = NULL; count = i; break; }
         snd[i].rate = (int)rate; snd[i].channels = (int)ch; snd[i].frames = nbytes / (2 * ch);
         fseek(f, size - 16 - nbytes, SEEK_CUR);
