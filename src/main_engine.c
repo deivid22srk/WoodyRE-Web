@@ -1922,15 +1922,19 @@ static Bomb *bomb_start(const BombT *T, Vec3 pos, Vec3 dir, int ground, int32_t 
     Bomb *b = NULL; for (int i = 0; i < g_nbombs && !b; i++) if (!g_bombs[i].in_use) b = &g_bombs[i];
     if (!b) { puts("  BOMB: Pas de bombes, ou plus assez de bombes dans ce niveau..."); if (var >= 0) game_var_set((uint32_t)var, 1); return NULL; }
     b->T = *T; b->fuse = T->life; b->warn = T->life < 2.0f ? T->life : 2.0f;       /* [0x5e48c4] = 2.0 */
-    if (ground && g_player) { int f; float gy = gel_floor_below(g_player->gel, pos, 0, 1e5f, &f); if (f) pos.y = gy + 1.0f; }   /* 0x435650 */
+    /* 0x44d50e: the bomb instance goes to T.pos, with `ground` (only the 1090 dispenser) onto the floor below it + 1.0 (0x435650);
+     * the projectile (0x4490a0 with the caller's T) still starts at T.pos itself, so the dispenser's bomb falls out of the
+     * marker in the air, and the next projectile step puts the bomb back on its point + (0, 1, 0) */
+    Vec3 ip = pos;
+    if (ground && g_player) { int f; float gy = gel_floor_below(g_player->gel, pos, 0, 1e5f, &f); if (f) ip.y = gy + 1.0f; }
     b->p = pos; b->vel = (Vec3){ dir.x * T->speed, dir.y * T->speed, dir.z * T->speed };
-    b->inst->position = (Vec3){ pos.x, pos.y + 1.0f, pos.z }; b->inst->visible = 1; b->inst->fade = b->inst->fade_target = 0;
+    b->inst->position = ip; b->inst->visible = 1; b->inst->fade = b->inst->fade_target = 0;
     b->var = var; b->kind = kind; b->launcher = NULL; b->in_use = 1; b->held = b->ridden = 0; b->owner_e = NULL; b->owner_pl = 0; b->target = NULL; b->age = 0; b->dir0 = dir;
     b->t = 0; b->state = 1; b->blink_acc = 0; b->blink_n = 0; b->puffed = 0;
     b->p_active = 1; b->press = b->grounded = b->bounced = 0; b->n = (Vec3){ 0, 1, 0 };
     b->col_cur = 0xffffffffu;                                                      /* a new projectile 0x449130: probe ctor 0x436cf0 (a throw 0x4492d0 keeps it) */
     bomb_place(b);
-    if (wenv("WOODY_BOMBLOG")) printf("  BOMB %u start at %.0f %.0f %.0f dir %.2f %.2f %.2f speed %.0f fuse %.2f kind %d var %d", b->inst->index, pos.x, pos.y, pos.z, dir.x, dir.y, dir.z, T->speed, b->fuse, kind, var), puts("");
+    if (wenv("WOODY_BOMBLOG")) printf("  BOMB %u start at %.1f %.1f %.1f (instance y %.1f) dir %.4f %.4f %.4f speed %.0f fuse %.2f kind %d var %d", b->inst->index, pos.x, pos.y, pos.z, ip.y, dir.x, dir.y, dir.z, T->speed, b->fuse, kind, var), puts("");
     return b;
 }
 /* 0x44d3a0 + 0x4492d0: start the carrying projectile again from where the bomb is (the throw / the drop from Woody's hands) */
@@ -2055,7 +2059,9 @@ static void bombs_fly(float dt, const GelFile *gel)
         if (f <= 1.0f) {                                                           /* Bounce 0x449eb0: mirror the end point in the plane, keep the speed */
             Vec3 d = { e.x - a.x, e.y - a.y, e.z - a.z }; float L = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z), s = L * f - 0.01f; if (s < 0) s = 0;
             Vec3 h = L > 1e-6f ? (Vec3){ a.x + d.x / L * s, a.y + d.y / L * s, a.z + d.z / L * s } : a;
-            float q = 2.0f * ((e.x - h.x) * n.x + (e.y - h.y) * n.y + (e.z - h.z) * n.z); Vec3 r = { e.x - q * n.x, e.y - q * n.y, e.z - q * n.z };
+            /* 0x449f6f: e is mirrored in the hit PLANE (n.e + D, D through the exact hit a + d f), not in a plane through h, which sits
+             * 0.01 short of it: the new direction r - h is a touch flatter than the mirrored d (live trace, S2A dispenser) */
+            float q = 2.0f * ((e.x - (a.x + d.x * f)) * n.x + (e.y - (a.y + d.y * f)) * n.y + (e.z - (a.z + d.z * f)) * n.z); Vec3 r = { e.x - q * n.x, e.y - q * n.y, e.z - q * n.z };
             Vec3 u = { r.x - h.x, r.y - h.y, r.z - h.z }; float ul = sqrtf(u.x * u.x + u.y * u.y + u.z * u.z), sp = sqrtf(b->vel.x * b->vel.x + b->vel.y * b->vel.y + b->vel.z * b->vel.z);
             if (ul > 1e-6f) b->vel = (Vec3){ u.x / ul * sp, u.y / ul * sp, u.z / ul * sp };
             b->p = h; b->bounced = 1; b->n = n;
@@ -2068,7 +2074,7 @@ static void bombs_fly(float dt, const GelFile *gel)
         b->grounded = b->press >= 5; if (b->grounded) { b->vel.y = 0; b->p.y = gy; }
         b->inst->position = (Vec3){ b->p.x, b->p.y + 1.0f, b->p.z };
         bomb_place(b);
-        if (wenv("WOODY_BOMBLOG") && wenv("WOODY_BOMBLOG")[0] == '2' && (int)(b->t * 8) != (int)((b->t - dt) * 8)) printf("  BOMB %u t %.2f state %d at %.0f %.0f %.0f vel %.0f %.0f %.0f ground %d", b->inst->index, b->t, b->state, b->p.x, b->p.y, b->p.z, b->vel.x, b->vel.y, b->vel.z, b->grounded), puts("");
+        if (wenv("WOODY_BOMBLOG") && (wenv("WOODY_BOMBLOG")[0] == '3' || (wenv("WOODY_BOMBLOG")[0] == '2' && (int)(b->t * 8) != (int)((b->t - dt) * 8)))) printf("  BOMB %u t %.3f state %d at %.1f %.1f %.1f vel %.1f %.1f %.1f ground %d", b->inst->index, b->t, b->state, b->p.x, b->p.y, b->p.z, b->vel.x, b->vel.y, b->vel.z, b->grounded), puts("");
     }
 }
 /* per frame for every bomb in use: its colour, and in fuse states 2/3 the fuse (0x478b70): a line along the bomb's own marker
@@ -2295,7 +2301,7 @@ static void launchers_update(float now, float dt, Player *pl, const GelFile *gel
                     else {                                                         /* Bounce 0x449eb0: the end point mirrored in the plane, the speed kept, the point put on the hit */
                         Vec3 d = { b.x - a.x, b.y - a.y, b.z - a.z }; float L = v3len(d), sl = L * f - 0.01f; if (sl < 0) sl = 0;
                         Vec3 h = L > 1e-6f ? (Vec3){ a.x + d.x / L * sl, a.y + d.y / L * sl, a.z + d.z / L * sl } : a;
-                        float q = 2.0f * ((b.x - h.x) * n.x + (b.y - h.y) * n.y + (b.z - h.z) * n.z); Vec3 r = { b.x - q * n.x, b.y - q * n.y, b.z - q * n.z };
+                        float q = 2.0f * ((b.x - (a.x + d.x * f)) * n.x + (b.y - (a.y + d.y * f)) * n.y + (b.z - (a.z + d.z * f)) * n.z); Vec3 r = { b.x - q * n.x, b.y - q * n.y, b.z - q * n.z };   /* mirrored in the hit plane itself (0x449f6f) */
                         Vec3 u = { r.x - h.x, r.y - h.y, r.z - h.z }; if (v3len(u) > 1e-6f) { s->dir = v3scale_to(u, 1.0f); s->vel = (Vec3){ s->dir.x * s->speed, s->dir.y * s->speed, s->dir.z * s->speed }; }
                         b = h; s->bounces++;
                         if (wenv("WOODY_FXLOG")) printf("shot %d bounces (%d) at %.0f %.0f %.0f", i, s->bounces, h.x, h.y, h.z), puts("");
@@ -3392,7 +3398,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 29: if (in && rocket_of(in)) rocket_reset(rocket_of(in)); if (in && bomb_of(in)) bomb_reset(bomb_of(in)); if (in && (in->type == 120 || in->type == 121)) chest_reset(in); break;   /* 0x451820: bomb and chest Reset */
     case 1090: if (in && m->nargs > 2) {                                           /* the bomb dispenser 0x444e00 (docs/BOMB_CARRY.md 2): template 0, fuse arg * 0.01 s */
         BombT t = BOMB_T0; t.life = (float)(int32_t)m->args[2] * 0.01f; Vec3 p0, d; float l = 0;
-        if (inst_vector(in, 0, &p0, &d)) { l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); t.speed = 100.0f; } else { p0 = in->position; d = (Vec3){ 0, -1, 0 }; t.speed = 0; }
+        if (game_inst_vector(in, 0, &p0, &d)) { l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z); t.speed = 100.0f; }   /* 0x42f6b0 poses the dispenser first (vtbl[2](1)) */ else { p0 = in->position; d = (Vec3){ 0, -1, 0 }; t.speed = 0; }
         if (l > 1e-4f) { d.x /= l; d.y /= l; d.z /= l; }
         bomb_start(&t, p0, d, 1, (int32_t)(m->args[1] & 0xffffff), 0);            /* no free bomb: the variable is set at once */
     } break;

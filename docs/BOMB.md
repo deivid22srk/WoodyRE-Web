@@ -365,6 +365,7 @@ with **`bomb->flags8 |= 0x40`** set while the ray runs (skip its own hull; old v
 | 3 | `0x497ed0` answers **2** (`0x435b4a`): the segment **starts inside a press node** of an instance (`0x4330c0`, PROJECTILES.md §2.3), no plane, t = 0, that instance in `[0x53a560]` | own bomb → ignore; otherwise **projectile gone** (`0x449e82`) → `CheckProj` → **explosion 2 frames later** (ported, `inst_point_in_press`) |
 
 Bounce `0x449eb0` (PROJECTILES §2.3): end point mirrored in the plane, speed preserved (no restitution loss); the only loss is the drag.
+The mirror plane is the hit plane itself, not a plane through the backed-off point `h` (verified live, PROJECTILES §2.3).
 
 **Correction (checked while porting, `0x4359b0` read line by line):** the ray sets hit kind 1 if `0x497ed0` answers 3 (world, plane from `0x4c4bc0`),
 hit kind **2** if it answers 4 (an instance polygon: node `[0x4c4be0]` → `[0x53a58c]`, instance via `[0x4c4c0c]+0x40` → `[0x53a560]`) and hit kind 3
@@ -523,9 +524,10 @@ static Bomb *bomb_start(const BombT *T, Vec3 pos, Vec3 dir, int ground, int var,
     Bomb *b = NULL; for (int i = 0; i < g_nbombs && !b; i++) if (!g_bombs[i].in_use) b = &g_bombs[i];
     if (!b) { if (var >= 0) game_var_set(var, 1); return NULL; }
     b->T = *T; b->fuse = T->life; b->warn = T->life < 2.0f ? T->life : 2.0f;
-    if (ground) { int f; float gy = gel_floor_below(&L.gel, pos, 0, 1e5f, &f); if (f) pos.y = gy + 1.0f; }
+    Vec3 ip = pos;   /* `ground` snaps the INSTANCE only; the projectile starts at T.pos (verified live on the S2A dispenser) */
+    if (ground) { int f; float gy = gel_floor_below(&L.gel, pos, 0, 1e5f, &f); if (f) ip.y = gy + 1.0f; }
     b->p = pos; b->vel = (Vec3){ dir.x * T->speed, dir.y * T->speed, dir.z * T->speed };   /* dir normalised by the caller */
-    b->inst->position = pos; b->inst->visible = 1; b->inst->fade = b->inst->fade_target = 0;
+    b->inst->position = ip; b->inst->visible = 1; b->inst->fade = b->inst->fade_target = 0;
     b->var = var; b->kind = kind; b->launcher = NULL; b->in_use = 1; b->held = b->ridden = 0;
     b->t = 0; b->state = 1; b->blink_acc = 0; b->blink_n = 0;
     b->p_active = 1; b->press = b->grounded = b->bounced = 0; b->puff_pending = 0;

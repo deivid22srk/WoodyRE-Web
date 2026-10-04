@@ -170,6 +170,9 @@ instance.c; port tolerance: at least 1 unit deep, so that a bomb lying on a pres
 `0x437040` on probe `P+0x24` (the "platform" step for a carried instance) does nothing: its sphere queries `0x435b60` are a stub, the push is always 0.
 `Bounce` `0x449eb0`: hit point `h = old + normalize(disp)·max(|disp|·t − 0.01, 0)`; end point mirrored in the plane `pos += −2·(n·pos + d)·n` (`0x4a9504`);
 `dir = normalize(pos − h)`, `vel = dir · P->speed`; `pos = h` (flag 1). No energy loss besides the damping `T+0x24/0x28`.
+Because the mirror plane is the hit plane itself and `h` lies 0.01 before it, `dir` is a touch flatter than the mirrored displacement
+(it gains horizontal speed at every bounce). The port mirrored in a plane through `h` until 2026-10-04: a bomb bouncing on the floor lost
+~6 % of its forward speed per bounce compared with the live original (S2A dispenser: rest point 7.6 units short after 4 s; now 0.3).
 
 For the W1A launcher (`max_bounce = 0`): **the first hit against the world or an instance ends the projectile** (the visual then shows its impact flash, §5.2).
 Note: the ray starts at the marker's beginning; if that lies inside a hull of the launcher itself, the shot dies instantly. In W1A this apparently does not happen
