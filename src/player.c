@@ -2767,4 +2767,5 @@ void player_side_start(Player *p, Vec3 a, Vec3 d, int v)
 }
 void player_script_hold(Player *p, float t) { p->atk = 0; p->charge = 0; p->use_atk_disp = 0; lock_move(p, t); }
 
-void player_free(Player *p) { free(p->inside); free(p->vol_inst); free(p->vol_node); free(p->vol_id); }
+void player_free(Player *p) { g_rider = g_rider_board = NULL;   /* they point into the level's instances; the next level's load runs floor queries before player_update */
+                              free(p->inside); free(p->vol_inst); free(p->vol_node); free(p->vol_id); }
