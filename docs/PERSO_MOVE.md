@@ -401,7 +401,10 @@ void Perso_MoveCollide(Perso *p)
 ```
 
 `0x436f00` additionally does: if the player is standing on an **instance** (`[0x53a554] == 2`), `0x436d80(att, inst, node, &probe)`: remember
-the local point (`0x431700` world→node) so `0x436d20` can pass on the platform movement next frame; if the press node
+the local point (`0x431700` world→node) so `0x436d20` can pass on the platform movement next frame. The point is the **probe point itself**
+(swept feet + 43, before the snap to the floor: `0x436f54` pushes the probe pointer; live: `att+0x14` = pos + (0, 43, 0)), stored at
+`att+0x14`, its node-space copy at `att+8` (`att+0` instance, `+4` press-node index, `+0x20` collision id). On a platform that only
+translates this is the same as the feet; on one that tilts, a point 43 above the deck moves `43·ω` further sideways (W3C, §6.6); if the press node
 has flag `(flags & 0xff00) == 0x100`, collision id = `inst+0x70[(flags >> 16) + model+0x48]` → script events **PersoPress `0x441fc0`** (new),
 **PersoIn `0x442000`** (same as previous frame, `att+0x20`), **PersoUnpress `0x442040`** (released). Not on an instance ⇒ `att` cleared (`0x436d10`).
 
@@ -779,9 +782,33 @@ sector chains: they use the static `.col` lists of the leaf cells (§6.7). The p
   they rise out of (K2A model 33/48, K3A model 10, S1A model 34, S3A model 8), "B lift" mostly W3C model 10 (the platforms that
   drop away 0.5 s after Woody presses them, script `COL_FLAG5` → `3 [inst, 4, 1, 200]`) and W3D model 8. One checked live:
   W3C 116 (`WOODY_POSAT="1 5362 800 -1601"` / `wverify --level W3C --probe cam,crush --pos 5362 800 -1601 --at 1`): no crush in
-  either; the platform drops at 1.75 s and he falls off it onto y −401 in both. Small difference: the original pushes him +44 in x
-  while it drops and slides him another +87 right after the landing (final x 5505), the port +23 and no slide (x 5385); same at
-  140 fps, so not frame rate. Not investigated further.
+  either; the platform drops at 1.75 s and he falls off it onto y −401 in both.
+  **The sideways push and the slide (2026-10-04, live-traced with `wverify --probe move`, frame-exact now).** The drop animation
+  (model 10, anim 4) tips the platform over by 179° in one key pair (frames 0 → 50, quaternion dot 0.009) while it falls, and three
+  things act on Woody:
+  1. *Carry* `0x436d20`: the remembered point is the probe point 43 above the deck (§6.1), so the tilt carries him sideways
+     (≈ 208 u/s at the start, besides the drop of ≈ 1000 u/s). The rotation keys are interpolated by `0x440a80`, a true slerp
+     (`O = acos(a·b)` via `0x49a7e0`, `k0 = sin((1−u)O)/sin O`, `k1 = sin(uO)/sin O`, plain lerp when `a·b ≥ 0.9999` `0x4aa41c`, **no**
+     shortest-path sign flip), called by the rotation track `0x43a9c0` (key = first one with time ≥ t, `u` = the fraction).
+  2. *Losing the deck*: the carried point stays 43 above the deck along its normal, so after a frame the feet are
+     `43·(n.y/n'.y − 1) ≈ 43·tanθ·ω·dt` above it; once that is ≥ 1 the probe misses (§6.1) and he falls. **This depends on the
+     frame rate in the original**: at a fixed 1/60 s (`wverify --fixfps 60`) he leaves at n.y ≈ 0.89 after 9 frames, x 5391.5, and
+     lands without sliding; at ~230 fps (the speed of the traced run) he rides it down to n.y ≈ 0.62.
+  3. *Slide* `0x45aa60` (Mover RampB, PERSO_FRAME §2.3): at the higher rate the ground normal passes n.y < 0.71 while he still
+     stands on it, so the slide starts: RampB target = 600, accelerate (`0x467130`: `t = sqrt(v/max)·T`), `M+0xdc = 1`, dir = the xz
+     part of `n × (n × up)` (`0x41af10` twice) = `n.y·(n.x, n.z)`, set **once** at the start and normalised after every tick. In the
+     air while sliding the Mover sets flag 4 (`0x45ac18`) and the total `0x45ae80` becomes `v = a·max(cos∠(a, b), 0)` (`0x440070` =
+     `a·b/|a||b|`, 0/0 = NaN → 0; a = walk, b = slide; no knockback), so he falls straight down while RampB reaches 600; on flatter
+     ground the slide stops (`0x467180`: target 0, decelerate `v = max·(1 − (t/T)²)`, `M+0xdc = 0`, RampA reset to the facing):
+     the +99 after the landing. Original at fixed 1/230 s: x 5411.7 when he leaves the deck, 5510.4 after the slide.
+  Before: the port remembered the feet (no lever), interpolated with a shortest-path nlerp (on this pair up to 8° behind and a
+  third slower at the start), slid with one linear ramp along the 3D downhill vector (xz speed `n.y·v`), re-aimed every frame and
+  applied (decelerating) in the air: +20 and no slide at any rate. Now (`attach_store(…, probe)`, `track_rot` in level.c, the
+  RampB block of `player_update`): 60 fps 5391.52 (original 5391.53, every frame within 0.01), 230 fps 5510.43 (original 5510.42,
+  420 frames within 0.03), 140 fps 5406. `WOODY_MCLOG=1` logs every MoveCollide like `--probe move`. The slerp change moves every
+  animated node with large-angle key pairs (37 pairs over 2° in W3C, 356 in W1B, a few dozen elsewhere; pairs with a·b < 0 now
+  turn the long way as in the original, most of them are a·b = −1 = the same rotation); position logs of the W1B shuttles and
+  fading platforms, the W1A stamper crush, a respawn and the K1R/S2R race starts are unchanged.
 * **Ledge edge** (`0x44b2e0`) and **fall damage** (`0x44b220`): see PERSO_FRAME §2.2.
 * **"Fell out of the world"**: does not exist as a separate test. If GetHeight finds no floor (`g_raw == 1`), then `ground height = probe point.y`
   (= feet+43): `0x436f00` then reports `onGround` and sets `pos.y += 43` (!), and in the sweep it counts as "on the ground". In practice, levels

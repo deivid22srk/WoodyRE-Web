@@ -234,7 +234,7 @@ flag 0x80) ⇒ `M+0x10 = normalize(target − pos)` (look direction towards the 
 * **`0x45aa60` sliding**: `n = normalize(M+0xd0)`; if `n.y < 0.71` (`0x4ab2d8`, f64) and onGround
   and not already sliding: RampB.max = P+0x40, start accelerating, RampB.dir = (n × up) × n (downhill),
   `M+0xdc = 1`. If sliding and onGround (flatter): decelerate, `M+0xdc = 0`, reset RampA to M+0x10;
-  not onGround ⇒ flag 4. Tick RampB.
+  not onGround ⇒ flag 4. Tick RampB. RampB.dir = xz of `n × (n × up)` is set only when the slide starts (PERSO_MOVE.md §6.6).
 * **`0x45acb0` push**: `M+0xec -= dt`; if `M+0xc8 == 2` ⇒ RampC decelerate; tick RampC; timer ≤ 0
   ⇒ RampC.dir = 0.
 * **`0x45ad30` phase automaton** `M+0xc` (table `0x45ae2c`): 0 stopped → 1 (start accelerating) on flag 8,
@@ -242,7 +242,7 @@ flag 0x80) ⇒ `M+0x10 = normalize(target − pos)` (look direction towards the 
   4 → 5/6; 5/6 → 1.
 * **`0x45ae50`**: if `Perso+0x2e0` (ground type ≠ 0) ⇒ `0x4672d0(RampA, 0.25)`; tick RampA(dt, 1).
 * **`0x45ae80` total**: `v = RampA.dir·RampA.v (only with flag 2) + RampB.dir·RampB.v +
-  RampC.dir·RampC.v`; with flag 4: only A projected (`0x440070` = dot) ≥ 0; `M+0xe0 = |v|`,
+  RampC.dir·RampC.v`; with flag 4: `v = a·max(cos∠(a, b), 0)` (`0x440070` = a·b/|a||b|, NaN → 0; no C); `M+0xe0 = |v|`,
   `M+0xe4 = |v|·dt`, `M+0x1c = v/|v|`.
 
 ### 2.4 Movement, collision and orientation

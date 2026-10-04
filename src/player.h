@@ -57,7 +57,8 @@ typedef struct Player {
     float iris_from, iris_to, iris_dur, iris_t, iris; int iris_on;  /* its iris Game+4 (0x4776b0); iris_on = drawn this tick, iris = its value */
     Vec3 spawn_pos; float spawn_yaw; Vec3 start_pos;                  /* respawn point +0x318 / facing +0x324 (checkpoint), start +0x30c */
     int bonus_got, bonus_total, bonus_count, special_charges, unique_items, race_bonus, race_total;   /* [0x5e54e8], [0x5e54e4], Perso+0x25c, +0x254, +0x260, +0x264, [0x5e54f4] */
-    Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0) and the slide ramp (RampB) */
+    Vec3 ground_n, slide_dir; float slide_speed; int sliding;   /* ground normal (Mover+0xd0), RampB (Mover+0x68: dir, v +0xc) and Mover+0xdc */
+    int slide_phase; float slide_target, slide_t1, slide_t2;     /* RampB phase +0x2c, target +0x10, accel / decel timers +0x24 / +0x28 */
     int ground_kind;                /* Perso+0x308 (0x4628e0): 0 normal, 1 slippery, 2 dust/sand/snow (docs/PERSO_MOVE.md 6.4) */
     int wall_contact;               /* Perso+0x2e0: the last sweep touched a wall (0x437180); speeds up the Mover's braking (0x45ae50) */
     float crush;                    /* Perso+0x2e8: squash scale of the crush test 0x462a40 (1 = none), -> inst z scale +0x54 and every body height */
