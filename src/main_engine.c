@@ -216,7 +216,7 @@ static Vec3 rail_nearest(const Trajectory *tr, Vec3 c, Vec3 R)
     for (uint32_t i = 0; i + 1 < tr->npoints; i++) {
         Vec3 A = tr->points[i], B = tr->points[i + 1], v = { B.x - A.x, B.y - A.y, B.z - A.z }, q;
         float tb = v.x * (c.x - B.x) + v.y * (c.y - B.y) + v.z * (c.z - B.z), ta = v.x * (c.x - A.x) + v.y * (c.y - A.y) + v.z * (c.z - A.z);
-        if (tb > 0) q = B; else if (ta < 0) q = A;
+        if (tb > 0) q = B; else if (ta < 0 || !(ta > tb)) q = A;         /* ta == tb: a doubled point, 0/0 would make the camera NaN for good */
         else { float s = ta / (ta - tb); q = (Vec3){ A.x + v.x * s, A.y + v.y * s, A.z + v.z * s }; }
         float e = v3d2(q, c); if (have && !(e < best)) continue;
         Vec3 o1, o2;
