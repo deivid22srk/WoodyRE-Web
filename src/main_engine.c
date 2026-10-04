@@ -416,7 +416,6 @@ _Static_assert(sizeof(SaveRec) == 0x3c && sizeof(SaveChar) == 0x6dc && sizeof(Sa
 #define SAVE_VER 0x11004u
 static SaveSlot g_save;                                          /* app+0x48 */
 static SaveFile g_file;                                          /* the slot manager app+0x4c */
-static int g_slot = -1;                                          /* the slot this game was loaded from or last saved to; -1 = a new game that was never saved */
 static int g_char, g_unlock_all;                                 /* cfg+0x380: 0 Woody, 1 Knothead, 2 Splinter */
 static void slot_reset(SaveSlot *s)                              /* 0x44ffa0 */
 {
@@ -467,9 +466,6 @@ static int slot_char_pct(const SaveSlot *s, int c)               /* 0x450050: we
 }
 static int slot_pct(const SaveSlot *s) { return (slot_char_pct(s, 0) + slot_char_pct(s, 1) + slot_char_pct(s, 2)) / 3; }   /* 0x4501f0; 0 = free */
 static int slot_char_open(const SaveSlot *s, int c) { return c == 0 || s->chr[0].rec[c == 1 ? 6 : 10].done; }            /* 0x4509b0: W2D / W3D done */
-/* the port writes progress into the slot it came from at the end of every level (a deliberate convenience); a new
- * game has no slot until the player saves once on page 5, exactly when the original would ask for one */
-static void save_auto(void) { if (g_slot >= 0) { g_file.slot[g_slot] = g_save; file_write(); } }
 /* ---- options (docs/MENU_OPTIONS.md): the original keeps the sfx / music volume in Woody.cfg ([0x4c2c50] / [0x4c2c54],
  * written back at exit) and a copy per save slot. The port keeps them in its own woodyre.cfg, key=value lines, so
  * port-only settings (aspect ratio, resolution, issue #12) can be added later without a format bump. The master
@@ -1392,7 +1388,7 @@ static void menu_new_game(EkoVM *vm, int attract)
     int32_t *iv = g_have_intro && (g_intro_var & 0xffffff) < vm->nvars ? &vm->varval[g_intro_var & 0xffffff] : NULL;
     hud_logo_off(); M.newgame = !attract;
     if (iv) eko_set_var(vm, g_intro_var, 1);                          /* SetVar(app+0x8c, 1) (0x4051b0), always */
-    else if (!attract) { save_reset(); g_slot = -1; request_level(1, 0.5f); menu_off(); return; }   /* no intro in this House script */
+    else if (!attract) { save_reset(); request_level(1, 0.5f); menu_off(); return; }   /* no intro in this House script */
     M.page = 0x1f; M.sel = 0;
 }
 static void menu_load_chain(void)                                     /* 0x4051da: no file -> page 7, else the wait page 0xb (app+0x5c = 0) */
@@ -1414,7 +1410,7 @@ static void menu_wait(void)
     switch (M.page) {
     case 0xb: menu_enter(M.wait_r < 0 ? 0xa : 2); break;                 /* 0x405276 */
     case 0xe: menu_enter(M.wait_r < 0 ? 6 : 5); break;                   /* 0x405483: unreadable -> back to "Do you want to save?" */
-    case 0xc: { int ok = file_write(); if (ok) g_slot = M.save_s; menu_enter(ok ? 8 : 9); break; }   /* 0x405662 */
+    case 0xc: { int ok = file_write(); menu_enter(ok ? 8 : 9); break; }   /* 0x405662 */
     }
 }
 
@@ -1438,7 +1434,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
                 return;
             case 2:
                 if (r == 24) { menu_enter(1); return; }
-                {   int s = r - 10; g_save = g_file.slot[s]; g_slot = s;                                  /* 0x456df0, 0x4052db: the slot's own volumes too */
+                {   int s = r - 10; g_save = g_file.slot[s];                                              /* 0x456df0, 0x4052db: the slot's own volumes too */
                     g_opt.music = g_file.music[s] > 100 ? 100 : (int)g_file.music[s]; g_opt.sfx = g_file.sfx[s] > 100 ? 100 : (int)g_file.sfx[s];   /* unsigned: a damaged slot cannot give a negative volume */
                     opt_apply(); car_reset(); menu_enter(3); }
                 return;
@@ -1493,7 +1489,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
         if (v != 4 && !k->atk_rel && !k->esc_rel && !k->syn && !k->ok) break;   /* the attack key or Esc, RELEASED; Enter does not skip in the
                                                                        * original - PORT EXTRA: confirm (Enter released / jump pressed) skips too */
         M.attract = 35.0f;
-        if (M.newgame) { save_reset(); g_slot = -1; menu_off(); request_level(1, v == 4 ? 0.0f : 0.5f); break; }   /* 0x44ffa0 in memory only, no write */
+        if (M.newgame) { save_reset(); menu_off(); request_level(1, v == 4 ? 0.0f : 0.5f); break; }   /* 0x44ffa0 in memory only, no write */
         if (v != 4) {                                                  /* the attract was broken off: stop the script, the cinematic and its stream */
             if (g_intro_obj) eko_cancel_timers(vm, (uint32_t)g_intro_obj);
             eko_set_var(vm, g_intro_var, 4);
@@ -1560,7 +1556,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
     case 9: if (k->ok) menu_enter(6); break;
     case 0x1d:                                                         /* GAME OVER: the draw 0x45bbd0 counts +0x14 down and sets +0xc = 1 every frame (no confirm), */
         if (M.go_t > 0 && (M.go_t -= dt) <= 0) {                       /* back gives 24, ignored; result 5 in the frame the timer crosses 0 -> handler 0x405796 */
-            save_reset(); g_slot = -1;                                 /* 0x44ffa0: the active save wiped in memory (9 lives, 3.0 health), Woody.sav is not written */
+            save_reset();                                              /* 0x44ffa0: the active save wiped in memory (9 lives, 3.0 health), Woody.sav is not written */
             request_level(0, 0.5f);                                    /* 0x405780: 0x404b60(0.5, 0, 0, 0) -> the title; the page stays up during the fade */
         }
         break;
@@ -1639,7 +1635,7 @@ static void results_update(EkoVM *vm, float dt, int ok)               /* the tab
         player_ground_snap(g_player);                                                  /* 0x45423f */
         g_cam.cut = 1; cam_set_mode(1); g_player->cam_init = 0;                        /* 0x41f9f0(2) + SetMode(0, 0) */
         eko_set_var(vm, g_res.var, 1);                                                 /* 0x45422c: the hub script opens the next door */
-        save_auto(); g_res.on = 0; g_stats.have = 0;
+        g_res.on = 0; g_stats.have = 0;
         puts("  RESULTS done");
         break;
     }
@@ -3430,7 +3426,7 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         if (g_level == 1 || g_level == 11 || g_level == 18 || g_level == 25) { request_level(0, 0.5f); break; }    /* from a hub: to the title */
         if (g_level >= 0 && g_level < 29) g_save.chr[g_char].rec[g_level].done = 1;
         results_capture();                                                                                  /* memcpy(app+0x74, perso+0x710, 20): the results screen runs in the hub, after the switch */
-        save_auto(); request_level(g_char == 0 ? 1 : g_char == 1 ? 11 : 18, 0.5f); break;
+        request_level(g_char == 0 ? 1 : g_char == 1 ? 11 : 18, 0.5f); break;
     case 1082: if (m->nargs > 1) eko_set_var(vm, m->args[1], level_is_enable((int)m->args[0])); break;
     case 1085: if (m->nargs > 1) eko_set_var(vm, m->args[1], m->args[0] < 29 ? g_save.chr[g_char].rec[m->args[0]].done : 0); break;   /* LevelIsDone 0x4509e0 */
     case 1030:                                                                                              /* SaveAuto: checkpoint 0x445129 -> 0x44aa10 */
@@ -3849,7 +3845,7 @@ int main(int argc, char **argv)
     if (!new_game && level_index(lvl) != 0) {                                          /* testing: straight into a level plays with a saved slot (WOODY_SLOT=1..4, else the first used one) */
         int s = wenv("WOODY_SLOT") ? atoi(wenv("WOODY_SLOT")) - 1 : -1;
         for (int i = 0; i < 4 && s < 0; i++) if (slot_pct(&g_file.slot[i])) s = i;
-        if (s >= 0 && s < 4) { g_save = g_file.slot[s]; g_slot = s; }
+        if (s >= 0 && s < 4) g_save = g_file.slot[s];
     }
     if (!wenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
     opt_apply();                                                                       /* 0x4691e2: the volumes from the cfg at sound start */
