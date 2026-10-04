@@ -33,17 +33,21 @@ int tex_load(TexFile *t, const char *path)
     t->data = read_file(path, &t->size); if (!t->data) return -1;
     Rd r = { t->data, 0, t->size, 0 };
     t->ngroups = ru32(&r); ru32(&r);           /* texture_count */
-    t->groups = (TexGroup *)calloc(t->ngroups, sizeof(TexGroup));
-    for (uint32_t g = 0; g < t->ngroups; g++) {
+    if (t->ngroups > t->size / 36) r.err = 1;  /* a damaged file: counts are checked against what the file can hold before anything is allocated */
+    t->groups = (TexGroup *)calloc(r.err ? 1 : t->ngroups ? t->ngroups : 1, sizeof(TexGroup)); if (r.err) t->ngroups = 0;
+    for (uint32_t g = 0; g < t->ngroups && !r.err; g++) {
         TexGroup *tg = &t->groups[g];
         tg->width = ru32(&r); tg->height = ru32(&r); tg->flags = ru32(&r);
         tg->scroll_u = rf32(&r); tg->scroll_v = rf32(&r); tg->anim_duration = rf32(&r);
         tg->frame_count = ru32(&r); ru32(&r); ru32(&r);
-        tg->frames = (uint16_t **)calloc(tg->frame_count, sizeof(uint16_t *));
-        for (uint32_t f = 0; f < tg->frame_count; f++) tg->frames[f] = (uint16_t *)rraw(&r, (size_t)tg->width * tg->height * 2);
+        size_t fb = (size_t)tg->width * tg->height * 2;
+        if (tg->width > 4096 || tg->height > 4096 || (tg->frame_count && (!fb || tg->frame_count > (r.size - r.pos) / fb))) { r.err = 1; tg->frame_count = 0; break; }
+        tg->frames = (uint16_t **)calloc(tg->frame_count ? tg->frame_count : 1, sizeof(uint16_t *));
+        for (uint32_t f = 0; f < tg->frame_count; f++) tg->frames[f] = (uint16_t *)rraw(&r, fb);
     }
-    t->nmaterials = ru32(&r);
-    t->materials = (Material *)calloc(t->nmaterials, sizeof(Material));
+    t->nmaterials = r.err ? 0 : ru32(&r);
+    if (t->nmaterials > (r.size - r.pos) / 52) { r.err = 1; t->nmaterials = 0; }
+    t->materials = (Material *)calloc(t->nmaterials ? t->nmaterials : 1, sizeof(Material));
     for (uint32_t i = 0; i < t->nmaterials; i++) { t->materials[i].group = ru32(&r); for (int k = 0; k < 12; k++) t->materials[i].m[k] = rf32(&r); }
     if (r.err || r.pos != r.size) { fprintf(stderr, "%s: parse error (pos %zu of %zu)\n", path, r.pos, r.size); return -1; }
     return 0;
