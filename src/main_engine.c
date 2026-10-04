@@ -423,7 +423,18 @@ static void slot_reset(SaveSlot *s)                              /* 0x44ffa0 */
 }
 static void save_reset(void) { slot_reset(&g_save); }
 static void file_reset(void) { memset(&g_file, 0, sizeof g_file); g_file.ver = SAVE_VER; for (int s = 0; s < 4; s++) { slot_reset(&g_file.slot[s]); g_file.music[s] = 70; g_file.sfx[s] = 100; } }   /* 0x456e20 */
-static int  file_write(void) { g_file.ver = SAVE_VER; FILE *f = fopen("woodyre.sav", "wb"); if (!f) return 0; int ok = fwrite(&g_file, sizeof g_file, 1, f) == 1; if (fclose(f)) ok = 0; return ok; }   /* 0x450b30 */
+static int  file_write(void)                                    /* 0x450b30; the port writes a temporary file and renames it over woodyre.sav, so a */
+{                                                               /* crash or power cut while writing cannot leave a truncated save (read as -1, then reset) */
+    g_file.ver = SAVE_VER; FILE *f = fopen("woodyre.sav.tmp", "wb"); if (!f) return 0;
+    int ok = fwrite(&g_file, sizeof g_file, 1, f) == 1; if (fflush(f)) ok = 0; if (fclose(f)) ok = 0;
+#ifdef _WIN32
+    if (ok) ok = MoveFileExA("woodyre.sav.tmp", "woodyre.sav", MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    if (ok) ok = rename("woodyre.sav.tmp", "woodyre.sav") == 0;
+#endif
+    if (!ok) remove("woodyre.sav.tmp");
+    return ok;
+}
 /* 0x450be0: 1 = read, 0 = no file (page 7), -1 = unreadable / wrong version (page 0xa). Without a woodyre.sav an
  * original Woody.sav (game/ or the working directory) is taken as is; the port's earlier one-save file ("WSV2") is
  * converted into slot 0 so nobody loses progress. */
