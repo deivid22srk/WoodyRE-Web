@@ -142,7 +142,8 @@ static int copy_cd(const wchar_t *src, const wchar_t *home)
         int r = file_pass(src, dst, i, buf, bufsz);
         if (r < 0) {
             if (g_win) { DestroyWindow(g_win); g_win = g_text = NULL; }
-            wchar_t m[WPATH + 300]; swprintf(m, WPATH + 300, L"Could not copy %hs\nfrom %ls\\ to\n%ls\\\n\nIs the CD complete, and is there room on the disk?", k_datafiles[i].path, src, dst);
+            wchar_t m[WPATH + 400]; swprintf(m, WPATH + 400, L"Could not copy %hs\nfrom %ls\\ to\n%ls\\\n\nIs the CD complete, and is there room on the disk?\n"
+                                                             L"(WoodyRE needs the English 1.00 CD; other releases are not supported.)", k_datafiles[i].path, src, dst);
             MessageBoxW(NULL, m, TITLE, MB_ICONERROR); free(buf); return -1;
         }
         if (!r) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s differs from the English 1.00 CD\n", k_datafiles[i].path); }
@@ -181,21 +182,49 @@ static int pick_folder(wchar_t *root)
     return ok;
 }
 
+/* the exe's folder can hold what the game writes: not read-only (Program Files) and not under %TEMP%, where Explorer runs an
+ * exe started from inside a zip and where the files would not last */
+static int home_ok(const wchar_t *dir)
+{
+    wchar_t t[MAX_PATH + 1], d[WPATH]; DWORD n = GetTempPathW(MAX_PATH + 1, t);   /* t ends with a backslash */
+    swprintf(d, WPATH, L"%ls\\", dir);
+    if (n > 3 && n <= MAX_PATH && t[n - 1] == L'\\' && !_wcsnicmp(d, t, n)) return 0;   /* (not a TEMP that is a whole drive) */
+    return writable(dir);
+}
+
+/* the game files in dir\rel, but dir is no place for woodyre.cfg / .sav / .log and mods\: those go to %LOCALAPPDATA%\WoodyRE,
+ * which becomes the current directory, and the engine reads the files by their full path (an ANSI one: its fopen is
+ * ANSI; the 8.3 name when the code page cannot spell the long one). NULL = not possible, the caller enters dir instead. */
+static const char *enter_away(const wchar_t *dir, const wchar_t *rel, const wchar_t *local)
+{
+    static char out[WPATH]; wchar_t full[WPATH], s[WPATH]; BOOL bad = FALSE;
+    int utf8 = GetACP() == CP_UTF8;                    /* "Beta: Unicode UTF-8" region setting: every name fits, and the flags must be 0 */
+    swprintf(full, WPATH, L"%ls\\%ls", dir, rel);
+    if (!WideCharToMultiByte(CP_ACP, utf8 ? 0 : WC_NO_BEST_FIT_CHARS, full, -1, out, sizeof out, NULL, utf8 ? NULL : &bad) || bad) {
+        DWORD k = GetShortPathNameW(full, s, WPATH); bad = FALSE;
+        if (!k || k >= WPATH || !WideCharToMultiByte(CP_ACP, utf8 ? 0 : WC_NO_BEST_FIT_CHARS, s, -1, out, sizeof out, NULL, utf8 ? NULL : &bad) || bad) return NULL;
+    }
+    CreateDirectoryW(local, NULL);
+    return SetCurrentDirectoryW(local) ? out : NULL;
+}
+
 const char *data_find(void)
 {
     const char *env = getenv("WOODY_DATA"); if (env && *env) return env;
     wchar_t exe[MAX_PATH], local[MAX_PATH], p[WPATH];
     exe_dir(exe);
-    int have_local = local_dir(local);
-    swprintf(p, WPATH, L"%ls\\data", exe);   if (cd_layout(p)) return enter(exe, "data\\Data");
-    if (cd_layout(exe)) return enter(exe, "Data");
+    int have_local = local_dir(local), exe_ok = home_ok(exe);
+    const char *r;
+    swprintf(p, WPATH, L"%ls\\data", exe);
+    if (cd_layout(p)) return !exe_ok && have_local && (r = enter_away(exe, L"data\\Data", local)) ? r : enter(exe, "data\\Data");
+    if (cd_layout(exe)) return !exe_ok && have_local && (r = enter_away(exe, L"Data", local)) ? r : enter(exe, "Data");
     if (cd_layout(L"extract")) return "extract/Data";
     if (have_local) { swprintf(p, WPATH, L"%ls\\data", local); if (cd_layout(p)) return enter(local, "data\\Data"); }
 
-    /* first start: copy the CD into data\ next to the exe, or under %LOCALAPPDATA% when that folder is read-only */
+    /* first start: copy the CD into data\ next to the exe, or under %LOCALAPPDATA% when that folder is read-only (or temporary) */
     const wchar_t *home = exe;
-    if (!writable(exe)) { if (!have_local) { MessageBoxW(NULL, L"No writable folder for the game files.", TITLE, MB_ICONERROR); return NULL; }
-                          CreateDirectoryW(local, NULL); home = local; }
+    if (!exe_ok && have_local) { CreateDirectoryW(local, NULL); home = local; }
+    else if (!exe_ok && !writable(exe)) { MessageBoxW(NULL, L"No writable folder for the game files.", TITLE, MB_ICONERROR); return NULL; }
     UINT em = SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);   /* no "insert a disk" boxes while probing drives */
     const char *res = NULL;
     for (;;) {
