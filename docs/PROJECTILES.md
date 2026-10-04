@@ -270,10 +270,17 @@ void Think(L) {                                          /* 0x452780, vtbl[3] */
     if (L->count == 0) L->active = 0;                                          /* -1 keeps counting down forever */
 }
 ```
-Result: `t0 = now + dt`, so at the next think step `t ≈ 0` → `floor` jumps from −1 to 0 → **the first shot fires immediately (1–2 frames after the message), then every
-T s**, aligned to the start moment (not to the last shot). All W1A launchers start at level start and thus fire **simultaneously at t = 0, 3, 6, … s**.
-Uncertain: whether the think step also runs when the launcher's sector is not visible (OBJECTS.md §2 says yes, BONUS.md §3.1 says `0x42b400` only walks visible sectors;
-the `floor`-based boundary logic is in any case robust against skipped frames: at most one shot per missed period).
+Result: `t0 = now + dt`, so at the next think step `t ≈ 0` → `floor` jumps from −1 to 0 → **the first shot fires on the think step of the next frame, then every
+T s**, aligned to the start moment (not to the last shot). Exception: a 1003 sent by an **init script** runs while the level loads with `dt = 0`, so `t0 = now`
+and the first boundary is one interval later: the W1A launchers fire at **t = 3, 6, 9, … s**, not at 0 (verified live, `tools/wverify.py --probe proj`:
+launcher 26 at 2.98 / 5.98 / 8.98 / 11.98 s, nothing before). The S1R race launchers, started from volumes mid-race, fire 1 frame after their 1003 (live: 1003 in
+frame 2281, Fire in frame 2282).
+
+**Think only runs for listed instances** (`0x452780` = `vtbl[3]` of the launcher vtable `0x4ab148`, whose only caller is `0x42b400`, the loop over this frame's
+instance list `world+0x64`, INSTANCE.md §4.1). A hidden launcher (message 6 off) or one outside the camera's sectors / race groups / frustum / race distance does not
+count down and **does not fire**; the `floor` test only looks at this frame's `dt`, so after a gap it fires again on the next interval boundary, never in bursts.
+Live (S1R): launcher 175 is in the list and fires while it flies ahead of the rider; in the first 12 s of W1A only launcher 26 (the one in view at the start) fires,
+the other W1A launchers (27, 28, 194, 195, ...) stay silent.
 
 ### 4.3 `Fire` `0x452560`
 ```c
@@ -429,6 +436,39 @@ and the 400-radius star-shaped flash of explosion kind 2 where it ends. No impac
 - **Bomb** `0x44d3a0`/`0x44d4d0`: template 0 + `T+0x5c = bomb`, §2.4.
 - **Class 20/21** `0x452e10`, Perso `0x463530`/`0x463c90`, class-17 family `0x40cb80`, enemies `0x411e44`, `0x413516`, `0x414c96`, `0x41677e`: copy a template; not traced further.
 
+### 6.1 The S1R race shooters (script + live trace)
+
+The "enemy that keeps shooting at the rider" in S1R is not one instance but a relay of five **flying launchers** (type 42, model 22, a saucer whose
+typecode-0 muzzle marker points straight **down**), each on its own TRAJ path (42 `[1, f]` = one pass in f/100 s), oriented along it (46 `[1, 1]`),
+firing at the rider (slot 170, type 18) every 2 s (`1003 [170, -1, 200]`), damage 100 (`1002 [4, 100]`), lifetime 1 s (`[2, 100]`), xz clamp off (`[17, −100]`).
+Script objects 172/175/178/179/181 run a small state machine on vars 3/4/10/11/12, driven by trigger volumes (track order):
+
+| volume | var | what happens | launcher | template / visual | aim flag | steering time |
+|---|---|---|---|---|---|---|
+| 14 (start) | 3 = 0, 4 = 2 | 172 shown at its path start, 175 hidden | | | | |
+| 15 | 3 = 1 | 172 flies (15.5 s) and fires | 172 | 2 / **missile** (`[18, 3]` → 0) | **1** (init `[19, 1]`, no 1001 after it) | 15 s |
+| 16 (≈ 1/6 of the track) | 3 = 2, 4 = 0 → 1 after 0.1 s | 172 hidden; 175 flies (20 s) and fires | 175 | 2 / **energy orb** (`[18, 0]` → 2) | **0** (state 1 sends 1001 `[2]`) | 0.5 s (`[14/15, 50]`) |
+| 18 (≈ 1/4) | 4 = 3 | 175 re-armed with template 3 and restarted | 175 | **3** (aim height 25 instead of 150) / orb | 0 | 0.5 s |
+| 17 | 4 = 2, 10 = 1 | 175 hidden; 178 flies (11 s) | 178 | 2 / missile | 0 | 15 s |
+| 21 | 10 = 2, 11 = 1 | 178 hidden; 179 flies (27.5 s) | 179 | 3 / orb | 0 | 0.5 s |
+| 20 | 11 = 2, 12 = 1 | 179 hidden; 181 flies (21 s) | 181 | 2 / missile | 0 | 15 s |
+
+1001 calls `0x452330` → `vtbl[17]` = Reset `0x452260`, which **clears the aim flag `+0x199`** (and target, count, active) before the template copy; the scripts
+never resend `[19, 1]` after it. So only the first launcher (172) aims its shots at the rider; from volume 16 on every shot leaves the saucer **straight down along
+its marker** and is pulled round to the rider by the homing (template 2/3: 0.5 of the way per 1/60 s in xz, 100 units per 1/60 s vertically, speed clamped to 800
+by the −800 floor of `vel.y`). The visible "change after a quarter of the race" is therefore authentic: aimed rockets first, then blue orbs (and later rockets)
+that drop out of the saucer and curve towards the rider, mostly hitting the track; the template-3 phase aims at the board (aim height 25) instead of the body.
+
+Live check (`tools/wverify.py --probe proj --respawn "2 -67800 2900 9490 90"`, a ride from just before volume 16; `--respawn "2 -48300 3300 5070 112"` for 178):
+175 fires at (−63470, 4825, 9466) dir0 (0, −1, 0), (−62063, 3232, 9588) dir0 (0.176, −0.984, 0.001), (−59684, 3487, 9603), (−57334, 3572, 9274), (−55420, 3379, 8093),
+aim 0, visual 2, aim height 150, steering 0.5 s; 178 at (−45068, 3906, 2867) dir0 (0, −1, 0), (−43272, 3186, 2323), (−41034, 3531, 1976), visual 0; 172 at
+(−78276, 1993, 3102) dir0 (−0.968, −0.245, −0.049) with aim 1. The port (`WOODY_LAUNCHLOG=1`) gives the same points within 1–20 units.
+
+Port bugs this exposed (fixed): the 42/43 handler did not re-cell the instance (`0x42dd5d` / `0x42dd8b` call `0x4077f0(0)` after moving `inst.pos` to the
+first / last path point), so each launcher kept the cell of the far path END that 42 `[0, 1]` had moved it to, was never in the instance list and therefore
+**never drawn** - and since the port's launchers fired whether listed or not, the blue orbs came out of thin air from volume 16 on. Now 42/43 re-cell
+(`Instance.cell_ok = 0`) and the launcher think step runs only for listed, shown launchers (§4.2).
+
 ## 7. Recipe for the port
 
 ### 7.1 What is in `src/main_engine.c`
@@ -438,6 +478,8 @@ twenty parameters of §3), the projectile (§2: gravity with the −800 floor, d
 Move with HitActors — the Perso's cylinder, and the bomb thrower / Boss2 of actor list 1 through `enemies_bomb_contact` —, the ray with bounces and hit
 kind 3, lifetime), the energy orb of kind 2 (§5.1-5.2), **the missile of kind 0/1 (§5.3-5.4)** and **the fireball of kind 3 (§5.5)**. Enemy shots
 (`game_enemy_shot`) are template 1 with the enemy's speed, damage, xz steering, visual and target = the Perso, aim height and vertical steering 0 (P+0x70).
+The think step (`launchers_update`) skips hidden and unlisted launchers (`game_enemy_thinks`, §4.2) and 1000/1003 set `t0 = now + dt` with the frame's dt
+(`g_dt`, 0 while the level loads); `WOODY_LAUNCHLOG=1` prints every Fire (launcher, listed, muzzle, direction, block, target, player).
 Scripts that use more than the lifetime: races (K3R/S1R/S3R: templates 2/3 aimed at the rider, 1003 target = the type-18 slot, so the missiles home —
 without input the rider is hit within a few seconds), W2D/W3D (gravity 2/10, speeds 500..3000), W3A/K3A/S3A (`[12, 50]`: xz steering 0.05), W3D (clamps
 `[16, 90/95]`, `[17, 95]`). The missile side consists of:
@@ -525,7 +567,7 @@ typedef struct { int active; ProjT t; Vec3 pos, dir, start; float age, dead_t; c
 
 ## 8. Open questions
 1. `L+0x184` (copy of parameter 2) and `L+0x188` (parameter 6): no reader found.
-2. Does `Think` also run for launchers in non-visible sectors (§4.2)?
+2. ~~Does `Think` also run for launchers in non-visible sectors?~~ No: only for the instances of the frame's list (§4.2, verified live).
 3. ~~Hit kind 3 of the ray~~: the start point inside a press node (§2.3).
 3b. ~~Does the ray `0x4359b0` hit the launcher's own hulls (§2.3)?~~ It tests press nodes, not hulls, and excludes nothing (the −1 is the start cell); in the port
    no shot of any level stops in its own launcher, so the muzzles lie outside the housings' press nodes (§2.3).

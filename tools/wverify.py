@@ -39,10 +39,14 @@ Probes (--probe, several allowed, comma separated):
             animated root +0x60 and the light the sector list gives (0x42e573), at most one line per --every s
   bomb      per VM tick every bomb of the pool 0x5e4880 in use (+0x131): state +0x108, held +0x132, pos +0xc and its projectile
             +0x124 (age P+0xd4, position P+0xb0, velocity P+0xc8, target P+0x80, owner P+0xa0, grounded P+0xec), plus the Perso pos/state/sub-state; every Launch 0x44d4d0 prints the template it starts from (BOMBLAUNCH: T.pos, dir0, gravity, speed, life, ground flag)
+  proj      launchers and projectiles (docs/PROJECTILES.md): every Fire 0x452560 (aim flag +0x199, target, interval, block),
+            every projectile init 0x449130 (start, dir0, visual) and per VM tick each projectile of the pool 0x5d7d48 in use
 
   --setvar "T var val ..."  SetVar 0x443ca0(var, val) T s after INIT (as tools/wsetvar.py, one per VM tick)
   --tp "T x y z yaw ..."    teleport the Perso T s after INIT and turn him to yaw (Mover_SetDir); x = "bomb" puts him
                             y units off the first bomb in use, in +x, and z is ignored
+  --respawn "T x y z yaw"   T s after INIT make (x y z, yaw) the respawn point (+0x318, +0x324, +0x330 = 1): the next death
+                            respawns him there with the camera cut behind him (races: a ride from any point of the track)
   python tools/wverify.py game --level W1A --probe list,fpu --from 15 --frames 12 --seconds 110 --out out/trace/v_list.txt
 """
 import argparse, ctypes, math, os, struct, sys, time
@@ -69,9 +73,12 @@ def main():
     ap.add_argument('--setvar', default='', help='"T var val ...": SetVar 0x443ca0 T s after INIT')
     ap.add_argument('--fixfps', type=int, help='from INIT every frame advances exactly 1/N s (the debug switch [0x5d7b89] / [0x4b3a8c] of 0x401810), like the port\'s WOODY_FIXDT')
     ap.add_argument('--tp', default='', help='"T x y z yaw ...": teleport + face T s after INIT (x = bomb: y units off the first bomb in use)')
+    ap.add_argument('--watch', default='', help='proj probe: "slot slot ..." whose presence in the instance list is logged on change')
+    ap.add_argument('--respawn', default='', help='"T x y z yaw": T s after INIT set the respawn point Perso+0x318/+0x324 (+0x330 = 1), used at the next death')
     a = ap.parse_args()
     tok = a.setvar.split(); setvars = [(float(tok[i]), int(tok[i + 1]), int(tok[i + 2])) for i in range(0, len(tok) - 2, 3)]
-    tok = a.tp.split(); tps = [(float(tok[i]), tok[i + 1], float(tok[i + 2]), float(tok[i + 3]), float(tok[i + 4])) for i in range(0, len(tok) - 4, 5)]
+    tok = a.respawn.split(); respawns = [tuple(float(v) for v in tok[i:i + 5]) for i in range(0, len(tok) - 4, 5)]
+    tok = a.tp.split(); tps =[(float(tok[i]), tok[i + 1], float(tok[i + 2]), float(tok[i + 3]), float(tok[i + 4])) for i in range(0, len(tok) - 4, 5)]
     probes = set(a.probe.split(','))
     out = sys.stdout if a.out == '-' else open(a.out, 'w', encoding='utf-8', buffering=1)
     exe = os.path.join(a.gamedir, 'Woody.exe')
@@ -136,7 +143,13 @@ def main():
                 v = struct.pack('<3f', *tgt); dbg.write(p + 0x1f4, v); dbg.write(p + 0x28c, v)
                 dbg.log('%s # Perso teleported to %.1f %.1f %.1f, yaw %.0f' % (T(), *tgt, yaw))
                 return face_call(ctx, p, yaw)
+        if respawns and st['init'] is not None and since() >= respawns[0][0]:
+            _, x, y, z, yaw = respawns.pop(0); p = dbg.u32(0x53a34c)
+            if p:                              # the next respawn 0x44a810 puts him on +0x318, facing +0x324 since +0x330 says "checkpoint taken"
+                dbg.write(p + 0x318, struct.pack('<6f', x, y, z, math.sin(math.radians(yaw)), 0.0, math.cos(math.radians(yaw)))); dbg.write(p + 0x330, b'\x01')
+                dbg.log('%s # respawn point set to %.1f %.1f %.1f, yaw %.0f' % (T(), x, y, z, yaw))
         if 'bomb' in probes and st['init'] is not None and a.frm <= since() <= a.until: bomb_lines()
+        if 'proj' in probes and st['init'] is not None and a.frm <= since() <= a.until: proj_lines()
         if (a.pos or a.onto) and st['init'] is not None and not st['moved'] and since() >= a.at:
             p = dbg.u32(0x53a34c)
             if p:
@@ -275,6 +288,34 @@ def main():
     def on_bomb_launch(ctx):                 # 0x44d4d0 Launch(T*, ground, var, kind), thiscall: the template the projectile starts from
         t = dbg.u32(ctx.Esp + 4); g = dbg.read(ctx.Esp + 8, 1)[0]
         dbg.log('%s BOMBLAUNCH %s T.pos %.2f %.2f %.2f dir0 %.4f %.4f %.4f grav %.2f speed %.1f life %.2f ground %d var %d kind %d' % (T(), slot(ctx.Ecx), *fv(t, 6), f32(t + 0x1c), f32(t + 0x20), f32(t + 0x2c), g, struct.unpack('<i', dbg.read(ctx.Esp + 12, 4))[0], dbg.u32(ctx.Esp + 16)))
+
+    # --- launchers and projectiles (docs/PROJECTILES.md): every Fire 0x452560 (ecx = launcher) with its aim flag, target,
+    # interval and block, and per VM tick every projectile of the pool 0x5d7d48[200] in use (+0xe4)
+    def on_fire(ctx):
+        if st['init'] is None or not (a.frm <= since() <= a.until): return
+        e = ctx.Ecx; tg = dbg.u32(e + 0x178); p = dbg.u32(0x53a34c)
+        dbg.log('%s FIRE launcher %s pos %.0f %.0f %.0f aim %d target %s T %.2f count %d visual %d aim_h %.0f life %.2f steer %.3f vsteer %.1f t_xz %.2f t_y %.2f | perso %.0f %.0f %.0f' % (
+            T(), slot(e), *fv(e + 0xc, 3), dbg.read(e + 0x199, 1)[0], slot(tg) if tg else '-', f32(e + 0x174), struct.unpack('<i', dbg.read(e + 0x170, 4))[0],
+            dbg.u32(e + 0x168), f32(e + 0x144), f32(e + 0x134), f32(e + 0x148), f32(e + 0x14c), f32(e + 0x150), f32(e + 0x154), *(fv(p + 0x1f4, 3) if p else (0, 0, 0))))
+    def on_pinit(ctx):                         # 0x449130 entry: ecx = P, [esp+4] = the block (start pos +0, dir0 +0xc)
+        if st['init'] is None or not (a.frm <= since() <= a.until): return
+        b = dbg.u32(ctx.Esp + 4); ow = dbg.u32(b + 0x58)
+        dbg.log('%s PINIT %d owner %s pos %.0f %.0f %.0f dir0 %.3f %.3f %.3f speed %.0f visual %d' % (T(), (ctx.Ecx - 0x5d7d48) // 0x104, slot(ow) if ow else '-',
+                *fv(b, 3), *fv(b + 0xc, 3), f32(b + 0x20), dbg.u32(b + 0x60)))
+    def proj_lines():
+        if a.watch:                            # which of the --watch slots are in this frame's instance list world+0x64 (= think)
+            w = dbg.u32(0x509adc); n = dbg.u32(w + 0x60); arr = dbg.u32(w + 0x64)
+            ptrs = set(struct.unpack('<%dI' % n, dbg.read(arr, 4 * n))) if n else set()
+            on = [s for s in a.watch.split() if inst_ptr(int(s)) in ptrs]
+            line = 'LISTED n=%d: %s' % (n, ' '.join(on) if on else '-')
+            if line != st.get('lastw'): dbg.log('%s %s' % (T(), line)); st['lastw'] = line
+        raw = dbg.read(0x5d7d48, 200 * 0x104)
+        for i in range(200):
+            o = i * 0x104
+            if not raw[o + 0xe4]: continue
+            pos = struct.unpack_from('<3f', raw, o + 0xb0); vel = struct.unpack_from('<3f', raw, o + 0xc8); age = struct.unpack_from('<f', raw, o + 0xd4)[0]
+            ow = struct.unpack_from('<I', raw, o + 0xa0)[0]
+            dbg.log('%s PROJ %d owner %s age %.3f pos %.0f %.0f %.0f vel %.0f %.0f %.0f' % (T(), i, slot(ow) if ow else '-', age, *pos, *vel))
 
     # --- camera
     def cam_line():
@@ -466,6 +507,7 @@ def main():
     if 'move' in probes: bps.update({0x4624f0: on_mc_entry, 0x4625f4: on_mc_carry, 0x46268d: on_mc_swept, 0x4626f9: on_mc_floor})
     if 'bomb' in probes: bps[0x44d4d0] = on_bomb_launch
     if 'shadow' in probes: bps.update({0x42e2b0: on_sh_draw, 0x42e573: on_sh_light})
+    if 'proj' in probes: bps.update({0x452560: on_fire, 0x449130: on_pinit})
     if a.level:
         import pefile
         pe = pefile.PE(exe); img = pe.get_memory_mapped_image()
