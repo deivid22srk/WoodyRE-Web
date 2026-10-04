@@ -304,12 +304,12 @@ iris opens (0 → 0.85, 0.5 s) when you come back to page 1 from the load/world-
 | 3 | world select, 3D carousel (class `0x45e560`, 0x148 B; GAMEFLOW §7) | | how the camera moves to the carousel at (−11300, −6, 600) not investigated |
 | 4 | high scores (class `0x45bfb0`, 0x40 B; MENU_LOAD §4.8) | | black page, rows per finished level |
 | 5 | save slot select (class `0x45e1f0`, 0x68 B) | | not worked out |
-| 6 | 35 "Do you want to save?" / 5 Yes / 6 No | 0.4 | result 8/9 |
+| 6 | 35 "Do you want to save?" / 1 "" / 5 Yes / 6 No | 0.4 | result 8/9 (MENU_LOAD.md §5.1) |
 | 7 | 64, 65, 66, 4 "Continue" | 0.4 | no save found |
 | 8 / 9 / 0xa | 67 "Game Saved" / 59 "Save failed." / 60 "Load failed." + 4 | 0.4 | |
 | 0xb, 0xc, 0xe | empty (wait pages for reading/writing; 0xc stands 2 frames, 0xb/0xe 1, MENU_LOAD §5) | 0.4 | |
 | 0xd, 0xf..0x16 | PS2 memory card texts 69..97 | 0.3/0.4 | almost unreachable on PC |
-| 0x17 | 61 "…overwrite this save?" / Yes / No | 0.4 | |
+| 0x17 | 61 "…overwrite this save?" / 1 "" / Yes / No | 0.4 | cursor on No (`0x45b370`) |
 | 0x18 / 0x19 | pause: 4 Continue, (19 Start again), 36 Options, 2 Quit | 0.05 | enter `0x45b390` (logo off) |
 | 0x1a | 101..103 controller disconnected | 0.4 | |
 | 0x1b | options (class `0x4601f0`): 36 heading, 38 / 39 / 132 sliders, 4 Continue | 0.4 | MENU_OPTIONS.md |
@@ -318,7 +318,7 @@ iris opens (0 → 0.85, 0.5 s) when you come back to page 1 from the load/world-
 | 0x1e | results (panel page `0x45b830`, iris 0 → 0.37) | | GAMEFLOW §5.1 |
 | 0x1f | intro running (empty) | 0.6 | §4.1 |
 | 0x20 | credits (vtable `0x4aa474`, draw `0x45bd90` + roll `0x453930`): black panel, Credits.rck picture 256×256 at (32,112) from table `0x4b5df8` (set by `app+0x6c`), new one every 10 s with 1 s fades, string 131 "THE END" S = 35, and the 253-record roll `0x4b3d28` at 50 u/s; confirm after 5 s → title. See **CREDITS.md** | | |
-| 0x21 | language/memory card (console leftover) | 0.6 | |
+| 0x21 | language selection, five flags (console leftover, MENU_LOAD.md §5.1) | 0.6 | |
 
 ## 6. Port recipe
 

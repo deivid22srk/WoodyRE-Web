@@ -401,8 +401,8 @@ while still counting and SoundFx 0x3f when the page opens.
 **Deviations and assumptions**:
 - Slot choice: pages 5 / 0x17 are ported (MENU_LOAD.md §5); the wait page 0xc (2 frames) is dropped.
   Page 8 + Continue leaves the menu (not back to 6, as previously stated here); 9 goes back to 6. The
-  cursor on page 6 starts on the first selectable item ("Yes"); only for page 0x1c is it known that it
-  starts on "No".
+  cursor on page 6 starts on the first selectable item ("Yes"); pages 0x1c and 0x17 start on "No"
+  (`0x45bd40`, `0x45b370`; MENU_LOAD.md §5.1, which also has the empty line under the question of pages 6/8/9/0x17).
 - End position of state 5 (decompiled `0x4541be..0x4542af`, PERSO_STATE9.md §2): **P0** of the door vector — the
   sub-5 case restarts 0x4d with `0x44dda0(0x4d, P0/P1)` *before* the timer test (`0x4541a3`), and during an action
   `0x44e290` only writes the render position `+0x544` (`+0x550` = 1), so `+0x1f4` is always P0; then ground snap

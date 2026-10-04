@@ -476,6 +476,30 @@ instance list (`game_instance_list`). Test: `extract/Data W2D --pos -5210 2950 -
 Checked against a live capture of the original (`tools/wverify.py --windowed --shot`, W2D `--pos -5210 2950 -5450 --face 0`,
 Num0): there too each nearer W of that row is drawn over the farther ones (`out/w2d_cmp/zoom_wrow_orig_before_after.png`).
 
+## 11. The per-vertex routines of the drawers (round 34)
+The five routines that `0x43d790` (polygons, `0x43dad1..0x43db70`), `0x43e0f0` (skinned triangles, `0x43e410..0x43e4af`)
+and `0x43ea30` (outline, `0x43ec15..0x43ecbe`) call one after the other on each polygon are **polygon clippers**
+(Sutherland–Hodgman), each returning the new vertex count (the drawer drops the polygon below 3):
+
+| routine | plane | outcode bit tested (`vertex+0x40`) |
+|---|---|---|
+| `0x43c5f0` | x ≤ w (clip space: `+0xc` x, `+0x10` y, `+0x14` w) | 1 |
+| `0x43c910` | −x ≤ w | 2 |
+| `0x43cc20` | y ≤ w | 4 |
+| `0x43cf10` | −y ≤ w | 8 |
+| `0x43d1f0` | a user plane `[0x5ac864..0x5ac870]` (a·x + b·y + c·z + d ≥ 0 on the world position), only when `[0x5ac860] != 0` | — |
+
+A cut edge gets a new 0x44-byte vertex from the caller's pool (`*arg4 += 0x44`) with every attribute (position, colour,
+UV) interpolated linearly and its outcode recomputed. The four side planes are what any GPU does by itself: nothing to port.
+The user plane is **dead**: every write of `[0x5ac860]` stores 0 (`0x40fdf8`, `0x40fe6b`, `0x430017`, `0x44cf55`,
+`0x451a52`, `0x451a81`, `0x45212b`, `0x45381c`, `0x453842`), so `0x43d1f0` and the alternative light direction of
+`0x42ed16` (LIGHTING.md, uncertain list) never run.
+
+Also dead: `0x429c80`, called by the world drawers `0x429a30` / `0x429e20` only while `world+0xac != 0`: it scales the RGB
+of a vertex colour by `[0x509464]` and keeps the alpha. `world+0xac` is cleared at the start of every flush (`0x4293fb`)
+and never set, and `[0x509464]` is a BSS float nothing writes. `0x440740` (from the sprite path `0x471820`) is a plain
+3×4 matrix product.
+
 ## Uncertain
 - Draw order of the two eye layers: `0x43d790` doesn't draw directly but fills batches per (texture, mode)
   (`renderer+0x1b8`, lists `+0x1c0`); a closed batch is linked at the front, so the later-closed

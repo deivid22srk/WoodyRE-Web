@@ -396,9 +396,9 @@ Cost measured in the class-16 fight: +0.1 ms per frame.
 - C field `+0x08`: 7% deviates by a few units from the material word of the parent
   (presumably a renumbered material table after the light build); functionally irrelevant. The port looks for the real parent itself (coplanar B face containing the centroid, `lit_c_parent`): using the field as a face index linked 0 of the 7209 C polygons in W1A/W1B/House to their parent, causing the lit half of floors to flicker on and off with the visible sectors (issue #29).
 - Flag value 1 in `lightsys+0x28` (tested in `0x42ad0b`, never set).
-- `[0x5ac860]` = 1 with vector `[0x5ac864..0x5ac86c]` (`0x42ed16`): alternative
-  light direction for models (menu/cutscene?), and `[0x5ac850]/[0x5ac854]` (colour summation)
-  are not investigated.
+- `[0x5ac860]` = 1 with vector `[0x5ac864..0x5ac86c]` (`0x42ed16`): dead, every write of `[0x5ac860]` stores 0
+  (MODEL_RENDER.md §11; the same plane would clip models in `0x43d1f0`). `[0x5ac850]/[0x5ac854]` (colour summation)
+  are the per-class render colour (PERSO_DEATH.md, ROCKET.md, STORM.md).
 - The rounding of the model vertex colour after `0x43bdbd` (the clamp is at 255, §3) and the details of
   the outline/clip functions `0x43aaa0`, `0x40b8f0`, `0x40bbc0` (only needed for cast
   instance shadows) are not worked out.

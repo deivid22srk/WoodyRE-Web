@@ -1000,12 +1000,12 @@ static int g_intro_obj;                        /* message 1160 arg 2 & 0xffffff:
 
 static const MenuItem k_page0[] = { {21,1} };
 static const MenuItem k_page1[] = { {22,1}, {23,1}, {36,1}, {2,1} };
-static const MenuItem k_page6[] = { {35,2}, {5,1}, {6,1} };
+static const MenuItem k_page6[] = { {35,2}, {1,2}, {5,1}, {6,1} };   /* 0x4b58a8 (4 items, 0x4600a0): an empty line (string 1) under the question, as on pages 7/8/9/0xa/0x17 */
 static const MenuItem k_page7[] = { {64,2}, {65,2}, {66,2}, {1,2}, {4,1} };
-static const MenuItem k_page8[] = { {67,2}, {4,1} };
-static const MenuItem k_page9[] = { {59,2}, {4,1} };
+static const MenuItem k_page8[] = { {67,2}, {1,2}, {4,1} };   /* 0x4b5878 */
+static const MenuItem k_page9[] = { {59,2}, {1,2}, {4,1} };   /* 0x4b58e8 */
 static const MenuItem k_pagea[] = { {60,2}, {1,2}, {4,1} };
-static const MenuItem k_page17[] = { {61,2}, {5,1}, {6,1} };
+static const MenuItem k_page17[] = { {61,2}, {1,2}, {5,1}, {6,1} };   /* 0x4b5c98; enter 0x45b370 puts the cursor on "No" */
 static const MenuItem k_page18[] = { {4,1}, {36,1}, {2,1} };
 static const MenuItem k_page19[] = { {4,1}, {19,1}, {36,1}, {2,1} };   /* 0x4b5d18: Continue (5), Start again (18), Options (6), Quit (7) */
 static const MenuItem k_page1c[] = { {3,2}, {5,1}, {6,1} };
@@ -1366,6 +1366,7 @@ static void menu_enter(int page)
         memcpy(g_ctl.bak, g_in.bind, sizeof g_ctl.bak); memcpy(g_ctl.pbak, g_in.pbind, sizeof g_ctl.pbak); g_ctl.bak_mode = g_in.mode; g_ctl.bak_cfg = g_in.have_cfg;
         ctl_items(); M.sel = 1; break;
     case 0x1c: M.sel = 2; break;                                       /* 0x45bd40: on "No" */
+    case 0x17: M.sel = 3; break;                                       /* 0x45b370: base enter, then sel = 3 = "No" */
     case 0x18: case 0x19: case 0x1f: M.sel = 0; hud_logo_off(); break; /* 0x45b390 */
     case 0x1d: M.go_t = 5.0f; break;                                   /* 0x45bbb0: base enter, +0x14 = 5.0 */
     case 0x20: M.sel = 0; M.cred_t = 0; hud_credits_enter(); break;   /* 0x45bd60: base enter, the roll 0x4538f0(0), +0x14 = +0x18 = +0x1c = 0 */
@@ -1545,10 +1546,10 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
         else if (k->back) panel_close(0, 24);
         break; }
     case 6:                                                            /* 0x405358 */
-        if (k->ok && M.sel == 1) { int r = file_read(); if (r == 0) { file_reset(); menu_enter(5); } else { M.wait = 0; M.wait_r = r; menu_enter(0xe); } }   /* 0x405358: no file -> four free slots (0x456e20) */
-        else if (k->ok && M.sel == 2) menu_off();                                                   /* results_update closes the panel */
+        if (k->ok && M.sel == 2) { int r = file_read(); if (r == 0) { file_reset(); menu_enter(5); } else { M.wait = 0; M.wait_r = r; menu_enter(0xe); } }   /* 0x405358: no file -> four free slots (0x456e20) */
+        else if (k->ok && M.sel == 3) menu_off();                                                   /* results_update closes the panel */
         break;
-    case 0x17: if (k->ok && M.sel == 1) menu_save_slot(M.save_s); else if ((k->ok && M.sel == 2) || k->back) menu_enter(6); break;   /* 0x405586 */
+    case 0x17: if (k->ok && M.sel == 2) menu_save_slot(M.save_s); else if ((k->ok && M.sel == 3) || k->back) menu_enter(6); break;   /* 0x405586 */
     case 8: if (k->ok) menu_off(); break;                              /* 0x4056c0: "Game Saved" leaves the menu */
     case 0x20:                                                         /* the credits (docs/CREDITS.md): the draw counts +0x18, validate 0x446e90 = 5 once it is past 5 s; */
         M.cred_t += dt;                                                /* back / Esc give 24, which the handler ignores: no way out in the first 5 s */

@@ -391,8 +391,8 @@ Class `0x45e1f0` (0x68 B, vtable `0x4ab4c0`), same slot list as page 2 with thes
 - Validate `0x45e270`: confirm-close (SoundFx 0x3f) + `+0x14 = 10 + sel − 1`, but the iris then goes back **open**
   (0.37 → 1.0 in 0.5 s).
 - Handler `0x4054ac`: 24 (back) → page 6; slot s → `app+0x60 = s`; slot occupied (`0x4501f0 ≠ 0`) → **page 0x17**
-  (61 "Are you sure you want to overwrite this save?" / 5 Yes / 6 No, handler `0x405586`: Yes → write, **No and
-  back → page 6**); empty → volumes `0x456e40(music, sfx, s)` + vibration `0x456e90`, `0x456dc0(save → slot s)`,
+  (61 "Are you sure you want to overwrite this save?" / 1 "" / 5 Yes / 6 No, enter `0x45b370` puts the cursor on **No**,
+  handler `0x405586`: Yes → write, **No and back → page 6**; §5.1); empty → volumes `0x456e40(music, sfx, s)` + vibration `0x456e90`, `0x456dc0(save → slot s)`,
   page 0xc with `app+0x5c = 2` → after 2 frames `vt[4]` writes → 8 "Game Saved" / 9 "Save failed."
   (the handler `0x405662` counts `app+0x5c` down once per frame, `0x4052a4`, and acts on the frame after it hit 0; the
   read pages 0xb (`0x405276`) and 0xe (`0x405483`) start at 0, so they stand for one frame; all three are empty pages
@@ -402,6 +402,33 @@ Class `0x45e1f0` (0x68 B, vtable `0x4ab4c0`), same slot list as page 2 with thes
   page 5 and `vt[0x54](0.5)` after a successful write (meaning **uncertain**, presumably ducking/restoring).
 - **Correction to GAMEFLOW §5**: page 8 "Game Saved" + Continue does **not** go back to 6 but leaves the menu
   (`0x4056c0` → `0x405364`: `0x454050(perso)` + state 1); only page 9 "Save failed." goes back to 6.
+
+### 5.1 The item tables of the list pages, checked against the exe (round 34)
+`tools`-style check: for every list page the menu ctor `0x445e00..0x446279` creates, `vt[2]` returns the item table
+(records of 16 B `{0x0002xxxx string, flags, result, 0}`), `vt[3]` the item count, `vt[7]` the y fraction, `vt[8]` S and
+`vt[15]` the enter. The y fractions and S of all pages match the port. The tables of **four** pages did not:
+
+| page | vtable | table / count | items in the exe | enter |
+|---|---|---|---|---|
+| 6 "Do you want to save?" | `0x4aa8f4` | `0x4b58a8` / 4 | 35, **1 ""**, 5 Yes (8), 6 No (9) | base `0x4464c0`: header skip ⇒ cursor on Yes |
+| 8 "Game Saved" | `0x4aa8b4` | `0x4b5878` / 3 | 67, **1 ""**, 4 Continue (5) | base |
+| 9 "Save failed." | `0x4aa874` | `0x4b58e8` / 3 | 59, **1 ""**, 4 Continue (5) | base |
+| 0x17 "…overwrite this save?" | `0x4aa4f4` | `0x4b5c98` / 4 | 61, **1 ""**, 5 Yes (8), 6 No (9) | **`0x45b370`: base enter, then `sel = 3` = "No"** |
+
+String 1 is the empty line (as on pages 7, 0xa, 0xf..0x16), so the choices stand one text line lower than the question,
+and the overwrite prompt starts on "No" like "Are you sure?" (page 0x1c, `0x45bd40`). The port had the tables without
+the empty line and the cursor of page 0x17 on "Yes"; **fixed in round 34** (`k_page6/8/9/17`, `menu_enter(0x17)`,
+handlers on the new indices). Test: `WOODY_MSGAT="2 1083 0" WOODY_KEYS="9:RET 11:RET 13:RET 17:RET 19:RET"` on W1A with
+a `woodyre.sav` whose slot 1 is used (page 6 at 15.3 s, page 0x17 at 19.6 s; `WOODY_MENULOG=1`).
+
+The other enters that are not the base: page 0x12 `0x45b310` (`sel = 6`) and 0x16 `0x45b350` (`sel = 7`) are PS2
+memory-card pages (69..76 + Yes/No, unreachable on PC); 0x18/0x19/0x1f `0x45b390`, 0x1c `0x45bd40`, 0x1d `0x45bbb0`,
+0x20 `0x45bd60` are documented elsewhere. Page **0x21** (vtable `0x4aa434`, table `0x4b5d88`, enter `0x45b3a0`, draw
+`0x45b3c0`, navigation `0x45b620`/`0x45b680`/`0x45b6e0`/`0x45b760`, validate `0x45b7e0` returning 0x15/0x16/0x17 (`0x45b7fb`..))
+is the console **language selection**: five 128×128 flags of the menu sprite bank at (30,40), (60,236), (256,335),
+(452,236), (482,40) around a 256×256 picture at (208,20), the selected flag blinking (`[0x5d7b1c]` against `[0x5d7b00]`).
+Nothing on PC opens it (GAMEFLOW.md §5). The per-page getters (`0x446310`, `0x446320`, `0x446330`, `0x446340`, `0x446350`, `0x446360`, `0x446370`, `0x446380`, `0x446390`, `0x4463a0`, `0x446ba0`, `0x446bb0`, `0x446bc0`, `0x446bd0`, `0x446be0`, `0x446bf0`, `0x446c00`, `0x446c10`, `0x446c20`, `0x446c30`, `0x446c40`, `0x446c50`, `0x446c60`, `0x446c70`, `0x446c80`, `0x446c90`, `0x446ca0`, `0x446cb0`, `0x446cc0`, `0x446cd0`, `0x446ce0`, `0x446cf0`, `0x446d00`, `0x446d10`, `0x446d20`, `0x446d30`, `0x446d40`, `0x446d50`, `0x446d60`, `0x446d70`, `0x446d80`, `0x446d90`, `0x446da0`, `0x446db0`, `0x446dc0`, `0x446dd0`, `0x446de0`, `0x446df0`, `0x446e00`, `0x446e50`, `0x446e60`, `0x446eb0`, `0x446ec0`, `0x446ed0`, `0x446ee0`, `0x446ef0`), `0x45b300`,
+`0x45b330`, `0x45e210`/`0x45e220`, `0x460020`, `0x4601d0`/`0x4601e0` only return the page id, table, count or y fraction.
 
 ## 6. `Woody.sav` byte-exact
 

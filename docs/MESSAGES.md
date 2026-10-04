@@ -126,7 +126,7 @@ thus comes back through a script variable (watchers get woken).
 > 3D voices of (inst, id) with fade, 1652 = stop 2D, 1620/1630 = 3D loops, 1622/1623/1627 = 3D one-shot, 1600/1602 = 2D one-shot, 1606 = 2D loop.
 | id | args | usage | meaning |
 |---|---|---|---|
-| 1600..1619 | … | 0 | tilde 2D variants (vtable +0x24/+0x28: PlaySound2D(id, 0, 1.0, …)) |
+| 1600..1619 | … | 0 | check 2D one-shots, queued plays and loops; per id in SOUND.md §1 (round 34: the scripts send 1600, 1602, 1606 and 1609) |
 | 1606 | id, f | 8 | check `vt[0x28](id, 0, 1.0, f, 1e13)` |
 | 1620 | inst, id, vol | 445 | check **PlaySound3D**: `vt[0x40](id, inst, 0, 1.0, 1e10, vol, 2.0)` |
 | 1621 | inst, id, vol, f | 37 | check like 1620 with `f·0.01` |
@@ -136,7 +136,7 @@ thus comes back through a script variable (watchers get woken).
 | 1630 | inst, id, a, b | 233 | check `vt[0x40](id, inst, 0, 1.0, 1e13, a, b·0.01)` |
 | 1631 | inst, id, a, b, c | 22 | check like 1630 with `c·0.01` as an extra |
 | 1632..1636 | … | 4-19 | check variants (vt[0x38]/[0x40]) with ×0.01 and ×`0x4ab990` scaling |
-| 1646/1656, 1649/1650 (`0x41fa40/50`), 1652..1654, 1657 | … | 0-26 | tilde stop/pause/resume |
+| 1646/1656, 1649/1650 (`0x41fa40/50`), 1652..1654, 1657 | … | 0-26 | check per id in SOUND.md §1 (1652 = stop 2D, 1657 = fade-in time of the next voice; the scripts send only these two of the group) |
 | 1655 | id | 26 | check `vt[0x48](id)` = StopSound |
 
 ## Engine → script
@@ -152,4 +152,4 @@ A static scan of all 28 `code` files (every `SEND`, with the target's class from
 1140..1142, 1150..1152, 1160, 1170..1173, 1180, 1200, 1500..1509, 1511 and the sound ids of SOUND.md. Every one of them
 is now handled by `on_msg` / `cam_msg` in `src/main_engine.c` (33, 51, 58, 63 and 1010 as deliberate no-ops, see their
 rows). `WOODY_MSGUNK=1` prints each id that falls through to the default case, once, with its arguments; a run of all 28
-levels to 1.5 s prints nothing.
+levels to 1.5 s prints nothing. Round 34: the same over the first 15 s of all 27 playable levels (House, the 24 game levels, Blackbox, Credits) also prints nothing, and the ids still marked tilde in this file are either superseded by SOUND.md §1 (the sound rows) or never sent by a script (29 for classes 21/40/120/121).
