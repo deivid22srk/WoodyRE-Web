@@ -774,7 +774,8 @@ static void ctl_apply_cfg(void)                                  /* woodyre.cfg 
 {
     for (int i = 0; i < g_nbind_cfg; i++) {
         char l[100]; snprintf(l, sizeof l, "%s", g_bind_cfg[i]);
-        int pad = l[0] == 'p'; char *eq = strchr(l, '='); *eq = 0; int row = -1;
+        int pad = l[0] == 'p'; char *eq = strchr(l, '='); if (!eq) continue;   /* a line longer than g_bind_cfg[0] lost its '=' */
+        *eq = 0; int row = -1;
         for (int r = 0; r < 11; r++) if (!strcmp(l + 4, k_ctl_rows[r].cfg)) row = r;
         if (row < 0) { printf("input: woodyre.cfg: unknown binding %s\n", l); continue; }
         int codes[4] = { 0 }, n = 0;
