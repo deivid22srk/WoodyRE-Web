@@ -3374,7 +3374,8 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
     case 45:                                                                        /* SetFlags (0x42ddb4) is a plain store on every instance, the player included: bit
                                                                                      * 0x20 is what gives a model its black outline (docs/MODEL_RENDER.md 11) */
         if (in && m->id == 6 && m->nargs > 1 && !m->args[1]) enemies_msg6_off(&g_enemies, in);   /* Enemy::HandleMsg 0x41abfd: UnPress 0x41ac11 before 0x407850 */
-        if (in) inst_msg(in, m->id, m->args, m->nargs, g_now);
+        if (in && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;   /* 12/13 while an animation runs: offered again
+                                                                                     * every frame until it ended (retry list 0x401250, docs/INSTANCE.md 5) */
         break;
     case 42: case 43: case 44: case 46: case 56: case 57:
         if (in && in->scripted && inst_msg(in, m->id, m->args, m->nargs, g_now) && g_nretry < 32) g_retry[g_nretry++] = *m;
