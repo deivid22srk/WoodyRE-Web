@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stddef.h>
 
 const char *eko_opcode_names[64] = {
     "NOP", "HANG", "END", "PUSH", "PUSHSTR", "PUSHVAR", "STOREVAR", "ADD", "SUB", "MUL",
@@ -17,51 +18,68 @@ const char *eko_opcode_names[64] = {
 static void warn(EkoVM *vm, const char *s) { if (vm->on_warn) vm->on_warn(vm, s, vm->user); }
 
 /* ------------------------------------------------------------------ loading */
+/* every count and offset of the header is checked against the file before it is used (a damaged or truncated code file
+ * fails to load instead of reading outside the buffer); the shipped 28 pass all of these */
+static int span_ok(size_t n, uint64_t off, uint64_t len) { return off <= n && len <= n - off; }
+/* count [n][ids] watcher lists from word q on; the pointer to list i goes to (char *)base + i * stride */
+static int lists_ok(const uint32_t *w, size_t n, uint64_t q, uint32_t count, void *base, size_t stride)
+{
+    for (uint32_t i = 0; i < count; i++) {
+        if (q >= n || !span_ok(n, q + 1, w[q])) return 0;
+        const uint32_t *l = w + q; memcpy((char *)base + (size_t)i * stride, &l, sizeof l); q += 1 + (uint64_t)w[q];
+    }
+    return 1;
+}
 int eko_load(EkoVM *vm, const void *data, size_t size)
 {
     memset(vm, 0, sizeof *vm);
     if (size < 16 * 4 || memcmp(data, "EKO CODE", 8) != 0) return -1;
     vm->nwords = size / 4;
-    vm->w = (uint32_t *)malloc(vm->nwords * 4);
+    vm->w = (uint32_t *)malloc(vm->nwords * 4); if (!vm->w) return -1;
     memcpy(vm->w, data, vm->nwords * 4);
-    uint32_t *w = vm->w;
+    uint32_t *w = vm->w; const size_t n = vm->nwords;
     vm->compiler_version = w[vm->nwords - 1];
     if (vm->compiler_version != 6) warn(vm, "Conflit: compiler version != 6");
     vm->nobj = w[2];
+    if (!span_ok(n, w[3], vm->nobj)) goto bad;
     vm->objs = w + w[3];                       /* 0x5d0538 */
     vm->base = w[3] + vm->nobj;                /* 0x5d0534 */
     /* variables: 8-byte entries then [count][ids] lists (0x5d0540) */
     vm->nvars = w[4];
     uint32_t p = w[5];
-    vm->varval = (int32_t *)calloc(vm->nvars + 1, sizeof(int32_t));
-    vm->varwatch = (const uint32_t **)calloc(vm->nvars + 1, sizeof(uint32_t *));
-    { uint32_t q = p + vm->nvars * 2;
-      for (uint32_t i = 0; i < vm->nvars; i++) { vm->varwatch[i] = w + q; q += 1 + w[q]; } }
+    if (!span_ok(n, p, (uint64_t)vm->nvars * 2)) goto bad;
+    vm->varval = (int32_t *)calloc((size_t)vm->nvars + 1, sizeof(int32_t));
+    vm->varwatch = (const uint32_t **)calloc((size_t)vm->nvars + 1, sizeof(uint32_t *));
+    if (!vm->varval || !vm->varwatch || !lists_ok(w, n, (uint64_t)p + (uint64_t)vm->nvars * 2, vm->nvars, (void *)vm->varwatch, sizeof *vm->varwatch)) goto bad;
     /* volumes: 16-byte entries then lists (0x5d0544) */
     vm->nvol = w[6]; p = w[7];
-    vm->vol = (EkoVolume *)calloc(vm->nvol + 1, sizeof(EkoVolume));
-    { uint32_t q = p + vm->nvol * 4;
-      for (uint32_t i = 0; i < vm->nvol; i++) { vm->vol[i].watch = w + q; q += 1 + w[q]; } }
+    if (!span_ok(n, p, (uint64_t)vm->nvol * 4)) goto bad;
+    vm->vol = (EkoVolume *)calloc((size_t)vm->nvol + 1, sizeof(EkoVolume));
+    if (!vm->vol || !lists_ok(w, n, (uint64_t)p + (uint64_t)vm->nvol * 4, vm->nvol, (char *)vm->vol + offsetof(EkoVolume, watch), sizeof(EkoVolume))) goto bad;
     /* strings (0x5ce2b0) */
     vm->nstr = w[8]; p = w[9];
-    vm->str = (const char **)calloc(vm->nstr + 1, sizeof(char *));
-    { const char *s = (const char *)(w + p + vm->nstr);
-      for (uint32_t i = 0; i < vm->nstr; i++) { vm->str[i] = s; s += strlen(s) + 1; } }
+    if (!span_ok(n, p, vm->nstr)) goto bad;
+    vm->str = (const char **)calloc((size_t)vm->nstr + 1, sizeof(char *)); if (!vm->str) goto bad;
+    { const char *s = (const char *)(w + p + vm->nstr), *end = (const char *)(w + n);
+      for (uint32_t i = 0; i < vm->nstr; i++) { const char *z = s < end ? memchr(s, 0, (size_t)(end - s)) : NULL; if (!z) goto bad; vm->str[i] = s; s = z + 1; } }
     /* collisions: 12-byte entries then lists (0x5d0548) */
     vm->ncol = w[10]; p = w[11];
-    vm->col = (EkoCollision *)calloc(vm->ncol + 1, sizeof(EkoCollision));
-    { uint32_t q = p + vm->ncol * 3;
-      for (uint32_t i = 0; i < vm->ncol; i++) { vm->col[i].watch = w + q; q += 1 + w[q]; } }
+    if (!span_ok(n, p, (uint64_t)vm->ncol * 3)) goto bad;
+    vm->col = (EkoCollision *)calloc((size_t)vm->ncol + 1, sizeof(EkoCollision));
+    if (!vm->col || !lists_ok(w, n, (uint64_t)p + (uint64_t)vm->ncol * 3, vm->ncol, (char *)vm->col + offsetof(EkoCollision, watch), sizeof(EkoCollision))) goto bad;
 
-    vm->stamp = (uint32_t *)calloc(vm->nobj + 1, 4);
-    vm->msgmask = (uint32_t *)calloc(vm->nobj + 1, 4);
-    vm->changed_vol = (uint32_t *)calloc(vm->nvol + 1, 4);
-    vm->changed_col = (uint32_t *)calloc(vm->ncol + 1, 4);
+    vm->stamp = (uint32_t *)calloc((size_t)vm->nobj + 1, 4);
+    vm->msgmask = (uint32_t *)calloc((size_t)vm->nobj + 1, 4);
+    vm->changed_vol = (uint32_t *)calloc((size_t)vm->nvol + 1, 4);
+    vm->changed_col = (uint32_t *)calloc((size_t)vm->ncol + 1, 4);
+    if (!vm->stamp || !vm->msgmask || !vm->changed_vol || !vm->changed_col) goto bad;
     for (int i = 0; i < EKO_MAX_ACTORS - 1; i++) vm->actor_pool[i].next = &vm->actor_pool[i + 1];
     vm->actor_free = vm->actor_pool;
     vm->wake_cur = vm->wake_a; vm->wake_run = vm->wake_b;
     vm->frame = 1;
     return 0;
+bad:
+    eko_free(vm); return -1;
 }
 
 void eko_free(EkoVM *vm)
