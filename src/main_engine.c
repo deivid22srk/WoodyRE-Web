@@ -3418,10 +3418,10 @@ static void on_msg(EkoVM *vm, const EkoMsg *m, void *user)
         }
         break;
     case 1020:                                                                      /* 0x44516a: Perso->vt[38](1) = Kill(1) 0x44c110, sent by the pit / water volumes; + 0x459030 unless CamMgr+0x138 == 5 (the side view).
-                                                                                     * The original calls 0x459030 even when Kill refuses (Boss2 beaten, App closing); the port only with a death running */
+                                                                                     * 0x459030 runs even when Kill refuses (Boss2 beaten, App closing): only the side-view test 0x44517c gates it */
         if (g_player) {
             player_kill(g_player, 1);
-            if (g_cam.mode != 0x20 && g_player->dead_kind) { g_cam.fix_pos = g_cam.pos; g_cam.fix_target = g_player->inst; g_cam.fix_f = g_cam.look_off.y; g_cam.cut = 1; cam_set_mode(2); g_cam.death_cam = 1; }
+            if (g_cam.mode != 0x20) { g_cam.fix_pos = g_cam.pos; g_cam.fix_target = g_player->inst; g_cam.fix_f = g_cam.look_off.y; g_cam.cut = 1; cam_set_mode(2); g_cam.death_cam = 1; }
         }
         break;
     /* game flow (docs/GAMEFLOW.md) */
