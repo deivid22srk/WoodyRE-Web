@@ -1428,7 +1428,7 @@ static void menu_update(EkoVM *vm, const MenuKeys *k, float dt)
             case 2:
                 if (r == 24) { menu_enter(1); return; }
                 {   int s = r - 10; g_save = g_file.slot[s]; g_slot = s;                                  /* 0x456df0, 0x4052db: the slot's own volumes too */
-                    g_opt.music = (int)g_file.music[s]; g_opt.sfx = (int)g_file.sfx[s]; if (g_opt.music > 100) g_opt.music = 100; if (g_opt.sfx > 100) g_opt.sfx = 100;
+                    g_opt.music = g_file.music[s] > 100 ? 100 : (int)g_file.music[s]; g_opt.sfx = g_file.sfx[s] > 100 ? 100 : (int)g_file.sfx[s];   /* unsigned: a damaged slot cannot give a negative volume */
                     opt_apply(); car_reset(); menu_enter(3); }
                 return;
             case 3:
