@@ -92,6 +92,7 @@ static void progress(void)
 
 /* ---- SHA-1 (Windows CNG) ---- */
 static BCRYPT_ALG_HANDLE g_alg;
+static int g_fit[DATAFILES_RELEASES];   /* per supported release: how many files of the last copy/verify were its copy (datafile_tally) */
 
 /* reads one manifest file under src_root, writes it to dst_root when that is set (as name.part, renamed at the end) and compares
  * its SHA-1: 1 = equal, 0 = differs, -1 = missing (src) or cannot be written (dst) */
@@ -119,14 +120,14 @@ static int file_pass(const wchar_t *src_root, const wchar_t *dst_root, int i, un
     CloseHandle(s);
     char hex[41] = "";
     if (h) { UCHAR dig[20]; BCryptFinishHash(h, dig, 20, 0); BCryptDestroyHash(h); for (int k = 0; k < 20; k++) sprintf(hex + 2 * k, "%02x", dig[k]); }
-    if (ok > 0 && (size != k_datafiles[i].size || (h && strcmp(hex, k_datafiles[i].sha1)))) ok = 0;
+    if (ok > 0 && !datafile_tally(i, size, h ? hex : NULL, g_fit)) ok = 0;
     if (d != INVALID_HANDLE_VALUE) {
         if (!CloseHandle(d) || ok < 0 || !MoveFileExW(tp, dp, MOVEFILE_REPLACE_EXISTING)) { DeleteFileW(tp); return -1; }
     }
     return ok;
 }
 
-/* copies the manifest from src (CD layout) into <home>\data. Returns the number of files that differ from the 1.00 CD, -1 = failed */
+/* copies the manifest from src (CD layout) into <home>\data. Returns the number of files that match no supported release, -1 = failed */
 static int copy_cd(const wchar_t *src, const wchar_t *home)
 {
     wchar_t dst[WPATH]; swprintf(dst, WPATH, L"%ls\\data", home); CreateDirectoryW(dst, NULL);
@@ -137,22 +138,23 @@ static int copy_cd(const wchar_t *src, const wchar_t *home)
     }
     DWORD bufsz = 4u << 20; unsigned char *buf = malloc(bufsz); if (!buf) return -1;
     g_done = 0; g_total = DATAFILES_BYTES; progress_show(); progress();
-    int bad = 0, first_bad = -1;
+    int bad = 0, first_bad = -1; memset(g_fit, 0, sizeof g_fit);
     for (int i = 0; i < DATAFILES_COUNT; i++) {
         int r = file_pass(src, dst, i, buf, bufsz);
         if (r < 0) {
             if (g_win) { DestroyWindow(g_win); g_win = g_text = NULL; }
             wchar_t m[WPATH + 400]; swprintf(m, WPATH + 400, L"Could not copy %hs\nfrom %ls\\ to\n%ls\\\n\nIs the CD complete, and is there room on the disk?\n"
-                                                             L"(WoodyRE needs the English 1.00 CD; other releases are not supported.)", k_datafiles[i].path, src, dst);
+                                                             L"(WoodyRE supports the English 1.00, Brazilian and Polish CDs.)", k_datafiles[i].path, src, dst);
             MessageBoxW(NULL, m, TITLE, MB_ICONERROR); free(buf); return -1;
         }
-        if (!r) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s differs from the English 1.00 CD\n", k_datafiles[i].path); }
+        if (!r) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s matches none of the supported CDs\n", k_datafiles[i].path); }
     }
     free(buf);
     if (g_win) { DestroyWindow(g_win); g_win = g_text = NULL; }
+    printf("data: copied from the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
-        wchar_t m[512]; swprintf(m, 512, L"%d of the copied files differ from the English 1.00 CD (the first: %hs).\n\n"
-                                         L"WoodyRE is made for that version; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+        wchar_t m[512]; swprintf(m, 512, L"%d of the copied files match none of the supported CDs (the first: %hs).\n\n"
+                                         L"WoodyRE supports the English 1.00, Brazilian and Polish CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
         MessageBoxW(NULL, m, TITLE, MB_ICONWARNING);
     }
     return bad;
@@ -237,7 +239,7 @@ const char *data_find(void)
             if (r == IDNO && !pick_folder(src)) continue;
         } else {
             r = MessageBoxW(NULL, L"WoodyRE needs the files of the original game CD-ROM:\n"
-                                  L"Woody Woodpecker: Escape from Buzz Buzzard Park (PC, English version).\n\n"
+                                  L"Woody Woodpecker: Escape from Buzz Buzzard Park (PC; the English, Brazilian or Polish CD).\n\n"
                                   L"Insert the CD or mount your ISO image of it, then press Yes to search again.\n"
                                   L"Press No to choose a folder that holds a copy of the CD's files instead.", TITLE, MB_YESNOCANCEL | MB_ICONINFORMATION);
             if (r == IDCANCEL) break;
@@ -261,12 +263,14 @@ int data_verify(const char *data_dir)
     snprintf(r, sizeof r, "%s\\..", data_dir);
     if (!MultiByteToWideChar(CP_ACP, 0, r, -1, root, WPATH)) return -1;
     DWORD bufsz = 4u << 20; unsigned char *buf = malloc(bufsz); if (!buf) return -1;
-    int bad = 0;
+    int bad = 0; memset(g_fit, 0, sizeof g_fit);
     for (int i = 0; i < DATAFILES_COUNT; i++) {
         int k = file_pass(root, NULL, i, buf, bufsz);
-        if (k <= 0) { bad++; printf("verify: %s %s\n", k_datafiles[i].path, k < 0 ? "MISSING" : "differs"); }
+        if (k <= 0) { bad++; printf("verify: %s %s\n", k_datafiles[i].path, k < 0 ? "MISSING" : "matches none of the supported CDs"); }
     }
     free(buf);
-    printf("verify: %d of %d files equal the English 1.00 CD%s\n", DATAFILES_COUNT - bad, DATAFILES_COUNT, bad ? "" : " - all good");
+    int best = datafile_best(g_fit);
+    printf("verify: %d of %d files belong to a supported CD; the copy is the %s CD (%d of its files)%s\n", DATAFILES_COUNT - bad, DATAFILES_COUNT,
+           k_releases[best], g_fit[best], bad ? "" : " - all good");
     return bad;
 }

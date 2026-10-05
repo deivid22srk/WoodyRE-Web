@@ -45,8 +45,10 @@ copy `Data`, `Common`, `Logo`, `Game` and `Music.bf` there with a USB cable. `wo
 and `mods/` live in `Android/data/io.github.jjmhalew.woodyre/files`. A Bluetooth or USB pad works like on Linux and hides
 the touch controls; touching the screen brings them back.
 
-**Supported version:** the English PC CD-ROM, version 1.00 (October 2001). Other releases, such as the later Brazilian
-"Pica-Pau" CD, contain changed levels and are not supported. `WoodyRE.exe --verify` checks your copy (output in `woodyre.log`).
+**Supported versions:** the English PC CD-ROM, version 1.00 (October 2001), the Brazilian Portuguese "Pica-Pau: A Fuga do
+Parque do Zeca Urubu!" CD and the Polish "Wielka Draka w Parku Buzza Buzzarda" CD (both February 2002, with a few level fixes;
+the game is in their language). `WoodyRE.exe --verify` checks your copy and names the release (output in `woodyre.log`); see
+[docs/RELEASES.md](docs/RELEASES.md) for what differs between them. Other releases may work but are untested.
 
 ### Controls
 | Action | Keys | PlayStation pad | Xbox naming |

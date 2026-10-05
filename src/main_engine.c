@@ -3779,7 +3779,7 @@ int main(int argc, char **argv)
 #ifdef WOODY_GUI
     if (!wenv("WOODY_CONSOLE")) freopen("woodyre.log", "w", stdout);              /* the windowed release build: the log beside woodyre.cfg */
 #endif
-    int verify = 0;                                                               /* --verify: check the data against the English 1.00 CD and quit */
+    int verify = 0;                                                               /* --verify: check the data against the supported CDs and quit */
     const char *shot_path = NULL; double shot_after = 0;                          /* --shot file.ppm seconds: screenshot then quit */
     int have_cam = 0; float cam_args[5] = {0, 0, 0, 0, 0};                          /* --cam x y z yaw pitch (degrees) */
     double jump_at = -1; float max_y = -1e30f, start_y = 0;                       /* --jump T: hold jump from T s for 1 s (testing), reports the apex */

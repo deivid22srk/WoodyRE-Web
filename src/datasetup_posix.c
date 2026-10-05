@@ -94,6 +94,7 @@ static int ask(const char *text, const char *yes, const char *no)   /* 1 = yes, 
     return r;
 }
 
+static int g_fit[DATAFILES_RELEASES];   /* per supported release: how many files of the last copy/check were its copy (datafile_tally) */
 /* reads one manifest file under src_root, writes it under dst_root when that is set (as name.part, renamed at the end) and
  * compares its SHA-1: 1 = equal, 0 = differs, -1 = missing (src) or cannot be written (dst) */
 static int file_pass(const char *src_root, const char *dst_root, int i, unsigned char *buf, size_t bufsz, unsigned long long *done)
@@ -114,7 +115,7 @@ static int file_pass(const char *src_root, const char *dst_root, int i, unsigned
     }
     fclose(s);
     char hex[41]; sha1_hex(&h, hex);
-    if (ok > 0 && (size != k_datafiles[i].size || strcmp(hex, k_datafiles[i].sha1))) ok = 0;
+    if (ok > 0 && !datafile_tally(i, size, hex, g_fit)) ok = 0;
     if (d) { if (fclose(d) || ok < 0 || rename(tp, dp)) { remove(tp); return -1; } }
     return ok;
 }
@@ -127,7 +128,7 @@ static int copy_cd(const char *src, const char *home)       /* the number of fil
         snprintf(m, sizeof m, "Not enough free disk space for the game files (%u MB) in\n%s", DATAFILES_BYTES >> 20, dst); plat_message(m, 1); return -1;
     }
     size_t bufsz = 4u << 20; unsigned char *buf = malloc(bufsz); if (!buf) return -1;
-    unsigned long long done = 0; int bad = 0, first_bad = -1, last = -1;
+    unsigned long long done = 0; int bad = 0, first_bad = -1, last = -1; memset(g_fit, 0, sizeof g_fit);
     printf("data: copying the game files from %s to %s\n", src, dst); fflush(stdout);
     for (int i = 0; i < DATAFILES_COUNT; i++) {
         int r = file_pass(src, dst, i, buf, bufsz, &done);
@@ -135,13 +136,14 @@ static int copy_cd(const char *src, const char *home)       /* the number of fil
             snprintf(m, sizeof m, "Could not copy %s\nfrom %s/ to\n%s/\n\nIs the CD complete, and is there room on the disk?", k_datafiles[i].path, src, dst);
             plat_message(m, 1); free(buf); return -1;
         }
-        if (!r) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s differs from the English 1.00 CD\n", k_datafiles[i].path); }
+        if (!r) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s matches none of the supported CDs\n", k_datafiles[i].path); }
         int pct = (int)(done * 100 / DATAFILES_BYTES); if (pct / 10 != last) { last = pct / 10; printf("data: %d%%\n", pct); fflush(stdout); }
     }
     free(buf);
+    printf("data: copied from the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
-        snprintf(m, sizeof m, "%d of the copied files differ from the English 1.00 CD (the first: %s).\n\n"
-                              "WoodyRE is made for that version; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+        snprintf(m, sizeof m, "%d of the copied files match none of the supported CDs (the first: %s).\n\n"
+                              "WoodyRE supports the English 1.00, Brazilian and Polish CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
         plat_message(m, 1);
     }
     return bad;
@@ -198,7 +200,7 @@ const char *data_find(void)
             return enter(home, "data/Data");
         }
         snprintf(m, sizeof m, "WoodyRE needs the files of the original game CD-ROM:\n"
-                              "Woody Woodpecker: Escape from Buzz Buzzard Park (PC, English version).\n\n"
+                              "Woody Woodpecker: Escape from Buzz Buzzard Park (PC; the English, Brazilian or Polish CD).\n\n"
                               "Insert the CD or mount your ISO image of it, then press Search.\n"
                               "Or copy Data, Common, Logo, Game and Music.bf from the CD into\n%s/data\nyourself and start WoodyRE again.", home);
         if (ask(m, "Search", NULL) != 1) return NULL;
@@ -309,7 +311,7 @@ static int iso_copy(int fd, const char *home)               /* the number of fil
         snprintf(m, sizeof m, "Not enough free space for the game files (%u MB) in\n%s", DATAFILES_BYTES >> 20, dst); plat_message(m, 1); return -1;
     }
     size_t bufsz = 4u << 20; unsigned char *buf = malloc(bufsz); if (!buf) return -1;
-    unsigned long long done = 0; int bad = 0, first_bad = -1, last = -1;
+    unsigned long long done = 0; int bad = 0, first_bad = -1, last = -1; memset(g_fit, 0, sizeof g_fit);
     printf("data: copying the game files from the ISO image to %s\n", dst);
     for (int i = 0; i < DATAFILES_COUNT; i++) {
         char dp[PMAX], tp[PMAX + 8]; uint32_t lba, len; int ok = 1;
@@ -329,12 +331,13 @@ static int iso_copy(int fd, const char *home)               /* the number of fil
             plat_message(m, 1); free(buf); return -1;
         }
         char hex[41]; sha1_hex(&h, hex);
-        if (len != k_datafiles[i].size || strcmp(hex, k_datafiles[i].sha1)) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s differs from the English 1.00 CD\n", k_datafiles[i].path); }
+        if (!datafile_tally(i, len, hex, g_fit)) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s matches none of the supported CDs\n", k_datafiles[i].path); }
     }
     free(buf); java_progress(NULL);
+    printf("data: the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
-        snprintf(m, sizeof m, "%d of the copied files differ from the English 1.00 CD (the first: %s).\n\n"
-                              "WoodyRE is made for that version; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+        snprintf(m, sizeof m, "%d of the copied files match none of the supported CDs (the first: %s).\n\n"
+                              "WoodyRE supports the English 1.00, Brazilian and Polish CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
         plat_message(m, 1);
     }
     return bad;
@@ -343,15 +346,16 @@ static void check_copy(const char *home)                     /* after the Java s
 {
     char root[PMAX], m[PMAX + 300]; snprintf(root, sizeof root, "%s/data", home);
     size_t bufsz = 4u << 20; unsigned char *buf = malloc(bufsz); if (!buf) return;
-    unsigned long long done = 0; int bad = 0, first_bad = -1, last = -1;
+    unsigned long long done = 0; int bad = 0, first_bad = -1, last = -1; memset(g_fit, 0, sizeof g_fit);
     for (int i = 0; i < DATAFILES_COUNT; i++) {
         if (file_pass(root, NULL, i, buf, bufsz, &done) <= 0) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s missing or differs\n", k_datafiles[i].path); }
         progress_pct("Checking the game files...", done, &last);
     }
     free(buf); java_progress(NULL);
+    printf("data: the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
-        snprintf(m, sizeof m, "%d game files are missing or differ from the English 1.00 CD (the first: %s).\n\n"
-                              "WoodyRE is made for that version; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+        snprintf(m, sizeof m, "%d game files are missing or match none of the supported CDs (the first: %s).\n\n"
+                              "WoodyRE supports the English 1.00, Brazilian and Polish CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
         plat_message(m, 1);
     }
 }
@@ -364,7 +368,7 @@ const char *data_find(void)
     snprintf(p, sizeof p, "%s/data", home); if (cd_layout(p)) return enter(home, "data/Data");
     for (;;) {
         snprintf(m, sizeof m, "WoodyRE needs the files of the original game CD-ROM:\n"
-                              "Woody Woodpecker: Escape from Buzz Buzzard Park (PC, English version).\n\n"
+                              "Woody Woodpecker: Escape from Buzz Buzzard Park (PC; the English, Brazilian or Polish CD).\n\n"
                               "Choose an ISO image of the CD, or a folder with a copy of it (Data, Common, Logo, Game and Music.bf). "
                               "The game files (%u MB) are copied once.\n\n"
                               "Or copy those files with a USB cable into\n%s/data\nand start WoodyRE again.", DATAFILES_BYTES >> 20, home);
@@ -393,13 +397,15 @@ int data_verify(const char *data_dir)
 {
     char root[PMAX]; snprintf(root, sizeof root, "%s/..", data_dir);
     size_t bufsz = 4u << 20; unsigned char *buf = malloc(bufsz); if (!buf) return -1;
-    int bad = 0;
+    int bad = 0; memset(g_fit, 0, sizeof g_fit);
     for (int i = 0; i < DATAFILES_COUNT; i++) {
         int k = file_pass(root, NULL, i, buf, bufsz, NULL);
-        if (k <= 0) { bad++; printf("verify: %s %s\n", k_datafiles[i].path, k < 0 ? "MISSING" : "differs"); }
+        if (k <= 0) { bad++; printf("verify: %s %s\n", k_datafiles[i].path, k < 0 ? "MISSING" : "matches none of the supported CDs"); }
     }
     free(buf);
-    printf("verify: %d of %d files equal the English 1.00 CD%s\n", DATAFILES_COUNT - bad, DATAFILES_COUNT, bad ? "" : " - all good");
+    int best = datafile_best(g_fit);
+    printf("verify: %d of %d files belong to a supported CD; the copy is the %s CD (%d of its files)%s\n", DATAFILES_COUNT - bad, DATAFILES_COUNT,
+           k_releases[best], g_fit[best], bad ? "" : " - all good");
     return bad;
 }
 #endif

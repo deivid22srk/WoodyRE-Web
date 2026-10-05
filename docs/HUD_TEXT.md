@@ -136,6 +136,10 @@ in the exe: `RckGet` indexes directly (`0x441580`). The level `Lang` (`\Data\Lan
 `0x4b1314`) has 6 images (flags) and no strings; it presumably selects which set of banks the
 installer/launcher uses — **uncertain, not followed**; in this (English) build there is nothing to choose.
 
+The Brazilian and Polish CDs (docs/RELEASES.md) confirm this: same exe, their own text and fonts, and in those two the font
+even differs per level, so a glyph code means a different letter per release and per level. The port's own ASCII texts look
+their letters up by glyph shape (`font_letters`, `src/hud.c`); `tools/glyphmatch.py` prints another release's strings that way.
+
 The full Common table is in §8.
 
 ---------------------------------------------------------------------------------------------------
