@@ -139,6 +139,9 @@ installer/launcher uses — **uncertain, not followed**; in this (English) build
 The Brazilian and Polish CDs (docs/RELEASES.md) confirm this: same exe, their own text and fonts, and in those two the font
 even differs per level, so a glyph code means a different letter per release and per level. The port's own ASCII texts look
 their letters up by glyph shape (`font_letters`, `src/hud.c`); `tools/glyphmatch.py` prints another release's strings that way.
+A level font only has the letters its language uses (the English one lacks `Z` and `j`, the Polish `X`, the Russian `J`, `N`,
+`U`, `V`, `z`...). Every release's Credits font holds all glyphs of its level fonts, pixel for pixel and with the same metrics,
+plus the full ASCII set, so port text takes a missing letter from `Data/Credits/Credits.rck` (code `0x8000 | n`, port only).
 
 The full Common table is in §8.
 

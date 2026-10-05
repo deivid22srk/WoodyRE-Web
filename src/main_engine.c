@@ -3829,8 +3829,8 @@ int main(int argc, char **argv)
     if (verify) {
         int bad = data_verify(dir);
 #ifdef WOODY_GUI
-        char m[200] = "All game files equal the English 1.00 CD.";
-        if (bad) snprintf(m, sizeof m, "%d game files are missing or differ from the English 1.00 CD (the list is in woodyre.log).", bad);
+        char m[200] = "All game files belong to a supported CD (woodyre.log names it).";
+        if (bad) snprintf(m, sizeof m, "%d game files are missing or match none of the supported CDs (the list is in woodyre.log).", bad);
         plat_message(m, bad); return 0;
 #endif
         return bad != 0;

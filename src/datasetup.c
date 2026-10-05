@@ -95,13 +95,13 @@ static BCRYPT_ALG_HANDLE g_alg;
 static int g_fit[DATAFILES_RELEASES];   /* per supported release: how many files of the last copy/verify were its copy (datafile_tally) */
 
 /* reads one manifest file under src_root, writes it to dst_root when that is set (as name.part, renamed at the end) and compares
- * its SHA-1: 1 = equal, 0 = differs, -1 = missing (src) or cannot be written (dst) */
+ * its SHA-1: 1 = equal, 2 = missing as in a supported release, 0 = differs, -1 = missing (src) or cannot be written (dst) */
 static int file_pass(const wchar_t *src_root, const wchar_t *dst_root, int i, unsigned char *buf, DWORD bufsz)
 {
     wchar_t sp[WPATH], dp[WPATH], tp[WPATH + 8];
     rel_path(sp, src_root, k_datafiles[i].path);
     HANDLE s = CreateFileW(sp, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-    if (s == INVALID_HANDLE_VALUE) return -1;
+    if (s == INVALID_HANDLE_VALUE) return datafile_absent(i, g_fit) ? 2 : -1;   /* the Russian CD has no Data/Lang (never read on the PC) */
     HANDLE d = INVALID_HANDLE_VALUE;
     if (dst_root) {
         rel_path(dp, dst_root, k_datafiles[i].path); make_dirs(dp); swprintf(tp, WPATH + 8, L"%ls.part", dp);
@@ -144,7 +144,7 @@ static int copy_cd(const wchar_t *src, const wchar_t *home)
         if (r < 0) {
             if (g_win) { DestroyWindow(g_win); g_win = g_text = NULL; }
             wchar_t m[WPATH + 400]; swprintf(m, WPATH + 400, L"Could not copy %hs\nfrom %ls\\ to\n%ls\\\n\nIs the CD complete, and is there room on the disk?\n"
-                                                             L"(WoodyRE supports the English 1.00, Brazilian and Polish CDs.)", k_datafiles[i].path, src, dst);
+                                                             L"(WoodyRE supports the English 1.00, Brazilian, Polish, Spanish and Russian CDs.)", k_datafiles[i].path, src, dst);
             MessageBoxW(NULL, m, TITLE, MB_ICONERROR); free(buf); return -1;
         }
         if (!r) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s matches none of the supported CDs\n", k_datafiles[i].path); }
@@ -154,7 +154,7 @@ static int copy_cd(const wchar_t *src, const wchar_t *home)
     printf("data: copied from the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
         wchar_t m[512]; swprintf(m, 512, L"%d of the copied files match none of the supported CDs (the first: %hs).\n\n"
-                                         L"WoodyRE supports the English 1.00, Brazilian and Polish CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+                                         L"WoodyRE supports the English 1.00, Brazilian, Polish, Spanish and Russian CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
         MessageBoxW(NULL, m, TITLE, MB_ICONWARNING);
     }
     return bad;
@@ -239,7 +239,7 @@ const char *data_find(void)
             if (r == IDNO && !pick_folder(src)) continue;
         } else {
             r = MessageBoxW(NULL, L"WoodyRE needs the files of the original game CD-ROM:\n"
-                                  L"Woody Woodpecker: Escape from Buzz Buzzard Park (PC; the English, Brazilian or Polish CD).\n\n"
+                                  L"Woody Woodpecker: Escape from Buzz Buzzard Park (PC; the English, Brazilian, Polish, Spanish or Russian CD).\n\n"
                                   L"Insert the CD or mount your ISO image of it, then press Yes to search again.\n"
                                   L"Press No to choose a folder that holds a copy of the CD's files instead.", TITLE, MB_YESNOCANCEL | MB_ICONINFORMATION);
             if (r == IDCANCEL) break;

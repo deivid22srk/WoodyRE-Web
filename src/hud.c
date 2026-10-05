@@ -37,6 +37,7 @@ static struct {
     struct { int state, n; float t, size; uint32_t id[3]; float x[3], y[3]; float rect[4]; } box;
     float iris_kx, iris_ky;                               /* hud_iris: virtual units per round pixel on this window (1, 1 at 4:3) */
     float vx0, vx1;                                       /* the virtual x range the viewport shows: 0..640 at 4:3, wider on a wide view (docs/DISPLAY.md 3) */
+    struct { uint32_t n, npages, psize; Glyph *gl; GLuint page[8]; } cf;   /* port extra: the Credits font (port_encode) */
 } H;
 
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -44,9 +45,10 @@ static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | 
 /* port-only text needs ASCII -> glyph code, but every language build generates its own font (glyph order = first
  * occurrence in its text, docs/HUD_TEXT.md 1.5; the Brazilian and Polish fonts even differ per level). The letters are
  * recognised by shape instead: FNV-1a of (w, h, alpha of the glyph cell) is identical for a letter in every font of the
- * English, Brazilian and Polish CDs (tools/glyphmatch.py). Table = the English fonts' letters (incl. the Credits extras). */
-static uint16_t g_chr[128]; static unsigned g_font_gen = 1;   /* ASCII -> code in the current font (0 = none); bumped per font */
-static void font_letters(const uint8_t *d)
+ * English, Brazilian, Polish, Spanish and Russian CDs (tools/glyphmatch.py). Table = the English fonts' letters (incl. the
+ * Credits extras). */
+static uint16_t g_chr[128], g_cchr[128]; static unsigned g_font_gen = 1;   /* ASCII -> code in the level / Credits font (0 = none); gen bumped per font */
+static void font_letters(const uint8_t *d, const Glyph *gl, uint32_t n, uint32_t npages, uint32_t psize, uint16_t *chr)
 {
     static const struct { uint32_t h; char c; } k_shape[] = {
         {0x98d3b8a0U,'0'},{0xbdc65688U,'1'},{0xb32459d0U,'2'},{0xbe5f8a37U,'3'},{0xa4070e8eU,'4'},{0x4554e012U,'5'},
@@ -63,15 +65,15 @@ static void font_letters(const uint8_t *d)
         {0xdcef9392U,'q'},{0x3c1b961bU,'\''},{0x342b26adU,'b'},{0xff2804eeU,','},{0x1f5dcb64U,'$'},{0x884225bcU,'z'},
         {0x2df4cf1dU,'J'},{0x2a8cfd0bU,'x'},{0x36ecd6abU,'&'},{0x4fcbe4a0U,'-'},{0x5e5cd4d0U,'j'},{0x465e8f0cU,'"'},
         {0xba8de7c3U,'Z'} };
-    memset(g_chr, 0, sizeof g_chr); g_font_gen++;
-    const uint8_t *pix = d + 0x1c + H.nglyphs * 20;
-    for (uint32_t i = 0; i < H.nglyphs; i++) {
-        const Glyph *g = &H.gl[i]; if (g->page >= H.npages || g->x + g->wpx > H.psize || g->y + g->hpx > H.psize) continue;
-        const uint8_t *pg = pix + (size_t)g->page * H.psize * H.psize * 4;
+    memset(chr, 0, 128 * sizeof *chr); g_font_gen++;
+    const uint8_t *pix = d + 0x1c + n * 20;
+    for (uint32_t i = 0; i < n; i++) {
+        const Glyph *g = &gl[i]; if (g->page >= npages || g->x + g->wpx > psize || g->y + g->hpx > psize) continue;
+        const uint8_t *pg = pix + (size_t)g->page * psize * psize * 4;
         uint32_t h = 0x811c9dc5u; h = (h ^ (uint8_t)g->wpx) * 0x01000193u; h = (h ^ (uint8_t)g->hpx) * 0x01000193u;
-        for (int y = 0; y < g->hpx; y++) for (int x = 0; x < g->wpx; x++) h = (h ^ pg[((size_t)(g->y + y) * H.psize + g->x + x) * 4 + 3]) * 0x01000193u;
+        for (int y = 0; y < g->hpx; y++) for (int x = 0; x < g->wpx; x++) h = (h ^ pg[((size_t)(g->y + y) * psize + g->x + x) * 4 + 3]) * 0x01000193u;
         for (size_t k = 0; k < sizeof k_shape / sizeof *k_shape; k++)
-            if (k_shape[k].h == h) { if (!g_chr[(int)k_shape[k].c]) g_chr[(int)k_shape[k].c] = (uint16_t)(i + 1); break; }
+            if (k_shape[k].h == h) { if (!chr[(int)k_shape[k].c]) chr[(int)k_shape[k].c] = (uint16_t)(i + 1); break; }
     }
 }
 
@@ -165,9 +167,23 @@ static void level_item(int type, int index, const uint8_t *d, uint32_t size)
     memcpy(&H.H, d + 0xc, 4); memcpy(&H.B, d + 0x14, 4); memcpy(&H.M, d + 0x18, 4);
     if (H.npages > 8 || size < 0x1c + H.nglyphs * 20 + H.npages * H.psize * H.psize * 4) { H.nglyphs = 0; return; }
     H.gl = malloc(H.nglyphs * sizeof *H.gl); memcpy(H.gl, d + 0x1c, H.nglyphs * 20);
-    font_letters(d);
+    font_letters(d, H.gl, H.nglyphs, H.npages, H.psize, g_chr);
     const uint8_t *p = d + 0x1c + H.nglyphs * 20;
     for (uint32_t i = 0; i < H.npages; i++, p += H.psize * H.psize * 4) H.page[i] = upload(p, (int)H.psize, (int)H.psize);   /* RGBA, top row first */
+}
+
+/* port extra: every release's Credits font holds all glyphs of its level fonts (same typeface and metrics) plus the letters
+ * their texts never use (j, Z, X, x, Q, ...: which ones differ per language), so port-only text takes those from it */
+static void credits_item(int type, int index, const uint8_t *d, uint32_t size)
+{
+    if (type != 3 || index != 0 || size < 0x1c) return;
+    uint32_t n = rd32(d), np = rd32(d + 4), ps = rd32(d + 8);
+    if (np > 8 || size < 0x1c + n * 20 + np * ps * ps * 4) return;
+    H.cf.n = n; H.cf.npages = np; H.cf.psize = ps;
+    H.cf.gl = malloc(n * sizeof *H.cf.gl); memcpy(H.cf.gl, d + 0x1c, n * 20);
+    font_letters(d, H.cf.gl, n, np, ps, g_cchr);
+    const uint8_t *p = d + 0x1c + n * 20;
+    for (uint32_t i = 0; i < np; i++, p += ps * ps * 4) H.cf.page[i] = upload(p, (int)ps, (int)ps);
 }
 
 int hud_load(const char *common_rck, const char *level_rck)
@@ -177,6 +193,10 @@ int hud_load(const char *common_rck, const char *level_rck)
     int bad = rck_walk(common_rck, 6, common_item); tp_scope(scope);
     if (bad) return -1;
     if (rck_walk(level_rck, 8 | 4 | 2, level_item) || !H.nglyphs) return -1;   /* images, strings, font */
+    char cred[512]; snprintf(cred, sizeof cred, "%s", level_rck);                 /* <Data>/<level>/<level>.rck -> <Data>/Credits/Credits.rck */
+    char *e = cred + strlen(cred); while (e > cred && e[-1] != '/' && e[-1] != '\\') e--;
+    snprintf(e, sizeof cred - (size_t)(e - cred), "../Credits/Credits.rck");
+    memset(g_cchr, 0, sizeof g_cchr); rck_walk(cred, 8, credits_item);
     H.ok = 1; H.k = 17.0f / (H.H - H.B);
     return 0;
 }
@@ -185,6 +205,7 @@ void hud_free(void)
 {
     for (int i = 0; i < 4; i++) if (H.img[i]) glDeleteTextures(1, &H.img[i]);
     for (int i = 0; i < 8; i++) if (H.page[i]) glDeleteTextures(1, &H.page[i]);
+    for (int i = 0; i < 8; i++) if (H.cf.page[i]) glDeleteTextures(1, &H.cf.page[i]);
     if (H.logo) glDeleteTextures(1, &H.logo); if (H.sheet) glDeleteTextures(1, &H.sheet); if (H.sheet2) glDeleteTextures(1, &H.sheet2);
     for (int i = 0; i < 5; i++) if (H.sky[i]) glDeleteTextures(1, &H.sky[i]);
     for (int i = 0; i < 5; i++) if (H.bonus[i]) glDeleteTextures(1, &H.bonus[i]);
@@ -195,7 +216,7 @@ void hud_free(void)
     for (int i = 0; i < 16; i++) if (H.limg[i]) glDeleteTextures(1, &H.limg[i]);
     for (int i = 0; i < H.nlstr; i++) free(H.lstr[i]);
     for (int i = 0; i < H.nstr; i++) free(H.str[i]);
-    free(H.lstr); free(H.str); free(H.gl); memset(&H, 0, sizeof H);
+    free(H.lstr); free(H.str); free(H.gl); free(H.cf.gl); memset(&H, 0, sizeof H);
 }
 
 /* ---------------------------------------------------------------- drawing primitives */
@@ -234,7 +255,7 @@ static float font_cell(void) { return (H.H + 2 * (H.M < 0 ? -H.M : H.M)) * H.k; 
 static float font_measure(const uint16_t *s)                                       /* 0x441b30 (width of the last line) */
 {
     float w = 0;
-    for (; *s; s++) { if (*s == 4000) w = 0; else if (*s <= H.nglyphs) w += H.gl[*s - 1].adv * H.k; }
+    for (; *s; s++) { if (*s == 4000) w = 0; else if (*s <= H.nglyphs) w += H.gl[*s - 1].adv * H.k; else if (*s & 0x8000 && (*s & 0x7fff) - 1u < H.cf.n) w += H.cf.gl[(*s & 0x7fff) - 1].adv * H.k; }
     return w;
 }
 static void font_draw(float x, float y, const uint16_t *s, uint32_t col)           /* 0x43f890; y = top of the cell */
@@ -242,22 +263,27 @@ static void font_draw(float x, float y, const uint16_t *s, uint32_t col)        
     float x0 = x;
     for (; *s; s++) {
         if (*s == 4000) { x = x0; y += H.H * H.k; continue; }
-        if (*s > H.nglyphs) continue;
-        const Glyph *g = &H.gl[*s - 1]; float P = (float)H.psize;
-        if (g->page < H.npages) quad(x, y, g->w * H.k, g->hpx * H.k, H.page[g->page], g->x / P, g->y / P, (g->x + g->wpx) / P, (g->y + g->hpx) / P, col, col, col, col);
+        const Glyph *g; const GLuint *pages; uint32_t np, ps;
+        if (*s <= H.nglyphs) { g = &H.gl[*s - 1]; pages = H.page; np = H.npages; ps = H.psize; }
+        else if (*s & 0x8000 && (*s & 0x7fff) - 1u < H.cf.n) { g = &H.cf.gl[(*s & 0x7fff) - 1]; pages = H.cf.page; np = H.cf.npages; ps = H.cf.psize; }   /* port text: a Credits glyph */
+        else continue;
+        float P = (float)ps;
+        if (g->page < np) quad(x, y, g->w * H.k, g->hpx * H.k, pages[g->page], g->x / P, g->y / P, (g->x + g->wpx) / P, (g->y + g->hpx) / P, col, col, col, col);
         x += g->adv * H.k;
     }
 }
 /* port-only text (docs/DISPLAY.md 4, port extra): ASCII turned into the current font's codes through g_chr (font_letters),
- * again whenever another font was loaded; a letter the font lacks takes the other case (the English level fonts have no "Z"
- * or "j"), anything else the space. Ref = 0x7f000000 | slot. */
+ * again whenever another font was loaded. A letter the level font lacks (the English ones have no "Z" or "j", the Polish
+ * no "X", the Russian no "J" or "z") comes from the Credits font as 0x8000 | its code, else takes the other case, else
+ * the space. Ref = 0x7f000000 | slot. */
 static struct { char a[32]; uint16_t u[32]; unsigned gen; } g_pstr[96]; static int g_npstr;   /* 0..63 kept for good, 64..95 the rewritable ones of hud_port_str_tmp */
 static void port_encode(int i)
 {
     int n = 0; uint16_t sp = g_chr[' '] ? g_chr[' '] : 18;
     for (const char *c = g_pstr[i].a; *c && n < 31; c++) {
-        int ch = *c & 0x7f, code = g_chr[ch];
-        if (!code && isalpha(ch)) code = g_chr[isupper(ch) ? tolower(ch) : toupper(ch)];
+        int ch = *c & 0x7f, other = isupper(ch) ? tolower(ch) : toupper(ch), code = g_chr[ch];
+        if (!code && g_cchr[ch]) code = 0x8000 | g_cchr[ch];
+        if (!code && isalpha(ch)) code = g_chr[other] ? g_chr[other] : g_cchr[other] ? 0x8000 | g_cchr[other] : 0;
         g_pstr[i].u[n++] = code ? (uint16_t)code : sp;
     }
     g_pstr[i].u[n] = 0; g_pstr[i].gen = g_font_gen;

@@ -96,12 +96,12 @@ static int ask(const char *text, const char *yes, const char *no)   /* 1 = yes, 
 
 static int g_fit[DATAFILES_RELEASES];   /* per supported release: how many files of the last copy/check were its copy (datafile_tally) */
 /* reads one manifest file under src_root, writes it under dst_root when that is set (as name.part, renamed at the end) and
- * compares its SHA-1: 1 = equal, 0 = differs, -1 = missing (src) or cannot be written (dst) */
+ * compares its SHA-1: 1 = equal, 2 = missing as in a supported release, 0 = differs, -1 = missing (src) or cannot be written (dst) */
 static int file_pass(const char *src_root, const char *dst_root, int i, unsigned char *buf, size_t bufsz, unsigned long long *done)
 {
     char sp[PMAX], dp[PMAX], tp[PMAX + 8];
     snprintf(sp, sizeof sp, "%s/%s", src_root, k_datafiles[i].path);
-    FILE *s = fopen(sp, "rb"); if (!s) return -1;
+    FILE *s = fopen(sp, "rb"); if (!s) return datafile_absent(i, g_fit) ? 2 : -1;   /* the Russian CD has no Data/Lang (never read) */
     FILE *d = NULL;
     if (dst_root) {
         snprintf(dp, sizeof dp, "%s/%s", dst_root, k_datafiles[i].path); make_dirs(dp); snprintf(tp, sizeof tp, "%s.part", dp);
@@ -143,7 +143,7 @@ static int copy_cd(const char *src, const char *home)       /* the number of fil
     printf("data: copied from the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
         snprintf(m, sizeof m, "%d of the copied files match none of the supported CDs (the first: %s).\n\n"
-                              "WoodyRE supports the English 1.00, Brazilian and Polish CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+                              "WoodyRE supports the English 1.00, Brazilian, Polish, Spanish and Russian CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
         plat_message(m, 1);
     }
     return bad;
@@ -200,7 +200,7 @@ const char *data_find(void)
             return enter(home, "data/Data");
         }
         snprintf(m, sizeof m, "WoodyRE needs the files of the original game CD-ROM:\n"
-                              "Woody Woodpecker: Escape from Buzz Buzzard Park (PC; the English, Brazilian or Polish CD).\n\n"
+                              "Woody Woodpecker: Escape from Buzz Buzzard Park (PC; the English, Brazilian, Polish, Spanish or Russian CD).\n\n"
                               "Insert the CD or mount your ISO image of it, then press Search.\n"
                               "Or copy Data, Common, Logo, Game and Music.bf from the CD into\n%s/data\nyourself and start WoodyRE again.", home);
         if (ask(m, "Search", NULL) != 1) return NULL;
@@ -315,6 +315,7 @@ static int iso_copy(int fd, const char *home)               /* the number of fil
     printf("data: copying the game files from the ISO image to %s\n", dst);
     for (int i = 0; i < DATAFILES_COUNT; i++) {
         char dp[PMAX], tp[PMAX + 8]; uint32_t lba, len; int ok = 1;
+        if (iso_find(&is, k_datafiles[i].path, &lba, &len) && datafile_absent(i, g_fit)) continue;
         if (iso_find(&is, k_datafiles[i].path, &lba, &len)) { snprintf(m, sizeof m, "The ISO image has no %s.", k_datafiles[i].path); java_progress(NULL); plat_message(m, 1); free(buf); return -1; }
         snprintf(dp, sizeof dp, "%s/%s", dst, k_datafiles[i].path); make_dirs(dp); snprintf(tp, sizeof tp, "%s.part", dp);
         FILE *d = fopen(tp, "wb"); if (!d) ok = -1;
@@ -337,7 +338,7 @@ static int iso_copy(int fd, const char *home)               /* the number of fil
     printf("data: the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
         snprintf(m, sizeof m, "%d of the copied files match none of the supported CDs (the first: %s).\n\n"
-                              "WoodyRE supports the English 1.00, Brazilian and Polish CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+                              "WoodyRE supports the English 1.00, Brazilian, Polish, Spanish and Russian CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
         plat_message(m, 1);
     }
     return bad;
@@ -355,7 +356,7 @@ static void check_copy(const char *home)                     /* after the Java s
     printf("data: the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
         snprintf(m, sizeof m, "%d game files are missing or match none of the supported CDs (the first: %s).\n\n"
-                              "WoodyRE supports the English 1.00, Brazilian and Polish CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
+                              "WoodyRE supports the English 1.00, Brazilian, Polish, Spanish and Russian CDs; another release or a damaged copy may not work correctly.", bad, k_datafiles[first_bad].path);
         plat_message(m, 1);
     }
 }
@@ -368,7 +369,7 @@ const char *data_find(void)
     snprintf(p, sizeof p, "%s/data", home); if (cd_layout(p)) return enter(home, "data/Data");
     for (;;) {
         snprintf(m, sizeof m, "WoodyRE needs the files of the original game CD-ROM:\n"
-                              "Woody Woodpecker: Escape from Buzz Buzzard Park (PC; the English, Brazilian or Polish CD).\n\n"
+                              "Woody Woodpecker: Escape from Buzz Buzzard Park (PC; the English, Brazilian, Polish, Spanish or Russian CD).\n\n"
                               "Choose an ISO image of the CD, or a folder with a copy of it (Data, Common, Logo, Game and Music.bf). "
                               "The game files (%u MB) are copied once.\n\n"
                               "Or copy those files with a USB cable into\n%s/data\nand start WoodyRE again.", DATAFILES_BYTES >> 20, home);
