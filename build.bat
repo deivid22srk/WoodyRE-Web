@@ -13,19 +13,22 @@ set "ZIG_SHA=68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e"
 set "ZIG_NAME=zig-x86_64-windows-%ZIG_VER%"
 set "SRC=src\level.c src\render_gl.c src\main_engine.c src\player.c src\instance.c src\enemy.c src\boss.c src\water.c src\storm.c src\ekovm.c src\audio.c src\hud.c src\hnm.c src\ambient.c src\blackbox.c src\datasetup.c src\pad.c src\texpack.c"
 set "LIBS=-lopengl32 -lgdi32 -luser32 -lwinmm -lbcrypt -lshell32 -lole32 -lhid -lsetupapi"
+rem zig cc compiles for the CPU of the build machine unless told otherwise: an exe built on a new PC or on the CI runner
+rem then uses AVX2/AVX-512 and dies with "illegal instruction" (0xc000001d) on older CPUs. Plain x86-64 runs everywhere.
+set "CPU=-target x86_64-windows-gnu -mcpu=baseline"
 
 call :find_zig || goto :fail
 
 if /i "%~1"=="dev" (
     if not exist out mkdir out
     echo Building out\woody.exe ^(developer build^)...
-    %ZIG% cc -std=c99 -O2 -o out\woody.exe %SRC% res\woodyre.rc %LIBS% || goto :fail
+    %ZIG% cc -std=c99 -O2 %CPU% -o out\woody.exe %SRC% res\woodyre.rc %LIBS% || goto :fail
     echo Done: out\woody.exe
     exit /b 0
 )
 
 echo Building WoodyRE.exe...
-%ZIG% cc -std=c99 -O2 -DWOODY_GUI -Wl,--subsystem,windows -o WoodyRE.exe %SRC% res\woodyre.rc %LIBS% || goto :fail
+%ZIG% cc -std=c99 -O2 %CPU% -DWOODY_GUI -Wl,--subsystem,windows -o WoodyRE.exe %SRC% res\woodyre.rc %LIBS% || goto :fail
 echo Done: WoodyRE.exe
 if /i not "%~1"=="standalone" exit /b 0
 
@@ -39,8 +42,8 @@ if not defined GAME (
     goto :fail
 )
 if not exist build mkdir build
-%ZIG% cc -std=c99 -O2 -Wl,--subsystem,windows -o build\bundle_stub.exe tools\native\bundle.c res\woodyre.rc -luser32 -lgdi32 || goto :fail
-%ZIG% cc -std=c99 -O2 -o build\pack.exe tools\native\pack.c || goto :fail
+%ZIG% cc -std=c99 -O2 %CPU% -Wl,--subsystem,windows -o build\bundle_stub.exe tools\native\bundle.c res\woodyre.rc -luser32 -lgdi32 || goto :fail
+%ZIG% cc -std=c99 -O2 %CPU% -o build\pack.exe tools\native\pack.c || goto :fail
 echo Packing the game files from %GAME%\ ...
 build\pack.exe build\bundle_stub.exe WoodyRE.exe %GAME% WoodyRE-standalone.exe || goto :fail
 echo.
