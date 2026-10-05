@@ -143,6 +143,14 @@ A level font only has the letters its language uses (the English one lacks `Z` a
 `U`, `V`, `z`...). Every release's Credits font holds all glyphs of its level fonts, pixel for pixel and with the same metrics,
 plus the full ASCII set, so port text takes a missing letter from `Data/Credits/Credits.rck` (code `0x8000 | n`, port only).
 
+The port's own texts are translated (PORT EXTRA, `k_port_tr` in `src/hud.c`, UTF-8) into the language of the loaded CD,
+which `hud_load` tells by a letter only that CD's fonts have (Polish `ł`, Russian `д`, Spanish `ñ`, Brazilian `ã`). The
+accented and Cyrillic letters are in `k_shape_ext` (identified by eye from glyph sheets, checked by decoding each CD's own
+menu strings); the Cyrillic letters that look Latin are the Latin glyphs in the Russian fonts. A letter a CD lacks falls
+back (`port_glyph`): Cyrillic to its Latin twin or the other case, accented Latin to the bare letter (Brazilian `â`, `ó`;
+Polish lower-case `ż`). The wording follows each CD's own menus ("Wciśnij klawisz", formal Spanish "Pulse una tecla",
+"Aperte uma tecla", "Нажми на кнопку").
+
 The full Common table is in §8.
 
 ---------------------------------------------------------------------------------------------------

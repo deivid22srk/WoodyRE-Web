@@ -700,6 +700,12 @@ static void in_pad_poll(const Window *w, double tl)              /* PORT EXTRA: 
         s += used; if (*s == ':' && sscanf(s, ":%lf%n", &d, &used) == 1) s += used;
         if (tl >= t && tl < t + d) { if (!g_in.pad.kind) g_in.pad.kind = PADK_DS5; g_in.pad.lx = x; g_in.pad.ly = y; g_in.pad.buttons = m; }
     }
+    for (const char *s = wenv("WOODY_RSTICK"); s && *s; ) {   /* testing: WOODY_RSTICK="T:RX:RY[:D] ...", the right stick likewise (default 0.5 s) */
+        double t, d = 0.5; float x, y; int used;
+        if (sscanf(s, " %lf:%f:%f%n", &t, &x, &y, &used) != 3) break;
+        s += used; if (*s == ':' && sscanf(s, ":%lf%n", &d, &used) == 1) s += used;
+        if (tl >= t && tl < t + d) { if (!g_in.pad.kind) g_in.pad.kind = PADK_DS5; g_in.pad.rx = x; g_in.pad.ry = y; }
+    }
 }
 static void in_frame(const Window *w, int fly, double now, double tl)   /* 0x402940: joystick first, then the keyboard; the value is the last one set */
 {
@@ -803,11 +809,12 @@ static void in_read_cfg(const char *data_dir) { in_read_wcfg(data_dir); ctl_appl
 static void ctl_list(int dev, int a, int names, char *b, size_t n)   /* the codes of action a as text; names: the pad's own names, keyboard view without WinMM buttons */
 {
     b[0] = 0;
-    if (names && dev && a < 4) snprintf(b, n, "Left stick");    /* the stick always walks (as the original's joystick axes) */
+    if (names && dev && a < 4) snprintf(b, n, "%s", hud_tr("Left stick"));    /* the stick always walks (as the original's joystick axes) */
     for (int s = 0; s < 4; s++) {
         int c = dev ? g_in.pbind[a][s] : g_in.bind[a][s]; if (!c) break;
         if (names && !dev && c >= IN_JOY) continue;
-        char t[32]; if (dev) snprintf(t, sizeof t, "%s", names ? pad_btn_name(c - 1, g_ctl.last_kind) : k_pad_cfg[c - 1]); else vk_name(c, t, sizeof t);
+        char t[48]; if (dev) snprintf(t, sizeof t, "%s", names ? pad_btn_name(c - 1, g_ctl.last_kind) : k_pad_cfg[c - 1]); else vk_name(c, t, sizeof t);
+        if (names) { const char *tt = hud_tr(t); if (tt != t) snprintf(t, sizeof t, "%s", tt); }   /* the Controls page in the CD's language; woodyre.cfg keeps the English names */
         size_t l = strlen(b); snprintf(b + l, n - l, "%s%s", l ? (names ? ", " : ",") : "", t);
     }
 }
@@ -4007,6 +4014,10 @@ int main(int argc, char **argv)
                 if (lm) { pin.mouse_dx = win.raw_dx; pin.mouse_dy = win.raw_dy; }
                 if (g_in.pad.kind != PADK_NONE) {                    /* PORT EXTRA: the right stick of a pad aims the look-around, worth what the left stick is (ftol(value * 5)) */
                     pin.mouse_dx += (int)(in_deadzone(g_in.pad.rx, g_pad_dz * 0.01f) * 5.0f); pin.mouse_dy += (int)(in_deadzone(g_in.pad.ry, g_pad_dz * 0.01f) * -5.0f); }
+                /* PORT EXTRA: outside the look-around the right stick turns / raises the follow camera (player_camera) */
+                int orbit = g_in.pad.kind != PADK_NONE && !pin.look && !L.player.look;
+                L.player.cam_orbit_x = orbit ? in_deadzone(g_in.pad.rx, g_pad_dz * 0.01f) : 0;
+                L.player.cam_orbit_y = orbit ? in_deadzone(g_in.pad.ry, g_pad_dz * 0.01f) : 0;
                 for (const char *e = wenv("WOODY_MOUSE"); e && *e; ) {
                     double t, d = 0.5; int dx, dy, n = 0;
                     if (sscanf(e, "%lf:%d:%d%n", &t, &dx, &dy, &n) < 3) break;

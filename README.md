@@ -47,7 +47,8 @@ the touch controls; touching the screen brings them back.
 
 **Supported versions:** the English PC CD-ROM, version 1.00 (October 2001), the Spanish CD (same game data as 1.00), and
 three CDs with the February 2002 data (a few level fixes): the Brazilian Portuguese "Pica-Pau: A Fuga do Parque do Zeca
-Urubu!", the Polish "Wielka Draka w Parku Buzza Buzzarda" and the Russian release by 1C. The game is in the CD's language.
+Urubu!", the Polish "Wielka Draka w Parku Buzza Buzzarda" and the Russian release by 1C. The game is in the CD's language,
+and so are the port's own menus (Display, Controls).
 `WoodyRE.exe --verify` checks your copy and names the release (output in `woodyre.log`); see
 [docs/RELEASES.md](docs/RELEASES.md) for what differs between them. Other releases may work but are untested.
 
@@ -61,6 +62,7 @@ Urubu!", the Polish "Wielka Draka w Parku Buzza Buzzarda" and the Russian releas
 | Duck | X | Circle | B |
 | Look around (aim with either stick) | Enter or V | R1 | RB |
 | Camera behind Woody | C or Numpad 0 | L1 or R3 | LB or RS |
+| Turn / raise the camera | | right stick | right stick |
 | Pause menu | Esc | Options | Start |
 | Fullscreen / window | F11 | | |
 

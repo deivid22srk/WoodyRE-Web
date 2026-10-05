@@ -53,6 +53,10 @@ static void rumble(const Player *p, float strength, float seconds) { if (!p->dea
 #define CAM_LOOK_Y     140.0f     /* look target = player + (0,140,0) */
 #define CAM_RADIUS     40.0f
 #define CAM_FOV_Y      83.97f     /* tan(hfov/2) = zoom 1.2 at 4:3 (0x41f690 / 0x4379a0) */
+#define CAM_ORBIT_RATE 2.6f       /* PORT EXTRA, right stick: radians/s at full tilt (~150 deg/s) */
+#define CAM_LIFT_RATE  400.0f     /* units/s of extra camera height at full tilt */
+#define CAM_LIFT_MIN   (-120.0f)
+#define CAM_LIFT_MAX   350.0f
 
 static float vdot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static Vec3 vsub(Vec3 a, Vec3 b) { Vec3 r = { a.x - b.x, a.y - b.y, a.z - b.z }; return r; }
@@ -2686,10 +2690,15 @@ static void camera_step(Player *p, float dt, int behind, int quick, int collide)
             if (d < dmin) { float st = (dmax / d) * dt * k * 66.6667f; if (d + st > dmin) st = dmin - d; mv.x = -vx * st; mv.z = -vz * st; }
             else if (d > dmax) { float st = (d / dmax) * dt * 433.333f; if (d - st < dmax) st = d - dmax; mv.x = vx * st; mv.z = vz * st; }
         }
+        if (p->cam_orbit_x != 0) {                                      /* PORT EXTRA: the right stick turns the camera round T (stick right = view turns
+                                                                         * right); a move like any other, so the sweep and the veto below still apply */
+            float a = p->cam_orbit_x * CAM_ORBIT_RATE * dt, c = cosf(a), s = sinf(a), ox = P.x + mv.x - T.x, oz = P.z + mv.z - T.z;
+            mv.x = T.x + ox * c - oz * s - P.x; mv.z = T.z + ox * s + oz * c - P.z;
+        }
     }
     if (behind) camera_behind_arc(p, T, P, look, &mv);
     if (rising) mv.y = (P.y - T.y < 300.0f) ? T.y - p->cam_tprev.y : 0;
-    else mv.y = (T.y + p->cam_height - P.y) * 6.0f * dt;
+    else mv.y = (T.y + p->cam_height + p->cam_lift - P.y) * 6.0f * dt;
     Vec3 N = { P.x + mv.x, P.y + mv.y, P.z + mv.z };
     if (collide) {
         /* Center_Collide 0x422e30: the sphere r = 40 swept from P to P + move (0x439c50); on contact the correction corr = where
@@ -2726,6 +2735,9 @@ void player_camera(Player *p, FreeCamera *cam, float dt, int behind_key)
     /* action 0xa: a tap pulls the camera behind the player for 0.5 s at 7*dt, holding it at 3*dt */
     if (behind_key && !p->cam_behind_prev) p->cam_quick_t = 0.5f;
     p->cam_behind_prev = behind_key; if (p->cam_quick_t > 0) p->cam_quick_t -= dt;
+    /* PORT EXTRA: right stick up / down lowers / raises the camera (stick up = look up), kept until "camera behind" */
+    if (behind_key) p->cam_lift = 0;
+    else { p->cam_lift += p->cam_orbit_y * CAM_LIFT_RATE * dt; if (p->cam_lift < CAM_LIFT_MIN) p->cam_lift = CAM_LIFT_MIN; if (p->cam_lift > CAM_LIFT_MAX) p->cam_lift = CAM_LIFT_MAX; }
     /* 0x4591ec: Perso states 1, 4 (climbing) and 8 force behind mode at the slow rate; the target is the root position during the climb-over */
     Vec3 keep = p->pos; if (p->use_root) p->pos = p->root_pos;
     camera_step(p, dt, behind_key || p->cam_quick_t > 0 || p->climb_sub || p->ride || (p->race_char && !p->dead_kind), p->cam_quick_t > 0, !p->ride);   /* port choice: no camera collision during the ride, the rocket flies through walls and the veto would strand the camera */

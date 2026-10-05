@@ -46,8 +46,35 @@ static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | 
  * occurrence in its text, docs/HUD_TEXT.md 1.5; the Brazilian and Polish fonts even differ per level). The letters are
  * recognised by shape instead: FNV-1a of (w, h, alpha of the glyph cell) is identical for a letter in every font of the
  * English, Brazilian, Polish, Spanish and Russian CDs (tools/glyphmatch.py). Table = the English fonts' letters (incl. the
- * Credits extras). */
-static uint16_t g_chr[128], g_cchr[128]; static unsigned g_font_gen = 1;   /* ASCII -> code in the level / Credits font (0 = none); gen bumped per font */
+ * Credits extras), then k_shape_ext = the letters only the other CDs' fonts have (Unicode; identified by eye from glyph
+ * sheets and checked by decoding each CD's own menu strings). The Cyrillic letters that look Latin (a, e, o, p, c, y, x,
+ * A, B, E, H, M, O, P, C, T, X) ARE the Latin glyphs in the Russian fonts. */
+static const struct { uint32_t h; uint16_t c; } k_shape_ext[] = {
+        {0x86276e1bU,0x015b},{0xfdfdbc79U,0x0144},{0x5666a3beU,0x017b},{0x8900511aU,0x0119},{0x2fce737cU,0x0105},
+        {0xfbab45f2U,0x0107},{0x2df9f308U,0x0142},{0x3228e4bdU,0x00f3},{0x4fa03bdaU,0x017a},{0x02ea0011U,0x0143},
+        {0x8b36cff3U,0x0118},{0xb5117256U,0x00ae},{0x2b1272a5U,0x00e9},{0xd2bb5ef8U,0x00f4},{0x81d22146U,0x00e7},
+        {0xbd5a61bfU,0x00b0},{0x731fea5aU,0x00e3},{0x72e1356bU,0x00cd},{0x278365dcU,0x00c7},{0xafee5546U,0x00c3},
+        {0x0ab9e6e7U,0x00d4},{0xa3de7374U,0x00ea},{0x7b186affU,0x00f5},{0x3f2e3aafU,0x00fa},{0x48182390U,0x00ed},
+        {0x6cea7f59U,0x00d5},{0xafaf7954U,0x00e1},{0x915e3bedU,0x00bf},{0x10ecf937U,0x00a1},{0x8d5f3955U,0x00c1},
+        {0x509165fcU,0x00d3},{0xc26cb107U,0x00f1},{0x9db45e9bU,0x20ac},{0xacade00aU,0x044b},{0x294e3784U,0x0434},
+        {0xaa244bdeU,0x043c},{0x35f25aa4U,0x043b},{0x9c76abb0U,0x041f},{0x0ded02c2U,0x0436},{0xe2bad563U,0x0438},
+        {0x2050866fU,0x0442},{0x34473173U,0x044c},{0x73fd9206U,0x0414},{0x1db58ebcU,0x0413},{0xf954a73cU,0x0417},
+        {0xf75be658U,0x0423},{0x04972acdU,0x041b},{0xbcea50bcU,0x042c},{0xcd33974aU,0x042b},{0xca016bacU,0x041a},
+        {0xcdb678a6U,0x0447},{0xb61f10e8U,0x043d},{0xf57c4af6U,0x043a},{0xe8309ed2U,0x043f},{0x670e12fcU,0x0432},
+        {0x571458fbU,0x044f},{0x4f7f3711U,0x0433},{0xc4d7cc47U,0x0437},{0x0ca9d2e5U,0x0431},{0xaaae36d6U,0x0418},
+        {0x5f95ed44U,0x0429},{0x26186795U,0x0411},{0x9eaf35dbU,0x0448},{0x4c68ac46U,0x0439},{0x7b570485U,0x0427},
+        {0xf17edf7dU,0x0426},{0xaafff1b3U,0x044e},{0x7ab3bf42U,0x044d},{0x6a25a67bU,0x0449},{0x7db0f09bU,0x042f},
+        {0x195800a9U,0x0446},{0x3a80e868U,0x0419},{0x54dde26fU,0x0424},{0x2522e9e2U,0x0444} };
+#define NLETTERS (128 + (int)(sizeof k_shape_ext / sizeof *k_shape_ext))
+static int letter_slot(unsigned cp)                                   /* Unicode -> index into g_chr / g_cchr, -1 = no font has it */
+{
+    if (cp < 128) return (int)cp;
+    for (int i = 0; i < NLETTERS - 128; i++) if (k_shape_ext[i].c == cp) return 128 + i;
+    return -1;
+}
+enum { LANG_EN, LANG_PL, LANG_ES, LANG_PT, LANG_RU };
+static int g_lang;                                                      /* port-only text's language (hud_load, hud_tr) */
+static uint16_t g_chr[NLETTERS], g_cchr[NLETTERS]; static unsigned g_font_gen = 1;   /* letter -> code in the level / Credits font (0 = none); gen bumped per font */
 static void font_letters(const uint8_t *d, const Glyph *gl, uint32_t n, uint32_t npages, uint32_t psize, uint16_t *chr)
 {
     static const struct { uint32_t h; char c; } k_shape[] = {
@@ -65,7 +92,7 @@ static void font_letters(const uint8_t *d, const Glyph *gl, uint32_t n, uint32_t
         {0xdcef9392U,'q'},{0x3c1b961bU,'\''},{0x342b26adU,'b'},{0xff2804eeU,','},{0x1f5dcb64U,'$'},{0x884225bcU,'z'},
         {0x2df4cf1dU,'J'},{0x2a8cfd0bU,'x'},{0x36ecd6abU,'&'},{0x4fcbe4a0U,'-'},{0x5e5cd4d0U,'j'},{0x465e8f0cU,'"'},
         {0xba8de7c3U,'Z'} };
-    memset(chr, 0, 128 * sizeof *chr); g_font_gen++;
+    memset(chr, 0, NLETTERS * sizeof *chr); g_font_gen++;
     const uint8_t *pix = d + 0x1c + n * 20;
     for (uint32_t i = 0; i < n; i++) {
         const Glyph *g = &gl[i]; if (g->page >= npages || g->x + g->wpx > psize || g->y + g->hpx > psize) continue;
@@ -74,6 +101,8 @@ static void font_letters(const uint8_t *d, const Glyph *gl, uint32_t n, uint32_t
         for (int y = 0; y < g->hpx; y++) for (int x = 0; x < g->wpx; x++) h = (h ^ pg[((size_t)(g->y + y) * psize + g->x + x) * 4 + 3]) * 0x01000193u;
         for (size_t k = 0; k < sizeof k_shape / sizeof *k_shape; k++)
             if (k_shape[k].h == h) { if (!chr[(int)k_shape[k].c]) chr[(int)k_shape[k].c] = (uint16_t)(i + 1); break; }
+        for (int k = 0; k < NLETTERS - 128; k++)
+            if (k_shape_ext[k].h == h) { if (!chr[128 + k]) chr[128 + k] = (uint16_t)(i + 1); break; }
     }
 }
 
@@ -197,6 +226,12 @@ int hud_load(const char *common_rck, const char *level_rck)
     char *e = cred + strlen(cred); while (e > cred && e[-1] != '/' && e[-1] != '\\') e--;
     snprintf(e, sizeof cred - (size_t)(e - cred), "../Credits/Credits.rck");
     memset(g_cchr, 0, sizeof g_cchr); rck_walk(cred, 8, credits_item);
+    {   /* port extra: the CD's language for port-only text (hud_tr), by a letter only its fonts have: Polish ł, Russian д, Spanish ñ, Brazilian ã */
+        static const struct { unsigned c; int lang; } k_tell[] = { { 0x142, LANG_PL }, { 0x434, LANG_RU }, { 0xf1, LANG_ES }, { 0xe3, LANG_PT } };
+        int lang = 0;
+        for (int i = 0; i < 4 && !lang; i++) { int s = letter_slot(k_tell[i].c); if (s >= 0 && (g_chr[s] || g_cchr[s])) lang = k_tell[i].lang; }
+        g_lang = lang;
+    }
     H.ok = 1; H.k = 17.0f / (H.H - H.B);
     return 0;
 }
@@ -272,19 +307,127 @@ static void font_draw(float x, float y, const uint16_t *s, uint32_t col)        
         x += g->adv * H.k;
     }
 }
-/* port-only text (docs/DISPLAY.md 4, port extra): ASCII turned into the current font's codes through g_chr (font_letters),
- * again whenever another font was loaded. A letter the level font lacks (the English ones have no "Z" or "j", the Polish
- * no "X", the Russian no "J" or "z") comes from the Credits font as 0x8000 | its code, else takes the other case, else
- * the space. Ref = 0x7f000000 | slot. */
-static struct { char a[32]; uint16_t u[32]; unsigned gen; } g_pstr[96]; static int g_npstr;   /* 0..63 kept for good, 64..95 the rewritable ones of hud_port_str_tmp */
+/* the language of the port-only texts = the one of the CD whose data is loaded, told by the letters its fonts hold
+ * (hud_load). Translations (PORT EXTRA) follow the wording of each CD's own menus: Polish "Wciśnij klawisz", Spanish
+ * formal "Pulse una tecla" / "Mando", Brazilian "Aperte uma tecla", Russian "Нажми на кнопку". UTF-8; a letter that
+ * CD's fonts lack falls back as port_glyph says (Brazilian "â", "ó"; Polish lower-case "ż"; Russian "Ш", "Э", "ё"). */
+static const struct { const char *en, *tr[4]; } k_port_tr[] = {   /* tr = Polish, Spanish, Brazilian Portuguese, Russian */
+    { "Display",          { "Obraz", "Pantalla", "Vídeo", "Изображение" } },
+    { "Controls",         { "Sterowanie", "Controles", "Controles", "Управление" } },
+    { "Aspect ratio",     { "Proporcje obrazu", "Relación de aspecto", "Proporção da tela", "Соотношение сторон" } },
+    { "Wide",             { "Panoramiczne", "Panorámica", "Widescreen", "широкое" } },
+    { "Window size",      { "Rozmiar okna", "Tamaño de ventana", "Tamanho da janela", "Размер окна" } },
+    { "Fullscreen",       { "Pełny ekran", "Pantalla completa", "Tela cheia", "Полный экран" } },
+    { "VSync",            { "Synchronizacja pionowa", "Sincronización vertical", "Sincronização vertical", "Верт. синхронизация" } },
+    { "Frame rate limit", { "Limit klatek", "Límite de fotogramas", "Limite de quadros", "Лимит кадров" } },
+    { "Device:",          { "Urządzenie:", "Dispositivo:", "Dispositivo:", "Устройство:" } },
+    { "Controller",       { "Pad", "Mando", "Controle", "Геймпад" } },
+    { "Keyboard",         { "Klawiatura", "Teclado", "Teclado", "Клавиатура" } },
+    { "Press a button",   { "Wciśnij przycisk", "Pulse un botón", "Aperte um botão", "Нажми кнопку" } },
+    { "Press a key",      { "Wciśnij klawisz", "Pulse una tecla", "Aperte uma tecla", "Нажми клавишу" } },
+    { "(none)",           { "(brak)", "(ninguno)", "(nenhum)", "(нет)" } },
+    { "Defaults",         { "Domyślne", "Predeterminados", "Padrão", "По умолчанию" } },
+    { "Walk forward:",    { "Naprzód:", "Avanzar:", "Para frente:", "Вперед:" } },
+    { "Walk back:",       { "Do tyłu:", "Retroceder:", "Para trás:", "Назад:" } },
+    { "Walk left:",       { "W lewo:", "Izquierda:", "Esquerda:", "Влево:" } },
+    { "Walk right:",      { "W prawo:", "Derecha:", "Direita:", "Вправо:" } },
+    { "Jump:",            { "Skok:", "Saltar:", "Pular:", "Прыжок:" } },
+    { "Attack:",          { "Atak:", "Atacar:", "Atacar:", "Атака:" } },
+    { "Special:",         { "Atak specjalny:", "Especial:", "Especial:", "Спецатака:" } },
+    { "Duck:",            { "Kucanie:", "Agacharse:", "Abaixar:", "Пригнуться:" } },
+    { "Look around:",     { "Rozglądanie:", "Mirar alrededor:", "Olhar ao redor:", "Осмотреться:" } },
+    { "Camera behind:",   { "Kamera za postacią:", "Cámara detrás:", "Câmera atrás:", "Камера сзади:" } },
+    { "Pause:",           { "Pauza:", "Pausa:", "Pausa:", "Пауза:" } },
+    { "Left stick",       { "Lewa gałka", "Stick izquierdo", "Analógico esquerdo", "Левый стик" } },
+    { "Space",            { "Spacja", "Espacio", "Espaço", "Пробел" } },
+    { "Left arrow",       { "Strzałka w lewo", "Flecha izquierda", "Seta esquerda", "Стрелка влево" } },
+    { "Right arrow",      { "Strzałka w prawo", "Flecha derecha", "Seta direita", "Стрелка вправо" } },
+    { "Up arrow",         { "Strzałka w górę", "Flecha arriba", "Seta para cima", "Стрелка вверх" } },
+    { "Down arrow",       { "Strzałka w dół", "Flecha abajo", "Seta para baixo", "Стрелка вниз" } },
+    { "Left Ctrl",        { "Lewy Ctrl", "Ctrl izquierdo", "Ctrl esquerdo", "Левый Ctrl" } },
+    { "Right Ctrl",       { "Prawy Ctrl", "Ctrl derecho", "Ctrl direito", "Правый Ctrl" } },
+    { "Left Shift",       { "Lewy Shift", "Mayús izquierda", "Shift esquerdo", "Левый Shift" } },
+    { "Right Shift",      { "Prawy Shift", "Mayús derecha", "Shift direito", "Правый Shift" } },
+    { "Left Alt",         { "Lewy Alt", "Alt izquierdo", "Alt esquerdo", "Левый Alt" } },
+    { "Right Alt",        { "Prawy Alt", "Alt derecho", "Alt direito", "Правый Alt" } } };
+const char *hud_tr(const char *en)
+{
+    if (g_lang == LANG_EN) return en;
+    for (size_t i = 0; i < sizeof k_port_tr / sizeof *k_port_tr; i++) if (!strcmp(k_port_tr[i].en, en)) return k_port_tr[i].tr[g_lang - 1];
+    return en;
+}
+static unsigned utf8_next(const char **s)                            /* one code point; a broken byte counts as itself */
+{
+    const unsigned char *p = (const unsigned char *)*s; unsigned c = *p++;
+    if (c >= 0xc0 && c < 0xe0 && (p[0] & 0xc0) == 0x80) { c = (c & 0x1f) << 6 | (p[0] & 0x3f); p++; }
+    else if (c >= 0xe0 && c < 0xf0 && (p[0] & 0xc0) == 0x80 && (p[1] & 0xc0) == 0x80) { c = (c & 0x0f) << 12 | (p[0] & 0x3f) << 6 | (p[1] & 0x3f); p += 2; }
+    *s = (const char *)p; return c;
+}
+static unsigned cp_other_case(unsigned c)
+{
+    if (c < 128) return isupper((int)c) ? (unsigned)tolower((int)c) : (unsigned)toupper((int)c);
+    if (c >= 0xc0 && c <= 0xfe && c != 0xd7 && c != 0xf7 && c != 0xdf) return c ^ 0x20;
+    if ((c >= 0x100 && c <= 0x137) || (c >= 0x14a && c <= 0x177)) return c ^ 1;   /* Latin Extended-A: upper even ... */
+    if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17e)) return c & 1 ? c + 1 : c - 1;   /* ... or upper odd */
+    if (c >= 0x410 && c <= 0x42f) return c + 0x20;
+    if (c >= 0x430 && c <= 0x44f) return c - 0x20;
+    if (c >= 0x400 && c <= 0x40f) return c + 0x50;
+    if (c >= 0x450 && c <= 0x45f) return c - 0x50;
+    return c;
+}
+static unsigned cp_latin_twin(unsigned c)                           /* a Cyrillic letter drawn with a Latin glyph (0 = none) */
+{
+    switch (c) {
+    case 0x410: return 'A'; case 0x412: return 'B'; case 0x415: case 0x401: return 'E'; case 0x41a: return 'K'; case 0x41c: return 'M';
+    case 0x41d: return 'H'; case 0x41e: return 'O'; case 0x420: return 'P'; case 0x421: return 'C'; case 0x422: return 'T';
+    case 0x423: return 'Y'; case 0x425: return 'X';                 /* K and Y only when the font lacks its own Cyrillic one */
+    case 0x430: return 'a'; case 0x435: case 0x451: return 'e'; case 0x43e: return 'o'; case 0x440: return 'p'; case 0x441: return 'c';
+    case 0x443: return 'y'; case 0x445: return 'x';
+    }
+    return 0;
+}
+static unsigned cp_base(unsigned c)                                 /* a Latin letter without its accent (0 = not one) */
+{
+    static const char l1[] = "AAAAAAACEEEEIIII\0NOOOOO\0OUUUUY\0\0aaaaaaaceeeeiiii\0nooooo\0ouuuuy\0y";   /* 0xc0..0xff */
+    static const char ea[] = "AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIi\0\0JjKk\0LlLlLlLlLlNnNnNn\0\0\0OoOoOo\0\0RrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZz";   /* 0x100..0x17e */
+    if (c >= 0xc0 && c <= 0xff) return (unsigned char)l1[c - 0xc0];
+    if (c >= 0x100 && c < 0x100 + sizeof ea - 1) return (unsigned char)ea[c - 0x100];
+    return 0;
+}
+static uint16_t port_glyph1(unsigned c)
+{
+    int s = letter_slot(c); if (s < 0) return 0;
+    return g_chr[s] ? g_chr[s] : g_cchr[s] ? (uint16_t)(0x8000 | g_cchr[s]) : 0;
+}
+/* the glyph of one letter: the level font's, else the Credits font's (0x8000 | code); else for Cyrillic its Latin twin or
+ * the other case, for an accented Latin letter the bare one, for a plain letter the other case; else 0 */
+static uint16_t port_glyph(unsigned c)
+{
+    uint16_t g = port_glyph1(c); if (g) return g;
+    unsigned t = cp_latin_twin(c);
+    if (t && (g = port_glyph1(t))) return g;
+    if (c >= 0x400 && c < 0x460) {
+        unsigned o = cp_other_case(c);
+        if ((g = port_glyph1(o))) return g;
+        if ((t = cp_latin_twin(o)) && (g = port_glyph1(t))) return g;
+        return 0;
+    }
+    unsigned b = c < 128 ? c : cp_base(c);
+    if (b && b != c && (g = port_glyph1(b))) return g;
+    if (b && isalpha((int)b)) return port_glyph1(cp_other_case(b));
+    return 0;
+}
+/* port-only text (docs/DISPLAY.md 4, port extra): the English key, translated (hud_tr), turned into the current font's codes
+ * through g_chr (font_letters), again whenever another font was loaded. A letter the level font lacks (the English ones have
+ * no "Z" or "j", the Polish no "X", the Russian no "J" or "z") comes from the Credits font as 0x8000 | its code, else
+ * port_glyph's fallbacks, else the space. Ref = 0x7f000000 | slot. */
+static struct { char a[128]; uint16_t u[64]; unsigned gen; } g_pstr[96]; static int g_npstr;   /* 0..63 kept for good, 64..95 the rewritable ones of hud_port_str_tmp */
 static void port_encode(int i)
 {
     int n = 0; uint16_t sp = g_chr[' '] ? g_chr[' '] : 18;
-    for (const char *c = g_pstr[i].a; *c && n < 31; c++) {
-        int ch = *c & 0x7f, other = isupper(ch) ? tolower(ch) : toupper(ch), code = g_chr[ch];
-        if (!code && g_cchr[ch]) code = 0x8000 | g_cchr[ch];
-        if (!code && isalpha(ch)) code = g_chr[other] ? g_chr[other] : g_cchr[other] ? 0x8000 | g_cchr[other] : 0;
-        g_pstr[i].u[n++] = code ? (uint16_t)code : sp;
+    for (const char *c = hud_tr(g_pstr[i].a); *c && n < 63; ) {
+        uint16_t code = port_glyph(utf8_next(&c));
+        g_pstr[i].u[n++] = code ? code : sp;
     }
     g_pstr[i].u[n] = 0; g_pstr[i].gen = g_font_gen;
 }

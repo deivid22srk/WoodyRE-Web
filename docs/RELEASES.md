@@ -40,7 +40,8 @@ it was not unwrapped, since its data equals the Brazilian build apart from the t
   new ones (135..139) are PlayStation 2 memory-card messages that the PC game never shows.
 - **Fonts** are generated per release and, in these two, per level (glyph order = first occurrence in the text). The port's
   own menu texts (Display, Controls) therefore find their letters by glyph shape: `font_letters` in `src/hud.c` hashes each
-  glyph cell's alpha (FNV-1a of w, h, alpha) and looks it up in the English letters. A letter a level font lacks (the
+  glyph cell's alpha (FNV-1a of w, h, alpha) and looks it up in the English letters and the other CDs' accented and
+  Cyrillic ones (HUD_TEXT.md 1, where the translations of those texts are described). A letter a level font lacks (the
   Brazilian and Polish ones have no `X`/`x`) is taken from the release's Credits font (§3).
 - **Music.bf**: identical directory (49 entries); only `/Game/2D.wav` (W2D) is now 22050 Hz instead of 44100 Hz.
 - **Logo/Cryo.hnm**: a different film, 512×384, stereo APC sound, flags `0xc0` (was 640×480 mono, `0x40`); the port's HNM

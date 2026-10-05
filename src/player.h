@@ -112,6 +112,7 @@ typedef struct Player {
     /* white blinking of the invulnerability bonus (vt[26] 0x44cf50): +0x704 time left, +0x708 accumulator, +0x70c frame counter */
     float bonus_inv, bonus_inv_acc; int bonus_inv_cnt;
     float cam_dist, cam_height, cam_zoom;                               /* follow camera C+0x7e0 (400), C+0x7d8 (180), zoom cam+0x678 (1.2) */
+    float cam_orbit_x, cam_orbit_y, cam_lift;                           /* PORT EXTRA: the right stick this frame (-1..1, y down = +) and the height it added */
     /* Perso state 6, carrying a bomb (docs/BOMB_CARRY.md 1): +0x590 the bomb, +0x594 in his hands, +0x58c sub-state, +0x598 its
      * timer; carry_pressed = attack just pressed this frame (read by the sub-states), throw_hold = port: the throw animation
      * keeps playing after the release (the original does that with animation priorities) */

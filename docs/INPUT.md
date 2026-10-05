@@ -307,7 +307,11 @@ the Mover).
   front. Rumble on XInput: both motors get the same value (`XInputSetState`). Mapping (`g_in.pbind`, separate from the Woody.cfg keys): left stick = the joystick axes through the dead zone of
   `0x467a80` (`pad_deadzone=` in woodyre.cfg, default the original's 30 %), D-pad = directions, A/Cross 4 (and confirm),
   B/Circle 5 and 8 (and back), X/Square and RT 6, RB 7, Start/Options 9, LB and R3 10, Y/Triangle and LT 11. The right stick
-  adds look-around counts (`ftol(value · 5)`, the same weight as the left stick, §6 mouse). While a pad is connected the
+  adds look-around counts (`ftol(value · 5)`, the same weight as the left stick, §6 mouse); outside the look-around it turns
+  the follow camera round Woody (x, up to 2.6 rad/s, stick right = the view turns right) and lowers / raises it (y, 400 units/s,
+  -120..+350 on top of the height of message 670, kept until "camera behind"), both as part of the camera's own move in
+  `camera_step`, so the sweep and the line-of-sight veto of CAMERA.md still stop it at walls; not in behind mode (climbing,
+  rides, races, the behind key). Test hook `WOODY_RSTICK="T:RX:RY[:D] ..."`. While a pad is connected the
   WinMM joystick is not used (it would be the same pad again; Sony devices, `wMid` 0x054c, are skipped anyway).
 - **Rumble (PORT EXTRA)**: the original's calls of `0x44d1b0(a, b)` (a = strength, b = seconds; the empty `0x467b20` never
   used them) now reach the pads, scaled by the Vibration option (MENU_OPTIONS.md 5.2): hit (0.5, 0.5), lightning / laser
