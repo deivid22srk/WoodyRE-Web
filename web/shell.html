@@ -138,6 +138,7 @@
   <div id="log"></div>
 </footer>
 
+<script src="woodyre.js"></script>
 <script>
 "use strict";
 /* WoodyShell — the glue between the page and the engine (src/datasetup_posix.c, __EMSCRIPTEN__ part).
@@ -178,10 +179,11 @@ const WoodyShell = (() => {
     if ($("persist").checked && navigator.storage && navigator.storage.persist) {
       await navigator.storage.persist().catch(() => {});
     }
+    try { await new Promise((ok, bad) => FS.syncfs(true, e => e ? bad(e) : ok())); }   // bring back a previous visit's files
+    finally { FS.mkdirTree("/woody/data"); }      // after the restore: creating it before would clash with the replayed dirs
     const had = FS.readdir("/woody/data").filter(n => n !== "." && n !== "..").length > 0;
     if (had) { $("bootmsg").textContent = "Restaurando os arquivos salvos deste navegador…"; $("b-play").disabled = true; }
-    await new Promise((ok, bad) => FS.syncfs(true, e => e ? bad(e) : ok()));
-    return had && FS.readdir("/woody/data").filter(n => n !== "." && n !== "..").length > 0;
+    return had;
   }
 
   /* ---- boot ---- */
@@ -190,7 +192,7 @@ const WoodyShell = (() => {
     $("hud").classList.remove("hide");
     let restored = false;
     try { restored = await mountStorage(); }
-    catch (e) { log("storage: " + e, true); toast("Não foi possível ler o armazenamento deste navegador; a sessão atual funciona mesmo assim.", 1); }
+    catch (e) { log("storage: " + (e && (e.message || e.name) || e), true); toast("Não foi possível ler o armazenamento deste navegador; a sessão atual funciona mesmo assim.", 1); }
     progress(restored ? "Carregando os arquivos do jogo…" : "");
     try { mod.callMain([]); }                     // the engine runs from here; data_find() shows the picker if needed
     catch (e) { log("main: " + e, true); toast("O engine não pôde iniciar. Veja o log no rodapé.", 1); }
@@ -282,6 +284,7 @@ const WoodyShell = (() => {
     onAbort: w => { log("abort: " + w, true); toast("O engine parou: " + w, 1); },
   }).then(m => {
     mod = m;
+    window.WoodyREmod = m;                        // debugging / power users in the console
     const b = $("b-play");
     b.disabled = false; b.textContent = "▶ Jogar";
     status("Pronto. Você vai precisar da ISO (ou dos arquivos) do seu CD do jogo.");
@@ -291,6 +294,5 @@ const WoodyShell = (() => {
   return api;
 })();
 </script>
-<script async src="woodyre.js"></script>
 </body>
 </html>
