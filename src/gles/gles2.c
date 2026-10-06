@@ -25,6 +25,24 @@ void gles_vertex_pointer(GLint size, GLenum type, GLsizei stride, const void *p)
 void gles_color_pointer(GLint size, GLenum type, GLsizei stride, const void *p) { track(A_COL, size, type, stride, p); }
 void gles_tex_coord_pointer(GLint size, GLenum type, GLsizei stride, const void *p) { track(g_unit == GL_TEXTURE1 ? A_TC1 : A_TC0, size, type, stride, p); }
 
+/* WebGL (unlike native GLES2) has no client-side arrays: each draw uploads the window of the arrays it uses into
+ * streaming buffer objects, and the attribute pointers point at those (offset 0) */
+static GLuint g_vbo[A_N], g_ibo;
+static size_t g_vcap[A_N]; static GLsizei g_icap;
+static size_t arr_es(const Arr *a)                         /* bytes of one entry of an attribute array */
+{
+    size_t es = (size_t)a->size * (a->type == GL_UNSIGNED_BYTE || a->type == GL_BYTE ? 1 : a->type == GL_SHORT || a->type == GL_UNSIGNED_SHORT ? 2 : 4);
+    return a->stride ? (size_t)a->stride : es;
+}
+static void put_indices(GLsizei count, GLenum type, const void *idx)    /* the index array of one draw into g_ibo */
+{
+    size_t es = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4, need = (size_t)count * es;
+    if (!g_ibo) glGenBuffers(1, &g_ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ibo);
+    if (need > (size_t)g_icap) { glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)need, idx, GL_STREAM_DRAW); g_icap = (GLsizei)need; }
+    else glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, (GLsizeiptr)need, idx);
+}
+
 /* ---- the fixed-function state ------------------------------------------------------------------------------------- */
 static struct {
     GLboolean tex[2]; GLint env[2]; float scale[2];        /* per texture unit: GL_TEXTURE_2D, GL_TEXTURE_ENV_MODE, GL_RGB_SCALE */
@@ -168,7 +186,7 @@ static float afunc_code(void)
     switch (S.afunc) { case GL_GEQUAL: return 1; case GL_GREATER: return 2; case GL_LESS: return 3; case GL_LEQUAL: return 4;
                        case GL_EQUAL: return 5; case GL_NOTEQUAL: return 6; case GL_NEVER: return 7; default: return 0; }
 }
-static void flush(const Arr *arr)                          /* the state of the next draw */
+static void flush(const Arr *arr, int n)                  /* the state of the next draw; n = the vertices the arrays must hold */
 {
     mat_init();
     if (!g_prog) prog_init();
@@ -178,8 +196,13 @@ static void flush(const Arr *arr)                          /* the state of the n
     glUniform4f(u_env, env_code(S.env[0]), env_code(S.env[1]), afunc_code(), S.aref);
     for (int a = 0; a < A_N; a++) {
         if (arr[a].on && arr[a].p) {
+            size_t st = arr_es(&arr[a]), need = (size_t)n * st;
+            if (!g_vbo[a]) glGenBuffers(1, &g_vbo[a]);
+            glBindBuffer(GL_ARRAY_BUFFER, g_vbo[a]);
+            if (need > g_vcap[a]) { glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)need, arr[a].p, GL_STREAM_DRAW); g_vcap[a] = need; }   /* orphan + fill */
+            else glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)need, arr[a].p);
             glEnableVertexAttribArray((GLuint)a);
-            glVertexAttribPointer((GLuint)a, arr[a].size, arr[a].type, a == A_COL && arr[a].type != GL_FLOAT, arr[a].stride, arr[a].p);
+            glVertexAttribPointer((GLuint)a, arr[a].size, arr[a].type, a == A_COL && arr[a].type != GL_FLOAT, (GLsizei)st, (const void *)0);
         } else {
             glDisableVertexAttribArray((GLuint)a);
             if (a == A_COL) glVertexAttrib4fv(A_COL, S.col);
@@ -187,21 +210,42 @@ static void flush(const Arr *arr)                          /* the state of the n
             else glVertexAttrib4f((GLuint)a, S.tc[a - A_TC0][0], S.tc[a - A_TC0][1], 0, 1);
         }
     }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);                      /* the pointers captured their buffers; the binding is free again */
 }
-void gles_draw_arrays(GLenum mode, GLint first, GLsizei count) { flush(g_arr); glDrawArrays(mode, first, count); }
+void gles_draw_arrays(GLenum mode, GLint first, GLsizei count)
+{
+    if (first > 0) {                                       /* the window starts at vertex `first`: rebase the pointers */
+        Arr a[A_N]; memcpy(a, g_arr, sizeof a);
+        for (int i = 0; i < A_N; i++) if (a[i].on && a[i].p) a[i].p = (const unsigned char *)a[i].p + (size_t)first * arr_es(&a[i]);
+        flush(a, count);
+    } else flush(g_arr, count);
+    glDrawArrays(mode, 0, count);
+}
 void gles_draw_elements(GLenum mode, GLsizei count, GLenum type, const void *idx)
 {
-    flush(g_arr);
     static int has_uint = -1;
-    if (has_uint < 0) { const char *e = (const char *)glGetString(GL_EXTENSIONS); has_uint = g_es3 || (e && strstr(e, "GL_OES_element_index_uint")); }
-    if (type != GL_UNSIGNED_INT || has_uint) { glDrawElements(mode, count, type, idx); return; }
+    if (has_uint < 0) { const char *e = (const char *)glGetString(GL_EXTENSIONS); has_uint = g_es3 > 0 || (e && strstr(e, "GL_OES_element_index_uint")); }
+    if (type != GL_UNSIGNED_INT || has_uint) {             /* the indices as they are, into a buffer object */
+        const unsigned char *ub = (const unsigned char *)idx; const GLushort *us = (const GLushort *)idx; const GLuint *ui = (const GLuint *)idx;
+        GLuint mx = 0;                                     /* how many vertices the arrays must hold */
+        for (GLsizei i = 0; i < count; i++) { GLuint v = type == GL_UNSIGNED_BYTE ? ub[i] : type == GL_UNSIGNED_SHORT ? us[i] : ui[i]; if (v > mx) mx = v; }
+        put_indices(count, type, idx);
+        flush(g_arr, (int)mx + 1);
+        glDrawElements(mode, count, type, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        return;
+    }
     const GLuint *in = (const GLuint *)idx;                /* a bare ES 2.0: 16 bit indices, or the vertices gathered */
     static GLushort *s; static GLsizei cap; GLuint mx = 0;
     for (GLsizei i = 0; i < count; i++) if (in[i] > mx) mx = in[i];
     if (mx < 65536) {
         if (count > cap) { GLushort *t = (GLushort *)realloc(s, (size_t)count * sizeof *t); if (!t) return; s = t; cap = count; }
         for (GLsizei i = 0; i < count; i++) s[i] = (GLushort)in[i];
-        glDrawElements(mode, count, GL_UNSIGNED_SHORT, s); return;
+        put_indices(count, GL_UNSIGNED_SHORT, s);
+        flush(g_arr, (int)mx + 1);
+        glDrawElements(mode, count, GL_UNSIGNED_SHORT, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        return;
     }
     static unsigned char *buf[A_N]; static size_t bcap[A_N]; Arr g[A_N]; memcpy(g, g_arr, sizeof g);
     for (int a = 0; a < A_N; a++) {
@@ -212,7 +256,7 @@ void gles_draw_elements(GLenum mode, GLsizei count, GLenum type, const void *idx
         for (GLsizei i = 0; i < count; i++) memcpy(buf[a] + (size_t)i * es, (const unsigned char *)g[a].p + in[i] * st, es);
         g[a].stride = 0; g[a].p = buf[a];
     }
-    flush(g); glDrawArrays(mode, 0, count);
+    flush(g, count); glDrawArrays(mode, 0, count);
 }
 
 /* ---- glBegin / glEnd ------------------------------------------------------------------------------------------------- */
@@ -241,14 +285,16 @@ void gles_end(void)
     if (I.mode == GL_QUADS) n -= n % 4;
     if (n <= 0) return;
     Arr a[A_N] = { { 1, 3, GL_FLOAT, 0, I.p }, { 1, 4, GL_UNSIGNED_BYTE, 0, I.c }, { 1, 2, GL_FLOAT, 0, I.t0 }, { I.tc1, 2, GL_FLOAT, 0, I.t1 } };
-    flush(a);
+    flush(a, n);
     if (I.mode == GL_QUADS) {                               /* every quad as two triangles */
         int ni = n / 4 * 6;
         if (ni > I.qcap) { GLushort *q = (GLushort *)realloc(I.qi, (size_t)ni * sizeof *q); if (!q) return; I.qi = q; I.qcap = ni; }
         if (n > 65536) return;
         for (int q = 0, o = 0; q < n; q += 4) { I.qi[o++] = (GLushort)q; I.qi[o++] = (GLushort)(q + 1); I.qi[o++] = (GLushort)(q + 2);
                                                 I.qi[o++] = (GLushort)q; I.qi[o++] = (GLushort)(q + 2); I.qi[o++] = (GLushort)(q + 3); }
-        glDrawElements(GL_TRIANGLES, ni, GL_UNSIGNED_SHORT, I.qi);
+        put_indices(ni, GL_UNSIGNED_SHORT, I.qi);
+        glDrawElements(GL_TRIANGLES, ni, GL_UNSIGNED_SHORT, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     } else glDrawArrays(I.mode == GL_POLYGON ? GL_TRIANGLE_FAN : I.mode == GL_QUAD_STRIP ? GL_TRIANGLE_STRIP : I.mode, 0, n);
 }
 
