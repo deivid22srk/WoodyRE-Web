@@ -3873,7 +3873,15 @@ int main(int argc, char **argv)
         for (int i = 0; i < 4 && s < 0; i++) if (slot_pct(&g_file.slot[i])) s = i;
         if (s >= 0 && s < 4) g_save = g_file.slot[s];
     }
-    if (!wenv("WOODY_NOSOUND") && !audio_init()) { char bf[512]; snprintf(bf, sizeof bf, "%s/../Music.bf", dir); printf("Music.bf: %d files\n", audio_bf_open(bf)); }
+    if (!wenv("WOODY_NOSOUND") && !audio_init()) {
+        char bf[512];
+#ifdef __EMSCRIPTEN__
+        snprintf(bf, sizeof bf, "/woody-big/Music.bf");        /* big files live outside the IDBFS mount (datasetup_posix.c) */
+#else
+        snprintf(bf, sizeof bf, "%s/../Music.bf", dir);
+#endif
+        printf("Music.bf: %d files\n", audio_bf_open(bf));
+    }
     opt_apply();                                                                       /* 0x4691e2: the volumes from the cfg at sound start */
     audio_reverse_stereo(wenv("WOODY_REVSTEREO") ? atoi(wenv("WOODY_REVSTEREO")) != 0 : g_setup.rev);   /* 0x4691f4: [0x5e81c0] = cfg +0x74 */
     in_read_cfg(dir);                                                                  /* 0x405e0f: Woody.cfg (key bindings, controller mode) */

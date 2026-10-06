@@ -164,11 +164,16 @@ const WoodyShell = (() => {
   }
   const log = (s, err) => { const el = $("log"); el.textContent += (el.textContent ? "\n" : "") + s; if (err) console.error(s); };
   const fmtMB = n => (n / 1048576).toFixed(1) + " MB";
+  const once = {};                              // some warnings must not repeat at every sync
+  const toastOnce = (key, msg, err) => { if (!once[key]) { once[key] = 1; toast(msg, err); } };
 
   /* ---- storage estimate on the boot card ---- */
   navigator.storage && navigator.storage.estimate &&
     navigator.storage.estimate().then(e => {
-      if (e.quota) $("storage").textContent = `Armazenamento disponível neste navegador: ~${fmtMB(e.quota - e.usage)}.`;
+      if (!e.quota) return;
+      const free = e.quota - e.usage;
+      $("storage").textContent = `Armazenamento disponível neste navegador: ~${fmtMB(free)}.` +
+        (free < 700 * 1048576 ? " O jogo roda, mas este navegador só libera pouco espaço para sites: pode não dar para guardar os arquivos (~650 MB) para as próximas visitas." : "");
     }).catch(() => {});
 
   /* ---- the virtual file system: /woody holds the game files + cfg/sav, persisted in IndexedDB ---- */
@@ -207,7 +212,8 @@ const WoodyShell = (() => {
     dataMode()    { return dataMode; },
     dataFile: null,
     persistEnabled() { return $("persist").checked; },
-    saved()       { toast("Arquivos do jogo guardados neste navegador. Na próxima visita eles abrem sozinhos."); },
+    saved()       { toastOnce('saved', "Arquivos do jogo guardados neste navegador. Na próxima visita eles abrem sozinhos."); },
+    syncError(msg){ toastOnce('sync', msg, 1); },
     fullscreen(on) {
       const el = document.documentElement;
       if (on) { (el.requestFullscreen || el.webkitRequestFullscreen || function(){}).call(el).catch?.(() => {}); }
