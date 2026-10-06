@@ -12,6 +12,31 @@
 #define plat_vsc_to_vk(sc) ((int)MapVirtualKeyA((UINT)(sc), 1 /* MAPVK_VSC_TO_VK */))
 static inline void plat_message(const char *text, int warn) { MessageBoxA(NULL, text, "WoodyRE", warn ? MB_ICONWARNING : MB_ICONINFORMATION); }
 #define plat_replace(from, to) (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0)   /* 1 = file from now is file to */
+#elif defined __EMSCRIPTEN__
+/* the web build (web/build_web.sh, Emscripten): the same names as the SDL2 builds. Sleep yields to the
+ * browser's event loop (the main loop, the frame cap and the logo films keep their blocking shape;
+ * -sASYNCIFY does the unwinding). The rest is as below. */
+#define plat_replace(from, to) (rename(from, to) == 0)
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <strings.h>
+#include <unistd.h>
+#include <emscripten.h>
+#define APIENTRY
+#define WINAPI
+#define _stricmp strcasecmp
+#define _strnicmp strncasecmp
+static inline void Sleep(unsigned ms) { emscripten_sleep(ms); }
+#define timeBeginPeriod(x) ((void)0)
+#define _fseeki64 fseeko                              /* 64-bit offsets (Music.bf) */
+#define _ftelli64 ftello
+FILE *plat_fopen(const char *path, const char *mode);
+#define fopen plat_fopen
+int plat_exists(const char *path);
+int plat_vsc_to_vk(int scancode);
+void (*plat_gl_proc(const char *name))(void);
+void plat_message(const char *text, int warn);
 #else
 #define plat_replace(from, to) (rename(from, to) == 0)
 #include <stdio.h>

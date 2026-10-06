@@ -65,7 +65,7 @@ int plat_vsc_to_vk(int sc)            /* MapVirtualKey(sc, MAPVK_VSC_TO_VK) of a
 #ifdef __ANDROID__
 void (*plat_gl_proc(const char *name))(void) { return gles_proc(name); }   /* eglGetProcAddress may hand out stubs for any name */
 #else
-void (*plat_gl_proc(const char *name))(void) { return (void (*)(void))SDL_GL_GetProcAddress(name); }
+void (*plat_gl_proc(const char *name))(void) { return (void (*)(void))SDL_GL_GetProcAddress(name); }   /* the web build too: Emscripten implements it over WebGL */
 #endif
 #ifdef __ANDROID__
 #include <jni.h>
@@ -87,6 +87,9 @@ int plat_dialog(const char *text, const char *b1, const char *b2, const char *b3
     return r;
 }
 void plat_message(const char *text, int warn) { (void)warn; printf("%s\n", text); plat_dialog(text, "OK", NULL, NULL); }
+#elif defined __EMSCRIPTEN__
+/* the web shell (web/shell.html) shows the message as a toast and in its log */
+void plat_message(const char *text, int warn) { printf("%s\n", text); fflush(stdout); EM_ASM({ if (window.WoodyShell) WoodyShell.toast(UTF8ToString($0), $1); }, text, warn); }
 #else
 void plat_message(const char *text, int warn)
 {
@@ -176,7 +179,8 @@ int win_open(Window *w, const char *title, int width, int height)
     log_tee();
 #endif
     if (SDL_InitSubSystem(SDL_INIT_VIDEO)) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return -1; }
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+    /* GLES 3 (WebGL 2 on the web); the GLES 2 fallback below does too (Emscripten maps any ES 2/3 ask to WebGL 2) */
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES); SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3); SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
 #endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1); SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24); SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
@@ -184,7 +188,7 @@ int win_open(Window *w, const char *title, int width, int height)
     SDL_Window *sw = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, flags);
     if (!sw) { fprintf(stderr, "SDL window: %s\n", SDL_GetError()); return -1; }
     SDL_GLContext gc = SDL_GL_CreateContext(sw);
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
     if (!gc) { SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2); gc = SDL_GL_CreateContext(sw); }   /* no ES 3.0: 2.0 does too */
 #endif
     if (!gc) { fprintf(stderr, "SDL OpenGL: %s\n", SDL_GetError()); SDL_DestroyWindow(sw); return -1; }
@@ -237,6 +241,10 @@ void win_swap(Window *w)
 void win_mode(Window *w, int width, int height, int full)
 {
     SDL_Window *sw = (SDL_Window *)w->hwnd;
+#ifdef __EMSCRIPTEN__
+    /* fullscreen is the browser's own (F11 or the shell's button; the shell also sizes the canvas) */
+    (void)width; (void)height; (void)sw; EM_ASM({ if (window.WoodyShell) WoodyShell.fullscreen($0); }, full); drawable(w); return;
+#endif
 #ifdef __ANDROID__
     (void)width; (void)height; (void)full; (void)sw; drawable(w); return;   /* always the whole screen */
 #endif
