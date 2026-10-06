@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>WoodyRE — Web</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: #0b0e14; color: #dfe6f1;
+    font: 15px/1.45 system-ui, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    padding: 8px 14px; display: flex; align-items: baseline; gap: 10px;
+    border-bottom: 1px solid #1c2230; background: #0e1219; flex: none;
+  }
+  header h1 { font-size: 17px; font-weight: 700; color: #ffd23f; letter-spacing: .3px; }
+  header small { color: #7d8aa0; }
+  #stage { position: relative; flex: 1; min-height: 0; background: #000; }
+  #canvas {
+    width: 100%; height: 100%; display: block; outline: none;
+    touch-action: none; background: #000;
+  }
+  .panel {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(7, 9, 14, .88); z-index: 10; padding: 16px;
+  }
+  .card {
+    max-width: 640px; width: 100%; max-height: 100%; overflow: auto;
+    background: #121722; border: 1px solid #232c3d; border-radius: 14px; padding: 22px 24px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.5);
+  }
+  .card h2 { font-size: 18px; margin-bottom: 10px; color: #ffd23f; }
+  .card p { margin: 8px 0; color: #b9c4d6; }
+  .card p.small { font-size: 13px; color: #7d8aa0; }
+  button, label.btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    background: #ffd23f; color: #14100a; font-weight: 700; font-size: 15px;
+    border: 0; border-radius: 10px; padding: 11px 20px; cursor: pointer; margin: 4px 6px 4px 0;
+  }
+  button:hover, label.btn:hover { filter: brightness(1.08); }
+  button:disabled { background: #3a4356; color: #939eb2; cursor: wait; }
+  button.ghost { background: #232c3d; color: #dfe6f1; font-weight: 600; }
+  input[type=file] { display: none; }
+  #drop {
+    border: 2px dashed #35415a; border-radius: 12px; padding: 18px; text-align: center;
+    color: #8fa0ba; margin: 12px 0; transition: .15s;
+  }
+  #drop.over { border-color: #ffd23f; color: #ffd23f; background: rgba(255,210,63,.06); }
+  .opts { margin: 10px 0 4px; font-size: 14px; color: #b9c4d6; }
+  .opts input { accent-color: #ffd23f; margin-right: 6px; }
+  #bar { height: 10px; background: #1c2230; border-radius: 6px; overflow: hidden; margin: 12px 0 4px; }
+  #bar > div { height: 100%; width: 0%; background: linear-gradient(90deg,#ffd23f,#ff9d3f); transition: width .2s; }
+  #bar.indet > div { width: 35% !important; animation: slide 1.1s infinite linear; }
+  @keyframes slide { from { transform: translateX(-110%); } to { transform: translateX(320%); } }
+  #ptext { font-size: 13.5px; color: #8fa0ba; min-height: 18px; }
+  .legal { font-size: 12.5px; color: #7d8aa0; border-top: 1px solid #232c3d; margin-top: 14px; padding-top: 10px; }
+  #toasts { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 40; width: min(560px, 92%); }
+  .toast {
+    background: #1d2433; border: 1px solid #35415a; border-left: 4px solid #ffd23f;
+    border-radius: 10px; padding: 10px 14px; margin-top: 8px; font-size: 14px; color: #dfe6f1;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45); white-space: pre-line;
+  }
+  .toast.warn { border-left-color: #ff5d5d; }
+  #hud { position: absolute; top: 10px; right: 10px; z-index: 20; display: flex; gap: 8px; }
+  #hud button { background: rgba(18,23,34,.85); color: #dfe6f1; border: 1px solid #2c3650; padding: 7px 12px; font-size: 13px; }
+  footer { flex: none; max-height: 138px; overflow: auto; padding: 7px 14px; border-top: 1px solid #1c2230; background: #0e1219; }
+  footer .cols { display: flex; flex-wrap: wrap; gap: 4px 26px; font-size: 12.5px; color: #7d8aa0; }
+  footer b { color: #a7b4c9; font-weight: 600; }
+  #log { margin-top: 6px; font: 11.5px/1.5 ui-monospace, Consolas, monospace; color: #6d7a92; white-space: pre-wrap; }
+  .hide { display: none !important; }
+  a { color: #ffd23f; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WoodyRE</h1>
+  <small>engine de <i>Woody Woodpecker: Escape from Buzz Buzzard Park</i> no navegador — reverso por <a href="https://github.com/jjmhalew/WoodyRE" target="_blank" rel="noopener">jjmhalew</a>, port web em WebAssembly</small>
+</header>
+
+<div id="stage">
+  <canvas id="canvas" tabindex="1"></canvas>
+  <div id="hud" class="hide">
+    <button id="b-full" title="Tela cheia">⛶ Tela cheia</button>
+  </div>
+
+  <div class="panel" id="boot">
+    <div class="card">
+      <h2>Jogar</h2>
+      <p>O engine roda 100% no seu navegador. Nenhum arquivo do jogo é distribuído aqui: para jogar você
+         fornece <b>uma imagem ISO do seu próprio CD</b> do jogo (ou uma pasta com a cópia dos arquivos
+         <b>Data, Common, Logo, Game e Music.bf</b>) quando o jogo pedir. Os arquivos ficam só no seu
+         computador/navegador — nada é enviado a nenhum servidor.</p>
+      <p style="margin-top:14px"><button id="b-play" disabled>Carregando engine…</button></p>
+      <p class="small" id="bootmsg">Baixando e compilando o WebAssembly…</p>
+      <div class="opts"><label><input type="checkbox" id="persist" checked>
+        Guardar os arquivos do jogo neste navegador (~640&nbsp;MB no IndexedDB) para não pedir de novo nas próximas visitas</label></div>
+      <p class="small" id="storage"></p>
+    </div>
+  </div>
+
+  <div class="panel hide" id="picker">
+    <div class="card">
+      <h2>Arquivos do jogo</h2>
+      <p>O WoodyRE precisa dos arquivos do CD original (versões: inglês 1.00, espanhol, brasileiro,
+         polonês ou russo). Escolha <b>uma</b> das opções:</p>
+      <p style="margin-top:10px">
+        <label class="btn" for="iso">📀 Escolher a imagem ISO do CD…</label>
+        <input type="file" id="iso" accept=".iso,.img,application/octet-stream">
+        <label class="btn" for="dir">📁 Escolher a pasta com os arquivos…</label>
+        <input type="file" id="dir" webkitdirectory multiple>
+      </p>
+      <div id="drop">…ou arraste a ISO aqui</div>
+      <div id="bar" class="hide"><div></div></div>
+      <div id="ptext"></div>
+      <p class="small">A cópia verifica cada arquivo (SHA-1, 232 arquivos, ~640&nbsp;MB) e acontece só uma vez.
+         Em celular a memória pode não bastar — prefira o computador.</p>
+      <p class="legal">Aviso legal: você deve possuir uma cópia original do jogo. Nenhum arquivo protegido por
+         direitos autorais é distribuído nesta página; os arquivos que você escolhe permanecem no seu navegador
+         e não são enviados a nenhum servidor. Projeto não oficial, sem vínculo com Eko Software, Cryo
+         Interactive, Microïds ou Universal Studios.</p>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+</div>
+
+<footer>
+  <div class="cols">
+    <span><b>Andar</b> setas/WASD</span><span><b>Pular</b> Espaço</span><span><b>Ataque</b> Ctrl/Shft</span>
+    <span><b>Especial</b> Ctrl dir./E</span><span><b>Agachar</b> X</span><span><b>Olhar</b> Enter/V</span>
+    <span><b>Câmera atrás</b> C</span><span><b>Pausa</b> Esc</span><span><b>Tela cheia</b> F11</span>
+    <span><b>Celular</b> metade esquerda = direção, botões à direita</span><span><b>Controle</b> Gamepad API</span>
+  </div>
+  <div id="log"></div>
+</footer>
+
+<script>
+"use strict";
+/* WoodyShell — the glue between the page and the engine (src/datasetup_posix.c, __EMSCRIPTEN__ part).
+   The C side calls these through EM_ASM; the page calls into the module (FS, callMain) here. */
+const WoodyShell = (() => {
+  const $ = id => document.getElementById(id);
+  const canvas = $("canvas");
+  let mod = null;                 // the Emscripten module instance
+  let dataFile = null;            // the picked ISO File object
+  let dataMode = 0;               // 0 none · 1 ISO (C extracts) · 2 folder (JS wrote the files)
+  let ready = false;              // the pick is complete; the C side may proceed
+  const progress = text => {      // "" hides the bar
+    const bar = $("bar"), t = $("ptext");
+    if (!text) { bar.classList.add("hide"); t.textContent = ""; return; }
+    bar.classList.remove("hide"); bar.classList.add("indet"); t.textContent = text;
+  };
+
+  function toast(text, warn) {
+    const d = document.createElement("div");
+    d.className = "toast" + (warn ? " warn" : ""); d.textContent = text;
+    $("toasts").appendChild(d);
+    setTimeout(() => d.remove(), warn ? 12000 : 6000);
+  }
+  const log = (s, err) => { const el = $("log"); el.textContent += (el.textContent ? "\n" : "") + s; if (err) console.error(s); };
+  const fmtMB = n => (n / 1048576).toFixed(1) + " MB";
+
+  /* ---- storage estimate on the boot card ---- */
+  navigator.storage && navigator.storage.estimate &&
+    navigator.storage.estimate().then(e => {
+      if (e.quota) $("storage").textContent = `Armazenamento disponível neste navegador: ~${fmtMB(e.quota - e.usage)}.`;
+    }).catch(() => {});
+
+  /* ---- the virtual file system: /woody holds the game files + cfg/sav, persisted in IndexedDB ---- */
+  async function mountStorage() {
+    const FS = mod.FS;
+    FS.mkdirTree("/woody");
+    FS.mount(FS.filesystems.IDBFS, {}, "/woody");
+    if ($("persist").checked && navigator.storage && navigator.storage.persist) {
+      await navigator.storage.persist().catch(() => {});
+    }
+    const had = FS.readdir("/woody/data").filter(n => n !== "." && n !== "..").length > 0;
+    if (had) { $("bootmsg").textContent = "Restaurando os arquivos salvos deste navegador…"; $("b-play").disabled = true; }
+    await new Promise((ok, bad) => FS.syncfs(true, e => e ? bad(e) : ok()));
+    return had && FS.readdir("/woody/data").filter(n => n !== "." && n !== "..").length > 0;
+  }
+
+  /* ---- boot ---- */
+  async function start() {
+    try { $("boot").classList.add("hide"); } catch (e) {}
+    $("hud").classList.remove("hide");
+    let restored = false;
+    try { restored = await mountStorage(); }
+    catch (e) { log("storage: " + e, true); toast("Não foi possível ler o armazenamento deste navegador; a sessão atual funciona mesmo assim.", 1); }
+    progress(restored ? "Carregando os arquivos do jogo…" : "");
+    try { mod.callMain([]); }                     // the engine runs from here; data_find() shows the picker if needed
+    catch (e) { log("main: " + e, true); toast("O engine não pôde iniciar. Veja o log no rodapé.", 1); }
+  }
+
+  /* ---- what the C side calls ---- */
+  const api = {
+    toast, progress,
+    pickData()    { $("picker").classList.remove("hide"); progress(""); },
+    pickAgain()   { ready = false; dataMode = 0; dataFile = null; $("picker").classList.remove("hide"); },
+    dataReady()   { return ready; },
+    dataMode()    { return dataMode; },
+    dataFile: null,
+    persistEnabled() { return $("persist").checked; },
+    saved()       { toast("Arquivos do jogo guardados neste navegador. Na próxima visita eles abrem sozinhos."); },
+    fullscreen(on) {
+      const el = document.documentElement;
+      if (on) { (el.requestFullscreen || el.webkitRequestFullscreen || function(){}).call(el).catch?.(() => {}); }
+      else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    },
+  };
+  Object.defineProperty(api, "dataFile", { get: () => dataFile });
+
+  /* ---- picks ---- */
+  function setReady(mode, file) {
+    dataMode = mode; dataFile = file || null; ready = true;
+    $("picker").classList.add("hide");
+    progress(mode === 1 ? "Lendo a ISO e copiando os arquivos do jogo…" : "Verificando os arquivos do jogo…");
+  }
+  async function useIso(file) {
+    if (!file) return;
+    if (!/\.(iso|img)$/i.test(file.name)) { toast("Esse arquivo não parece uma imagem ISO do CD (" + file.name + ").", 1); return; }
+    if (file.size < 100 * 1048576) { toast("A ISO parece pequena demais (" + fmtMB(file.size) + "). Use a imagem do CD original.", 1); return; }
+    toast("Lendo a ISO do seu computador. Nada é enviado a servidores.");
+    setReady(1, file);
+  }
+  async function useFolder(files) {
+    // keep only what the engine reads, under the folder that holds Data/ Common/ Logo/ Game/ Music.bf
+    const keep = p => /^(Data|Common|Logo|Game)\//.test(p) || p === "Music.bf";
+    const list = [...files].map(f => ({ f, rel: (f.webkitRelativePath || f.name).split("/").slice(1).join("/") }))
+                           .filter(o => o.rel && keep(o.rel));
+    if (!list.some(o => o.rel === "Music.bf")) { toast("A pasta não parece a cópia de um CD do jogo: falta Music.bf (escolha a pasta que contém Data, Common, Logo, Game e Music.bf).", 1); return; }
+    try {
+      const FS = mod.FS; FS.mkdirTree("/woody/data");
+      for (const { f, rel } of list) {
+        const path = "/woody/data/" + rel;
+        FS.mkdirTree(path.slice(0, path.lastIndexOf("/")));
+        const st = FS.open(path, "w+"); const CH = 8 << 20;
+        for (let off = 0; off < f.size; off += CH) {
+          const buf = new Uint8Array(await f.slice(off, Math.min(off + CH, f.size)).arrayBuffer());
+          FS.write(st, buf, 0, buf.length, off);
+          progress(`Copiando os arquivos do jogo… ${fmtMB(Math.min(off + CH, f.size))} de ${fmtMB(f.size)}`);
+        }
+        FS.close(st);
+      }
+    } catch (e) { log("folder: " + e, true); toast("Não foi possível copiar a pasta (" + e + ").", 1); return; }
+    setReady(2, null);
+  }
+  $("iso").addEventListener("change", e => { e.target.files[0] && useIso(e.target.files[0]); e.target.value = ""; });
+  $("dir").addEventListener("change", e => { e.target.files.length && useFolder(e.target.files); e.target.value = ""; });
+  const drop = $("drop");
+  ["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", e => {
+    const items = [...(e.dataTransfer.items || [])];
+    const entries = items.map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+    if (entries.length && entries[0].isDirectory) {         // a dropped folder: walk it
+      const files = [];
+      (function walk(entry, base, done) {
+        if (entry.isFile) entry.file(f => { Object.defineProperty(f, "webkitRelativePath", { value: base + entry.name }); files.push(f); done(); });
+        else { const r = entry.createReader(), next = () => r.readEntries(got => { if (!got.length) return done(); let left = got.length; got.forEach(g => walk(g, base + entry.name + "/", () => { if (!--left) next(); })); }, done); next(); }
+      })(entries[0], "", () => files.length && useFolder(files));
+    } else { const f = e.dataTransfer.files[0]; f && useIso(f); }
+  });
+
+  /* ---- buttons ---- */
+  $("b-play").addEventListener("click", start);
+  $("b-full").addEventListener("click", () => api.fullscreen(!document.fullscreenElement));
+  canvas.addEventListener("click", () => canvas.focus());
+  addEventListener("pagehide", () => { try { mod && mod.FS && mod.FS.syncfs(false, () => {}); } catch (e) {} });
+
+  /* ---- the module ---- */
+  const status = s => { $("bootmsg").textContent = s; };
+  window.WoodyShell = api;
+  WoodyRE({
+    canvas, locateFile: p => p,
+    noInitialRun: true,
+    print: s => log(s), printErr: s => log(s, true),
+    onAbort: w => { log("abort: " + w, true); toast("O engine parou: " + w, 1); },
+  }).then(m => {
+    mod = m;
+    const b = $("b-play");
+    b.disabled = false; b.textContent = "▶ Jogar";
+    status("Pronto. Você vai precisar da ISO (ou dos arquivos) do seu CD do jogo.");
+    progress("");
+  }).catch(e => { status("Falha ao carregar o WebAssembly (" + e + "). Use um navegador atual (Chrome, Edge, Firefox ou Safari)."); log(String(e), true); });
+
+  return api;
+})();
+</script>
+<script async src="woodyre.js"></script>
+</body>
+</html>
