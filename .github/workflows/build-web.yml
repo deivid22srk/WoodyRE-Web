@@ -1,0 +1,65 @@
+# build-web.yml - builds the browser version of WoodyRE (Emscripten / WebAssembly) and publishes it on
+# GitHub Pages: https://deivid22srk.github.io/WoodyRE-Web/
+# No ISO, ROM or game files take part in the build: the user picks their own CD files in the browser
+# (see PORT_REQUIREMENTS.md and web/shell.html).
+name: build-web
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Emscripten (fixed version; the action caches the toolchain itself)
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+          actions-cache-folder: emsdk-cache
+
+      - name: Cache the compiled Emscripten ports (SDL2)
+        uses: actions/cache@v4
+        with:
+          path: ~/.emscripten_cache
+          key: emcc-cache-3.1.74-${{ runner.os }}-${{ hashFiles('web/build_web.sh') }}
+          restore-keys: emcc-cache-3.1.74-${{ runner.os }}-
+
+      - name: Build the web version
+        run: |
+          emcc --version
+          ./web/build_web.sh
+          ls -la web/dist
+
+      - name: The page must use relative paths (GitHub Pages serves a subpath)
+        run: |
+          ! grep -nE '(src|href)="/[^/]' web/dist/index.html
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
