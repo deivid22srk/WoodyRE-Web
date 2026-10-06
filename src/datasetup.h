@@ -16,4 +16,8 @@ const char *data_find(void);
  * Returns their number (0 = an exact copy of the English 1.00 CD). */
 int data_verify(const char *data_dir);
 
+/* web only: write the changes of the virtual file system (woodyre.cfg, woodyre.sav) to the browser's IndexedDB;
+ * a no-op elsewhere (main_engine.c calls it every few frames) */
+void data_sync(void);
+
 #endif

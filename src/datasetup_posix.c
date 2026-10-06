@@ -207,10 +207,13 @@ const char *data_find(void)
     }
 }
 #else
-/* ---- Android: the app's own folder on the shared storage (Android/data/<package>/files: a USB cable reaches it, no
- * permission needed), filled once from an ISO image of the CD or a folder with a copy of it that the user picks in the
- * system's file picker (WoodyActivity.java); an ISO is read here, through the file descriptor the picker hands out. */
+/* ---- Android and the web build: the game files come from what the user picks once - an ISO image of the CD (read here,
+ * by the ISO 9660 parser below) or a folder with a copy of it. Android goes through the system's file picker
+ * (WoodyActivity.java, which hands out a file descriptor for the ISO); the web build's shell (web/shell.html) hands over
+ * the picked File object of the ISO, or writes a picked folder copy into the virtual file system (see data_find below).
+ * Nothing is uploaded anywhere: everything stays on the device / in the browser's own storage. */
 #include <fcntl.h>
+#ifdef __ANDROID__
 #include <jni.h>
 
 static int home_dir(char *d)
@@ -242,20 +245,54 @@ static void java_progress(const char *text)                 /* WoodyActivity.pro
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     (*env)->DeleteLocalRef(env, c); (*env)->DeleteLocalRef(env, act);
 }
+#endif   /* __ANDROID__ (java glue) */
+
+/* the progress dialog of a copy / check: Android shows it in the app, the web build in the page */
+static void data_progress(const char *text)
+{
+#ifdef __ANDROID__
+    java_progress(text);
+#else
+    EM_ASM({ if (window.WoodyShell) WoodyShell.progress(UTF8ToString($0)); }, text);
+#endif
+}
+
 static void progress_pct(const char *what, unsigned long long done, int *last)
 {
     int pct = (int)(done * 100 / DATAFILES_BYTES); char m[128];
     if (pct == *last) return;
-    *last = pct; snprintf(m, sizeof m, "%s %d %%", what, pct); java_progress(m);
+    *last = pct; snprintf(m, sizeof m, "%s %d %%", what, pct); data_progress(m);
 }
 
 /* ---- ISO 9660 (ECMA-119) with the Joliet names when there are some: just enough to find the manifest's files ---- */
 typedef struct { int fd; uint32_t root_lba, root_len; int joliet; } Iso;
 static uint32_t le32(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+#ifdef __EMSCRIPTEN__
+/* reads [off, off+n) of the ISO file the shell picked into the WASM heap; -1 = no file / read failed */
+EM_ASYNC_JS(int, web_pread, (void *b, double off, double n), {
+    const f = window.WoodyShell && WoodyShell.dataFile;
+    if (!f) return -1;
+    try { const buf = await f.slice(off, off + n).arrayBuffer(); HEAPU8.set(new Uint8Array(buf), b); return 0; }
+    catch (e) { return -1; }
+});
+/* writes the virtual file system (/woody: the game files, woodyre.cfg, woodyre.sav) into the browser's IndexedDB */
+EM_ASYNC_JS(int, web_syncfs, (void), {
+    if (!window.WoodyShell || !WoodyShell.persistEnabled()) return 0;
+    try { await new Promise((ok, bad) => FS.syncfs(false, e => e ? bad(e) : ok())); WoodyShell.saved(); return 0; }
+    catch (e) { console.warn('WoodyRE: syncfs failed:', e); WoodyShell.toast('N\u00e3o foi poss\u00edvel salvar os arquivos do jogo no navegador (a sess\u00e3o atual funciona mesmo assim).', 1); return -1; }
+});
+#endif
+/* the ISO 9660 reader: Android reads a file descriptor; the web build reads the picked File object in the page
+ * (web_pread above, a chunk at a time, so the whole image never sits in memory at once) */
 static int iso_pread(int fd, void *b, size_t n, unsigned long long off)
 {
+#ifdef __EMSCRIPTEN__
+    (void)fd;
+    return (int)web_pread(b, (double)off, (double)n);
+#else
     for (size_t got = 0; got < n; ) { ssize_t k = pread(fd, (char *)b + got, n - got, (off_t)(off + got)); if (k <= 0) return -1; got += (size_t)k; }
     return 0;
+#endif
 }
 static int iso_open(Iso *is, int fd)
 {
@@ -306,17 +343,19 @@ static int iso_copy(int fd, const char *home)               /* the number of fil
     uint32_t l0, n0;
     if (iso_find(&is, "Data/W1A/W1A.gel", &l0, &n0) || iso_find(&is, "Music.bf", &l0, &n0)) { plat_message("That ISO image does not hold the Woody Woodpecker game files (Data, Common, Music.bf).", 1); return -1; }
     snprintf(dst, sizeof dst, "%s/data", home); mkdir(dst, 0755);
+#ifndef __EMSCRIPTEN__                                      /* a browser has no useful free-space number; the copy just fails if it has to */
     struct statvfs vf;
     if (!statvfs(home, &vf) && (unsigned long long)vf.f_bavail * vf.f_frsize < (unsigned long long)DATAFILES_BYTES + (16u << 20)) {
         snprintf(m, sizeof m, "Not enough free space for the game files (%u MB) in\n%s", DATAFILES_BYTES >> 20, dst); plat_message(m, 1); return -1;
     }
+#endif
     size_t bufsz = 4u << 20; unsigned char *buf = malloc(bufsz); if (!buf) return -1;
     unsigned long long done = 0; int bad = 0, first_bad = -1, last = -1; memset(g_fit, 0, sizeof g_fit);
     printf("data: copying the game files from the ISO image to %s\n", dst);
     for (int i = 0; i < DATAFILES_COUNT; i++) {
         char dp[PMAX], tp[PMAX + 8]; uint32_t lba, len; int ok = 1;
         if (iso_find(&is, k_datafiles[i].path, &lba, &len) && datafile_absent(i, g_fit)) continue;
-        if (iso_find(&is, k_datafiles[i].path, &lba, &len)) { snprintf(m, sizeof m, "The ISO image has no %s.", k_datafiles[i].path); java_progress(NULL); plat_message(m, 1); free(buf); return -1; }
+        if (iso_find(&is, k_datafiles[i].path, &lba, &len)) { snprintf(m, sizeof m, "The ISO image has no %s.", k_datafiles[i].path); data_progress(NULL); plat_message(m, 1); free(buf); return -1; }
         snprintf(dp, sizeof dp, "%s/%s", dst, k_datafiles[i].path); make_dirs(dp); snprintf(tp, sizeof tp, "%s.part", dp);
         FILE *d = fopen(tp, "wb"); if (!d) ok = -1;
         Sha1 h; sha1_init(&h);
@@ -327,14 +366,14 @@ static int iso_copy(int fd, const char *home)               /* the number of fil
         }
         if (d && fclose(d)) ok = -1;
         if (ok < 0 || rename(tp, dp)) {
-            remove(tp); java_progress(NULL);
+            remove(tp); data_progress(NULL);
             snprintf(m, sizeof m, "Could not copy %s from the ISO image to\n%s/\n\nIs there room on the device?", k_datafiles[i].path, dst);
             plat_message(m, 1); free(buf); return -1;
         }
         char hex[41]; sha1_hex(&h, hex);
         if (!datafile_tally(i, len, hex, g_fit)) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s matches none of the supported CDs\n", k_datafiles[i].path); }
     }
-    free(buf); java_progress(NULL);
+    free(buf); data_progress(NULL);
     printf("data: the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
         snprintf(m, sizeof m, "%d of the copied files match none of the supported CDs (the first: %s).\n\n"
@@ -352,7 +391,7 @@ static void check_copy(const char *home)                     /* after the Java s
         if (file_pass(root, NULL, i, buf, bufsz, &done) <= 0) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s missing or differs\n", k_datafiles[i].path); }
         progress_pct("Checking the game files...", done, &last);
     }
-    free(buf); java_progress(NULL);
+    free(buf); data_progress(NULL);
     printf("data: the %s CD\n", k_releases[datafile_best(g_fit)]);
     if (bad) {
         snprintf(m, sizeof m, "%d game files are missing or match none of the supported CDs (the first: %s).\n\n"
@@ -392,6 +431,37 @@ const char *data_find(void)
         }
     }
 }
+#endif   /* __ANDROID__ (data_find) */
+
+#if defined __EMSCRIPTEN__
+/* ---- web: the shell (web/shell.html) asks the user for the CD files and, for a folder copy, writes them into the
+ * virtual file system itself. This side waits for the pick, extracts an ISO with the parser above (reading the picked
+ * File object chunk by chunk, the image never sits in memory whole), checks the manifest and keeps the result in the
+ * browser's IndexedDB (IDBFS mounted at /woody by the shell before main): a later visit starts without the picker. */
+const char *data_find(void)
+{
+    const char *env = getenv("WOODY_DATA"); if (env && *env) return env;
+    if (cd_layout("/woody/data")) return chdir("/woody") ? NULL : "data/Data";   /* a previous visit's copy */
+    mkdir("/woody", 0755); mkdir("/woody/data", 0755);
+    for (;;) {
+        EM_ASM({ if (window.WoodyShell) WoodyShell.pickData(); });               /* show the picker (an ISO file or a folder) */
+        while (!EM_ASM_INT({ return window.WoodyShell ? WoodyShell.dataReady() : 0; })) emscripten_sleep(120);
+        if (EM_ASM_INT({ return WoodyShell.dataMode(); }) == 1) {                /* mode 1 = an ISO image, 2 = the shell already wrote a folder copy */
+            if (iso_copy(0, "/woody") < 0) { EM_ASM({ if (window.WoodyShell) WoodyShell.pickAgain(); }); continue; }
+        }
+        if (!cd_layout("/woody/data")) {
+            plat_message("That selection does not hold the game files: it needs Data, Common, Logo, Game and Music.bf of the CD.", 1);
+            EM_ASM({ if (window.WoodyShell) WoodyShell.pickAgain(); }); continue;
+        }
+        check_copy("/woody");
+        data_progress("");
+        web_syncfs();                                                            /* keep everything for the next visits (best effort) */
+        printf("data: the game files stay in this browser's own storage; nothing is sent anywhere\n");
+        return chdir("/woody") ? NULL : "data/Data";
+    }
+}
+
+void data_sync(void) { web_syncfs(); }
 #endif
 
 int data_verify(const char *data_dir)
