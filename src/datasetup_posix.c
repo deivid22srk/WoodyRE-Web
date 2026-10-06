@@ -288,8 +288,12 @@ EM_ASYNC_JS(int, web_pread, (void *b, double off, double n), {
 /* writes the virtual file system (/woody: the game files, woodyre.cfg, woodyre.sav) into the browser's IndexedDB */
 EM_ASYNC_JS(int, web_syncfs, (void), {
     if (!window.WoodyShell || !WoodyShell.persistEnabled()) return 0;
-    try { await new Promise((ok, bad) => FS.syncfs(false, e => e ? bad(e) : ok())); WoodyShell.saved(); return 0; }
-    catch (e) { console.warn('WoodyRE: syncfs failed:', e); WoodyShell.syncError(e && e.name == 'QuotaExceededError'
+    const show = window.__woodyFinalSave;                     /* only the copy's final save reports progress */
+    if (show) WoodyShell.phase(-1, 'save');
+    try { await new Promise((ok, bad) => FS.syncfs(false, e => e ? bad(e) : ok())); WoodyShell.saved();
+          if (show) window.__woodyFinalSave = 0; return 0; }
+    catch (e) { console.warn('WoodyRE: syncfs failed:', e); if (show) window.__woodyFinalSave = 0;
+        WoodyShell.syncError(e && e.name == 'QuotaExceededError'
         ? 'O navegador n\u00e3o tem cota de armazenamento suficiente para guardar tudo (~650 MB). O jogo roda mesmo assim, mas na pr\u00f3xima visita ele pede a ISO de novo.'
         : 'N\u00e3o foi poss\u00edvel salvar os arquivos do jogo no navegador (a sess\u00e3o atual funciona mesmo assim).'); return -1; }
 });
@@ -314,6 +318,7 @@ EM_ASYNC_JS(int, web_bigfile_store, (const char *name), {
         req.onupgradeneeded = () => req.result.createObjectStore('chunks');
         const db = await Promise.race([new Promise((ok, e) => { req.onsuccess = () => ok(req.result); req.onerror = () => e(req.error); }), tick(30000, 'db open')]);
         console.warn('WoodyRE: store ' + n + ': db open, ' + Math.ceil(size / CH) + ' chunks');
+        if (window.WoodyShell) WoodyShell.phase(0, 'store');
         const f = FS.open(path, 'r');
         const buf = new Uint8Array(CH);
         try {
@@ -323,43 +328,49 @@ EM_ASYNC_JS(int, web_bigfile_store, (const char *name), {
                 const tx = db.transaction('chunks', 'readwrite');          // one transaction per chunk: IndexedDB
                 tx.objectStore('chunks').put(buf.slice(0, got), n + ':' + i); // drains to disk instead of queueing
                 await Promise.race([new Promise((ok, e) => { tx.oncomplete = ok; tx.onerror = () => e(tx.error); tx.onabort = () => e(tx.error); }), tick(30000, 'chunk ' + i)]); // ~300 MB at once
+                if (window.WoodyShell) WoodyShell.phase(Math.round((i + 1) * 100 / Math.ceil(size / CH)), 'store');
             }
             const tx = db.transaction('chunks', 'readwrite');
             tx.objectStore('chunks').put({ size, chunk: CH }, n + ':meta');
             await Promise.race([new Promise((ok, e) => { tx.oncomplete = ok; tx.onerror = () => e(tx.error); }), tick(30000, 'meta')]);
         } finally { FS.close(f); db.close(); }
         console.warn('WoodyRE: ' + n + ' (' + Math.round(size / 1048576) + ' MB) stored in chunks for the next visits');
+        if (window.WoodyShell) WoodyShell.progress('');
         return 0;
-    } catch (e) { console.warn('WoodyRE: bigfile store failed:', e); return -1; }
+    } catch (e) { console.warn('WoodyRE: bigfile store failed:', e); if (window.WoodyShell) WoodyShell.progress(''); return -1; }
 });
 EM_ASYNC_JS(int, web_bigfile_restore, (const char *name), {
     try {
         const n = UTF8ToString(name), path = '/woody-big/' + n;
-        if (FS.analyzePath(path).exists) return 1;
+        if (FS.analyzePath(path).exists) { if (window.WoodyShell) WoodyShell.progress(''); return 1; }
         const req = indexedDB.open('woodyre-big', 1);
         req.onupgradeneeded = () => req.result.createObjectStore('chunks');
         const db = await new Promise((ok, e) => { req.onsuccess = () => ok(req.result); req.onerror = () => e(req.error); });
         const meta = await new Promise((ok, e) => { const t = db.transaction('chunks'), r = t.objectStore('chunks').get(n + ':meta'); r.onsuccess = () => ok(r.result); r.onerror = () => e(r.error); });
-        if (!meta) { db.close(); return 0; }
+        if (!meta) { db.close(); if (window.WoodyShell) WoodyShell.progress(''); return 0; }
+        if (window.WoodyShell) WoodyShell.phase(0, 'restore-big');
         FS.mkdirTree('/woody-big');
         const f = FS.open(path, 'w+');
         try {
             const tx = db.transaction('chunks'), st = tx.objectStore('chunks');
             for (let i = 0; i * meta.chunk < meta.size; i++) {
                 const c = await new Promise((ok, e) => { const r = st.get(n + ':' + i); r.onsuccess = () => ok(r.result); r.onerror = () => e(r.error); });
-                if (!c) return -1;                                 // incomplete store: caller falls back to the picker
+                if (!c) { if (window.WoodyShell) WoodyShell.progress(''); return -1; }   // incomplete store: caller falls back to the picker
                 FS.write(f, c, 0, c.length, i * meta.chunk);
+                if (window.WoodyShell) WoodyShell.phase(Math.round((i + 1) * 100 / Math.ceil(meta.size / meta.chunk)), 'restore-big');
             }
         } finally { FS.close(f); db.close(); }
         console.log('WoodyRE: ' + n + ' restored from the browser storage (no pick needed)');
+        if (window.WoodyShell) WoodyShell.progress('');
         return 1;
-    } catch (e) { console.warn('WoodyRE: bigfile restore failed:', e); return -1; }
+    } catch (e) { console.warn('WoodyRE: bigfile restore failed:', e); if (window.WoodyShell) WoodyShell.progress(''); return -1; }
 });
 /* a folder copy (the shell writes every file under /woody/data) leaves Music.bf inside the IDBFS mount: move it
  * to /woody-big before anything syncs. FS.rename cannot cross the mount, so this streams a copy and unlinks. */
 EM_JS(int, web_bigfile_relocate, (void), {
     try {
         if (!FS.analyzePath('/woody/data/Music.bf').exists) return 0;
+        if (window.WoodyShell) WoodyShell.phase(-1, 'move');
         FS.mkdirTree('/woody-big');
         const s = FS.open('/woody/data/Music.bf', 'r'), d = FS.open('/woody-big/Music.bf', 'w+');
         const size = FS.stat('/woody/data/Music.bf').size, CH = 8 << 20, buf = new Uint8Array(CH);
@@ -370,8 +381,9 @@ EM_JS(int, web_bigfile_relocate, (void), {
         }
         FS.close(s); FS.close(d);
         FS.unlink('/woody/data/Music.bf');
+        if (window.WoodyShell) WoodyShell.progress('');
         return 0;
-    } catch (e) { console.warn('WoodyRE: bigfile relocate failed:', e); return -1; }
+    } catch (e) { console.warn('WoodyRE: bigfile relocate failed:', e); if (window.WoodyShell) WoodyShell.progress(''); return -1; }
 });
 /* the big file is written slice by slice straight from the WASM heap: never a second 300 MB JS copy */
 EM_JS(int, web_bigfile_begin, (const char *name), {
@@ -600,6 +612,7 @@ const char *data_find(void)
         printf("data: the big file is out of the IDBFS mount\n");
         web_bigfile_store("Music.bf");                                           /* keep the big file in its own chunked store */
         printf("data: the big file is in its chunk store\n");
+        EM_ASM({ window.__woodyFinalSave = 1; });                                 /* the next syncfs reports progress */
         web_syncfs();                                                            /* keep everything for the next visits (best effort) */
         printf("data: syncfs done\n");
         printf("data: the game files stay in this browser's own storage; nothing is sent anywhere\n");
