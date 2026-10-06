@@ -32,6 +32,16 @@
   :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
   a { color: var(--amber); text-decoration: none; }
   a:hover { text-decoration: underline; }
+  html, body { overscroll-behavior: none; }
+  #canvas { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+
+  /* the portrait hint on phones */
+  #rotate { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 45;
+            display: flex; align-items: center; gap: 9px; background: rgba(17,23,36,.96); border: 1px solid var(--line-2);
+            border-radius: 999px; padding: 10px 18px; font-size: 13.5px; color: var(--txt);
+            box-shadow: 0 12px 34px rgba(0,0,0,.5); cursor: pointer; white-space: nowrap; }
+  #rotate.hide { display: none; }
+  #rotate svg { flex: none; color: var(--amber); }
 
   /* ---------- header ---------- */
   #topbar {
@@ -234,6 +244,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
       <span>Tela cheia</span>
     </button>
+    <button id="b-pad" class="hudbtn hide" title="Mostrar / ocultar os controles de toque">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="16" r="2.6"/><circle cx="16.5" cy="7.5" r="2.2"/><path d="M9 18.6c1 .9 2.3 1.4 3.7 1.4M5 12.5A9 9 0 0 1 12.7 8"/></svg>
+      <span>Controles</span>
+    </button>
   </div>
 
   <!-- boot -->
@@ -258,7 +272,8 @@
         <div id="bootmsg">Baixando e compilando o WebAssembly…</div>
       </div>
       <label class="switch"><input type="checkbox" id="persist" checked><span class="sw"></span>
-        <span>Guardar os arquivos do jogo neste navegador (~640&nbsp;MB no IndexedDB) para não pedir de novo nas próximas visitas</span></label>
+        <span>Guardar os arquivos neste navegador (~640&nbsp;MB) — nas próximas visitas o jogo abre direto.
+        Desligado = preparação <b>bem mais rápida</b>, mas pede a ISO de novo a cada visita</span></label>
       <p class="small" id="storage"></p>
       <details class="how">
         <summary>Controles e como jogar</summary>
@@ -272,7 +287,8 @@
           <div class="ctl"><span class="keys"><kbd>C</kbd></span> câmera atrás</div>
           <div class="ctl"><span class="keys"><kbd>Esc</kbd></span> pausa</div>
           <div class="ctl"><span class="keys"><kbd>F11</kbd> / botão ⛶</span> tela cheia</div>
-          <div class="ctl">📱 metade esquerda = direção, botões à direita</div>
+          <div class="ctl">📱 <b>toque:</b> metade esquerda = direção (stick)</div>
+          <div class="ctl">📱 A pula · B agacha · X ataca · Y especial</div>
           <div class="ctl">🎮 gamepad pela Gamepad API</div>
         </div>
       </details>
@@ -303,7 +319,7 @@
       </div>
       <div id="drop">…ou arraste a ISO aqui</div>
       <p class="small" style="margin-top:12px">CDs suportados: inglês 1.00, brasileiro, espanhol, polonês e russo.
-         Em celular a memória pode não bastar — prefira o computador. Os arquivos nunca saem do seu navegador.</p>
+         Funciona em celular (Android/iOS): os controles de toque aparecem sozinhos. Os arquivos nunca saem do seu navegador.</p>
       <p class="legal">Aviso legal: você deve possuir uma cópia original do jogo. Nenhum arquivo protegido por
          direitos autorais é distribuído nesta página; os arquivos que você escolhe permanecem no seu navegador
          e não são enviados a nenhum servidor.</p>
@@ -320,11 +336,16 @@
       </div>
       <div class="wrow"><span id="wphase">Preparando…</span><span id="wpct"></span></div>
       <div id="bar"><div></div></div>
-      <div class="wmeta"><span id="wtime"></span><span>Isso acontece só uma vez — nas próximas visitas o jogo abre direto.</span></div>
+      <div class="wmeta"><span><span id="wtime"></span><span id="wspeed"></span></span><span id="whint">Isso acontece só uma vez — nas próximas visitas o jogo abre direto.</span></div>
     </div>
   </section>
 
   <div id="toasts"></div>
+
+  <div id="rotate" class="hide" role="status">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M3 7a9 9 0 0 1 2.6-3.4M21 17a9 9 0 0 1-2.6 3.4"/></svg>
+    Gire o celular para ter uma tela de jogo maior
+  </div>
 </main>
 
 <footer>
@@ -386,7 +407,8 @@ const WoodyShell = (() => {
     "store":       "Guardando Music.bf no armazenamento do navegador…",
     "save":        "Salvando tudo para as próximas visitas…",
   };
-  let workOn = false, workKey = null, workT0 = 0, workTick = 0;
+  let workOn = false, workKey = null, workT0 = 0, workTick = 0, phaseT0 = 0, phaseShown = "";
+  const PHASE_MB = { copy: 639, check: 639, store: 306, "restore-big": 306, save: 330, move: 306 };   // rough sizes for the speed read-out
   function showWork() {
     if (workOn) return;
     workOn = true; workT0 = Date.now();
@@ -398,26 +420,38 @@ const WoodyShell = (() => {
     }, 500);
   }
   function hideWork() {
-    workOn = false; workKey = null; workT0 = 0;
+    workOn = false; workKey = null; workT0 = 0; phaseShown = "";
     clearInterval(workTick); workTick = 0;
-    $("wtime").textContent = "";
+    $("wtime").textContent = ""; $("wspeed").textContent = "";
     $("work").classList.add("hide");
     setStatus("Engine pronta", "ok");
+    if (touchable) toastOnce('hud', '📱 Controles na tela: metade esquerda = direção, botões à direita. Toque em "Tela cheia" para aproveitar a tela toda.');
   }
   function phase(pct, key) {              // pct < 0 = indeterminate
     if (key) workKey = key;
     if (!workKey) workKey = "copy";
     showWork();
+    if (workKey !== phaseShown) { phaseShown = workKey; phaseT0 = Date.now(); }
     setStatus("Preparando os dados…", "busy");
     $("wphase").textContent = PHASES[workKey] || "Preparando os arquivos do jogo…";
+    $("whint").textContent = $("persist").checked
+      ? "Isso acontece só uma vez — nas próximas visitas o jogo abre direto."
+      : "Modo rápido: os arquivos não ficam guardados (a sessão atual funciona normalmente).";
     const bar = $("bar"), p = Math.max(0, Math.min(100, Math.round(pct)));
     if (pct >= 0) {
       bar.classList.remove("indet");
       bar.firstElementChild.style.width = p + "%";
       $("wpct").textContent = p + " %";
+      const el = (Date.now() - phaseT0) / 1000, mb = PHASE_MB[workKey];
+      if (mb && p > 2 && p < 100 && el > 3) {
+        const spd = (p / 100 * mb / el).toFixed(1).replace(".", ",");
+        const eta = Math.max(1, Math.round(el * (100 - p) / p));
+        $("wspeed").textContent = " · " + spd + " MB/s · faltam ~" + eta + " s";
+      } else $("wspeed").textContent = "";
     } else {
       bar.classList.add("indet");
       $("wpct").textContent = "";
+      $("wspeed").textContent = "";
     }
   }
   /* progress() = the C side's text callback ("Copying the game files... 42 %"); "" hides it */
@@ -433,9 +467,15 @@ const WoodyShell = (() => {
     navigator.storage.estimate().then(e => {
       if (!e.quota) return;
       const free = e.quota - e.usage;
-      $("storage").textContent = `Armazenamento disponível neste navegador: ~${fmtMB(free)}.` +
+      let msg = `Armazenamento disponível neste navegador: ~${fmtMB(free)}.` +
         (free < 700 * 1048576 ? " O jogo roda mesmo assim, mas pode não haver espaço para guardar os arquivos (~650 MB) entre as visitas." : "");
+      if (free < 700 * 1048576 && !$("persist").dataset.touched) {
+        $("persist").checked = false;                 // the quick mode by default when the quota would not fit anyway
+        msg += " Modo rápido ligado: não há espaço para guardar os arquivos.";
+      }
+      $("storage").textContent = msg;
     }).catch(() => {});
+  $("persist").addEventListener("change", () => { try { $("persist").dataset.touched = "1"; } catch (e) {} });
 
   /* ---- the virtual file system: /woody holds the game files + cfg/sav, persisted in IndexedDB ---- */
   async function mountStorage() {
@@ -456,6 +496,7 @@ const WoodyShell = (() => {
   async function start() {
     try { $("boot").classList.add("hide"); } catch (e) {}
     hud.classList.remove("hide");
+    document.body.classList.add("playing"); rotCheck();
     let restored = false;
     try { restored = await mountStorage(); }
     catch (e) { log("storage: " + (e && (e.message || e.name) || e), true); toast("Não foi possível ler o armazenamento deste navegador; a sessão atual funciona mesmo assim.", 1); }
@@ -511,6 +552,7 @@ const WoodyShell = (() => {
     persistEnabled() { return $("persist").checked; },
     saved()       { hideWork(); toastOnce('saved', "Arquivos do jogo guardados neste navegador. Na próxima visita eles abrem sozinhos."); setStatus("Engine pronta", "ok"); },
     syncError(msg){ hideWork(); toastOnce('sync', msg, 1); },
+    touchState(on){ $("b-pad").classList.toggle("on", !!on); },
     fullscreen(on) {
       if (on) {
         const fn = stage.requestFullscreen || stage.webkitRequestFullscreen || stage.webkitRequestFullScreen;
@@ -591,6 +633,21 @@ const WoodyShell = (() => {
     } else { const f = e.dataTransfer.files[0]; f && useIso(f); }
   });
 
+  /* ---- on-screen controls button and the portrait hint (touch devices) ---- */
+  const touchable = (() => { try { return matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0 ||
+      new URLSearchParams(location.search).get("touch") === "1"; } catch (e) { return false; } })();
+  $("b-pad").addEventListener("click", () => { window.__woodyToggle = 1; pokeHud(); });   // the engine applies it on the next frame
+  let rotOk = false;
+  try { rotOk = sessionStorage.getItem("rot-ok") === "1"; } catch (e) {}
+  function rotCheck() {
+    const show = !rotOk && document.body.classList.contains("playing") &&
+                 matchMedia("(pointer: coarse)").matches && matchMedia("(orientation: portrait)").matches;
+    $("rotate").classList.toggle("hide", !show);
+  }
+  $("rotate").addEventListener("click", () => { rotOk = true; try { sessionStorage.setItem("rot-ok", "1"); } catch (e) {} rotCheck(); });
+  addEventListener("orientationchange", rotCheck);
+  addEventListener("resize", rotCheck);
+
   /* ---- buttons ---- */
   $("b-play").addEventListener("click", start);
   const toggleFs = () => api.fullscreen(!fsActive());
@@ -611,6 +668,10 @@ const WoodyShell = (() => {
   }).then(m => {
     mod = m;
     window.WoodyREmod = m;                        // debugging / power users in the console
+    if (touchable) {                              // the pad starts enabled on touch devices (src/touch.c asks the browser)
+      $("b-pad").classList.remove("hide");
+      try { $("b-pad").classList.toggle("on", !!mod.ccall("touch_enabled", "number")); } catch (e) {}
+    }
     const b = $("b-play");
     b.disabled = false;
     b.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M8 5.5v13l11-6.5z"/></svg><span>Jogar</span>';

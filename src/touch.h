@@ -10,4 +10,6 @@
 void touch_event(const void *sdl_event, int width, int height);   /* an SDL_Event (finger events, keys); width / height = the drawable */
 void touch_pad(PadState *st, int real_pad_used);                   /* merge into this frame's pads; real_pad_used hides the controls */
 void touch_draw(int width, int height);                            /* over the finished frame, before the swap */
+void touch_toggle(void);                                           /* web only: show / hide the on-screen pad from the page */
+int touch_enabled(void);                                           /* web only: whether the on-screen pad is on now */
 #endif

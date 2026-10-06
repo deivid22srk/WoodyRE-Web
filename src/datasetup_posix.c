@@ -306,14 +306,21 @@ EM_ASYNC_JS(int, web_syncfs_quiet, (void), {
 });
 /* Music.bf is ~300 MB and the engine only streams it: IDBFS would copy the whole file into IndexedDB on
  * every sync (and again on restore), which can outgrow a small machine's memory. So big files live in
- * /woody-big, OUTSIDE the IDBFS mount, and get their own chunked store (8 MB pieces, written once). */
+ * /woody-big, OUTSIDE the IDBFS mount, and get their own chunked store (16 MB pieces, written once, as
+ * Blobs so IndexedDB streams them to disk instead of cloning each one whole). With saving off (the quick
+ * mode) nothing is written: the session runs from RAM and the next visit asks for the CD files again. */
 EM_ASYNC_JS(int, web_bigfile_store, (const char *name), {
     try {
         const n = UTF8ToString(name), path = '/woody-big/' + n;
         if (!FS.analyzePath(path).exists) return 0;
+        if (window.WoodyShell && !WoodyShell.persistEnabled()) {
+            console.warn('WoodyRE: not keeping ' + n + ' (saving is off; the next visit asks for the CD files again)');
+            return 0;
+        }
         const size = FS.stat(path).size, CH = 16 << 20;
         const tick = (ms, what) => new Promise((_, bad) => setTimeout(() => bad(new Error('timeout: ' + what)), ms));
         console.warn('WoodyRE: store ' + n + ': opening db');
+        const t0 = performance.now();
         const req = indexedDB.open('woodyre-big', 1);
         req.onupgradeneeded = () => req.result.createObjectStore('chunks');
         const db = await Promise.race([new Promise((ok, e) => { req.onsuccess = () => ok(req.result); req.onerror = () => e(req.error); }), tick(30000, 'db open')]);
@@ -326,7 +333,7 @@ EM_ASYNC_JS(int, web_bigfile_store, (const char *name), {
                 const got = Math.min(CH, size - off);
                 FS.read(f, buf, 0, got, off);
                 const tx = db.transaction('chunks', 'readwrite');          // one transaction per chunk: IndexedDB
-                tx.objectStore('chunks').put(buf.slice(0, got), n + ':' + i); // drains to disk instead of queueing
+                tx.objectStore('chunks').put(new Blob([buf.subarray(0, got)]), n + ':' + i); // drains to disk instead of queueing
                 await Promise.race([new Promise((ok, e) => { tx.oncomplete = ok; tx.onerror = () => e(tx.error); tx.onabort = () => e(tx.error); }), tick(30000, 'chunk ' + i)]); // ~300 MB at once
                 if (window.WoodyShell) WoodyShell.phase(Math.round((i + 1) * 100 / Math.ceil(size / CH)), 'store');
             }
@@ -334,6 +341,7 @@ EM_ASYNC_JS(int, web_bigfile_store, (const char *name), {
             tx.objectStore('chunks').put({ size, chunk: CH }, n + ':meta');
             await Promise.race([new Promise((ok, e) => { tx.oncomplete = ok; tx.onerror = () => e(tx.error); }), tick(30000, 'meta')]);
         } finally { FS.close(f); db.close(); }
+        console.warn('WoodyRE: the store of ' + n + ' took ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s');
         console.warn('WoodyRE: ' + n + ' (' + Math.round(size / 1048576) + ' MB) stored in chunks for the next visits');
         if (window.WoodyShell) WoodyShell.progress('');
         return 0;
@@ -351,15 +359,28 @@ EM_ASYNC_JS(int, web_bigfile_restore, (const char *name), {
         if (window.WoodyShell) WoodyShell.phase(0, 'restore-big');
         FS.mkdirTree('/woody-big');
         const f = FS.open(path, 'w+');
+        let blobs = [];
         try {
-            const tx = db.transaction('chunks'), st = tx.objectStore('chunks');
+            const nc = Math.ceil(meta.size / meta.chunk);
+            await new Promise((ok, e) => {                    // every get queued at once: no await between them,
+                const tx = db.transaction('chunks'), st = tx.objectStore('chunks');   // the transaction never idles
+                for (let i = 0; i < nc; i++) {
+                    const r = st.get(n + ':' + i);
+                    r.onsuccess = () => { blobs[i] = r.result; if (window.WoodyShell) WoodyShell.phase(Math.round((i + 1) * 100 / nc), 'restore-big'); };
+                }
+                tx.oncomplete = ok; tx.onerror = () => e(tx.error); tx.onabort = () => e(tx.error);
+            });
+        } catch (e) { db.close(); console.warn('WoodyRE: bigfile restore failed:', e); if (window.WoodyShell) WoodyShell.progress(''); return -1; }
+        // outside the transaction: Blob -> bytes one chunk at a time (a Blob read with the transaction still
+        // open can deadlock the browser, so this waits for oncomplete above)
+        try {
             for (let i = 0; i * meta.chunk < meta.size; i++) {
-                const c = await new Promise((ok, e) => { const r = st.get(n + ':' + i); r.onsuccess = () => ok(r.result); r.onerror = () => e(r.error); });
+                let c = blobs[i];
                 if (!c) { if (window.WoodyShell) WoodyShell.progress(''); return -1; }   // incomplete store: caller falls back to the picker
+                if (typeof Blob !== 'undefined' && c instanceof Blob) c = new Uint8Array(await c.arrayBuffer());   // stores written as Blobs
                 FS.write(f, c, 0, c.length, i * meta.chunk);
-                if (window.WoodyShell) WoodyShell.phase(Math.round((i + 1) * 100 / Math.ceil(meta.size / meta.chunk)), 'restore-big');
             }
-        } finally { FS.close(f); db.close(); }
+        } finally { blobs = null; FS.close(f); db.close(); }
         console.log('WoodyRE: ' + n + ' restored from the browser storage (no pick needed)');
         if (window.WoodyShell) WoodyShell.progress('');
         return 1;
@@ -474,28 +495,27 @@ static int iso_copy(int fd, const char *home)               /* the number of fil
     printf("data: copying the game files from the ISO image to %s\n", dst);
     for (int i = 0; i < DATAFILES_COUNT; i++) {
         char dp[PMAX], tp[PMAX + 8]; uint32_t lba, len; int ok = 1;
-        if (iso_find(&is, k_datafiles[i].path, &lba, &len) && datafile_absent(i, g_fit)) continue;
-        if (iso_find(&is, k_datafiles[i].path, &lba, &len)) { snprintf(m, sizeof m, "The ISO image has no %s.", k_datafiles[i].path); data_progress(NULL); plat_message(m, 1); free(buf); return -1; }
+        int found = iso_find(&is, k_datafiles[i].path, &lba, &len) == 0;
+        if (!found && datafile_absent(i, g_fit)) continue;        /* the manifest lists it, a release lacks it */
+        if (!found) { snprintf(m, sizeof m, "The ISO image has no %s.", k_datafiles[i].path); data_progress(NULL); plat_message(m, 1); free(buf); return -1; }
 #ifdef __EMSCRIPTEN__
-        if (len >= WEB_BIGFILE_MIN) {                               /* a big file (Music.bf): exact-size buffer straight into
-                                                                     * /woody-big, outside the IDBFS mount — one FS.writeFile,
-                                                                     * no .part, no doubling, never a 300 MB IndexedDB write */
-            unsigned char *big = malloc(len);
-            if (!big) { data_progress(NULL); plat_message("Not enough memory for the copy.", 1); free(buf); return -1; }
+        if (len >= WEB_BIGFILE_MIN) {                               /* a big file (Music.bf): streamed 4 MB at a time from the
+                                                                     * ISO straight into /woody-big, outside the IDBFS mount, the
+                                                                     * SHA-1 computed on the way — never a 300 MB buffer in RAM
+                                                                     * and never a 300 MB IndexedDB write */
             const char *b = strrchr(k_datafiles[i].path, '/');
             snprintf(dp, sizeof dp, "/woody-big/%s", b ? b + 1 : k_datafiles[i].path);
             EM_ASM({ FS.mkdirTree('/woody-big'); });
             Sha1 hb; sha1_init(&hb); ok = 1;
-            if (web_bigfile_begin(b ? b + 1 : k_datafiles[i].path)) { free(big); free(buf); return -1; }
+            if (web_bigfile_begin(b ? b + 1 : k_datafiles[i].path)) { free(buf); return -1; }
             for (uint32_t o = 0; ok > 0 && o < len; ) {
                 size_t n = len - o < bufsz ? len - o : bufsz;
-                if (iso_pread(fd, big + o, n, (unsigned long long)lba * 2048 + o)) { ok = -1; break; }
-                sha1_add(&hb, big + o, n);
-                if (web_bigfile_write(o, big + o, n)) { ok = -1; break; }   // straight from the heap, 4 MB at a time
+                if (iso_pread(fd, buf, n, (unsigned long long)lba * 2048 + o)) { ok = -1; break; }
+                sha1_add(&hb, buf, n);
+                if (web_bigfile_write(o, buf, n)) { ok = -1; break; }   // straight from the heap, 4 MB at a time
                 o += (uint32_t)n; done += n; progress_pct("Copying the game files...", done, &last);
             }
             web_bigfile_end();
-            free(big);
             if (ok < 0) { data_progress(NULL); plat_message("Could not read the big file from the ISO image.", 1); free(buf); return -1; }
             char hex[41]; sha1_hex(&hb, hex);
             if (!datafile_tally(i, len, hex, g_fit)) { bad++; if (first_bad < 0) first_bad = i; printf("data: %s matches none of the supported CDs\n", k_datafiles[i].path); }

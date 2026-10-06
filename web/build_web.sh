@@ -27,7 +27,7 @@ emcc $SRC \
     -sENVIRONMENT=web \
     -sMODULARIZE=1 -sEXPORT_NAME=WoodyRE \
     -sEXPORTED_RUNTIME_METHODS=ccall,callMain,FS,HEAPU8 \
-    -sEXPORTED_FUNCTIONS=_main,_malloc,_free \
+    -sEXPORTED_FUNCTIONS=_main,_malloc,_free,_touch_toggle,_touch_enabled,_touch_draw \
     -sEXIT_RUNTIME=0 \
     -o "$OUT/woodyre.js"
 

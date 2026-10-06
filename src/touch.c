@@ -7,6 +7,9 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 enum { G_TRI_UP, G_TRI_DOWN, G_DIAMOND, G_RING, G_CAMERA, G_EYE, G_PAUSE };
 typedef struct { int pad, glyph, face; float x, y, r, rgb[3]; } Btn;
@@ -50,11 +53,34 @@ static void check_init(void)
     T.init = 1;
 #ifdef __ANDROID__
     T.enabled = 1; T.shown = 1;
+#elif defined(__EMSCRIPTEN__)
+    /* the browser says whether touch is the main input (a phone / tablet); ?touch=1 / ?touch=0 forces it either way */
+    T.enabled = EM_ASM_INT({
+        try {
+            const q = new URLSearchParams(location.search).get('touch');
+            if (q === '1') return 1;
+            if (q === '0') return 0;
+            return matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints > 1 && matchMedia('(hover: none)').matches) ? 1 : 0;
+        } catch (e) { return 0; }
+    });
+    T.shown = T.enabled;
 #else
     const char *e = getenv("WOODY_TOUCH"); T.enabled = e && atoi(e) != 0;
 #endif
     T.stick = -1;
 }
+
+/* the page's on-screen controls button (web): the shell sets window.__woodyToggle and the next frame flips the pad,
+ * because a click can land while Asyncify has the engine unwound and no wasm call can be made from there */
+void touch_toggle(void)
+{
+    check_init();
+    T.enabled = !T.enabled; T.shown = T.enabled;
+    if (!T.enabled) { T.nf = 0; T.stick = -1; }
+    printf("touch: on-screen controls %s\n", T.enabled ? "on" : "off");
+}
+
+int touch_enabled(void) { check_init(); return T.enabled; }
 
 static void drop(int k)
 {
@@ -82,6 +108,12 @@ void touch_event(const void *ev, int width, int height)
         if (b >= 0) T.f[k].ctl = 1 + b;
         else if (x < T.W * 0.5f && T.stick < 0) { T.f[k].ctl = 0; T.stick = k; T.sx = T.kx = x; T.sy = T.ky = y; }
         else T.f[k].ctl = -1;
+#ifdef __EMSCRIPTEN__
+        EM_ASM({ (window.__touchLog = window.__touchLog || []).push({ w: $0, x: $1, y: $2, ctl: $3 });
+                 if (window.__touchLog.length > 64) window.__touchLog.shift(); },
+               e->type, x / T.W, y / T.H, T.f[k].ctl);
+        if (T.f[k].ctl >= 0) EM_ASM({ try { navigator.vibrate && navigator.vibrate(10); } catch (e) {} });
+#endif
     } else if (k >= 0 && e->type == SDL_FINGERMOTION) {
         if (T.f[k].ctl == 0) {
             float R = 0.14f * unit(), dx = x - T.sx, dy = y - T.sy, d = sqrtf(dx * dx + dy * dy);

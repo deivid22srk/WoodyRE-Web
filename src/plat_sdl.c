@@ -171,6 +171,9 @@ int win_open(Window *w, const char *title, int width, int height)
 {
     memset(w, 0, sizeof *w);
     Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+#ifdef __EMSCRIPTEN__
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");                     /* the fingers are the on-screen pad (touch.c), not a mouse */
+#endif
 #ifdef __ANDROID__
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight"); SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");                     /* the fingers are the on-screen pad (touch.c), not a mouse */
@@ -199,6 +202,14 @@ int win_open(Window *w, const char *title, int width, int height)
 static unsigned char g_down_now[256], g_up_late[256];   /* a key pressed and released within one poll stays down for one frame */
 void win_poll(Window *w)
 {
+#ifdef __EMSCRIPTEN__
+    /* the shell's on-screen controls button asks through a flag: a click can land while Asyncify has the engine
+     * unwound, and no wasm call can be made from there -- the next frame applies it (touch.c) */
+    if (EM_ASM_INT({ if (!window.__woodyToggle) return 0; window.__woodyToggle = 0; return 1; })) {
+        touch_toggle();
+        EM_ASM({ if (window.WoodyShell && WoodyShell.touchState) WoodyShell.touchState($0); }, touch_enabled());
+    }
+#endif
     w->mouse_dx = w->mouse_dy = 0; w->raw_dx = w->raw_dy = 0;
     for (int k = 0; k < 256; k++) { if (g_up_late[k]) { w->keys[k] = 0; g_up_late[k] = 0; } g_down_now[k] = 0; }
     w->keys[VK_CONTROL] = w->keys[VK_LCONTROL] || w->keys[VK_RCONTROL]; w->keys[VK_SHIFT] = w->keys[VK_LSHIFT] || w->keys[VK_RSHIFT]; w->keys[VK_MENU] = w->keys[VK_LMENU] || w->keys[VK_RMENU];
