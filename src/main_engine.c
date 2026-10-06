@@ -3764,9 +3764,15 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *e)
 #endif
     return EXCEPTION_CONTINUE_SEARCH;
 }
-#elif !defined __ANDROID__                                        /* Android keeps its own handlers (the tombstone in logcat) */
+#elif !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)                        /* Android keeps its own handlers (the tombstone in logcat); the web build has none */
 #include <signal.h>
 static void crash_signal(int sig) { printf("crash: signal %d\n", sig); fflush(stdout); signal(sig, SIG_DFL); raise(sig); }
+#endif
+
+#ifdef __EMSCRIPTEN__
+/* the web main loop: the next frame comes with the next requestAnimationFrame tick (the browser's own vsync
+ * pacing; a hidden tab pauses the game). -sASYNCIFY unwinds to the browser and resumes here. */
+EM_ASYNC_JS(void, web_frame, (void), { await new Promise(function (r) { requestAnimationFrame(r); }); });
 #endif
 
 int main(int argc, char **argv)
@@ -4342,6 +4348,10 @@ int main(int argc, char **argv)
             lvl = L.name; continue;
         }
         if (now - fps_t > 2.0 && wenv("WOODY_FPSLOG")) printf("fps %.1f\n", frames / (now - fps_t));   /* testing: the frame cap / vsync */
+#ifdef __EMSCRIPTEN__
+        web_frame();                                                                 /* yield to the browser between frames */
+        { static double sync_t; if (now - sync_t > 8) { sync_t = now; data_sync(); } }   /* cfg / sav changes reach the browser's storage */
+#endif
         if (now - fps_t > 2.0) { char title[256]; snprintf(title, sizeof title, "WoodyRE%s - %s - %.0f fps - VM t=%d frame %u msgs %u - %s - woody %.0f %.0f %.0f %s - vol events %u - hearts %.0f lives %d bonus %d/%d", g_level == 0 ? " - TITLE: Enter = new game, L = continue" : "", lvl, frames / (now - fps_t), L.vm.time, L.vm.frame, L.vm.stat_msgs_total, fly ? "fly" : "play", L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.on_ground ? "ground" : "air", L.player.events_sent, L.player.health, L.player.lives, L.player.bonus_got, L.player.bonus_total); if (WOODY_DEBUG_TITLE) win_title(&win, title); if (L.have_player) printf("player t=%.1f pos %.0f %.0f %.0f vel %.0f %.0f %.0f %s floor %.0f cam %.0f %.0f %.0f\n", now - t0, L.player.pos.x, L.player.pos.y, L.player.pos.z, L.player.vel.x, L.player.vel.y, L.player.vel.z, L.player.on_ground ? (L.player.floor_is_hull ? "hull" : "ground") : "air", L.player.floor_y, cam.pos.x, cam.pos.y, cam.pos.z); frames = 0; fps_t = now; }
     }
     opt_write(); level_free(&L); audio_shutdown(); win_close(&win);   /* 0x401130: the cfg is written back at exit */
