@@ -23,3 +23,6 @@ __pycache__/
 *.pyc
 .venv/
 /woodyre
+# web port build output (web/build_web.sh) and local emsdk installs
+web/dist/
+emsdk/

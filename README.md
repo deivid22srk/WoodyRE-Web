@@ -45,6 +45,22 @@ copy `Data`, `Common`, `Logo`, `Game` and `Music.bf` there with a USB cable. `wo
 and `mods/` live in `Android/data/io.github.jjmhalew.woodyre/files`. A Bluetooth or USB pad works like on Linux and hides
 the touch controls; touching the screen brings them back.
 
+**Web / browser** (WebAssembly, built by `.github/workflows/build-web.yml` and published on GitHub Pages):
+- The engine runs 100% in the browser (Emscripten, SDL2, WebGL 2). **No game files are distributed** with the page:
+  at the first start the page asks for **an ISO image of your own CD** (or a folder holding its `Data`, `Common`,
+  `Logo`, `Game` and `Music.bf`), reads it locally, checks every file's SHA-1 and keeps the result in the browser's
+  own storage (IndexedDB, ~640 MB), so later visits start without the picker. Nothing is uploaded anywhere.
+- Playing from an ISO reads it a chunk at a time (the image is never held in memory whole); the extracted files live
+  in memory for the session, so weak phones may not manage — prefer a desktop browser (Chrome, Edge, Firefox, Safari).
+- `woodyre.cfg` and `woodyre.sav` are saved into the browser's storage too (options and the four save slots survive).
+- Keyboard, mouse, gamepad (Gamepad API) and the touch controls work; `⛶ Tela cheia` (or F11) is the browser's
+  fullscreen. Web Audio needs one click on the page before sound starts — the Jogar button is it.
+- Building it yourself: `./web/build_web.sh` (needs [emsdk](https://github.com/emscripten-core/emsdk) **3.1.74**;
+  `source emsdk_env.sh` first) writes `web/dist/` (`index.html`, `woodyre.js`, `woodyre.wasm`). Serve it over HTTP
+  (`python -m http.server` inside `web/dist`), open the page and click **Jogar**. The native builds are untouched:
+  the web code is `#ifdef __EMSCRIPTEN__` next to the Android ones (`src/plat_sdl.c`, `src/datasetup_posix.c`,
+  `src/main_engine.c`, `src/plat.h`); see `PORT_REQUIREMENTS.md` for the port's analysis and decisions.
+
 **Supported versions:** the English PC CD-ROM, version 1.00 (October 2001), the Spanish CD (same game data as 1.00), and
 three CDs with the February 2002 data (a few level fixes): the Brazilian Portuguese "Pica-Pau: A Fuga do Parque do Zeca
 Urubu!", the Polish "Wielka Draka w Parku Buzza Buzzarda" and the Russian release by 1C. The game is in the CD's language,
