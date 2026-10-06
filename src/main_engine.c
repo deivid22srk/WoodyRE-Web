@@ -3779,7 +3779,7 @@ int main(int argc, char **argv)
 {
 #ifdef _WIN32
     SetUnhandledExceptionFilter(crash_filter);
-#elif !defined __ANDROID__
+#elif !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
     signal(SIGSEGV, crash_signal); signal(SIGBUS, crash_signal); signal(SIGFPE, crash_signal); signal(SIGILL, crash_signal); signal(SIGABRT, crash_signal);
 #endif
     if (wenv("WOODY_UNBUF")) setvbuf(stdout, NULL, _IONBF, 0);                  /* debugging a crash: every line reaches the log */

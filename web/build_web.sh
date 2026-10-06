@@ -18,7 +18,7 @@ SRC="src/level.c src/render_gl.c src/main_engine.c src/player.c src/instance.c s
 emcc $SRC \
     -std=gnu99 -O2 -fsigned-char -Wno-format-truncation -D_FILE_OFFSET_BITS=64 \
     -Isrc/gles -Isrc \
-    -sUSE_SDL=2 -sUSE_WEBGL=2 \
+    -sUSE_SDL=2 -sMAX_WEBGL_VERSION=2 \
     -sASYNCIFY \
     -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4GB -sINITIAL_MEMORY=134217728 \
     -sSTACK_SIZE=2MB \

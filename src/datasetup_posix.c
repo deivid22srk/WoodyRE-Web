@@ -119,7 +119,7 @@ static int file_pass(const char *src_root, const char *dst_root, int i, unsigned
     if (d) { if (fclose(d) || ok < 0 || rename(tp, dp)) { remove(tp); return -1; } }
     return ok;
 }
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
 static int copy_cd(const char *src, const char *home)       /* the number of files that differ from the 1.00 CD, -1 = failed */
 {
     char dst[PMAX], m[PMAX + 400]; snprintf(dst, sizeof dst, "%s/data", home); mkdir(dst, 0755);
@@ -400,6 +400,7 @@ static void check_copy(const char *home)                     /* after the Java s
     }
 }
 
+#ifdef __ANDROID__
 const char *data_find(void)
 {
     const char *env = getenv("WOODY_DATA"); if (env && *env) return env;
@@ -432,6 +433,7 @@ const char *data_find(void)
     }
 }
 #endif   /* __ANDROID__ (data_find) */
+#endif   /* !desktop: the shared ISO parser + copy/check above serve Android and the web build */
 
 #if defined __EMSCRIPTEN__
 /* ---- web: the shell (web/shell.html) asks the user for the CD files and, for a folder copy, writes them into the
