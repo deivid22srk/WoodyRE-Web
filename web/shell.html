@@ -5,211 +5,361 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>WoodyRE — Escape from Buzz Buzzard Park no navegador</title>
 <meta name="description" content="Jogue Woody Woodpecker: Escape from Buzz Buzzard Park direto no navegador com a engine reimplementada WoodyRE (WebAssembly). Você fornece a ISO do seu próprio CD; nada é enviado a servidores.">
+<meta name="theme-color" content="#F7FAF2">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-  :root {
-    color-scheme: dark;
-    --bg: #0a0d13; --surface: rgba(19,25,39,.94); --surface-2: rgba(13,18,30,.85);
-    --line: rgba(148,163,195,.14); --line-2: rgba(148,163,195,.24);
-    --txt: #eef2fa; --txt-2: #aab6cb; --txt-3: #7c89a1;
-    --amber: #ffc93c; --red: #e8442e; --ok: #3ecf6f;
-    --grad: linear-gradient(135deg,#ffd23f,#ff9d3f);
-    --shadow: 0 24px 70px rgba(0,0,0,.55);
-    --r: 16px;
+/* ================= Material You (Material 3) =================
+   Color roles, type scale, shape and state layers follow the M3 guidelines
+   (material.io / material-web). Green seed — the park of the game. */
+
+:root {
+  color-scheme: light;
+  /* scheme: light (green seed) */
+  --sf: #F7FAF2;            /* surface */
+  --sf-dim: #DBE1D4;
+  --sf-lowest: #FFFFFF;     /* surface-container-lowest */
+  --sf-low: #F1F5EA;
+  --sf-cont: #EBEFE4;       /* surface-container */
+  --sf-high: #E5EADF;
+  --sf-highest: #DFE4D9;
+  --on-sf: #181D15;
+  --on-sf-var: #43483E;
+  --outline: #73796C;
+  --outline-var: #C3C8BA;
+  --pri: #3B6939;           /* primary (green 40) */
+  --on-pri: #FFFFFF;
+  --pri-cont: #BCF0AF;
+  --on-pri-cont: #002204;
+  --sec-cont: #D5E8CF;
+  --on-sec-cont: #101F10;
+  --err: #BA1A1A;
+  --on-err: #FFFFFF;
+  --err-cont: #FFDAD6;
+  --on-err-cont: #410002;
+  --inv-sf: #2D322A;        /* inverse surface (snackbar) */
+  --inv-on-sf: #EEF2E7;
+  --inv-pri: #A1D394;
+  --scrim: #000000;
+  /* elevation */
+  --elev1: 0 1px 2px rgba(0,0,0,.30), 0 1px 3px 1px rgba(0,0,0,.15);
+  --elev2: 0 1px 2px rgba(0,0,0,.30), 0 2px 6px 2px rgba(0,0,0,.15);
+  --elev3: 0 4px 8px 3px rgba(0,0,0,.15), 0 1px 3px rgba(0,0,0,.30);
+  --f: Roboto, "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+:root[data-theme="dark"] { color-scheme: dark; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { color-scheme: dark; }
+}
+/* dark scheme — applied either explicitly or via the system */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --sf: #10140E; --sf-dim: #10140E; --sf-lowest: #0B0F09;
+    --sf-low: #181D15; --sf-cont: #1C211A; --sf-high: #262B24; --sf-highest: #31362E;
+    --on-sf: #DFE4D8; --on-sf-var: #C3C8BA;
+    --outline: #8D9385; --outline-var: #43483E;
+    --pri: #A1D394; --on-pri: #0A390F; --pri-cont: #205123; --on-pri-cont: #BCF0AF;
+    --sec-cont: #384B38; --on-sec-cont: #D5E8CF;
+    --err: #FFB4AB; --on-err: #690005; --err-cont: #93000A; --on-err-cont: #FFDAD6;
+    --inv-sf: #DFE4D8; --inv-on-sf: #2D322A; --inv-pri: #3B6939;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; }
-  body {
-    background: var(--bg); color: var(--txt);
-    font: 15px/1.5 "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
-    display: flex; flex-direction: column; overflow: hidden;
-    background-image:
-      radial-gradient(1100px 480px at 12% -8%, rgba(255,210,63,.075), transparent 62%),
-      radial-gradient(900px 420px at 108% 112%, rgba(232,68,46,.065), transparent 60%);
-  }
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-thumb { background: #2a3348; border-radius: 8px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
-  a { color: var(--amber); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  html, body { overscroll-behavior: none; }
-  #canvas { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+}
+:root[data-theme="dark"] {
+  --sf: #10140E; --sf-dim: #10140E; --sf-lowest: #0B0F09;
+  --sf-low: #181D15; --sf-cont: #1C211A; --sf-high: #262B24; --sf-highest: #31362E;
+  --on-sf: #DFE4D8; --on-sf-var: #C3C8BA;
+  --outline: #8D9385; --outline-var: #43483E;
+  --pri: #A1D394; --on-pri: #0A390F; --pri-cont: #205123; --on-pri-cont: #BCF0AF;
+  --sec-cont: #384B38; --on-sec-cont: #D5E8CF;
+  --err: #FFB4AB; --on-err: #690005; --err-cont: #93000A; --on-err-cont: #FFDAD6;
+  --inv-sf: #DFE4D8; --inv-on-sf: #2D322A; --inv-pri: #3B6939;
+}
 
-  /* the portrait hint on phones */
-  #rotate { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 45;
-            display: flex; align-items: center; gap: 9px; background: rgba(17,23,36,.96); border: 1px solid var(--line-2);
-            border-radius: 999px; padding: 10px 18px; font-size: 13.5px; color: var(--txt);
-            box-shadow: 0 12px 34px rgba(0,0,0,.5); cursor: pointer; white-space: nowrap; }
-  #rotate.hide { display: none; }
-  #rotate svg { flex: none; color: var(--amber); }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--sf); color: var(--on-sf);
+  font: 400 14px/1.5 var(--f);
+  display: flex; flex-direction: column; overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--outline-var); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+:focus-visible { outline: 2px solid var(--pri); outline-offset: 2px; border-radius: 4px; }
+a { color: var(--pri); text-decoration: none; }
+a:hover { text-decoration: underline; }
+html, body { overscroll-behavior: none; }
+#canvas { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+::selection { background: var(--pri-cont); color: var(--on-pri-cont); }
 
-  /* ---------- header ---------- */
-  #topbar {
-    flex: none; height: 56px; display: flex; align-items: center; justify-content: space-between;
-    padding: 0 16px; border-bottom: 1px solid var(--line);
-    background: linear-gradient(180deg, rgba(16,21,33,.92), rgba(12,16,25,.78));
-    backdrop-filter: blur(10px); z-index: 30;
-  }
-  .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
-  .mark { flex: none; width: 34px; height: 34px; border-radius: 10px; background: var(--grad);
-          display: grid; place-items: center; box-shadow: 0 4px 16px rgba(255,157,63,.35); }
-  .mark svg { width: 24px; height: 24px; }
-  .brand-name { font-size: 17px; font-weight: 800; letter-spacing: .2px; white-space: nowrap; }
-  .brand-tag { font-size: 10.5px; font-weight: 800; color: #171208; background: var(--grad);
-               border-radius: 6px; padding: 2px 7px; letter-spacing: .9px; }
-  .top-actions { display: flex; align-items: center; gap: 9px; }
-  .chip { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--txt-3);
-          background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; }
-  .chip i { width: 7px; height: 7px; border-radius: 50%; background: #8b96ab; flex: none; }
-  .chip.ok i { background: var(--ok); box-shadow: 0 0 8px rgba(62,207,111,.8); }
-  .chip.busy i { background: var(--amber); animation: pulse 1s infinite alternate; }
-  @keyframes pulse { from { opacity: .35; } to { opacity: 1; } }
-  .iconbtn { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center;
-             background: var(--surface-2); border: 1px solid var(--line); color: var(--txt-2); cursor: pointer; }
-  .iconbtn svg { width: 17px; height: 17px; }
-  .iconbtn:hover { color: var(--amber); border-color: rgba(255,210,63,.5); }
+/* ---------- M3 buttons ---------- */
+.md-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 40px; padding: 0 24px; border-radius: 20px; border: 0; cursor: pointer; overflow: hidden;
+  font: 500 14px/1 var(--f); letter-spacing: .1px; white-space: nowrap;
+  transition: box-shadow .2s, background-color .2s, color .2s; }
+.md-btn svg { width: 18px; height: 18px; flex: none; }
+.md-btn::before { content: ""; position: absolute; inset: 0; background: currentColor; opacity: 0;
+  transition: opacity .15s; border-radius: inherit; pointer-events: none; }
+.md-btn:hover::before { opacity: .08; }
+.md-btn:active::before { opacity: .12; }
+.md-btn.filled { background: var(--pri); color: var(--on-pri); }
+.md-btn.filled:hover { box-shadow: var(--elev1); }
+.md-btn.filled:disabled { background: rgba(115,121,108,.4); color: rgba(24,29,21,.55);
+  background: color-mix(in srgb, var(--on-sf) 12%, transparent); color: color-mix(in srgb, var(--on-sf) 38%, transparent);
+  box-shadow: none; cursor: wait; }
+.md-btn.tonal { background: var(--sec-cont); color: var(--on-sec-cont); }
+.md-btn.tonal:hover { box-shadow: var(--elev1); }
+.md-btn.outline { background: transparent; color: var(--pri); box-shadow: inset 0 0 0 1px var(--outline); }
+.md-btn.text { background: transparent; color: var(--pri); padding: 0 12px; border-radius: 20px; }
+.md-btn.small { height: 36px; padding: 0 18px; font-size: 13px; }
+.md-btn:disabled:not(.filled) { color: color-mix(in srgb, var(--on-sf) 38%, transparent); cursor: default; }
 
-  /* ---------- stage / canvas ---------- */
-  #stage { position: relative; flex: 1; min-height: 0; background: #000; overflow: hidden; }
-  #frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
-           width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #000; }
-  #canvas { width: 100%; height: 100%; display: block; outline: none; touch-action: none; background: #000; }
-  #stage:fullscreen, #stage:-webkit-full-screen { background: #000; }
-  body.pseudo-fs #topbar, body.pseudo-fs footer { display: none; }
-  body.pseudo-fs #stage { position: fixed; inset: 0; z-index: 90; }
+.md-iconbtn { position: relative; width: 40px; height: 40px; border-radius: 50%; border: 0; flex: none;
+  display: grid; place-items: center; background: transparent; color: var(--on-sf-var); cursor: pointer;
+  transition: background-color .2s, color .2s; }
+.md-iconbtn::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: currentColor;
+  opacity: 0; transition: opacity .15s; }
+.md-iconbtn:hover { color: var(--on-sf); }
+.md-iconbtn:hover::before { opacity: .08; }
+.md-iconbtn:active::before { opacity: .12; }
+.md-iconbtn svg { width: 21px; height: 21px; }
 
-  /* ---------- HUD ---------- */
-  #hud { position: absolute; top: 12px; right: 12px; z-index: 25; display: flex; gap: 8px;
-         transition: opacity .35s; }
-  #hud.dim { opacity: 0; pointer-events: none; }
-  .hudbtn { display: inline-flex; align-items: center; gap: 7px; background: rgba(10,13,20,.72);
-            color: var(--txt); border: 1px solid rgba(148,163,195,.28); backdrop-filter: blur(8px);
-            border-radius: 10px; padding: 8px 13px; font-size: 13px; font-weight: 600; cursor: pointer; }
-  .hudbtn svg { width: 15px; height: 15px; }
-  .hudbtn:hover, .hudbtn.on { border-color: var(--amber); color: var(--amber); }
+/* ---------- M3 switch ---------- */
+.md-switch { position: relative; display: inline-block; flex: none; width: 52px; height: 32px; cursor: pointer; }
+.md-switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.md-switch .sw { position: absolute; inset: 0; border-radius: 999px; pointer-events: none;
+  background: var(--sf-highest); border: 2px solid var(--outline); transition: background-color .2s, border-color .2s; }
+.md-switch .sw::after { content: ""; position: absolute; top: 50%; left: 4px; width: 16px; height: 16px;
+  border-radius: 50%; background: var(--outline); transform: translateY(-50%); transition: left .2s, width .2s, height .2s, background-color .2s; }
+.md-switch input:checked + .sw { background: var(--pri); border-color: var(--pri); }
+.md-switch input:checked + .sw::after { left: 22px; width: 24px; height: 24px; background: var(--on-pri); }
+.md-switch input:focus-visible + .sw { outline: 2px solid var(--pri); outline-offset: 2px; }
 
-  /* ---------- overlays & cards ---------- */
-  .overlay { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center;
-             justify-content: center; padding: 20px; overflow: auto;
-             background: radial-gradient(1000px 620px at 50% 38%, rgba(13,18,30,.88), rgba(5,7,11,.95));
-             backdrop-filter: blur(12px); }
-  .overlay.hide { display: none; }
-  .card { width: 100%; max-width: 680px; max-height: 100%; overflow: auto; background: var(--surface);
-          border: 1px solid var(--line); border-radius: var(--r); padding: 26px 28px; box-shadow: var(--shadow); }
-  .card h1 { font-size: 24px; font-weight: 800; margin: 2px 0 10px; letter-spacing: .2px; }
-  .card h2 { font-size: 19px; font-weight: 750; margin-bottom: 8px; }
-  .card p { margin: 8px 0; }
-  .lead { font-size: 15.5px; }
-  .dim { color: var(--txt-2); }
-  .small { font-size: 12.5px; color: var(--txt-3); }
-  .legal { font-size: 12px; color: var(--txt-3); border-top: 1px solid var(--line);
-           margin-top: 16px; padding-top: 12px; }
+/* ---------- M3 chip (assist) ---------- */
+.md-chip { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 14px;
+  border-radius: 8px; border: 1px solid var(--outline-var); color: var(--on-sf-var);
+  font: 500 13px/1 var(--f); white-space: nowrap; }
+.md-chip svg { width: 16px; height: 16px; flex: none; }
 
-  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
-  .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
-           color: var(--txt-2); background: rgba(255,255,255,.04); border: 1px solid var(--line);
-           border-radius: 999px; padding: 5px 11px; }
-  .badge svg { width: 13px; height: 13px; color: var(--amber); flex: none; }
+/* ---------- top app bar (M3: surface, no border) ---------- */
+#topbar { flex: none; height: 64px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 8px 0 12px; background: var(--sf); z-index: 30; }
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.mark { flex: none; width: 40px; height: 40px; border-radius: 12px; background: var(--pri-cont);
+  display: grid; place-items: center; }
+.mark svg { width: 27px; height: 27px; }
+.brand-name { font-size: 22px; font-weight: 500; letter-spacing: 0; white-space: nowrap; color: var(--on-sf); }
+.brand-tag { font: 500 11px/1 var(--f); letter-spacing: 1px; color: var(--on-sec-cont);
+  background: var(--sec-cont); border-radius: 8px; padding: 4px 8px; transform: translateY(-1px); }
+.top-actions { display: flex; align-items: center; gap: 4px; }
+#eng-status { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 14px;
+  margin-right: 6px; border-radius: 8px; border: 1px solid var(--outline-var);
+  font: 500 13px/1 var(--f); color: var(--on-sf-var); background: transparent; }
+#eng-status i { width: 8px; height: 8px; border-radius: 50%; background: var(--outline); flex: none; transition: background-color .3s; }
+#eng-status.ok i { background: var(--pri); }
+#eng-status.busy i { background: #E8A13C; animation: pulse 1s infinite alternate; }
+@keyframes pulse { from { opacity: .35; } to { opacity: 1; } }
 
-  .btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 10px;
-    background: var(--grad); color: #191203; font-weight: 800; font-size: 16px; border: 0;
-    border-radius: 12px; padding: 13px 26px; cursor: pointer; box-shadow: 0 6px 22px rgba(255,157,63,.3);
-    transition: transform .12s, filter .15s, box-shadow .2s; }
-  .btn-primary svg { width: 17px; height: 17px; }
-  .btn-primary:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
-  .btn-primary:disabled { background: #2a3145; color: #8b96ab; box-shadow: none; cursor: wait; }
-  .playrow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 16px 0 4px; }
-  #bootmsg { font-size: 13px; color: var(--txt-3); flex: 1; min-width: 200px; }
+/* ---------- stage / canvas ---------- */
+#stage { position: relative; flex: 1; min-height: 0; background: #000; overflow: hidden; }
+#frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: #000; }
+#canvas { width: 100%; height: 100%; display: block; outline: none; touch-action: none; background: #000; }
+#stage:fullscreen, #stage:-webkit-full-screen { background: #000; }
+body.pseudo-fs #topbar, body.pseudo-fs footer { display: none; }
+body.pseudo-fs #stage { position: fixed; inset: 0; z-index: 90; }
 
-  .switch { display: flex; align-items: flex-start; gap: 11px; cursor: pointer; margin: 14px 0 2px;
-            font-size: 13.5px; color: var(--txt-2); }
-  .switch input { display: none; }
-  .sw { flex: none; width: 38px; height: 22px; border-radius: 999px; background: #2a3145;
-        position: relative; transition: .2s; margin-top: 1px; }
-  .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
-               border-radius: 50%; background: #fff; transition: .2s; }
-  .switch input:checked + .sw { background: var(--grad); }
-  .switch input:checked + .sw::after { left: 19px; }
+/* ---------- in-game HUD (top right; auto-hides in fullscreen) ---------- */
+#hud { position: absolute; top: 12px; right: 12px; z-index: 25; display: flex; gap: 8px; transition: opacity .35s; }
+#hud.dim { opacity: 0; pointer-events: none; }
+.hudbtn { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px;
+  background: rgba(18,22,16,.72); background: color-mix(in srgb, var(--sf-high) 88%, transparent);
+  color: var(--on-sf);
+  border: 0; border-radius: 20px; box-shadow: var(--elev1); backdrop-filter: blur(10px);
+  font: 500 14px/1 var(--f); cursor: pointer; position: relative; overflow: hidden; }
+.hudbtn svg { width: 18px; height: 18px; }
+.hudbtn::before { content: ""; position: absolute; inset: 0; background: currentColor; opacity: 0; transition: opacity .15s; }
+.hudbtn:hover::before { opacity: .08; }
+.hudbtn.on { background: var(--pri); color: var(--on-pri); }
+.hudbtn.hide { display: none; }
 
-  details.how { margin: 14px 0 2px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
-  details.how summary { cursor: pointer; padding: 11px 15px; font-size: 13.5px; font-weight: 600;
-                        color: var(--txt-2); list-style: none; display: flex; align-items: center; gap: 9px; }
-  details.how summary::-webkit-details-marker { display: none; }
-  details.how summary::before { content: "›"; color: var(--amber); font-size: 16px; transition: .2s; }
-  details.how[open] summary::before { transform: rotate(90deg); }
-  details.how .ctl-grid { padding: 2px 15px 13px; }
-  .ctl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 24px; }
-  .ctl { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--txt-2); padding: 5px 0; }
-  .ctl .keys { display: flex; gap: 4px; flex: none; }
-  kbd { font: 600 11px/1 ui-monospace, Consolas, monospace; background: #1b2233; border: 1px solid #303a52;
-        border-bottom-width: 2px; border-radius: 6px; padding: 4px 7px; color: #dbe4f5; white-space: nowrap; }
+/* ---------- overlays & cards ---------- */
+.overlay { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center;
+  justify-content: center; padding: 18px; overflow: auto; background: rgba(0,0,0,.45); }
+.overlay.hide { display: none; }
+.card { width: 100%; max-width: 640px; max-height: 100%; overflow: auto; background: var(--sf-low);
+  border-radius: 28px; padding: 26px 28px; box-shadow: var(--elev3); color: var(--on-sf); }
+.card h1 { font-size: 26px; font-weight: 400; margin: 4px 0 10px; letter-spacing: 0; }
+.card h2 { font-size: 22px; font-weight: 400; margin-bottom: 10px; }
+.card p { margin: 8px 0; }
+.lead { font-size: 15px; }
+.dim { color: var(--on-sf-var); }
+.small { font-size: 12px; color: var(--on-sf-var); }
+.legal { font-size: 12px; color: var(--on-sf-var); border-top: 1px solid var(--outline-var);
+  margin-top: 18px; padding-top: 14px; }
+.dlg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.dlg-head h2 { margin: 0; }
 
-  .tiles { display: grid; gap: 10px; margin: 14px 0 4px; }
-  .btn-tile { display: flex; gap: 14px; align-items: center; width: 100%; text-align: left;
-              background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 12px;
-              padding: 13px 16px; cursor: pointer; color: var(--txt); transition: .15s; }
-  .btn-tile:hover { border-color: rgba(255,210,63,.55); background: rgba(255,210,63,.05); transform: translateY(-1px); }
-  .btn-tile .ico { flex: none; width: 42px; height: 42px; border-radius: 10px; display: grid;
-                   place-items: center; background: rgba(255,210,63,.1); color: var(--amber); }
-  .btn-tile .ico svg { width: 21px; height: 21px; }
-  .btn-tile b { display: block; font-size: 15px; }
-  .btn-tile small { color: var(--txt-3); font-size: 12.5px; }
-  input[type=file] { display: none; }
-  #drop { border: 2px dashed var(--line-2); border-radius: 12px; padding: 20px; text-align: center;
-          color: var(--txt-3); transition: .15s; margin-top: 12px; font-size: 14px; }
-  #drop.over { border-color: var(--amber); color: var(--amber); background: rgba(255,210,63,.06); }
+.md-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 
-  /* ---------- work overlay (progress) ---------- */
-  #work .card { max-width: 540px; }
-  .wfile { display: flex; align-items: center; gap: 12px; background: var(--surface-2);
-           border: 1px solid var(--line); border-radius: 12px; padding: 11px 14px; margin: 16px 0 14px; }
-  .wfile svg { flex: none; width: 22px; height: 22px; color: var(--amber); }
-  .wfile b { display: block; font-size: 14px; word-break: break-all; }
-  .wfile small { color: var(--txt-3); font-size: 12px; }
-  .wrow { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
-  #wphase { font-size: 14px; color: var(--txt-2); }
-  #wpct { font-size: 26px; font-weight: 800; color: var(--amber); font-variant-numeric: tabular-nums; }
-  #bar { height: 12px; background: #1a2132; border-radius: 999px; overflow: hidden; position: relative;
-         margin: 8px 0 4px; }
-  #bar > div { height: 100%; width: 0%; background: var(--grad); border-radius: 999px; transition: width .25s; }
-  #bar.indet > div { width: 32% !important; animation: slide 1.15s infinite linear; }
-  @keyframes slide { from { transform: translateX(-110%); } to { transform: translateX(420%); } }
-  .wmeta { display: flex; justify-content: space-between; gap: 12px; font-size: 12px;
-           color: var(--txt-3); margin-top: 10px; }
+/* ---------- M3 settings list ---------- */
+.set-sec { font: 500 12px/1 var(--f); letter-spacing: 1.2px; text-transform: uppercase;
+  color: var(--pri); margin: 20px 0 4px; }
+.set-item { display: flex; align-items: center; gap: 16px; min-height: 64px; padding: 8px 12px 8px 0;
+  border-radius: 12px; }
+.set-item.wide { display: block; padding-right: 12px; }
+.set-item.wide .set-head { display: flex; align-items: center; gap: 16px; }
+.set-ico { flex: none; width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center;
+  background: var(--sf-cont); color: var(--on-sf-var); }
+.set-ico svg { width: 20px; height: 20px; }
+.set-txt { flex: 1; min-width: 0; }
+.set-txt b { display: block; font-weight: 500; font-size: 15px; }
+.set-txt small { display: block; font-size: 12.5px; color: var(--on-sf-var); margin-top: 2px; line-height: 1.45; }
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
-  /* ---------- toasts ---------- */
-  #toasts { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 40;
-            width: min(560px, 94%); display: flex; flex-direction: column; gap: 8px; }
-  .toast { background: rgba(17,23,36,.95); border: 1px solid var(--line-2); border-left: 4px solid var(--amber);
-           border-radius: 12px; padding: 11px 15px; font-size: 14px; box-shadow: 0 12px 34px rgba(0,0,0,.5);
-           white-space: pre-line; animation: tin .25s ease; }
-  .toast.warn { border-left-color: var(--red); }
-  @keyframes tin { from { opacity: 0; transform: translateY(8px); } }
+/* ---------- M3 segmented buttons (theme) ---------- */
+.md-seg { display: flex; margin: 4px 0 4px 56px; border-radius: 20px; overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--outline); width: fit-content; }
+.md-seg label { position: relative; display: inline-flex; }
+.md-seg input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.md-seg span { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 18px;
+  font: 500 13.5px/1 var(--f); color: var(--on-sf); background: transparent; transition: background-color .2s; }
+.md-seg span svg { width: 16px; height: 16px; display: none; }
+.md-seg input:checked + span { background: var(--sec-cont); color: var(--on-sec-cont); }
+.md-seg input:checked + span svg { display: block; }
+.md-seg label + label { box-shadow: inset 1px 0 0 0 var(--outline); }
+.md-seg input:focus-visible + span { outline: 2px solid var(--pri); outline-offset: -3px; }
 
-  /* ---------- footer ---------- */
-  footer { flex: none; border-top: 1px solid var(--line); background: rgba(12,16,25,.92); padding: 8px 16px 10px; }
-  .controls { display: flex; flex-wrap: wrap; gap: 5px 18px; }
-  .ctlf { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--txt-3); }
-  .meta { display: flex; justify-content: space-between; align-items: center; gap: 14px;
-          margin-top: 7px; font-size: 12px; color: var(--txt-3); }
-  .linkbtn { background: none; border: 0; color: var(--txt-3); font-size: 12px; cursor: pointer;
-             padding: 2px 4px; border-radius: 6px; }
-  .linkbtn:hover { color: var(--amber); }
-  #log { margin-top: 8px; max-height: 150px; overflow: auto; font: 11.5px/1.55 ui-monospace, Consolas, monospace;
-         color: #66738c; white-space: pre-wrap; border-top: 1px dashed var(--line); padding-top: 8px; }
-  #log.hide { display: none; }
+/* ---------- boot card extras ---------- */
+.playrow { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 18px 0 6px; }
+#bootmsg { font-size: 13px; color: var(--on-sf-var); flex: 1; min-width: 200px; }
+.setrow { display: flex; align-items: center; gap: 16px; cursor: pointer; margin: 14px 0 2px; padding: 4px 0; }
+.setrow .set-txt { cursor: pointer; }
 
-  @media (max-width: 720px) {
-    .card { padding: 20px 18px; }
-    .ctl-grid { grid-template-columns: 1fr; }
-    .chip span { display: none; }
-    .chip { padding: 5px 9px; }
-    #wpct { font-size: 21px; }
-  }
+/* details (controles) as an M3 accordion list */
+details.how { margin: 14px 0 2px; border-radius: 12px; background: var(--sf-cont); }
+details.how summary { cursor: pointer; padding: 14px 16px; font: 500 14px/1.3 var(--f); color: var(--on-sf);
+  list-style: none; display: flex; align-items: center; gap: 12px; border-radius: 12px; }
+details.how summary:hover { background: rgba(59,105,57,.08); background: color-mix(in srgb, var(--on-sf) 8%, transparent); }
+details.how summary::-webkit-details-marker { display: none; }
+details.how summary::after { content: ""; width: 20px; height: 20px; margin-left: auto; flex: none;
+  background: var(--on-sf-var);
+  -webkit-mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>') center/contain no-repeat;
+  mask: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M7.4 8.6 12 13.2l4.6-4.6L18 10l-6 6-6-6z"/></svg>') center/contain no-repeat;
+  transition: transform .2s; }
+details.how[open] summary::after { transform: rotate(180deg); }
+details.how .ctl-grid { padding: 4px 16px 16px; }
+.ctl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 24px; }
+.ctl { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--on-sf-var); padding: 5px 0; }
+.ctl .keys { display: flex; gap: 4px; flex: none; }
+kbd { font: 500 11px/1 ui-monospace, Consolas, monospace; background: var(--sf-highest);
+  border: 0; border-radius: 6px; padding: 5px 8px; color: var(--on-sf); white-space: nowrap; }
+
+/* ---------- picker (M3 outlined option cards) ---------- */
+.tiles { display: grid; gap: 12px; margin: 16px 0 4px; }
+.btn-tile { display: flex; gap: 16px; align-items: center; width: 100%; text-align: left;
+  background: transparent; border-radius: 12px; box-shadow: inset 0 0 0 1px var(--outline);
+  padding: 14px 16px; cursor: pointer; color: var(--on-sf); transition: background-color .15s, box-shadow .15s; }
+.btn-tile:hover { background: rgba(59,105,57,.08); background: color-mix(in srgb, var(--pri) 8%, transparent);
+  box-shadow: inset 0 0 0 1px var(--pri); }
+.btn-tile .ico { flex: none; width: 44px; height: 44px; border-radius: 12px; display: grid;
+  place-items: center; background: var(--sec-cont); color: var(--on-sec-cont); }
+.btn-tile .ico svg { width: 22px; height: 22px; }
+.btn-tile b { display: block; font-size: 15px; font-weight: 500; }
+.btn-tile small { color: var(--on-sf-var); font-size: 12.5px; }
+input[type=file] { display: none; }
+#drop { border: 1px dashed var(--outline); border-radius: 12px; padding: 18px; text-align: center;
+  color: var(--on-sf-var); transition: .15s; margin-top: 12px; font-size: 13.5px; }
+#drop.over { border-color: var(--pri); color: var(--pri); background: rgba(59,105,57,.08); background: color-mix(in srgb, var(--pri) 8%, transparent); }
+
+/* ---------- work overlay (progress) ---------- */
+#work .card { max-width: 520px; }
+.wfile { display: flex; align-items: center; gap: 14px; background: var(--sf-cont);
+  border-radius: 12px; padding: 12px 16px; margin: 16px 0 14px; }
+.wfile svg { flex: none; width: 22px; height: 22px; color: var(--pri); }
+.wfile b { display: block; font-size: 14px; font-weight: 500; word-break: break-all; }
+.wfile small { color: var(--on-sf-var); font-size: 12px; }
+.wrow { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+#wphase { font-size: 13.5px; color: var(--on-sf-var); }
+#wpct { font-size: 24px; font-weight: 500; color: var(--pri); font-variant-numeric: tabular-nums; }
+#bar { height: 6px; background: var(--sf-highest); border-radius: 999px; overflow: hidden; position: relative;
+  margin: 10px 0 4px; }
+#bar > div { height: 100%; width: 0%; background: var(--pri); border-radius: 999px; transition: width .25s; }
+#bar.indet > div { width: 33% !important; animation: slide 1.15s infinite linear; }
+#bar::after { content: ""; position: absolute; right: 0; top: 50%; width: 4px; height: 4px;
+  border-radius: 50%; background: var(--pri); transform: translateY(-50%); }
+#bar.indet::after { display: none; }
+@keyframes slide { from { transform: translateX(-110%); } to { transform: translateX(420%); } }
+.wmeta { display: flex; justify-content: space-between; gap: 12px; font-size: 12px;
+  color: var(--on-sf-var); margin-top: 10px; }
+
+/* ---------- snackbars (M3) ---------- */
+#toasts { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 40;
+  width: min(520px, 94%); display: flex; flex-direction: column; gap: 8px; }
+.toast { background: var(--inv-sf); color: var(--inv-on-sf); border-radius: 8px; padding: 13px 16px;
+  font-size: 14px; box-shadow: var(--elev3); white-space: pre-line; animation: tin .25s ease; }
+.toast.warn { background: var(--err-cont); color: var(--on-err-cont); }
+@keyframes tin { from { opacity: 0; transform: translateY(8px); } }
+
+/* ---------- rotate hint ---------- */
+#rotate { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 45;
+  display: flex; align-items: center; gap: 10px; background: var(--sf-high); color: var(--on-sf);
+  border-radius: 12px; padding: 11px 18px; font-size: 13.5px; box-shadow: var(--elev2);
+  cursor: pointer; white-space: nowrap; }
+#rotate.hide { display: none; }
+#rotate svg { flex: none; color: var(--pri); }
+
+/* ---------- footer ---------- */
+footer { flex: none; border-top: 1px solid var(--outline-var); background: var(--sf); padding: 10px 16px 12px; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.ctlf { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--on-sf-var); }
+.meta { display: flex; justify-content: space-between; align-items: center; gap: 14px;
+  margin-top: 8px; font-size: 12px; color: var(--on-sf-var); }
+.linkbtn { background: none; border: 0; color: var(--pri); font: 500 12px/1 var(--f); cursor: pointer;
+  padding: 8px 10px; border-radius: 20px; }
+.linkbtn:hover { background: rgba(59,105,57,.08); background: color-mix(in srgb, var(--pri) 8%, transparent); }
+#log { margin-top: 8px; max-height: 150px; overflow: auto; font: 11.5px/1.55 ui-monospace, Consolas, monospace;
+  color: var(--on-sf-var); white-space: pre-wrap; border-top: 1px dashed var(--outline-var); padding-top: 8px; }
+#log.hide { display: none; }
+
+@media (max-width: 720px) {
+  .card { padding: 20px 18px; border-radius: 24px; }
+  .ctl-grid { grid-template-columns: 1fr; }
+  #eng-status span { display: none; }
+  #eng-status { padding: 0 10px; }
+  .brand-name { font-size: 18px; }
+  #wpct { font-size: 20px; }
+  .md-seg { margin-left: 0; }
+}
+/*CHUNK1*/
 </style>
+<script>
+/* Log capture — runs before everything else so even loader errors are recorded.
+   The shell toggles __woodyLog.on from the settings ("Capturar logs"). */
+window.__woodyLog = (function () {
+  const L = { on: true, lines: [], max: 900,
+    push(type, msg) {
+      if (!L.on) return;
+      try {
+        const ts = new Date().toTimeString().slice(0, 8);
+        L.lines.push("[" + ts + "][" + type + "] " + String(msg).slice(0, 600));
+        if (L.lines.length > L.max) L.lines.splice(0, L.lines.length - L.max);
+      } catch (e) {}
+    } };
+  const fmt = a => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch (e) { return String(a); } };
+  ["log", "info", "warn", "error"].forEach(m => {
+    const orig = console[m].bind(console);
+    console[m] = (...a) => { L.push(m, a.map(fmt).join(" ")); orig(...a); };
+  });
+  addEventListener("error", e => L.push("js-error", (e.message || "erro") + " @ " + (e.filename || "") + ":" + (e.lineno || "")));
+  addEventListener("unhandledrejection", e => L.push("promise", String((e && (e.reason && (e.reason.message || e.reason))) || e)));
+  return L;
+})();
+</script>
 </head>
 <body>
-
 <header id="topbar">
   <div class="brand">
     <div class="mark" aria-hidden="true">
@@ -226,12 +376,15 @@
   </div>
   <div class="top-actions">
     <div id="eng-status" class="chip"><i></i><span>Carregando engine…</span></div>
-    <a class="iconbtn" href="https://github.com/jjmhalew/WoodyRE" target="_blank" rel="noopener"
+    <button id="b-settings" class="md-iconbtn" title="Configurações" aria-label="Configurações">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13.5c.05-.5.05-1 0-1.5l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.3-.75L15.3 4.5h-4l-.4 2.75a7 7 0 0 0-1.3.75l-2.4-1-2 3.5 2 1.5c-.05.5-.05 1 0 1.5l-2 1.5 2 3.5 2.4-1c.4.3.84.55 1.3.75l.4 2.75h4l.4-2.75c.46-.2.9-.45 1.3-.75l2.4 1 2-3.5z"/></svg>
+    </button>
+    <a class="md-iconbtn" href="https://github.com/jjmhalew/WoodyRE" target="_blank" rel="noopener"
        title="Projeto original no GitHub (jjmhalew)" aria-label="Projeto original no GitHub">
-      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      <svg viewBox="0 0 16 16" fill="currentColor" style="width:19px;height:19px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
-    <button id="b-full-top" class="iconbtn" title="Tela cheia (mostra só o jogo)" aria-label="Tela cheia">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+    <button id="b-full-top" class="md-iconbtn" title="Tela cheia (mostra só o jogo)" aria-label="Tela cheia">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
     </button>
   </div>
 </header>
@@ -248,32 +401,36 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="16" r="2.6"/><circle cx="16.5" cy="7.5" r="2.2"/><path d="M9 18.6c1 .9 2.3 1.4 3.7 1.4M5 12.5A9 9 0 0 1 12.7 8"/></svg>
       <span>Controles</span>
     </button>
+    <button id="b-set" class="hudbtn" title="Configurações" aria-label="Configurações">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13.5c.05-.5.05-1 0-1.5l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.3-.75L15.3 4.5h-4l-.4 2.75a7 7 0 0 0-1.3.75l-2.4-1-2 3.5 2 1.5c-.05.5-.05 1 0 1.5l-2 1.5 2 3.5 2.4-1c.4.3.84.55 1.3.75l.4 2.75h4l.4-2.75c.46-.2.9-.45 1.3-.75l2.4 1 2-3.5z"/></svg>
+    </button>
   </div>
 
   <!-- boot -->
   <section class="overlay" id="boot">
     <div class="card">
-      <div class="badges">
-        <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"/></svg>100% no navegador</span>
-        <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Nada é enviado a servidores</span>
-        <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 4v4h-4"/></svg>Arquivos ficam salvos no seu navegador</span>
-      </div>
-      <h1>WoodyRE <span class="brand-tag">Web</span></h1>
+      <h1>Pronto para jogar</h1>
       <p class="lead">Engine de <b>Woody Woodpecker: Escape from Buzz Buzzard Park</b> reimplementada em C e
-         compilada para WebAssembly — rodando direto no navegador, sem instalar nada.</p>
-      <p class="dim">Para jogar, forneça <b>a imagem ISO do seu próprio CD</b> do jogo (ou uma pasta com os
-         arquivos <b>Data, Common, Logo, Game e Music.bf</b>) quando o jogo pedir. A cópia é verificada e fica
-         só no seu computador.</p>
+         compilada para WebAssembly — rodando 100% no seu navegador, sem instalar nada.</p>
+      <p class="dim">Quando o jogo pedir, informe a imagem ISO do seu CD original (ou a pasta com os arquivos
+         <b>Data, Common, Logo, Game e Music.bf</b>). A cópia é verificada por SHA-1 e fica somente neste
+         dispositivo.</p>
+      <div class="md-chips">
+        <span class="md-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6z"/></svg>100% no navegador</span>
+        <span class="md-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Nada vai para servidores</span>
+        <span class="md-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 4v4h-4"/></svg>Abre direto nas próximas visitas</span>
+      </div>
       <div class="playrow">
-        <button id="b-play" class="btn-primary" disabled>
+        <button id="b-play" class="md-btn filled" disabled>
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>
           <span>Carregando engine…</span>
         </button>
         <div id="bootmsg">Baixando e compilando o WebAssembly…</div>
       </div>
-      <label class="switch"><input type="checkbox" id="persist" checked><span class="sw"></span>
-        <span>Guardar os arquivos neste navegador (~640&nbsp;MB) — nas próximas visitas o jogo abre direto.
-        Desligado = preparação <b>bem mais rápida</b>, mas pede a ISO de novo a cada visita</span></label>
+      <div class="setitem"><label class="setrow"><span class="set-txt"><b>Guardar os arquivos neste navegador</b>
+        <small>~640&nbsp;MB — nas próximas visitas o jogo abre direto. Desligado, a preparação é bem mais rápida
+        mas pede a ISO de novo a cada visita.</small></span>
+        <span class="md-switch"><input type="checkbox" id="persist" checked><span class="sw"></span></span></label></div>
       <p class="small" id="storage"></p>
       <details class="how">
         <summary>Controles e como jogar</summary>
@@ -303,8 +460,8 @@
   <section class="overlay hide" id="picker">
     <div class="card">
       <h2>Arquivos do jogo</h2>
-      <p class="dim">O WoodyRE precisa dos arquivos do CD original. Escolha <b>uma</b> das opções — a cópia é
-         verificada por SHA-1 (232 arquivos, ~640&nbsp;MB) e acontece <b>só uma vez</b>:</p>
+      <p class="dim">O WoodyRE precisa dos dados do CD original. Escolha <b>uma</b> das opções — a cópia é
+         verificada por SHA-1 (232 arquivos, ~640&nbsp;MB) e acontece <b>só uma vez</b>.</p>
       <div class="tiles">
         <label class="btn-tile" for="iso">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/></svg></span>
@@ -318,8 +475,9 @@
         <input type="file" id="dir" webkitdirectory multiple>
       </div>
       <div id="drop">…ou arraste a ISO aqui</div>
-      <p class="small" style="margin-top:12px">CDs suportados: inglês 1.00, brasileiro, espanhol, polonês e russo.
-         Funciona em celular (Android/iOS): os controles de toque aparecem sozinhos. Os arquivos nunca saem do seu navegador.</p>
+      <p class="small" style="margin-top:14px">CDs suportados: inglês 1.00, brasileiro, espanhol, polonês e russo.
+         Funciona em celular (Android/iOS): os controles de toque aparecem sozinhos. Os arquivos nunca saem do
+         seu navegador.</p>
       <p class="legal">Aviso legal: você deve possuir uma cópia original do jogo. Nenhum arquivo protegido por
          direitos autorais é distribuído nesta página; os arquivos que você escolhe permanecem no seu navegador
          e não são enviados a nenhum servidor.</p>
@@ -329,7 +487,7 @@
   <!-- work / progress -->
   <section class="overlay hide" id="work">
     <div class="card">
-      <h2>Preparando os arquivos do jogo</h2>
+      <h2>Preparando os arquivos</h2>
       <div class="wfile">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.6"/></svg>
         <div><b id="wname">—</b><small id="wsize"></small></div>
@@ -337,6 +495,53 @@
       <div class="wrow"><span id="wphase">Preparando…</span><span id="wpct"></span></div>
       <div id="bar"><div></div></div>
       <div class="wmeta"><span><span id="wtime"></span><span id="wspeed"></span></span><span id="whint">Isso acontece só uma vez — nas próximas visitas o jogo abre direto.</span></div>
+    </div>
+  </section>
+
+  <!-- settings (M3 dialog) -->
+  <section class="overlay hide" id="settings">
+    <div class="card" role="dialog" aria-modal="true" aria-labelledby="set-title" style="max-width:560px">
+      <div class="dlg-head">
+        <h2 id="set-title">Configurações</h2>
+        <button id="b-set-close" class="md-iconbtn" aria-label="Fechar configurações">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <p class="set-sec">Tela</p>
+      <div class="set-item">
+        <span class="set-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h13A2.5 2.5 0 0 1 21 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M3 9h18"/></svg></span>
+        <span class="set-txt"><b>Preencher a tela</b>
+          <small>O jogo ocupa a tela inteira, sem faixas pretas (a imagem é esticada). Desligado, a proporção
+          original do jogo é mantida.</small></span>
+        <span class="md-switch"><input type="checkbox" id="set-fill"><span class="sw"></span></span>
+      </div>
+      <div class="set-item wide">
+        <div class="set-head">
+          <span class="set-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 13A8 8 0 1 1 11 4a6.5 6.5 0 0 0 9 9z"/></svg></span>
+          <span class="set-txt"><b>Tema</b><small>Claro, escuro ou o mesmo do sistema.</small></span>
+        </div>
+        <div class="md-seg" role="radiogroup" aria-label="Tema">
+          <label><input type="radio" name="theme" value="system"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Sistema</span></label>
+          <label><input type="radio" name="theme" value="light"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Claro</span></label>
+          <label><input type="radio" name="theme" value="dark"><span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>Escuro</span></label>
+        </div>
+      </div>
+      <p class="set-sec">Diagnóstico</p>
+      <div class="set-item">
+        <span class="set-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M9 11h6M9 15h6M14 3v5h5"/></svg></span>
+        <span class="set-txt"><b>Capturar logs</b>
+          <small>Registra as mensagens do jogo e do navegador para diagnóstico.</small></span>
+        <span class="md-switch"><input type="checkbox" id="set-logcap"><span class="sw"></span></span>
+      </div>
+      <div class="set-item">
+        <span class="set-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><path d="M8.3 10.7l7.4-4.3M8.3 13.3l7.4 4.3"/></svg></span>
+        <span class="set-txt"><b>Compartilhar logs</b>
+          <small>Gera um arquivo .txt com os logs desta sessão para anexar a um problema.</small></span>
+        <button id="b-share" class="md-btn tonal small">Compartilhar</button>
+      </div>
+      <div class="dlg-actions">
+        <button id="b-set-ok" class="md-btn text">Fechar</button>
+      </div>
     </div>
   </section>
 
@@ -372,7 +577,8 @@
 <script>
 "use strict";
 /* WoodyShell — glue between the page and the engine (src/datasetup_posix.c, __EMSCRIPTEN__ part).
-   The C side calls these through EM_ASM; the page calls into the module (FS, callMain) here. */
+   The C side calls these through EM_ASM; the page calls into the module (FS, callMain) here.
+   UI follows Material You (M3): color roles, state layers, snackbars, dialogs. */
 const WoodyShell = (() => {
   const $ = id => document.getElementById(id);
   const stage = $("stage"), frame = $("frame"), canvas = $("canvas"), hud = $("hud");
@@ -384,18 +590,99 @@ const WoodyShell = (() => {
   const once = {};                // some warnings must not repeat
   const toastOnce = (key, msg, warn) => { if (!once[key]) { once[key] = 1; toast(msg, warn); } };
 
-  function toast(text, warn) {
+  /* ---- settings (persisted; Material You preferences) ---- */
+  const SET_KEY = "woody:settings";
+  const settings = Object.assign({ fill: false, theme: "system", logcap: true }, (() => {
+    try { return JSON.parse(localStorage.getItem(SET_KEY) || "{}") || {}; } catch (e) { return {}; }
+  })());
+  const saveSettings = () => { try { localStorage.setItem(SET_KEY, JSON.stringify(settings)); } catch (e) {} };
+  const metaTheme = document.querySelector('meta[name="theme-color"]');
+  const sysDark = matchMedia("(prefers-color-scheme: dark)");
+  function applyTheme() {                     // M3: light / dark / follow the system
+    const root = document.documentElement, t = settings.theme;
+    if (t === "system") delete root.dataset.theme; else root.dataset.theme = t;
+    const dark = t === "dark" || (t === "system" && sysDark.matches);
+    metaTheme.content = dark ? "#10140E" : "#F7FAF2";
+  }
+  sysDark.addEventListener ? sysDark.addEventListener("change", applyTheme) : sysDark.addListener(applyTheme);
+  window.__woodyLog.on = settings.logcap !== false;      // head capture honors the switch
+  applyTheme();
+
+  function toast(text, warn) {              // M3 snackbar (inverse surface / error container)
     const d = document.createElement("div");
     d.className = "toast" + (warn ? " warn" : ""); d.textContent = text;
     $("toasts").appendChild(d);
     setTimeout(() => d.remove(), warn ? 12000 : 6000);
   }
-  const log = (s, err) => { const el = $("log"); el.textContent += (el.textContent ? "\n" : "") + s; if (err) console.error(s); };
+  const log = (s, err) => {
+    window.__woodyLog.push("engine", s);
+    const el = $("log"); el.textContent += (el.textContent ? "\n" : "") + s; if (err) console.error(s);
+  };
   const setStatus = (txt, state) => {
     const c = $("eng-status");
     c.className = "chip" + (state ? " " + state : "");
     c.querySelector("span").textContent = txt;
   };
+
+  /* ---- settings dialog ---- */
+  function syncSettingsUI() {
+    $("set-fill").checked = !!settings.fill;
+    $("set-logcap").checked = settings.logcap !== false;
+    document.querySelectorAll('input[name="theme"]').forEach(r => { r.checked = r.value === settings.theme; });
+  }
+  function openSettings() { syncSettingsUI(); $("settings").classList.remove("hide"); pokeHud(); }
+  function closeSettings() { $("settings").classList.add("hide"); }
+  $("b-settings").addEventListener("click", openSettings);
+  $("b-set").addEventListener("click", openSettings);
+  $("b-set-close").addEventListener("click", closeSettings);
+  $("b-set-ok").addEventListener("click", closeSettings);
+  $("settings").addEventListener("click", e => { if (e.target === $("settings")) closeSettings(); });   // scrim tap
+  addEventListener("keydown", e => { if (e.key === "Escape" && !$("settings").classList.contains("hide")) closeSettings(); });
+  $("set-fill").addEventListener("change", e => {
+    settings.fill = e.target.checked; saveSettings(); fitCanvas();
+    toast(e.target.checked ? "O jogo vai preencher a tela inteira." : "Proporção original do jogo restaurada.");
+  });
+  document.querySelectorAll('input[name="theme"]').forEach(r => r.addEventListener("change", e => {
+    settings.theme = e.target.value; saveSettings(); applyTheme();
+  }));
+  $("set-logcap").addEventListener("change", e => {
+    settings.logcap = e.target.checked; saveSettings();
+    window.__woodyLog.on = e.target.checked;
+    window.__woodyLog.push("shell", "captura de logs " + (e.target.checked ? "ativada" : "desativada"));
+  });
+  $("b-share").addEventListener("click", () => shareLogs());
+
+  /* ---- share logs: Web Share API when available, download as fallback ---- */
+  async function shareLogs() {
+    const cap = window.__woodyLog;
+    let est = {};
+    try { est = (navigator.storage && navigator.storage.estimate) ? await navigator.storage.estimate() : {}; } catch (e) {}
+    const shellLog = (() => { try { return $("log").textContent; } catch (e) { return ""; } })();
+    const head = [
+      "WoodyRE Web — logs de diagnóstico",
+      "Gerado em: " + new Date().toLocaleString("pt-BR"),
+      "URL: " + location.href,
+      "Navegador: " + navigator.userAgent,
+      "Idioma: " + navigator.language,
+      "Tela: " + screen.width + "x" + screen.height + " · buffer do jogo: " + canvas.width + "x" + canvas.height,
+      "Armazenamento: uso ~" + fmtMB(est.usage || 0) + " de ~" + fmtMB(est.quota || 0),
+      "Configurações: " + JSON.stringify(settings),
+      "Captura de logs: " + (settings.logcap !== false ? "ativada" : "desativada nesta sessão"),
+    ].join("\n");
+    const body = cap.lines.length ? cap.lines.join("\n") : "(sem logs capturados)";
+    const extra = shellLog ? "\n\n----- Log do sistema (rodapé) -----\n" + shellLog : "";
+    const d = new Date(), z = n => String(n).padStart(2, "0");
+    const name = "woodyre-logs-" + d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + "-" + z(d.getHours()) + z(d.getMinutes()) + z(d.getSeconds()) + ".txt";
+    const file = new File([head + "\n\n----- Log -----\n" + body + extra + "\n"], name, { type: "text/plain" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: "Logs do WoodyRE Web" }); toast("Logs compartilhados."); return; }
+      catch (err) { if (err && err.name === "AbortError") return; }
+    }
+    const url = URL.createObjectURL(file), a = document.createElement("a");
+    a.href = url; a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast("Logs salvos em " + name + (navigator.canShare ? "" : " (compartilhamento não disponível neste navegador)."));
+  }
 
   /* ---- the work overlay: every step of the one-time data preparation, with real percentages ---- */
   const PHASES = {
@@ -476,7 +763,6 @@ const WoodyShell = (() => {
       $("storage").textContent = msg;
     }).catch(() => {});
   $("persist").addEventListener("change", () => { try { $("persist").dataset.touched = "1"; } catch (e) {} });
-
   /* ---- the virtual file system: /woody holds the game files + cfg/sav, persisted in IndexedDB ---- */
   async function mountStorage() {
     const FS = mod.FS;
@@ -511,9 +797,13 @@ const WoodyShell = (() => {
   /* ---- fullscreen: only the game (the stage) goes fullscreen — header and footer stay out ---- */
   const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement;
   const pseudoOn = () => document.body.classList.contains("pseudo-fs");     // iOS fallback: hide the page chrome with CSS
-  function fitCanvas() {                                   // letterbox: keep the engine's buffer aspect, centered
+  function fitCanvas() {                                   // letterbox: keep the engine's buffer aspect, centered —
     const bw = canvas.width, bh = canvas.height, sw = stage.clientWidth, sh = stage.clientHeight;
     if (!bw || !bh || !sw || !sh) return;
+    if (settings.fill) {                                   // "Preencher a tela": stretch over the whole stage
+      frame.style.width = "100%"; frame.style.height = "100%";
+      return;
+    }
     const s = Math.min(sw / bw, sh / bh);
     frame.style.width = Math.floor(bw * s) + "px";
     frame.style.height = Math.floor(bh * s) + "px";
